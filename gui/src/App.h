@@ -145,6 +145,11 @@ private:
         bool answered = false;
         std::string askId;                        // P1.5：协议 ask 的 id（answer 回执用）
         int bodyH = 0;                            // 展开体高度缓存（autosize 布局用）
+        // ★ A-2 曾拟在此加 `bodyHDirty`（按需重测），**已复核否决**（2026-10-13 晚）：
+        //   把 `chars` 分解为 `a(一次性) + b(每帧)·frames` 后实测 ⇒ b 与文本长度**无关**
+        //   （body 4000 与 40 的 b 分别为 504 / 502，比 1.00×）⇒ 折叠态**没有**逐帧
+        //   重测长文本；长文本的成本是**一次性**的布局建立（C29-10 缓存按文档生效）。
+        //   故 `Relayout` 保持无条件 `AutoSize()`。取证：`.scratch/probe_a2_decompose.py`。
         int lastBodyW = 0;                        // 上次下发给 body 的基准尺寸——
         int lastBodyH = 0;                        // 未变则不重发（动画期间重入会钉死动画）
     };
