@@ -233,6 +233,21 @@ GUI 侧对 `prompt` / `cancel` 的按钮使能**只由 `state` 驱动**（不要
 | `tool_call` | **可折叠卡片**，默认折叠；标题 = `name`，展开体 = `args` 美化 | `CollapsiblePanel` |
 | `tool_result` | 可折叠卡片，标题 = `ok ? 成功 : 失败` + `summary` | `CollapsiblePanel` |
 | `system` / `error` | 弱化色、居中 | `Label` |
+| ★ **未知 `kind`**（含**缺失** `kind`） | **中性气泡**：琥珀描边 + 显式前缀 `[未知 kind: xxx]`，正文原样保留 | `Label` / `Panel` |
+
+★ **未知 `kind` 的处置（2026-10-13 补，实测驱动）**：§3.3 只列六个值，且 **I5 只管信封层的 `t`**
+——`kind` 是**子判别符**，未被任何不变量覆盖。此前未知 `kind` **静默掉进工具卡分支**，而该分支的
+占位标题是 `等待结果`（= `tool_result` 在 `block_end` 到达**前**的标题）⇒ **思维链与「正在等的工具结果」
+视觉上无法区分**，且 `validate.py` 对其**返回 0**（一份满屏思维链的夹具会全绿通过）。
+
+⇒ 现行处置 = **中性渲染 + 显式提示 + 记账**（三者缺一不可）：
+① 渲染不得**伪装成有语义的形态**（工具卡 / 权限门）；② 正文**不得丢弃**（I5 的前向兼容精神是
+「忽略并记录」，不是「拒绝」）；③ 计入摘要 `unknownKinds` 并在 GUI 协议健康里单列。
+`validate.py` 对未知 / 缺失 `kind` 记 **note**（不判违规）。详见 `docs/ecdi-capability-requests.md` §2。
+
+> ⬜ **待协议 v2**：给思维链一个一等公民位置（`kind:"reasoning"`，可选 `tokens`）并补一条
+> **I8**（未知 `kind` 必须中性渲染 + 显式提示）。渲染形态（默认折叠？显 token 数？）**先用
+> `fixtures/cot/` 取读数再定**。
 
 - 转录容器 = `ScrollView` + `ListLayout`（Phase 25 的布局正好是这个形状）。
 - 流式指示：`running` 且最后一块未 `block_end` 时显示；用 `AnimationManager` 或不确定态 `ProgressBar`。
@@ -275,6 +290,8 @@ GUI 侧对 `prompt` / `cancel` 的按钮使能**只由 `state` 驱动**（不要
 | `fixtures/hostile/truncated-final-line.jsonl` | **§1.2 的负向用例**：最后一行被截断（半个 JSON） |
 | `fixtures/scale/scale-transcript-2000.jsonl` | **规模基线**：2000 块 / 250 工具对 / 8906 条消息 / 916 KB，全部不变量成立。用于评估指标 ②（长转录滚动延迟与内存）；**建议 `instant` 回放**（`timed` 约 1.6 分钟） |
 | `fixtures/scale/gen_scale.py` | **确定性生成器**：`--blocks N --seed S`，同参数必得**逐字节相同**输出 ⇒ 2000 / 5000 / 20000 是**旋钮**，不是砖 |
+| `fixtures/cot/cot-session.jsonl` | **思维链基线**（开源推理模型）：12 轮，每轮一段**长、流式、本应折叠**的思维链 + 短回答。44 块 / 934 deltas / 1044 消息。★ 用 `kind:"reasoning"`——**§3.3 尚未收录该值**，故本夹具同时是那条**协议空白**的可执行载体（见 §7 与账本 §2「思维链与未知 kind」） |
+| `fixtures/cot/gen_cot.py` | **确定性生成器**：`--turns N --thinking-chars C --kind reasoning\|unknown\|assistant`。用途：① `--thinking-chars` 做**长度剂量**（`measureChars/measureCalls` 随长度单调上升）② `--kind` 做**同一内容的渲染对照**（`assistant` = 今天唯一可行的绕法）。★ **本夹具目前测不了「折叠省多少」**——harness 对 thinking 块没有折叠能力，不存在可比的折叠态；那要等渲染形态定案 |
 
 **否定型断言必须配正对照**：先用 `demo-session.jsonl` 证明路径通，再用 hostile 目录证明失败被**显式**暴露。
 

@@ -308,6 +308,7 @@
 | `F8` | evals 数据卫生（3 项） | 🔄 **仍成立且扩到 5 项**，见 `MEMORY.md`「待澄清的数据卫生问题」 |
 | ★ `A-1` | **未知 `kind` 的中性渲染 + 记账**（`reasoning`/`thinking`/缺失 `kind` 曾静默长成「等待结果」工具卡，与未完成的 `tool_result` 无法区分） | ✅ **已落地并实机复验**（2026-10-13）：`App.cpp` 中性分支 + `Transcript::UnknownKinds()` + 摘要 `unknownKinds` 字段 + 右栏独立行 + `validate.py` 记 note。探针 `probe-kind.jsonl` 四个块全部中性渲染，`unknownKinds=4` |
 | ★ `A-2` | **折叠态仍在全量测量**（`App.cpp:1123` 无条件 `AutoSize()`）：折叠卡里的长文本每帧照样测量 ⇒ 为看不见的内容付全部成本 | 🔄 **仍成立**（2026-10-13 受控 4 档剂量实测：body 40→4000 字符，`measureChars` 15,796→139,043，**8.80×**）⇒ 属 harness 侧，修法见 `.scratch/D-attribution-conclusion.md` §五 |
+| ★ `C-1` | **思维链评估夹具**（`fixtures/cot/`）：开源推理模型的 CoT 是「长 + 流式 + 本应折叠」的独立负载画像，既有夹具都不覆盖 | ✅ **已落地**（2026-10-13）：生成器 `gen_cot.py`（`--turns/--thinking-chars/--kind/--emit-empty`）+ 入库基线 `cot-session.jsonl`（44 块 / 934 deltas / 1044 消息 / 172,868 B · sha256 `2b8cb42f…` 可复现）+ PROTOCOL §8.4 登记。读数见 `.scratch/C-cot-eval-conclusion.md` |
 
 ---
 
@@ -336,6 +337,13 @@
 
 ## §6 修订记录（新在前）
 
+- **v1.7（2026-10-13 晚·二）建议 C 落地：思维链评估夹具 + 三条附读数**：
+  新增 `protocol/fixtures/cot/`（生成器 + 入库基线，确定性可复现），PROTOCOL §8.4 登记、
+  §7 补「未知 `kind` 的中性渲染」一行。读数的**两条自我修正**（重要，均已记档）：
+  ① 我原打算把「空体 vs 2600 字」当**折叠对照**，**截图否证**——`reasoning` 走中性路径是**可见气泡**（不是折叠卡），故该组测的是**正文长度**；根因是 **harness 对 thinking 块没有折叠能力**（A-1 有意为之：不让它伪装成工具卡）⇒「折叠省多少」**今天测不出来**，须等渲染形态定案。`--folded` 已改名 `--emit-empty`。
+  ② 我原写「三种 kind 渲染路径不同」，**命令计数否证**——极差仅 145 条 text（噪声内），三者都是文本气泡，差别只在颜色令牌与前缀文本，**不在渲染规模**⇒ 该组只作对照，唯一可用判据是 `unknownKinds`（reasoning/unknown = 8 · assistant = 0）。
+  ★ 主读数（**帧数无关**判据 `chars/call`，`--thinking-chars` 400/1200/2600/5200）：
+  **53.58 → 131.94 → 272.39 → 512.33**（单调，5200 档是 400 档的 **9.6×**），`avgExecuteUs` 7,355 → 14,014 μs（**+90%**）⇒ 思维链长度线性推高每帧测量成本，直接兑现评估指标 ①/④。
 - **v1.6（2026-10-13 晚）思维链 / 未知 `kind` 专项 + 一条候选 ECDI 需求被否决**：
   ① 登记**协议空白**——§3.3 的 `kind` 无思维链位置，且未知 `kind` 不被任何不变量覆盖（实测 `unknownTypes=0` + `validate.py` exit 0，满屏思维链可全绿）⇒ 建议协议 v2 增 `kind:"reasoning"` 并补 **I8**（未知 `kind` 必须中性渲染 + 显式提示）。
   ② ★★ **候选 `REQ-07` 复核否决**：曾拟记「ECDI 折叠件收起后仍测量」为框架需求；查 ECDI 源码仓发现其 Layout **四处**均有 `C-VIS-1` 跳过不可见子节点的契约（`VerticalLayout.cpp:37` 等）⇒ 归属 **harness 侧**（`App.cpp:1123` 无条件 `AutoSize()`）。**不登记为 ECDI 需求**。这是本项目**第 4 次**归属反转，成因同前三次（未先查 ECDI 源码仓）。
