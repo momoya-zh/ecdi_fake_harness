@@ -1,0 +1,18 @@
+{
+  "fixture": "truncated-final-line.jsonl",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "d59561d+p30rel",
+  "backend": "gdi",
+  "blocks": 1,
+  "deltas": 1,
+  "messages": 5,
+  "invalidations": 4,
+  "paints": 31,
+  "frameCount": 31,
+  "maxPaintUs": 0,
+  "avgPaintUs": 0,
+  "seqGaps": 0,
+  "violations": 1,
+  "unknownTypes": 0
+}

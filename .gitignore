@@ -1,0 +1,61 @@
+# ============================================================
+# ECDI_fake_harness
+# 编码：无 BOM + CRLF（配置文件例外，见 protocol/PROTOCOL.md §1.1）
+# 目录名模式（无前缀）会匹配任意层级的同名目录
+# ============================================================
+
+# ===== 第三方（ECDI 安装前缀，不入库）=====
+third_party/
+
+# ===== 构建产物 =====
+build/
+build-*/
+cmake-build-*/
+out/
+x64/
+Debug/
+Release/
+
+# ===== 可执行 / 库 / 调试符号 =====
+*.exe
+*.dll
+*.lib
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# ===== Go =====
+/core/bin/
+*.test
+
+# ===== Python（夹具生成器 / 协议校验器）=====
+__pycache__/
+*.pyc
+
+# ===== 编辑器 / IDE =====
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.VC.db
+
+# ===== 项目档案（★ 刻意不入库——用户 2026-10-13 定调）=====
+# agent 的长期记忆与当日日志（MEMORY.md / YYYY-MM-DD.md）：
+#   属「工作笔记」性质，留在本地；仓库内以 docs/ 的规格与账本为准。
+.workbuddy/
+
+# ===== 临时 / 诊断 =====
+.scratch/
+tmp/
+*.tmp
+error.txt
+Thumbs.db
+Desktop.ini
+
+# ===== 注意 =====
+# protocol/fixtures/**/*.jsonl 是入库资产（含 2000 块的规模基线），
+# 绝不要添加忽略 *.jsonl 的规则——评估数据的可比性依赖它们被版本控制。

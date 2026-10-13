@@ -1,0 +1,18 @@
+{
+  "fixture": "demo-session.jsonl",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "glfix",
+  "backend": "gl",
+  "blocks": 8,
+  "deltas": 19,
+  "messages": 43,
+  "invalidations": 5,
+  "paints": 3,
+  "frameCount": 3,
+  "maxPaintUs": 0,
+  "avgPaintUs": 0,
+  "seqGaps": 0,
+  "violations": 0,
+  "unknownTypes": 0
+}

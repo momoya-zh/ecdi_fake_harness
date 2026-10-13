@@ -1,0 +1,5 @@
+{"t":"hello","seq":0,"ts":"2026-10-03T11:10:00.000Z","protocol":1,"core":"0.1.0","session":"s-hostile-2","caps":["tools"]}
+{"t":"state","seq":1,"ts":"2026-10-03T11:10:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-10-03T11:10:00.100Z","id":"b1","kind":"assistant"}
+{"t":"delta","seq":3,"ts":"2026-10-03T11:10:00.140Z","id":"b1","text":"这一行是完整的，之后的那一行被截断了。"}
+{"t":"delta","seq":4,"ts":"2026-10-03T11:10:00.180Z","id":"b1","text":"半个 JSON：{"t":"delta","seq":5

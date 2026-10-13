@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness · 高保真模型 · 变体 A（三栏工作台）</title>
+<!--
+  高保真模型（hi-fi mockup）· 变体 A 三栏工作台
+  ────────────────────────────────────────────────────────────
+  底稿：harness-lofi-variant-a.html（2026-10-05 低保真线框）
+  本版：2026-10-06 高保真 —— 灰块全部换成真实界面，深色 IDE 风，可交互。
+  对应关系（逐区块）：
+    顶栏 HUD        → 窗口标题栏 + 会话/模型/上下文/运行状态
+    左栏            → 会话列表 + 工作区树 + 本次上下文
+    中栏            → 转录（系统/用户/助手消息、工具卡片、权限门、流式指示）
+    右栏            → 检查器（工具详情 / 权限历史 / 用量 / 协议健康）
+    Composer        → 输入区 + 发送/停止
+    状态栏          → 运行状态 / 协议 / 消息数 / token / 重绘耗时 / 缩放
+  交互：工具卡片可折叠、权限门可点、发送/停止可切换、流式动画。
+-->
+<style>
+/* ═══════════ 外壳（深色 IDE 风） ═══════════ */
+:root{
+  --bg:#0d0f14;
+  --panel:#161a21;
+  --panel2:#1d222c;
+  --line:#272d38;
+  --fg:#e6e9ef;
+  --dim:#8d95a5;
+  --accent:#5b9dff;
+  --accent-soft:#263449;
+  --ok:#3fbf7f;
+  --warn:#e0a33c;
+  --err:#e0564a;
+
+  /* 应用内配色（工作台本体） */
+  --app-bg:#16181d;           /* 工作台整体底 */
+  --app-panel:#1e2128;        /* 侧栏/检查器底 */
+  --app-panel2:#23262f;       /* 卡片头、输入框底 */
+  --app-line:#2e333e;
+  --app-fg:#e6e9ef;
+  --app-dim:#9aa2b1;
+  --app-user:#263449;         /* 用户气泡 */
+  --app-tool:#20242c;         /* 工具卡片 */
+  --app-ask:#3a2f1d;          /* 权限门 */
+  --app-ask-line:#8a6d3b;
+  --app-mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--fg);
+  font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+
+.top{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);
+  padding:12px 18px;display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.top h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+.top h1 small{display:block;font-weight:400;font-size:11px;color:var(--dim);letter-spacing:0}
+.top .sp{flex:1}
+.btn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;
+  padding:5px 10px;font:inherit;font-size:12px;cursor:pointer}
+.btn[data-on="1"]{background:var(--accent-soft);border-color:var(--accent);color:#cfe1ff}
+.btn:hover{border-color:#3d4658}
+
+.wrap{padding:20px;display:flex;flex-direction:column;gap:26px;max-width:1180px;margin:0 auto}
+
+/* ── 变体外壳 ── */
+.variant{background:#101419;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.vhead{display:flex;align-items:baseline;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);
+  background:#141922}
+.vhead .tag{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#0d1017;background:var(--accent);
+  padding:2px 7px;border-radius:4px;font-weight:700}
+.vhead b{font-size:14px}
+.vhead .sub{color:var(--dim);font-size:12px}
+.vbody{padding:20px;display:flex;justify-content:center}
+.notes{padding:0 16px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+@media(max-width:900px){.notes{grid-template-columns:1fr}}
+.note{background:#141922;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.6}
+.note b{display:block;color:var(--accent);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+.note.q b{color:var(--warn)}
+.note ul{margin:0;padding-left:16px;color:var(--dim)}
+.note li{margin:2px 0}
+.hintbar{margin:0 auto;max-width:1180px;padding:0 20px 20px;color:var(--dim);font-size:12px;line-height:1.7}
+
+/* ══════════ 高保真工作台本体 ══════════ */
+.app{
+  width:1040px;background:var(--app-bg);border:1px solid #05070c;border-radius:10px;
+  box-shadow:0 24px 60px rgba(0,0,0,.55);overflow:hidden;position:relative;
+  color:var(--app-fg);
+  font-family:-apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+}
+.app *{box-sizing:border-box}
+.app .mono{font-family:var(--app-mono);font-size:12px}
+.app .tiny{font-size:11px;color:var(--app-dim);letter-spacing:.02em}
+.app .lbl{font-size:12px;color:var(--app-dim)}
+.app .row{display:flex;align-items:center;gap:8px}
+.app .grow{flex:1}
+.app .stack{display:flex;flex-direction:column;gap:8px}
+
+/* ── 顶栏 HUD ── */
+.app .titlebar{
+  height:36px;display:flex;align-items:center;gap:10px;padding:0 12px;
+  background:var(--app-panel);border-bottom:1px solid var(--app-line);
+}
+.app .titlebar .tb-btn{
+  width:26px;height:26px;border-radius:6px;border:1px solid transparent;background:transparent;
+  color:var(--app-dim);font-size:14px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+}
+.app .titlebar .tb-btn:hover{background:var(--app-panel2);color:var(--app-fg)}
+.app .titlebar .brand{font-weight:600;font-size:13px;letter-spacing:.02em}
+.app .titlebar .chip{
+  font-size:11px;padding:2px 8px;border-radius:10px;background:var(--app-panel2);
+  border:1px solid var(--app-line);color:var(--app-dim);
+}
+.app .titlebar .chip.accent{color:#cfe1ff;border-color:var(--accent)}
+.app .titlebar .model{
+  font-size:12px;color:var(--app-dim);padding:3px 8px;border-radius:6px;cursor:pointer;
+}
+.app .titlebar .model:hover{background:var(--app-panel2);color:var(--app-fg)}
+.app .titlebar .status{
+  display:flex;align-items:center;gap:6px;font-size:12px;color:var(--app-dim);
+}
+.app .titlebar .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
+.app .titlebar .dot.running{background:var(--ok);box-shadow:0 0 6px rgba(63,191,127,.6)}
+.app .titlebar .dot.idle{background:var(--app-dim)}
+
+/* ── 主区三栏 ── */
+.app .main{display:flex;align-items:stretch;height:560px}
+
+/* 栏顶收起/展开钮 */
+.app .collapse{
+  align-self:flex-end;width:22px;height:22px;border-radius:50%;flex:0 0 22px;
+  border:1px solid var(--app-line);background:var(--app-panel2);color:var(--app-dim);
+  font-size:11px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background .15s,color .15s,border-color .15s,transform .18s;
+}
+.app .collapse:hover{background:var(--accent-soft);border-color:var(--accent);color:#cfe1ff}
+.app .side.collapsed .collapse,
+.app .insp.collapsed .collapse{transform:rotate(180deg)}
+
+/* 左栏 */
+.app .side{
+  width:200px;flex:0 0 200px;border-right:1px solid var(--app-line);
+  background:var(--app-panel);padding:12px 10px;display:flex;flex-direction:column;gap:16px;
+  overflow-y:auto;transition:width .18s ease,flex-basis .18s ease,padding .18s ease;
+}
+.app .side.collapsed{
+  width:40px;flex-basis:40px;padding:12px 9px;align-items:center;gap:0;
+}
+.app .side.collapsed>*:not(.collapse){display:none}
+.app .side .sec-title{
+  font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--app-dim);
+  padding:0 4px;margin-bottom:6px;
+}
+.app .side .new-session{
+  display:flex;align-items:center;gap:6px;padding:7px 10px;border-radius:7px;
+  background:var(--accent-soft);border:1px solid var(--accent);color:#cfe1ff;
+  font-size:12px;cursor:pointer;
+}
+.app .side .new-session:hover{background:#2e3f57}
+.app .side .sess{
+  display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;
+  font-size:12px;color:var(--app-dim);
+}
+.app .side .sess:hover{background:var(--app-panel2);color:var(--app-fg)}
+.app .side .sess.active{background:var(--app-panel2);color:var(--app-fg)}
+.app .side .sess .dot{width:7px;height:7px;border-radius:50%;flex:0 0 7px}
+.app .side .sess.active .dot{background:var(--accent)}
+.app .side .sess:not(.active) .dot{background:transparent;border:1.5px solid var(--app-dim)}
+.app .side .sess .meta{margin-left:auto;font-size:10.5px;color:var(--app-dim)}
+.app .side .tree{
+  font-family:var(--app-mono);font-size:12px;color:var(--app-dim);
+  display:flex;flex-direction:column;gap:2px;
+}
+.app .side .tree .node{
+  display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;
+}
+.app .side .tree .node:hover{background:var(--app-panel2);color:var(--app-fg)}
+.app .side .tree .node.dir{color:var(--app-fg)}
+.app .side .tree .node .ico{width:14px;text-align:center;flex:0 0 14px}
+.app .side .ctx{
+  display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--app-dim);
+}
+.app .side .ctx .item{
+  display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:5px;
+}
+.app .side .ctx .item:hover{background:var(--app-panel2)}
+.app .side .ctx .bar{
+  height:4px;border-radius:2px;background:var(--app-panel2);flex:1;overflow:hidden;
+}
+.app .side .ctx .bar>i{display:block;height:100%;background:var(--accent);border-radius:2px}
+
+/* 中栏 · 转录 */
+.app .mid{
+  flex:1;min-width:0;display:flex;flex-direction:column;
+}
+.app .transcript{
+  flex:1;min-height:0;overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:12px;
+  scrollbar-width:thin;scrollbar-color:#3a404d transparent;
+}
+.app .transcript::-webkit-scrollbar{width:10px}
+.app .transcript::-webkit-scrollbar-thumb{background:#3a404d;border-radius:5px;border:2px solid transparent;background-clip:content-box}
+
+.app .msg{max-width:78%;padding:10px 14px;border-radius:12px;line-height:1.6;font-size:13px;position:relative}
+.app .msg.assistant{
+  align-self:flex-start;background:var(--app-panel);border:1px solid var(--app-line);
+  border-bottom-left-radius:4px;
+}
+.app .msg.user{
+  align-self:flex-end;background:var(--app-user);border:1px solid #3a506e;
+  border-bottom-right-radius:4px;color:#e8eef7;
+}
+.app .msg .meta{
+  font-size:10.5px;color:var(--app-dim);letter-spacing:.03em;margin-bottom:6px;
+  display:flex;align-items:center;gap:8px;
+}
+.app .msg .meta .role{color:var(--app-fg);font-weight:600}
+.app .msg.user .meta{justify-content:flex-end}
+.app .msg p{margin:0 0 8px}
+.app .msg p:last-child{margin-bottom:0}
+.app .msg code{
+  font-family:var(--app-mono);font-size:12px;background:rgba(0,0,0,.25);
+  padding:1px 5px;border-radius:4px;color:#cfe1ff;
+}
+.app .msg.user code{background:rgba(255,255,255,.08);color:#fff}
+
+/* 流式光标 */
+.app .caret{
+  display:inline-block;width:8px;height:15px;background:var(--accent);
+  vertical-align:-2px;margin-right:2px;animation:blink 1s step-end infinite;
+}
+@keyframes blink{50%{opacity:0}}
+
+/* 打字点 */
+.app .typing{display:inline-flex;gap:4px;align-items:center}
+.app .typing i{width:6px;height:6px;border-radius:50%;background:var(--app-dim);animation:tp 1.2s infinite}
+.app .typing i:nth-child(2){animation-delay:.15s}
+.app .typing i:nth-child(3){animation-delay:.3s}
+@keyframes tp{0%,60%,100%{opacity:.25;transform:translateY(0)}30%{opacity:1;transform:translateY(-2px)}}
+
+/* 工具卡片 */
+.app .tool{
+  align-self:stretch;background:var(--app-tool);border:1px solid var(--app-line);
+  border-radius:10px;overflow:hidden;
+}
+.app .tool>.h{
+  display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;
+  background:rgba(255,255,255,.02);border-bottom:1px solid transparent;
+}
+.app .tool>.h:hover{background:rgba(255,255,255,.04)}
+.app .tool>.h .arrow{
+  width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;
+  color:var(--app-dim);font-size:11px;transition:transform .15s;
+}
+.app .tool.open>.h .arrow{transform:rotate(90deg)}
+.app .tool>.h .name{font-family:var(--app-mono);font-size:12px;color:var(--app-fg)}
+.app .tool>.h .tag{
+  font-size:10.5px;padding:1px 7px;border-radius:8px;background:var(--app-panel2);
+  color:var(--app-dim);border:1px solid var(--app-line);
+}
+.app .tool>.h .tag.ok{color:var(--ok);border-color:rgba(63,191,127,.4)}
+.app .tool>.h .tag.warn{color:var(--warn);border-color:rgba(224,163,60,.4)}
+.app .tool>.b{
+  display:none;padding:10px 12px;border-top:1px solid var(--app-line);
+  background:rgba(0,0,0,.15);
+}
+.app .tool.open>.b{display:block}
+.app .tool .kv{
+  display:grid;grid-template-columns:84px 1fr;gap:4px 10px;font-size:12px;
+}
+.app .tool .kv dt{color:var(--app-dim)}
+.app .tool .kv dd{margin:0;font-family:var(--app-mono);color:var(--app-fg);word-break:break-all}
+.app .tool .diff{
+  margin-top:8px;border:1px solid var(--app-line);border-radius:6px;overflow:hidden;
+  font-family:var(--app-mono);font-size:11.5px;line-height:1.5;
+}
+.app .tool .diff .line{padding:2px 10px;white-space:pre}
+.app .tool .diff .line.del{background:rgba(224,86,74,.12);color:#f0a8a2}
+.app .tool .diff .line.add{background:rgba(63,191,127,.12);color:#a8e6c5}
+.app .tool .diff .line.ctx{color:var(--app-dim)}
+
+/* 权限门 */
+.app .gate{
+  align-self:stretch;display:flex;align-items:center;gap:10px;padding:10px 14px;
+  background:var(--app-ask);border:1px solid var(--app-ask-line);border-radius:10px;
+}
+.app .gate .dot{width:9px;height:9px;border-radius:50%;background:var(--warn);flex:0 0 9px;
+  box-shadow:0 0 8px rgba(224,163,60,.5)}
+.app .gate .q{font-size:13px;color:#f5e8d0}
+.app .gate .q code{font-family:var(--app-mono);font-size:12px;background:rgba(0,0,0,.25);
+  padding:1px 5px;border-radius:4px;color:#ffe1a8}
+.app .gate .btn{
+  padding:5px 14px;border-radius:7px;font-size:12px;cursor:pointer;border:1px solid transparent;
+}
+.app .gate .btn.deny{background:transparent;border-color:var(--app-ask-line);color:#e8d5b5}
+.app .gate .btn.deny:hover{background:rgba(224,86,74,.15);border-color:var(--err);color:#f0a8a2}
+.app .gate .btn.allow{background:var(--warn);border-color:var(--warn);color:#221a0c;font-weight:600}
+.app .gate .btn.allow:hover{background:#f0b75c}
+.app .gate.resolved{opacity:.55}
+.app .gate.resolved .btn{pointer-events:none}
+.app .gate .verdict{font-size:12px;font-weight:600}
+.app .gate .verdict.allow{color:var(--ok)}
+.app .gate .verdict.deny{color:var(--err)}
+
+/* 流式指示 */
+.app .streaming{
+  display:flex;align-items:center;gap:8px;padding:4px 2px;color:var(--app-dim);font-size:12px;
+}
+.app .streaming .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+  animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.1)}}
+
+/* 右栏 · 检查器 */
+.app .insp{
+  width:230px;flex:0 0 230px;border-left:1px solid var(--app-line);
+  background:var(--app-panel);padding:14px 12px;display:flex;flex-direction:column;gap:18px;
+  overflow-y:auto;transition:width .18s ease,flex-basis .18s ease,padding .18s ease;
+}
+.app .insp.collapsed{
+  width:40px;flex-basis:40px;padding:14px 9px;align-items:center;gap:0;
+}
+.app .insp.collapsed>*:not(.collapse){display:none}
+.app .insp .sec-title{
+  font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--app-dim);
+  padding:0 2px;margin-bottom:8px;
+}
+.app .insp .card{
+  background:var(--app-panel2);border:1px solid var(--app-line);border-radius:8px;
+  padding:10px 12px;
+}
+.app .insp .kv{display:grid;grid-template-columns:72px 1fr;gap:5px 10px;font-size:12px}
+.app .insp .kv dt{color:var(--app-dim)}
+.app .insp .kv dd{margin:0;color:var(--app-fg);font-family:var(--app-mono);font-size:11.5px;word-break:break-all}
+.app .insp .hist{display:flex;flex-direction:column;gap:6px}
+.app .insp .hist .h{
+  display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--app-dim);
+}
+.app .insp .hist .h .chip{
+  font-size:10px;padding:1px 7px;border-radius:8px;font-weight:600;letter-spacing:.03em;
+}
+.app .insp .hist .h .chip.allow{background:rgba(63,191,127,.15);color:var(--ok)}
+.app .insp .hist .h .chip.deny{background:rgba(224,86,74,.15);color:var(--err)}
+.app .insp .hist .h .what{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app .insp .usage{display:flex;flex-direction:column;gap:8px;font-size:12px}
+.app .insp .usage .u{display:flex;align-items:center;gap:8px}
+.app .insp .usage .u .k{width:64px;color:var(--app-dim)}
+.app .insp .usage .u .bar{flex:1;height:5px;border-radius:3px;background:var(--app-panel2);overflow:hidden}
+.app .insp .usage .u .bar>i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+.app .insp .usage .u .v{width:52px;text-align:right;font-family:var(--app-mono);font-size:11px;color:var(--app-fg)}
+.app .insp .health{display:flex;flex-direction:column;gap:7px;font-size:12px}
+.app .insp .health .h{display:flex;align-items:center;gap:8px;color:var(--app-dim)}
+.app .insp .health .dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
+.app .insp .health .dot.ok{background:var(--ok)}
+.app .insp .health .dot.warn{background:var(--warn)}
+.app .insp .health .v{margin-left:auto;font-family:var(--app-mono);font-size:11px;color:var(--app-fg)}
+
+/* ── Composer（限在中栏） ── */
+.app .composer{
+  border-top:1px solid var(--app-line);padding:12px 14px;display:flex;gap:10px;align-items:flex-end;
+  background:var(--app-panel);flex:0 0 auto;
+}
+.app .composer .input{
+  flex:1;min-height:40px;max-height:120px;background:var(--app-panel2);
+  border:1px solid var(--app-line);border-radius:9px;padding:9px 12px;
+  color:var(--app-fg);font:inherit;font-size:13px;line-height:1.5;resize:none;outline:none;
+}
+.app .composer .input:focus{border-color:var(--accent)}
+.app .composer .input::placeholder{color:var(--app-dim)}
+.app .composer .hint{
+  font-size:10.5px;color:var(--app-dim);padding:0 2px 2px;
+}
+.app .composer .btn{
+  padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;border:1px solid transparent;
+  height:38px;
+}
+.app .composer .btn.send{background:var(--accent);border-color:var(--accent);color:#0b1220;font-weight:600}
+.app .composer .btn.send:hover{background:#7cb1ff}
+.app .composer .btn.stop{background:transparent;border-color:var(--app-line);color:var(--app-dim)}
+.app .composer .btn.stop:hover{border-color:var(--err);color:#f0a8a2}
+.app .composer .btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* ── 状态栏 ── */
+.app .statusbar{
+  border-top:1px solid var(--app-line);padding:6px 14px;display:flex;gap:18px;align-items:center;
+  background:var(--app-panel);font-size:11px;color:var(--app-dim);
+}
+.app .statusbar .item{display:flex;align-items:center;gap:6px}
+.app .statusbar .dot{width:7px;height:7px;border-radius:50%}
+.app .statusbar .dot.idle{background:var(--app-dim)}
+.app .statusbar .dot.running{background:var(--ok)}
+.app .statusbar .sep{width:1px;height:12px;background:var(--app-line)}
+.app .statusbar .grow{flex:1}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>harness · 高保真模型 · 变体 A<small>三栏工作台 · 深色 IDE 风 · 真实数据 · 可交互</small></h1>
+  <div class="sp"></div>
+  <button class="btn" id="btnAnnot" data-on="0">区域标注</button>
+</div>
+
+<div class="wrap" id="wrap">
+
+  <!-- ══════════════ 变体 A ══════════════ -->
+  <section class="variant" data-v="A">
+    <div class="vhead">
+      <span class="tag">Variant A</span>
+      <b>三栏工作台</b>
+      <span class="sub">左：会话与工作区 · 中：转录 · 右：检查器</span>
+    </div>
+    <div class="vbody">
+      <div class="app" id="app">
+
+        <!-- 顶栏 HUD -->
+        <div class="titlebar zone" data-z="顶栏 HUD">
+          <button class="tb-btn" title="菜单">≡</button>
+          <span class="brand">harness</span>
+          <span class="chip accent mono">s-0001</span>
+          <span class="model">gpt-5 · 高算力 ▾</span>
+          <span class="grow"></span>
+          <span class="chip">autosize</span>
+          <span class="status"><span class="dot running" id="topDot"></span><span id="topStatus">running</span></span>
+        </div>
+
+        <div class="main">
+          <!-- 左栏 · 会话 / 工作区 -->
+          <div class="side zone" data-z="左栏 · 会话 / 工作区">
+            <button class="collapse" id="collapseLeft" title="收起左栏">◀</button>
+            <div>
+              <div class="new-session">＋ 新建会话</div>
+            </div>
+
+            <div>
+              <div class="sec-title">会话</div>
+              <div class="stack" style="gap:2px">
+                <div class="sess active"><span class="dot"></span><span>s-0001</span><span class="meta">今天 14:32</span></div>
+                <div class="sess"><span class="dot"></span><span>s-0000</span><span class="meta">昨天 18:07</span></div>
+                <div class="sess"><span class="dot"></span><span>s-0002</span><span class="meta">周一 09:15</span></div>
+              </div>
+            </div>
+
+            <div>
+              <div class="sec-title">工作区</div>
+              <div class="tree">
+                <div class="node dir"><span class="ico">▾</span><span>src/</span></div>
+                <div class="node" style="padding-left:24px"><span class="ico">·</span><span>main.cpp</span></div>
+                <div class="node" style="padding-left:24px"><span class="ico">·</span><span>app.cpp</span></div>
+                <div class="node dir"><span class="ico">▾</span><span>docs/</span></div>
+                <div class="node" style="padding-left:24px"><span class="ico">·</span><span>README.md</span></div>
+                <div class="node dir"><span class="ico">▸</span><span>protocol/</span></div>
+              </div>
+            </div>
+
+            <div>
+              <div class="sec-title">本次上下文</div>
+              <div class="ctx">
+                <div class="item"><span style="width:64px">系统提示</span><span class="bar"><i style="width:72%"></i></span><span class="tiny">7.2k</span></div>
+                <div class="item"><span style="width:64px">工具结果</span><span class="bar"><i style="width:38%"></i></span><span class="tiny">3.8k</span></div>
+                <div class="item"><span style="width:64px">转录</span><span class="bar"><i style="width:45%"></i></span><span class="tiny">4.5k</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 中栏 · 转录（唯一主角） -->
+          <div class="mid zone" data-z="中栏 · 转录（唯一主角）">
+            <div class="transcript" id="transcript">
+
+              <!-- 系统消息 -->
+              <div class="msg assistant">
+                <div class="meta"><span class="role">system</span><span>core 0.1.0</span><span>·</span><span>session s-0001</span><span>·</span><span>protocol 1</span></div>
+                <p>已加载工作区 <code>D:\Project\ECDI_fake_harness</code>，协议版本 1，准备好接收指令。</p>
+              </div>
+
+              <!-- 用户消息 -->
+              <div class="msg user">
+                <div class="meta"><span class="role">you</span><span>14:32:05</span></div>
+                <p>看一下 <code>docs/README.md</code> 里有没有过期的数字</p>
+              </div>
+
+              <!-- 助手流式回复 -->
+              <div class="msg assistant" id="streamMsg">
+                <div class="meta"><span class="role">assistant</span><span>14:32:06</span><span class="typing" id="typing"><i></i><i></i><i></i></span></div>
+                <p id="streamText"><span class="caret"></span></p>
+              </div>
+
+              <!-- 工具卡片：read_file（折叠） -->
+              <div class="tool" data-tool="read_file">
+                <div class="h">
+                  <span class="arrow">▸</span>
+                  <span class="name">read_file</span>
+                  <span class="grow"></span>
+                  <span class="tag ok">ok · 312 行</span>
+                </div>
+                <div class="b">
+                  <dl class="kv">
+                    <dt>path</dt><dd>docs/README.md</dd>
+                    <dt>offset</dt><dd>1</dd>
+                    <dt>limit</dt><dd>400</dd>
+                    <dt>result</dt><dd>312 lines, 11.4 KB, UTF-8 BOM</dd>
+                  </dl>
+                </div>
+              </div>
+
+              <!-- 工具卡片：edit_file（展开，带 diff） -->
+              <div class="tool open" data-tool="edit_file">
+                <div class="h">
+                  <span class="arrow">▸</span>
+                  <span class="name">edit_file</span>
+                  <span class="grow"></span>
+                  <span class="tag warn">1 处已替换</span>
+                </div>
+                <div class="b">
+                  <dl class="kv">
+                    <dt>path</dt><dd>docs/README.md</dd>
+                    <dt>old_string</dt><dd>version: 0.8.2</dd>
+                    <dt>new_string</dt><dd>version: 0.9.0</dd>
+                  </dl>
+                  <div class="diff">
+                    <div class="line ctx">  ## Status</div>
+                    <div class="line ctx">  </div>
+                    <div class="line del">- version: 0.8.2</div>
+                    <div class="line add">+ version: 0.9.0</div>
+                    <div class="line ctx">  </div>
+                    <div class="line ctx">  P1 harness_gui 已交付。</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 权限门 -->
+              <div class="gate" id="gate">
+                <span class="dot"></span>
+                <span class="q">允许修改 <code>docs/README.md</code> 吗？</span>
+                <span class="grow"></span>
+                <button class="btn deny" id="btnDeny">拒绝</button>
+                <button class="btn allow" id="btnAllow">允许</button>
+              </div>
+
+              <!-- 助手后续（权限门点完后出现） -->
+              <div class="msg assistant" id="afterGate" style="display:none">
+                <div class="meta"><span class="role">assistant</span><span>14:32:11</span></div>
+                <p>已更新 <code>docs/README.md</code>：把 <code>version: 0.8.2</code> 改成 <code>0.9.0</code>，其它数字（43 msg、18.4k tokens）与当前会话一致，未动。</p>
+              </div>
+
+              <!-- 流式指示 -->
+              <div class="streaming" id="streaming">
+                <span class="dot"></span><span>正在生成…</span>
+              </div>
+
+            </div>
+
+            <!-- Composer（限在中栏） -->
+            <div class="composer zone" data-z="Composer">
+              <div style="flex:1;display:flex;flex-direction:column;gap:4px">
+                <textarea class="input" id="composerInput" rows="1" placeholder="输入…"></textarea>
+                <div class="hint">Enter 发送 · Shift+Enter 换行</div>
+              </div>
+              <button class="btn send" id="btnSend">发送</button>
+              <button class="btn stop" id="btnStop" disabled>停止</button>
+            </div>
+          </div>
+
+          <!-- 右栏 · 检查器 -->
+          <div class="insp zone" data-z="右栏 · 检查器">
+            <button class="collapse" id="collapseRight" title="收起右栏">▶</button>
+            <div>
+              <div class="sec-title">工具详情</div>
+              <div class="card">
+                <dl class="kv">
+                  <dt>name</dt><dd>edit_file</dd>
+                  <dt>call_id</dt><dd>call_7f3a</dd>
+                  <dt>duration</dt><dd>84 ms</dd>
+                  <dt>status</dt><dd style="color:var(--ok)">success</dd>
+                </dl>
+              </div>
+            </div>
+
+            <div>
+              <div class="sec-title">权限历史</div>
+              <div class="card">
+                <div class="hist">
+                  <div class="h"><span class="chip allow">allow</span><span class="what mono">read_file · docs/README.md</span></div>
+                  <div class="h"><span class="chip allow">allow</span><span class="what mono">list_dir · docs/</span></div>
+                  <div class="h"><span class="chip deny">deny</span><span class="what mono">write_file · src/main.cpp</span></div>
+                  <div class="h"><span class="chip allow">allow</span><span class="what mono">edit_file · docs/README.md</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="sec-title">用量</div>
+              <div class="card">
+                <div class="usage">
+                  <div class="u"><span class="k">输入</span><span class="bar"><i style="width:62%"></i></span><span class="v">18.4k</span></div>
+                  <div class="u"><span class="k">输出</span><span class="bar"><i style="width:9%"></i></span><span class="v">913</span></div>
+                  <div class="u"><span class="k">缓存</span><span class="bar"><i style="width:41%"></i></span><span class="v">12.1k</span></div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="sec-title">协议健康</div>
+              <div class="card">
+                <div class="health">
+                  <div class="h"><span class="dot ok"></span><span>seq 连续</span><span class="v">0 缺口</span></div>
+                  <div class="h"><span class="dot ok"></span><span>违规</span><span class="v">0</span></div>
+                  <div class="h"><span class="dot ok"></span><span>unknownTypes</span><span class="v">0</span></div>
+                  <div class="h"><span class="dot warn"></span><span>blocks</span><span class="v">43</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 状态栏 -->
+        <div class="statusbar zone" data-z="状态栏">
+          <span class="item"><span class="dot running" id="sbDot"></span><span id="sbStatus">running</span></span>
+          <span class="sep"></span>
+          <span class="item mono">protocol 1</span>
+          <span class="item mono">43 msg</span>
+          <span class="item mono">tokens 18.4k / 913</span>
+          <span class="item mono">上次重绘 12 ms</span>
+          <span class="grow"></span>
+          <span class="item mono">缩放 100%</span>
+        </div>
+
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>定位</b>把「会话 / 上下文 / 转录 / 详情」四个信息面同时摊开，接近 IDE 的使用习惯。</div>
+      <div class="note"><b>代价</b>转录可用宽度只剩 ~55%；小窗口下三栏会挤。</div>
+      <div class="note q"><b>已按你的选择定稿</b><ul>
+        <li>右栏保留：工具详情 / 权限历史 / 用量 / 协议健康。</li>
+        <li>左栏保留：会话列表 + 工作区树 + 本次上下文。</li>
+      </ul></div>
+    </div>
+  </section>
+
+</div>
+
+<div class="hintbar">
+  <b>怎么用这一版：</b>这是高保真模型，不是真应用。左/右栏顶部的小圆钮可收起/展开对应栏；
+  输入区（Composer）限在中间栏下方；工具卡片点标题可折叠/展开；
+  权限门点「允许 / 拒绝」会改变后续转录；「发送 / 停止」会切换运行状态；
+  顶栏「区域标注」可显示每个区块的名字。数据是编的，但结构和交互和真机一一对应。
+  （底稿：harness-lofi-variant-a.html，2026-10-06 高保真化；同日按反馈把 Composer 收进中栏、左右栏加收起钮）
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  /* ── 区域标注开关 ── */
+  const btnAnnot = document.getElementById('btnAnnot');
+  btnAnnot.addEventListener('click', () => {
+    const on = btnAnnot.dataset.on !== '1';
+    btnAnnot.dataset.on = on ? '1' : '0';
+    document.getElementById('app').classList.toggle('annot', on);
+  });
+
+  /* ── 工具卡片折叠 ── */
+  document.querySelectorAll('.app .tool > .h').forEach(h => {
+    h.addEventListener('click', () => h.parentElement.classList.toggle('open'));
+  });
+
+  /* ── 左/右栏收起 ── */
+  const side = document.querySelector('.app .side');
+  const insp = document.querySelector('.app .insp');
+  const collapseLeft = document.getElementById('collapseLeft');
+  const collapseRight = document.getElementById('collapseRight');
+  collapseLeft.addEventListener('click', () => {
+    const c = side.classList.toggle('collapsed');
+    collapseLeft.textContent = c ? '▶' : '◀';
+    collapseLeft.title = c ? '展开左栏' : '收起左栏';
+  });
+  collapseRight.addEventListener('click', () => {
+    const c = insp.classList.toggle('collapsed');
+    collapseRight.textContent = c ? '◀' : '▶';
+    collapseRight.title = c ? '展开右栏' : '收起右栏';
+  });
+
+  /* ── 权限门 ── */
+  const gate = document.getElementById('gate');
+  const afterGate = document.getElementById('afterGate');
+  const btnAllow = document.getElementById('btnAllow');
+  const btnDeny = document.getElementById('btnDeny');
+  function resolveGate(allow){
+    if(gate.classList.contains('resolved')) return;
+    gate.classList.add('resolved');
+    btnAllow.style.display = 'none';
+    btnDeny.style.display = 'none';
+    const v = document.createElement('span');
+    v.className = 'verdict ' + (allow ? 'allow' : 'deny');
+    v.textContent = allow ? '已允许' : '已拒绝';
+    gate.appendChild(v);
+    if(allow){
+      afterGate.style.display = '';
+      afterGate.scrollIntoView({behavior:'smooth', block:'nearest'});
+    }
+  }
+  btnAllow.addEventListener('click', () => resolveGate(true));
+  btnDeny.addEventListener('click', () => resolveGate(false));
+
+  /* ── 流式动画 ── */
+  const streamText = document.getElementById('streamText');
+  const typing = document.getElementById('typing');
+  const fullText = '我扫了一遍 docs/README.md，发现两处过期数字：\n1) 顶部 version 还停在 0.8.2，P1 交付后应该升到 0.9.0；\n2) 「Status」表里的 P1 行还写着「进行中」，其实已经收口。';
+  let idx = 0, streaming = true;
+  function tick(){
+    if(!streaming) return;
+    if(idx <= fullText.length){
+      const slice = fullText.slice(0, idx);
+      streamText.innerHTML = slice.replace(/\n/g,'<br>') + '<span class="caret"></span>';
+      idx += 1 + (Math.random() < .3 ? 1 : 0);
+      setTimeout(tick, 18 + Math.random()*30);
+    } else {
+      typing.style.display = 'none';
+      setRunning(false);
+    }
+  }
+  tick();
+
+  /* ── 运行状态 / 发送 / 停止 ── */
+  const btnSend = document.getElementById('btnSend');
+  const btnStop = document.getElementById('btnStop');
+  const topDot = document.getElementById('topDot');
+  const topStatus = document.getElementById('topStatus');
+  const sbDot = document.getElementById('sbDot');
+  const sbStatus = document.getElementById('sbStatus');
+  const streamingBar = document.getElementById('streaming');
+  function setRunning(r){
+    streaming = r;
+    btnSend.disabled = r;
+    btnStop.disabled = !r;
+    topDot.className = 'dot ' + (r ? 'running' : 'idle');
+    sbDot.className = 'dot ' + (r ? 'running' : 'idle');
+    topStatus.textContent = r ? 'running' : 'idle';
+    sbStatus.textContent = r ? 'running' : 'idle';
+    streamingBar.style.display = r ? '' : 'none';
+  }
+  btnStop.addEventListener('click', () => setRunning(false));
+  btnSend.addEventListener('click', () => {
+    const input = document.getElementById('composerInput');
+    if(!input.value.trim()) return;
+    input.value = '';
+    setRunning(true);
+    // 简单演示：把 typing 重新打开，模拟新一轮
+    typing.style.display = '';
+    streamText.innerHTML = '<span class="caret"></span>';
+    idx = 0;
+    tick();
+  });
+
+  /* ── Composer 自适应高度 ── */
+  const input = document.getElementById('composerInput');
+  input.addEventListener('input', () => {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+  });
+
+  /* ── 区域标注样式（动态注入，避免和外壳冲突） ── */
+  const style = document.createElement('style');
+  style.textContent = `
+    .app.annot .zone{outline:1px dashed rgba(91,157,255,.45);outline-offset:-1px;position:relative}
+    .app.annot .zone::before{
+      content:attr(data-z);position:absolute;top:-9px;left:10px;z-index:10;
+      background:#0d0f14;padding:0 6px;font-size:9.5px;letter-spacing:.06em;
+      color:#5b9dff;font-weight:700;text-transform:uppercase;white-space:nowrap;
+      border-radius:3px;
+    }
+  `;
+  document.head.appendChild(style);
+})();
+</script>
+</body>
+</html>

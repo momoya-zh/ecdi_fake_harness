@@ -1,0 +1,13 @@
+{"t":"hello","seq":0,"ts":"2026-10-03T11:00:00.000Z","protocol":1,"core":"0.1.0","session":"s-hostile-1","caps":["tools","ask"]}
+{"t":"state","seq":1,"ts":"2026-10-03T11:00:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-10-03T11:00:00.100Z","id":"b1","kind":"assistant"}
+{"t":"delta","seq":3,"ts":"2026-10-03T11:00:00.130Z","id":"b1","text":"这条会到达。"}
+{"t":"delta","seq":5,"ts":"2026-10-03T11:00:00.190Z","id":"b1","text":" seq 4 丢了——GUI 必须显式提示，不得静默继续（I4）。"}
+{"t":"delta","seq":6,"ts":"2026-10-03T11:00:00.220Z","id":"b1","text":"这条也会到达。"}
+{"t":"block_end","seq":7,"ts":"2026-10-03T11:00:00.260Z","id":"b1","ok":true}
+{"t":"telemetry","seq":8,"ts":"2026-10-03T11:00:00.300Z","value":{"cpu":0.12}}
+{"t":"block_end","seq":9,"ts":"2026-10-03T11:00:00.340Z","id":"b-never-started","ok":true}
+{"t":"delta","seq":10,"ts":"2026-10-03T11:00:00.380Z","id":"b1","text":"块已 end 之后的 delta——违反 I2/I6，应被拒绝或计入异常。"}
+{"t":"usage","seq":11,"ts":"2026-10-03T11:00:00.400Z","turn":1,"input":100,"output":20}
+{"t":"state","seq":12,"ts":"2026-10-03T11:00:00.420Z","value":"idle"}
+{"t":"bye","seq":13,"ts":"2026-10-03T11:00:00.450Z","reason":"eof","code":0}

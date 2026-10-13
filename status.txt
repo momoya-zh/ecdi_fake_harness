@@ -1,0 +1,2 @@
+P1.5 done: fake Go core + ChildSource + reverse channel, all 4 acceptance gates passed (live E2E / I4 28=28 / replay regression / no zombies)
+ECDI release a1f843f (MSVC Release, from user-rebuilt VS tree) installed to third_party/ecdi and consumed: harness_gui rebuilt; ECDI suite Debug+Release 445/445 each, replay smoke seqGaps 0 / violations 0, live E2E no zombies, I4 negative 74/74 (evals/p32-*)

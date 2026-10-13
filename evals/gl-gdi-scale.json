@@ -1,0 +1,18 @@
+{
+  "fixture": "scale-transcript-2000.jsonl",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "3b702a0",
+  "backend": "gdi",
+  "blocks": 2000,
+  "deltas": 4590,
+  "messages": 8906,
+  "invalidations": 4,
+  "paints": 3,
+  "frameCount": 3,
+  "maxPaintUs": 0,
+  "avgPaintUs": 0,
+  "seqGaps": 0,
+  "violations": 0,
+  "unknownTypes": 0
+}

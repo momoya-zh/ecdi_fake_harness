@@ -1,0 +1,17 @@
+{
+  "fixture": "seq-gap.jsonl",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "batch1",
+  "blocks": 1,
+  "deltas": 3,
+  "messages": 13,
+  "invalidations": 4,
+  "paints": 3,
+  "frameCount": 3,
+  "maxPaintUs": 1,
+  "avgPaintUs": 0,
+  "seqGaps": 1,
+  "violations": 3,
+  "unknownTypes": 1
+}

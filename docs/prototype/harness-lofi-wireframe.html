@@ -1,0 +1,518 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness · 低保真线框（三变体）</title>
+<!--
+  低保真线框（low-fi wireframe）
+  ────────────────────────────────────────────────────────────
+  用途：看「一个 AI agent harness 大概长什么样」，然后提修改意见。
+  不是实现参考、不是像素稿 —— 灰块是占位、虚线是「内容待定」。
+  说明：这一版刻意丢掉了协议/夹具/度量，只保留布局与信息层级。
+-->
+<style>
+:root{
+  --bg:#0d0f14; --panel:#161a21; --line:#272d38;
+  --fg:#e6e9ef; --dim:#8d95a5; --accent:#5b9dff;
+
+  /* 线框专用灰阶 */
+  --w-ink:#23262d;        /* 线框主描边 */
+  --w-ink2:#6f7684;       /* 次级描边/文字 */
+  --w-fill:#f2f3f5;       /* 区块底 */
+  --w-fill2:#e4e6ea;      /* 更深一档 */
+  --w-ph:#c9ccd3;         /* 占位条 */
+  --w-hint:#98a0b0;
+  --w-accent:#2f6fdb;
+  --w-warn:#c9861a;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--fg);
+  font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;}
+
+.top{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);
+  padding:12px 18px;display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.top h1{font-size:14px;margin:0;font-weight:600;letter-spacing:.02em}
+.top h1 small{display:block;font-weight:400;font-size:11px;color:var(--dim);letter-spacing:0}
+.top .sp{flex:1}
+.btn{background:#1d222c;border:1px solid var(--line);color:var(--fg);border-radius:6px;
+  padding:5px 10px;font:inherit;font-size:12px;cursor:pointer}
+.btn[data-on="1"]{background:#263449;border-color:var(--accent);color:#cfe1ff}
+.btn:hover{border-color:#3d4658}
+
+.wrap{padding:20px;display:flex;flex-direction:column;gap:26px;max-width:1180px;margin:0 auto}
+
+/* ── 每个变体的外壳 ── */
+.variant{background:#101419;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.vhead{display:flex;align-items:baseline;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);
+  background:#141922}
+.vhead .tag{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#0d1017;background:var(--accent);
+  padding:2px 7px;border-radius:4px;font-weight:700}
+.vhead b{font-size:14px}
+.vhead .sub{color:var(--dim);font-size:12px}
+.vbody{padding:20px;display:flex;justify-content:center}
+.notes{padding:0 16px 16px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+@media(max-width:900px){.notes{grid-template-columns:1fr}}
+.note{background:#141922;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.6}
+.note b{display:block;color:var(--accent);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:4px}
+.note.q b{color:var(--w-warn)}
+.note ul{margin:0;padding-left:16px;color:var(--dim)}
+.note li{margin:2px 0}
+
+/* ══════════ 线框本体 ══════════ */
+.wf{background:#fff;border:2px solid var(--w-ink);border-radius:6px;color:var(--w-ink);
+  font-family:-apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  position:relative;overflow:hidden}
+.wf *{box-sizing:border-box}
+
+/* 区块：虚线 = 内容待定 */
+.zone{position:relative;border:1px dashed #b6bbc4;border-radius:4px}
+.zone.solid{border:1px solid var(--w-ink2);border-radius:4px}
+.zname{display:none;position:absolute;top:-9px;left:8px;background:#fff;padding:0 5px;
+  font-size:9.5px;letter-spacing:.06em;color:var(--w-accent);font-weight:700;text-transform:uppercase;white-space:nowrap;z-index:5}
+.annot .zname{display:block}
+.annot .zone{background-image:linear-gradient(rgba(47,111,219,.05),rgba(47,111,219,.05))}
+
+/* 占位条 */
+.ph{height:8px;background:var(--w-ph);border-radius:4px}
+.ph.t{height:11px}
+.ph.s{height:6px}
+.ph.d{background:#aeb4bd}
+.stack{display:flex;flex-direction:column;gap:7px}
+.row{display:flex;align-items:center;gap:8px}
+.grow{flex:1}
+
+/* 线框内的小控件 */
+.box{border:1px solid var(--w-ink2);border-radius:4px;padding:5px 9px;font-size:12px;
+  background:#fff;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;color:var(--w-ink)}
+.box.fill{background:var(--w-fill)}
+.box.dark{background:var(--w-ink);color:#fff;border-color:var(--w-ink)}
+.box.sm{font-size:11px;padding:3px 7px}
+.chip{border:1px solid var(--w-ink2);border-radius:20px;padding:1px 8px;font-size:10.5px;color:var(--w-ink2)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--w-ink);flex:0 0 7px}
+.dot.ring{background:#fff;border:1.5px solid var(--w-ink)}
+.mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:11.5px}
+.tiny{font-size:10.5px;color:var(--w-hint);letter-spacing:.03em}
+.lbl{font-size:11.5px;color:var(--w-ink2)}
+.caret{width:7px;height:13px;background:var(--w-ink);display:inline-block;vertical-align:-2px}
+
+/* ═══ 变体 A：三栏工作台 ═══ */
+.A{width:940px}
+.A .bar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--w-ink2)}
+.A .main{display:flex;align-items:stretch;min-height:430px}
+.A .side{width:190px;border-right:1px solid var(--w-ink2);padding:10px;display:flex;flex-direction:column;gap:12px;background:#fbfbfc}
+.A .mid{flex:1;padding:12px;display:flex;flex-direction:column;gap:9px;min-width:0}
+.A .insp{width:210px;border-left:1px solid var(--w-ink2);padding:10px;display:flex;flex-direction:column;gap:12px;background:#fbfbfc}
+.A .composer{border-top:1px solid var(--w-ink2);padding:10px 12px;display:flex;gap:8px;align-items:center}
+.A .statusbar{border-top:1px solid var(--w-ink2);padding:5px 12px;display:flex;gap:14px;align-items:center;background:var(--w-fill)}
+.msg{border-radius:5px;padding:8px 10px}
+.msg.user{background:var(--w-fill2);align-self:flex-end;width:62%}
+.msg.assistant{background:#fff}
+.card{border:1px solid var(--w-ink2);border-radius:5px;overflow:hidden}
+.card>.h{display:flex;align-items:center;gap:7px;padding:5px 9px;background:var(--w-fill);font-size:12px}
+.card>.b{padding:8px 10px;border-top:1px dashed #c8ccd3;background:#fcfcfd}
+.gate{border:1.5px solid var(--w-ink);border-radius:5px;padding:8px 10px;background:#fffdf4;
+  display:flex;align-items:center;gap:8px}
+
+/* ═══ 变体 B：单栏极简 ═══ */
+.B{width:470px}
+.B .bar{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--w-ink2)}
+.B .stream{padding:14px;display:flex;flex-direction:column;gap:11px;min-height:400px}
+.B .inner{width:100%;padding:0 6px}
+.B .bub{border-radius:12px;padding:8px 12px;max-width:80%}
+.B .bub.me{background:var(--w-fill2);align-self:flex-end}
+.B .foot{border-top:1px solid var(--w-ink2);padding:10px 12px}
+.B .comp{border:1.5px solid var(--w-ink);border-radius:20px;padding:8px 10px 8px 14px;display:flex;align-items:center;gap:8px}
+
+/* ═══ 变体 C：终端流式 ═══ */
+.C{width:660px}
+.C .bar{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--w-ink2)}
+.C .term{padding:10px 8px;font-family:"Cascadia Mono",Consolas,monospace;font-size:11.5px;min-height:420px}
+.C .ln{display:flex;gap:8px;padding:1.5px 0;align-items:baseline}
+.C .ts{flex:0 0 52px;color:var(--w-hint);font-size:10.5px;text-align:right}
+.C .gut{flex:0 0 12px;text-align:center;color:var(--w-ink2)}
+.C .tx{flex:1;min-width:0}
+.C .blockquote{border-left:2px solid var(--w-ink2);padding-left:8px;margin:3px 0}
+.C .prompt{border-top:1px solid var(--w-ink2);padding:8px 10px;display:flex;gap:8px;align-items:center;background:var(--w-fill)}
+.C .statusbar{border-top:1px solid var(--w-ink2);padding:4px 10px;display:flex;gap:12px;background:var(--w-fill)}
+
+/* 底部说明表 */
+.cmp{margin:0 20px 40px;max-width:1180px}
+.cmp table{width:100%;border-collapse:collapse;font-size:12px}
+.cmp th,.cmp td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+.cmp th{background:#141922;color:var(--dim);font-weight:500}
+.cmp td:first-child{color:var(--fg);white-space:nowrap}
+.cmp .a{color:#7fb2ff}.cmp .b{color:#8fd6a8}.cmp .c{color:#e0b573}
+.hintbar{margin:0 auto;max-width:1180px;padding:0 20px 20px;color:var(--dim);font-size:12px;line-height:1.7}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>harness · 低保真线框<small>三个布局变体 · 灰块是占位 · 虚线框是「内容待定」</small></h1>
+  <div class="sp"></div>
+  <button class="btn" id="btnAnnot" data-on="1">区域标注</button>
+  <button class="btn" id="btnOnly" data-on="0">视图：全部</button>
+</div>
+
+<div class="wrap" id="wrap">
+
+  <!-- ══════════════ 变体 A ══════════════ -->
+  <section class="variant" data-v="A">
+    <div class="vhead">
+      <span class="tag">Variant A</span>
+      <b>三栏工作台</b>
+      <span class="sub">左：会话与工作区 · 中：转录 · 右：检查器</span>
+    </div>
+    <div class="vbody">
+      <div class="wf A annot">
+        <!-- 顶栏 -->
+        <div class="bar zone solid">
+          <span class="zname">顶栏 HUD</span>
+          <span class="box sm">≡</span>
+          <b style="font-size:13px">harness</b>
+          <span class="chip">s-0001</span>
+          <span class="lbl">模型 ▾</span>
+          <span class="grow"></span>
+          <span class="chip">autosize</span>
+          <span class="row"><span class="dot"></span><span class="lbl">running</span></span>
+        </div>
+
+        <div class="main">
+          <!-- 左栏 -->
+          <div class="side zone">
+            <span class="zname">左栏 · 会话 / 工作区</span>
+            <div class="row"><span class="box sm fill grow">＋ 新建会话</span></div>
+            <div class="stack">
+              <div class="row"><span class="dot"></span><span class="lbl">s-0001 · 今天的</span></div>
+              <div class="row"><span class="dot ring"></span><span class="lbl">s-0000 · 昨天</span></div>
+              <div class="row"><span class="dot ring"></span><span class="lbl">s-前前</span></div>
+            </div>
+            <div class="ph" style="width:60%"></div>
+            <div class="stack">
+              <div class="lbl">▾ 工作区</div>
+              <div class="row" style="padding-left:10px"><span class="lbl mono">src/</span></div>
+              <div class="row" style="padding-left:10px"><span class="lbl mono">docs/</span></div>
+              <div class="row" style="padding-left:10px"><span class="lbl mono">protocol/</span></div>
+            </div>
+            <div class="ph" style="width:45%"></div>
+            <div class="stack">
+              <div class="lbl">▾ 本次上下文</div>
+              <div class="row" style="padding-left:10px"><span class="ph" style="width:70%"></span></div>
+              <div class="row" style="padding-left:10px"><span class="ph" style="width:52%"></span></div>
+            </div>
+          </div>
+
+          <!-- 中栏 -->
+          <div class="mid zone">
+            <span class="zname">中栏 · 转录（唯一主角）</span>
+
+            <div class="msg assistant stack">
+              <span class="tiny">core 0.1.0 · session s-0001 · protocol 1</span>
+              <span class="ph" style="width:38%"></span>
+            </div>
+
+            <div class="msg user stack">
+              <span class="lbl" style="color:#000">看一下 docs/README.md 里有没有过期的数字</span>
+            </div>
+
+            <div class="msg assistant stack">
+              <div class="row"><span class="caret"></span><span class="ph t" style="width:70%"></span></div>
+              <div class="ph" style="width:55%"></div>
+            </div>
+
+            <!-- 工具卡片：折叠 -->
+            <div class="card">
+              <div class="h"><span class="mono">▸ read_file</span><span class="grow"></span><span class="chip">折叠</span></div>
+            </div>
+
+            <!-- 工具卡片：展开 -->
+            <div class="card">
+              <div class="h"><span class="mono">▾ edit_file</span><span class="grow"></span><span class="chip">1 处已替换</span></div>
+              <div class="b">
+                <div class="stack">
+                  <div class="ph s" style="width:80%"></div>
+                  <div class="ph s" style="width:64%"></div>
+                  <div class="ph s" style="width:72%"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 权限门 -->
+            <div class="gate">
+              <span class="dot" style="background:var(--w-warn)"></span>
+              <span class="lbl" style="color:#000">允许修改 README.md 吗？</span>
+              <span class="grow"></span>
+              <span class="box sm">拒绝</span>
+              <span class="box sm dark">允许</span>
+            </div>
+
+            <div class="row"><span class="ph" style="width:46%"></span></div>
+
+            <!-- 流式指示 -->
+            <div class="row"><span class="dot"></span><span class="tiny">正在生成…</span></div>
+          </div>
+
+          <!-- 右栏 -->
+          <div class="insp zone">
+            <span class="zname">右栏 · 检查器</span>
+            <div class="stack">
+              <div class="lbl">工具详情</div>
+              <div class="ph s" style="width:86%"></div>
+              <div class="ph s" style="width:62%"></div>
+            </div>
+            <div class="ph" style="width:50%"></div>
+            <div class="stack">
+              <div class="lbl">权限历史</div>
+              <div class="row"><span class="chip">allow</span><span class="ph s grow"></span></div>
+              <div class="row"><span class="chip">deny</span><span class="ph s grow"></span></div>
+            </div>
+            <div class="ph" style="width:50%"></div>
+            <div class="stack">
+              <div class="lbl">用量</div>
+              <div class="ph s" style="width:70%"></div>
+              <div class="ph s" style="width:44%"></div>
+            </div>
+            <div class="ph" style="width:50%"></div>
+            <div class="stack">
+              <div class="lbl">协议健康</div>
+              <div class="row"><span class="dot" style="background:#2f8f4e"></span><span class="tiny">seq 连续 · 0 缺口</span></div>
+              <div class="row"><span class="dot" style="background:#2f8f4e"></span><span class="tiny">0 违规</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 输入区 -->
+        <div class="composer zone">
+          <span class="zname">Composer</span>
+          <span class="box fill grow" style="color:var(--w-hint)">输入…　<span class="tiny">Enter 发送 · Shift+Enter 换行</span></span>
+          <span class="box">发送</span>
+          <span class="box">停止</span>
+        </div>
+
+        <!-- 状态栏 -->
+        <div class="statusbar zone">
+          <span class="zname">状态栏</span>
+          <span class="tiny">● idle</span><span class="tiny">protocol 1</span>
+          <span class="tiny">43 msg</span><span class="tiny">tokens 18.4k / 913</span>
+          <span class="tiny">上次重绘 12 ms</span>
+          <span class="grow"></span><span class="tiny">缩放 100%</span>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>定位</b>把「会话 / 上下文 / 转录 / 详情」四个信息面同时摊开，接近 IDE 的使用习惯。</div>
+      <div class="note"><b>代价</b>转录可用宽度只剩 ~55%；小窗口下三栏会挤。</div>
+      <div class="note q"><b>要你定</b><ul>
+        <li>右栏是要，还是并进卡片？</li>
+        <li>左栏放文件树，还是只放会话？</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 变体 B ══════════════ -->
+  <section class="variant" data-v="B">
+    <div class="vhead">
+      <span class="tag">Variant B</span>
+      <b>单栏极简</b>
+      <span class="sub">对话优先，一切让位给转录</span>
+    </div>
+    <div class="vbody">
+      <div class="wf B annot">
+        <div class="bar zone solid">
+          <span class="zname">顶栏（极薄）</span>
+          <span class="box sm">≡</span>
+          <b style="font-size:12.5px">harness</b>
+          <span class="chip">s-0001 ▾</span>
+          <span class="grow"></span>
+          <span class="row"><span class="dot"></span><span class="tiny">running</span></span>
+        </div>
+
+        <div class="stream zone">
+          <span class="zname">转录（居中，最大宽度受限）</span>
+          <span class="tiny">core 0.1.0 · protocol 1 · 07 条消息</span>
+          <span class="ph" style="width:40%"></span>
+
+          <div class="bub me"><span class="lbl" style="color:#000">看一下 docs/README.md 里有没有过期的数字</span></div>
+
+          <div class="stack">
+            <div class="row"><span class="caret"></span><span class="ph t" style="width:64%"></span></div>
+            <div class="ph" style="width:50%"></div>
+          </div>
+
+          <div class="card">
+            <div class="h"><span class="mono">▸ read_file</span><span class="grow"></span><span class="chip">成功 · 575 行</span></div>
+          </div>
+
+          <div class="gate">
+            <span class="dot" style="background:var(--w-warn)"></span>
+            <span class="lbl" style="color:#000">允许修改 README.md 吗？</span>
+            <span class="grow"></span>
+            <span class="box sm">拒绝</span>
+            <span class="box sm dark">允许</span>
+          </div>
+
+          <div class="stack">
+            <div class="row"><span class="caret"></span><span class="ph t" style="width:56%"></span></div>
+            <div class="ph" style="width:44%"></div>
+          </div>
+
+          <div class="row"><span class="dot"></span><span class="tiny">正在生成…</span></div>
+        </div>
+
+        <div class="foot zone">
+          <span class="zname">Composer（浮起）</span>
+          <div class="comp">
+            <span class="grow tiny">输入…</span>
+            <span class="box sm dark">↑</span>
+          </div>
+          <div class="row" style="margin-top:7px">
+            <span class="tiny">/ 命令 · @ 引用文件 · Esc 停止</span>
+            <span class="grow"></span>
+            <span class="tiny">● idle</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>定位</b>像聊天工具，学习成本最低；转录拿到最大宽度。</div>
+      <div class="note"><b>代价</b>会话切换、文件上下文、评估读数都得藏进菜单或浮层。</div>
+      <div class="note q"><b>要你定</b><ul>
+        <li>状态栏要不要？还是只留一行提示？</li>
+        <li>工具卡片用行内卡片，还是缩成一行「▸ read_file」？</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ══════════════ 变体 C ══════════════ -->
+  <section class="variant" data-v="C">
+    <div class="vhead">
+      <span class="tag">Variant C</span>
+      <b>终端流式</b>
+      <span class="sub">等宽、时间戳 gutter、键盘驱动</span>
+    </div>
+    <div class="vbody">
+      <div class="wf C annot">
+        <div class="bar zone solid">
+          <span class="zname">顶栏（工具条）</span>
+          <span class="chip">s-0001</span>
+          <span class="row"><span class="dot"></span><span class="tiny">running</span></span>
+          <span class="tiny">12 ms</span>
+          <span class="grow"></span>
+          <span class="box sm">⚙</span>
+          <span class="box sm">⤢</span>
+        </div>
+
+        <div class="term zone">
+          <span class="zname">转录（单列流式，左 gutter 时间戳）</span>
+
+          <div class="ln"><span class="ts">12:40:00</span><span class="gut">›</span>
+            <span class="tx">看一下 docs/README.md 里有没有过期的数字</span></div>
+
+          <div class="ln"><span class="ts">12:40:00</span><span class="gut">●</span>
+            <span class="tx">我先读一下那个文件，重点核对用例数、公共头数和文档篇数<span class="caret"></span></span></div>
+
+          <div class="ln"><span class="ts">12:40:01</span><span class="gut">⚙</span>
+            <span class="tx"><span class="mono">read_file { path: "docs/README.md", max_lines: 400 }</span>　<span class="chip">✓</span></span></div>
+
+          <div class="ln"><span class="ts"></span><span class="gut"></span>
+            <span class="tx"><div class="blockquote"><span class="tiny">575 行 · 测试 307 用例 · Public 头 94 · 设计文档 155 篇</span></div></span></div>
+
+          <div class="ln"><span class="ts">12:40:02</span><span class="gut">⚙</span>
+            <span class="tx"><span class="mono">edit_file { path: "README.md", line: 22 }</span>　<span class="chip">…</span></span></div>
+
+          <div class="ln"><span class="ts">12:40:02</span><span class="gut">│</span>
+            <span class="tx">
+              <div class="gate" style="padding:6px 9px">
+                <span class="dot" style="background:var(--w-warn)"></span>
+                <span style="color:#000">允许修改 README.md 吗？（1 处替换）</span>
+                <span class="grow"></span>
+                <span class="box sm mono">[y]</span><span class="box sm mono">[n]</span>
+              </div>
+            </span></div>
+
+          <div class="ln"><span class="ts">12:40:05</span><span class="gut">⚙</span>
+            <span class="tx"><span class="mono">edit_file</span>　<span class="chip">✓ 1 处已替换</span></span></div>
+
+          <div class="ln"><span class="ts">12:40:06</span><span class="gut">●</span>
+            <span class="tx">锚点本身是对的，但根 README 第 22 行还写着 153 篇。</span></div>
+
+          <div class="ln"><span class="ts">12:41:12</span><span class="gut">⚠</span>
+            <span class="tx" style="color:#9a4a10">run_tests　✗ 2 项失败　305 passed / 307 total</span></div>
+        </div>
+
+        <div class="prompt zone">
+          <span class="zname">提示行（单行）</span>
+          <span class="mono tiny">›</span>
+          <span class="caret"></span>
+          <span class="grow"></span>
+          <span class="tiny">Enter 发送 · Esc 停止 · Tab 补全</span>
+        </div>
+
+        <div class="statusbar zone">
+          <span class="zname">状态栏</span>
+          <span class="tiny">● idle</span><span class="tiny">p1</span>
+          <span class="tiny">43 msg</span><span class="tiny">18.4k/913</span>
+          <span class="tiny">seq ✓ 0</span><span class="grow"></span><span class="tiny">100%</span>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <div class="note"><b>定位</b>信息密度最高、最省操作；天然贴合「协议 = 协议」的调性。</div>
+      <div class="note"><b>代价</b>长文本（助手回答）在等宽窄列里读起来累；富内容难展开。</div>
+      <div class="note q"><b>要你定</b><ul>
+        <li>时间戳 gutter 要留吗？长会话会显得吵。</li>
+        <li>权限门用行内 <span class="mono">[y]/[n]</span>，还是弹层？</li>
+      </ul></div>
+    </div>
+  </section>
+</div>
+
+<div class="cmp">
+  <table>
+    <thead><tr><th>维度</th><th class="a">A · 三栏工作台</th><th class="b">B · 单栏极简</th><th class="c">C · 终端流式</th></tr></thead>
+    <tbody>
+      <tr><td>转录可用宽度</td><td>中（右栏吃掉 ~22%）</td><td>大（拿满）</td><td>中（等宽 + gutter）</td></tr>
+      <tr><td>会话/文件可见性</td><td>常驻可见</td><td>藏进菜单</td><td>靠命令切换</td></tr>
+      <tr><td>评估读数放哪</td><td>右栏常驻</td><td>顶部小字 / 溢出即藏</td><td>状态栏一行</td></tr>
+      <tr><td>长文本阅读</td><td>好</td><td>最好</td><td>一般</td></tr>
+      <tr><td>富内容（卡片/权限门）</td><td>最好</td><td>好</td><td>受限</td></tr>
+      <tr><td>实现体量感</td><td>最大</td><td>最小</td><td>中</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="hintbar">
+  <b>怎么用这一版：</b>先挑一个变体（或「A 的骨架 + B 的输入框」这种混搭），然后对着具体区块说改哪儿 ——
+  区块左上角的蓝色小标签就是它的名字，比如「顶栏 HUD」「右栏 · 检查器」「权限门」。
+  这一版刻意不含协议、夹具、度量数字，改起来是纯挪积木；定了形我再往回补细节。
+</div>
+
+<script>
+// 区域标注开关
+document.getElementById('btnAnnot').addEventListener('click', e => {
+  const boxes = document.querySelectorAll('.wf');
+  const on = !boxes[0].classList.contains('annot');
+  boxes.forEach(b => b.classList.toggle('annot', on));
+  e.target.dataset.on = on ? '1' : '0';
+});
+
+// 视图切换：全部 → A → B → C → 全部
+(function(){
+  const btn = document.getElementById('btnOnly');
+  const modes = ['all', 'A', 'B', 'C'];
+  let i = 0;
+  btn.addEventListener('click', () => {
+    i = (i + 1) % modes.length;
+    const m = modes[i];
+    document.querySelectorAll('.variant').forEach(v => {
+      v.style.display = (m === 'all' || v.dataset.v === m) ? '' : 'none';
+    });
+    btn.textContent = '视图：' + (m === 'all' ? '全部' : m);
+    btn.dataset.on = m === 'all' ? '0' : '1';
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "fixture": "seq-gap.jsonl",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "42291c6+glfix",
+  "backend": "gdi",
+  "blocks": 1,
+  "deltas": 3,
+  "messages": 13,
+  "invalidations": 4,
+  "paints": 3,
+  "frameCount": 3,
+  "maxPaintUs": 0,
+  "avgPaintUs": 0,
+  "seqGaps": 1,
+  "violations": 3,
+  "unknownTypes": 1
+}

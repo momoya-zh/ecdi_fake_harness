@@ -1,0 +1,17 @@
+{
+  "fixture": "demo-session.jsonl",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "9ad0697e97a246c70c496bad03f00ab4e000302e",
+  "blocks": 8,
+  "deltas": 19,
+  "messages": 43,
+  "invalidations": 3,
+  "paints": 22,
+  "frameCount": 22,
+  "maxPaintUs": 10,
+  "avgPaintUs": 1,
+  "seqGaps": 0,
+  "violations": 0,
+  "unknownTypes": 0
+}
