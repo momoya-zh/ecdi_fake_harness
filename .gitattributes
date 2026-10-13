@@ -1,40 +1,46 @@
 # ============================================================
-# ECDI_fake_harness · 行尾与编码约定（唯一真相源）
+# ECDI_fake_harness · 行尾约定（唯一真相源）
 # ------------------------------------------------------------
-# 为何需要本文件：仓库若有 core.autocrlf=true 而无 .gitattributes，
-#   checkout 时会把 LF 转成 CRLF ⇒ 破坏协议对 *.jsonl 的 LF 要求
-#   （PROTOCOL.md §1.1：分帧靠 '\n'，CRLF 会污染每一行的尾字符）。
+# 为何需要本文件：仓库若配 core.autocrlf=true 而无 .gitattributes，
+#   checkout 会把 LF 转成 CRLF ⇒ 破坏协议对 *.jsonl 的 LF 要求
+#   （PROTOCOL.md §1.1：分帧靠 '\n'，CRLF 会污染每行尾字符）。
 # 本文件把行尾**固定**下来，使 clone 结果与仓库存储逐字节一致，
 #   不受任何人的 core.autocrlf 设置影响。
+#
+# ★ 取值依据 = **工作区实测**，不是「应该是什么」（条 98）：
+#   入库的 129 个文件中，文本文件绝大多数已是 LF ⇒ 统一声明 eol=lf，
+#   以免 clone 出的行尾与原作者不同（那才是制造漂移）。
 # ============================================================
 
-# ── 默认：文本规范化，检出为 LF ──
+# ── 默认：文本归一为 LF（与仓库现状一致；二进制由 git 自行识别）──
 * text=auto eol=lf
 
-# ── 协议夹具与读数：★ 必须 LF（流式解析按 '\n' 分帧）──
+# ── ★ 协议夹具与读数：**必须 LF**（流式解析按 '\n' 分帧）──
+#    这是唯一「有协议依据」的硬要求，必须显式钉死。
 *.jsonl text eol=lf
+*.json  text eol=lf
 
-# ── 二进制（不能被当文本处理）──
-*.png binary
-*.jpg binary
-*.ico binary
-*.exe binary
-*.lib binary
-*.dll binary
-*.pdb binary
+# ── 二进制：禁止当文本处理（防止 CRLF 转换损坏字节）──
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.exe  binary
+*.dll  binary
+*.lib  binary
+*.pdb  binary
+*.obj  binary
 
-# ── 显式声明为文本（便于 diff 与语言统计）──
-*.md    text eol=crlf
-*.cpp   text eol=crlf
-*.h     text eol=crlf
-*.go    text eol=crlf
-*.py    text eol=crlf
-*.txt   text eol=crlf
-*.html  text eol=crlf
-
-# 配置文件：无 BOM；行尾随各工具预期（此处统一 CRLF，与仓库现状一致）
-.gitignore      text eol=crlf
-.gitattributes  text eol=crlf
-CMakeLists.txt  text eol=crlf
-go.mod          text eol=crlf
-*.json          text eol=lf
+# ── 显式标注为文本（便于 diff / 语言统计；行尾仍 LF）──
+*.md    text eol=lf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.go    text eol=lf
+*.py    text eol=lf
+*.txt   text eol=lf
+*.html  text eol=lf
+.gitignore      text eol=lf
+.gitattributes  text eol=lf
+CMakeLists.txt  text eol=lf
+go.mod          text eol=lf
