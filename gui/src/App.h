@@ -47,6 +47,15 @@ struct CliOptions {
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
     //   ★ 默认 false ⇒ 任何既有路径**零行为变化**（逐位等价）；仅探针跑批开启。
     bool probeContrast = false;           // --probe-contrast：白底黑字（仅测量用，非交付外观）
+    // ★★ REQ-04 直接回读探针（2026-10-14）：把「发送/停止按钮的使能 + 标题文本」
+    //   逐次记入摘要——**取代截图**，让协议 §6「按钮只由 state 驱动」变成机器可读。
+    //   ★ 为何必须新开通道：`Widget::SetEnabled` **故意不内建 Invalidate**
+    //     （`Widget.h:185-187`——IsEnabled() 无任何绘制消费者）⇒ 使能翻转
+    //     在 invalidations/paints 里**不可见**；且 `m_invalidations` 只数应用侧
+    //     `RequestRepaint()`。实测 A/B/C 对照组（2026-10-14）证明该间接通道
+    //     **判不出** state 驱动（B 与 C 的 inval 均为 25，B-C=+0）。
+    //   ★ 默认 false ⇒ 零行为变化（只在 RefreshHud 里多几次只读查询）。
+    bool stateProbe = false;              // --state-probe：回读按钮使能/标题到摘要
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -197,6 +206,22 @@ private:
     std::string m_pendingTruncated;                // ReplaySource 的 EOF 截断提示（延后展示）
     bool m_liveEof = false;                        // live 模式：源已 EOF（停止空转刷 HUD）
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
+
+    // ★★ REQ-04 探针读数（--state-probe）：每次 RefreshHud 观察到「与上次不同」的
+    //   {send 使能, stop 使能, send 标题} 时记一行 ⇒ 摘要里是一份**状态翻转轨迹**。
+    //   ★ 只在**变化时**记录（否则 30Hz 下会记几千行相同内容，摘要不可读）。
+    //   ★ 与 core 的 `state` 并排输出 ⇒ 可逐行核对「state:X ⇒ 按钮使能应为 Y」。
+    struct StateProbeRec {
+        std::string coreState;   // 本次观察时的 core state（来自 m_coreState）
+        bool sendEnabled = true;
+        bool stopEnabled = false;
+        std::string sendTitle;   // Button::GetText()——标题文本直接回读，不靠像素
+    };
+    std::vector<StateProbeRec> m_stateProbeLog;
+    bool m_stateProbeLastValid = false;            // 是否已有「上次」可比
+    bool m_stateProbeLastSend = true;
+    bool m_stateProbeLastStop = false;
+
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
     size_t m_evalPaints = 0;

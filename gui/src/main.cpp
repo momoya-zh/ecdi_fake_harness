@@ -74,6 +74,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.autoPrompt = Utf8FromWide(next());
         } else if (arg == L"--probe-contrast") {
             options.probeContrast = true;   // ★ 探针专用：白底黑字（仅测量，非交付外观）
+        } else if (arg == L"--state-probe") {
+            options.stateProbe = true;      // ★ REQ-04：回读发送/停止按钮使能+标题到摘要
         }
     }
     if (argv) LocalFree(argv);
@@ -92,6 +94,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --backend gdi|gl                 渲染后端 A/B（默认 gdi）\n"
                     L"  --auto-close <ms>                定时自动退出（跑批/冒烟）\n"
                     L"  --cull-probe                     探针套件：命令分类/执行帧时/测量成本\n"
+                    L"  --state-probe                    回读发送/停止按钮使能+标题（REQ-04 机读证据）\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;

@@ -1,1220 +1,1220 @@
-﻿<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ECDI harness · GUI 原型（P1 参考）</title>
-<!--
-  ECDI_fake_harness · GUI 原型
-  ────────────────────────────────────────────────────────────────
-  定位：P1 harness_gui 的**可视化参考**，不是应用本体。
-  依据（全部为仓库内实测，非推测）：
-    · docs/P1-gui-implementation-spec.md            §3 文件清单 / §5 渲染映射 / §6 测量
-    · protocol/PROTOCOL.md                          §3 消息 / §5 不变量 / §7 渲染映射
-    · gui/src/App.cpp                               行构建 / 布局 / 摘要字段
-    · gui/src/PromptBar.cpp                         底栏几何（52 高、按钮 70×30）
-    · gui/src/Transcript.cpp                        不变量判定（逐条镜像）
-    · third_party/ecdi/include/ECDI/Widget/*.h      控件契约（Label 单行测量等）
-  几何：窗口客户区 960×720 DIP，1 DIP = 1 px @100% 缩放。
-  说明：渲染用浏览器 DOM 近似 GDI，文本度量与真机有偏差；协议派生的
-        计数器（blocks/deltas/seqGaps/violations/unknownTypes）与真机**必须一致**，
-        「读数」页会拿 evals/*.json 做实时比对。
--->
-<style>
-/* ═══════════ 原型外壳（非应用 UI） ═══════════ */
-:root{
-  --sh-bg:#0f1116;
-  --sh-panel:#171a21;
-  --sh-panel2:#1d212a;
-  --sh-line:#2b303c;
-  --sh-fg:#e7eaf0;
-  --sh-fg-dim:#98a0b0;
-  --sh-accent:#5b9dff;
-  --sh-ok:#3fbf7f;
-  --sh-warn:#e0a33c;
-  --sh-err:#e0564a;
-
-  /* ECDI 应用调色板 —— 逐条对应 gui/src/App.cpp:26-31 与 PromptBar.cpp:9-10 */
-  --ecdi-panel-bg:#fafafb;    /* kPanelBg   (250,250,251) */
-  --ecdi-user-bg:#e9f1ff;     /* kUserBg    (233,241,255) */
-  --ecdi-tool-bg:#f3f3f5;     /* kToolBg    (243,243,245) */
-  --ecdi-ask-bg:#fff7e1;      /* kAskBg     (255,247,225) */
-  --ecdi-bar-bg:#f4f4f6;      /* PromptBar  (244,244,246) */
-  --ecdi-text:#1b1d21;
-  --ecdi-system:#6e6e6e;      /* kSystemColor (110,110,110) */
-  --ecdi-error:#b22222;       /* kErrorColor  (178,34,34) */
-  --ecdi-line:#d8dae0;
-  --ecdi-btn:#e8e9ed;
-  --ecdi-btn-line:#c9ccd4;
-  --ecdi-mono:"Cascadia Mono",Consolas,"Courier New",monospace;
-}
-*{box-sizing:border-box}
-html,body{margin:0;padding:0}
-body{
-  background:var(--sh-bg); color:var(--sh-fg);
-  font:13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
-  -webkit-font-smoothing:antialiased;
-}
-.shell{display:flex;flex-direction:column;min-height:100vh}
-
-/* ── 顶部控制条 ── */
-.toolbar{
-  display:flex;flex-wrap:wrap;align-items:center;gap:14px;
-  padding:10px 16px;background:var(--sh-panel);border-bottom:1px solid var(--sh-line);
-  position:sticky;top:0;z-index:50;
-}
-.tb-brand{font-weight:600;letter-spacing:.02em;margin-right:6px}
-.tb-brand small{display:block;font-weight:400;color:var(--sh-fg-dim);font-size:11px;letter-spacing:0}
-.tb-group{display:flex;align-items:center;gap:6px}
-.tb-group>label{color:var(--sh-fg-dim);font-size:11px}
-select,.tb-btn,input[type=number]{
-  background:var(--sh-panel2);color:var(--sh-fg);border:1px solid var(--sh-line);
-  border-radius:6px;padding:5px 8px;font:inherit;font-size:12px;cursor:pointer;
-}
-.tb-btn:hover,select:hover{border-color:#3d4658}
-.tb-btn.primary{background:var(--sh-accent);border-color:var(--sh-accent);color:#0b1220;font-weight:600}
-.tb-btn[data-on="1"]{background:#263449;border-color:var(--sh-accent);color:#cfe1ff}
-.tb-spacer{flex:1}
-.tb-note{color:var(--sh-fg-dim);font-size:11px}
-
-/* ── 主体 ── */
-.stage{display:flex;gap:18px;padding:18px;align-items:flex-start;flex-wrap:wrap}
-.stage-left{display:flex;flex-direction:column;gap:10px}
-
-/* ═══════════ 应用窗口（这是原型主体） ═══════════ */
-.appwin{
-  width:960px;background:#fff;border:1px solid #05070c;border-radius:8px;
-  box-shadow:0 18px 50px rgba(0,0,0,.55);overflow:hidden;position:relative;
-}
-.appwin-titlebar{
-  height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;
-  background:#e9eaee;border-bottom:1px solid #d3d5db;color:#23262c;
-  font-size:12px;position:relative;
-}
-.appwin-titlebar .dot{width:9px;height:9px;border-radius:50%;background:#b9bcc4}
-.appwin-titlebar .title{flex:1;text-align:center;color:#4a4f59;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 40px}
-
-/* CountingPanel：VerticalLayout(0, true, 6) ⇒ 6px padding，fillCrossAxis */
-.counting{
-  width:960px;height:720px;padding:6px;display:flex;flex-direction:column;
-  background:var(--ecdi-panel-bg);position:relative;
-}
-
-/* ScrollView：stretch=1 */
-.scroll{
-  flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;position:relative;
-  scrollbar-width:thin;scrollbar-color:#b9bcc4 transparent;
-}
-.scroll::-webkit-scrollbar{width:12px}
-.scroll::-webkit-scrollbar-thumb{background:#c2c5cc;border-radius:6px;border:3px solid transparent;background-clip:content-box}
-.scrollcontent{width:908px;position:relative}
-
-/* ── 行 ── */
-.row{position:relative;width:908px;margin-bottom:4px;overflow:hidden}
-.row.plain{background:transparent}
-.row.user{background:var(--ecdi-user-bg)}
-.row.tool{background:var(--ecdi-tool-bg)}
-.row.ask{background:var(--ecdi-ask-bg)}
-.row .label{
-  color:var(--ecdi-text);font-size:14px;line-height:20px;
-  white-space:pre-wrap;word-break:break-word;
-}
-.row.nosize .label{white-space:pre;word-break:normal;overflow:visible}
-.row .hdr{
-  position:absolute;left:10px;top:2px;width:888px;height:26px;
-  display:flex;align-items:center;padding:0 8px;
-  background:var(--ecdi-btn);border:1px solid var(--ecdi-btn-line);border-radius:4px;
-  font-size:13px;color:var(--ecdi-text);cursor:pointer;user-select:none;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-}
-.row .hdr:hover{background:#dfe1e7}
-.row .hdr .caret{width:12px;flex:0 0 12px;color:#7c828d;transition:transform .12s}
-.row .hdr.open .caret{transform:rotate(90deg)}
-.row .hdr .hname{font-family:var(--ecdi-mono);font-size:12.5px}
-.row .body{position:absolute;left:10px;top:30px;width:888px;overflow:hidden;transition:height .12s ease}
-.row .body .label{font-family:var(--ecdi-mono);font-size:12.5px;line-height:17px;color:#33373d}
-.row .body .label.wrapbreak{white-space:pre-wrap}
-.row .ri{position:absolute;right:10px;top:0;height:26px;display:flex;align-items:center;
-  font-size:11px;color:#8a909b;gap:6px}
-
-/* ask 行按钮 */
-.ecdi-btn{
-  background:var(--ecdi-btn);border:1px solid var(--ecdi-btn-line);border-radius:4px;
-  font:inherit;font-size:13px;color:var(--ecdi-text);cursor:pointer;padding:0;
-  display:inline-flex;align-items:center;justify-content:center;
-}
-.ecdi-btn:hover:not(:disabled){background:#dfe1e7}
-.ecdi-btn:disabled{opacity:.45;cursor:default}
-.row .askbtns{position:absolute;top:5px;display:flex;gap:8px}
-.row .askbtns .ecdi-btn{width:70px;height:28px}
-
-/* PromptBar：固定 52 高 */
-.promptbar{
-  height:52px;flex:0 0 52px;background:var(--ecdi-bar-bg);position:relative;
-  border-top:1px solid #e4e6ea;
-}
-.promptbar .tb-input{
-  position:absolute;left:10px;top:11px;height:30px;width:764px;
-  background:#fff;border:1px solid var(--ecdi-btn-line);border-radius:4px;
-  padding:0 8px;font-size:14px;color:var(--ecdi-text);outline:none;
-}
-.promptbar .tb-input:focus{border-color:#7aa7e8}
-.promptbar .ecdi-btn{position:absolute;top:11px;width:70px;height:30px}
-
-/* ── 标注层 ── */
-.anno{display:none;position:absolute;z-index:20}
-.annot-on .anno{display:block}
-.anno-badge{
-  width:17px;height:17px;border-radius:50%;background:var(--sh-accent);color:#0b1220;
-  font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;
-  box-shadow:0 0 0 2px rgba(91,157,255,.28);cursor:help;
-}
-.annot-on .anno-target{outline:1px dashed rgba(91,157,255,.85);outline-offset:0}
-
-/* ── 右侧面板 ── */
-.side{
-  flex:1;min-width:430px;max-width:620px;background:var(--sh-panel);
-  border:1px solid var(--sh-line);border-radius:10px;overflow:hidden;
-}
-.tabs{display:flex;border-bottom:1px solid var(--sh-line);background:var(--sh-panel2)}
-.tab{
-  flex:1;padding:9px 6px;text-align:center;font-size:12px;color:var(--sh-fg-dim);
-  cursor:pointer;border-right:1px solid var(--sh-line);user-select:none;
-}
-.tab:last-child{border-right:0}
-.tab.on{color:var(--sh-fg);background:var(--sh-panel);box-shadow:inset 0 -2px 0 var(--sh-accent)}
-.pane{display:none;padding:14px 16px;max-height:calc(100vh - 190px);overflow-y:auto}
-.pane.on{display:block}
-.pane h3{margin:0 0 8px;font-size:13px;letter-spacing:.02em}
-.pane h3:not(:first-child){margin-top:20px}
-.pane p{margin:0 0 8px;color:var(--sh-fg-dim);font-size:12px;line-height:1.65}
-.pane code{font-family:var(--ecdi-mono);font-size:11.5px;background:#232833;padding:1px 5px;border-radius:4px;color:#bcd2f5}
-table{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 6px}
-th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--sh-line);vertical-align:top}
-th{color:var(--sh-fg-dim);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
-td.num{text-align:right;font-family:var(--ecdi-mono);font-size:12px}
-td .ref{color:var(--sh-fg-dim)}
-.ok{color:var(--sh-ok);font-weight:600}
-.bad{color:var(--sh-err);font-weight:600}
-.warn{color:var(--sh-warn)}
-.kv{display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:12px}
-.kv div:nth-child(odd){color:var(--sh-fg-dim)}
-.kv div:nth-child(even){text-align:right;font-family:var(--ecdi-mono)}
-.banner{
-  background:#2a1f16;border:1px solid #5a3d21;border-radius:8px;padding:10px 12px;
-  font-size:12px;line-height:1.6;color:#f0d0a6;margin-bottom:14px;
-}
-.banner b{color:#ffca7a}
-.legend{display:flex;flex-direction:column;gap:7px}
-.legend .li{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.55}
-.legend .li b{color:var(--sh-fg)}
-.legend .li .nb{
-  flex:0 0 17px;width:17px;height:17px;border-radius:50%;background:var(--sh-accent);color:#0b1220;
-  font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:2px;
-}
-.finding{border-left:3px solid var(--sh-warn);background:#1c1a15;border-radius:0 6px 6px 0;padding:9px 12px;margin-bottom:10px;font-size:12px;line-height:1.65}
-.finding.crit{border-left-color:var(--sh-err);background:#1e1616}
-.finding.info{border-left-color:#3a5f96;background:#151a24}
-.finding .ft{font-weight:600;display:block;margin-bottom:3px;color:var(--sh-fg)}
-.finding code{background:#232833}
-.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:20px;border:1px solid var(--sh-line);color:var(--sh-fg-dim);vertical-align:1px}
-.tag.prop{border-color:#5a3d21;color:#ffca7a}
-.tag.impl{border-color:#2c4a35;color:#78d6a4}
-.muted{color:var(--sh-fg-dim)}
-</style>
-</head>
-<body>
-<div class="shell">
-
-  <!-- ══════════ 原型控制条（不是应用 UI） ══════════ -->
-  <div class="toolbar">
-    <div class="tb-brand">ECDI harness · GUI 原型<small>P1 开发参考 · 依据 gui/src + PROTOCOL.md v1</small></div>
-
-    <div class="tb-group">
-      <label>夹具</label>
-      <select id="selFixture">
-        <option value="demo-session.jsonl">demo-session.jsonl（正常路径）</option>
-        <option value="hostile/seq-gap.jsonl">hostile/seq-gap.jsonl（I1/I2/I4/I5）</option>
-        <option value="hostile/truncated-final-line.jsonl">hostile/truncated-final-line.jsonl（PARSE）</option>
-      </select>
-    </div>
-
-    <div class="tb-group">
-      <label>回放</label>
-      <select id="selMode">
-        <option value="instant">instant</option>
-        <option value="timed" selected>timed</option>
-      </select>
-    </div>
-
-    <div class="tb-group">
-      <label>倍速</label>
-      <select id="selSpeed">
-        <option value="1">1×</option>
-        <option value="4" selected>4×</option>
-        <option value="16">16×</option>
-      </select>
-    </div>
-
-    <div class="tb-group">
-      <label>行模式</label>
-      <select id="selRowMode">
-        <option value="autosize" selected>autosize</option>
-        <option value="listlayout">listlayout</option>
-      </select>
-    </div>
-
-    <div class="tb-group">
-      <label>文本</label>
-      <select id="selWrap">
-        <option value="spec" selected>换行（规格预期）</option>
-        <option value="ecdi">单行测量（ECDI 实测语义）</option>
-      </select>
-    </div>
-
-    <button class="tb-btn primary" id="btnRun">▶ 开始回放</button>
-    <button class="tb-btn" id="btnReset">⟲ 重置</button>
-    <button class="tb-btn" id="btnAnnot">标注</button>
-
-    <div class="tb-spacer"></div>
-    <div class="tb-note">客户区 960×720 DIP · 1 DIP = 1 px</div>
-  </div>
-
-  <div class="stage">
-    <div class="stage-left">
-
-      <!-- ══════════ 应用窗口 ══════════ -->
-      <div class="appwin" id="appwin">
-        <div class="appwin-titlebar anno-target" id="annTitle">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="title" id="winTitle">ECDI harness - demo-session.jsonl</span>
-          <span class="anno" style="right:6px;top:6px"><span class="anno-badge">1</span></span>
-        </div>
-
-        <div class="counting anno-target" id="annCounting">
-          <span class="anno" style="left:6px;bottom:58px"><span class="anno-badge">2</span></span>
-
-          <div class="scroll" id="scroll">
-            <span class="anno" style="right:14px;top:6px;z-index:30"><span class="anno-badge">3</span></span>
-            <div class="scrollcontent" id="content"></div>
-          </div>
-
-          <div class="promptbar anno-target" id="annBar">
-            <span class="anno" style="left:6px;top:-8px"><span class="anno-badge">7</span></span>
-            <input class="tb-input" id="promptInput" type="text" autocomplete="off"
-                   placeholder="单行 TextBox（ECDI 多行输入 = 记账 #16）">
-            <button class="ecdi-btn" id="btnSend" style="left:782px">发送</button>
-            <button class="ecdi-btn" id="btnStop" style="left:866px">停止</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="tb-note">
-        提示：点 tool 卡片标题可展开/折叠；timed 模式下回放会在 <code>ask</code> 处停在
-        <code>waiting</code>，等你点「允许 / 拒绝」才继续。倍速是原型专用的加速器（真机没有）。
-      </div>
-    </div>
-
-    <!-- ══════════ 右侧参考面板 ══════════ -->
-    <div class="side">
-      <div class="tabs">
-        <div class="tab on" data-pane="paneLive">读数</div>
-        <div class="tab" data-pane="paneMap">映射表</div>
-        <div class="tab" data-pane="paneInv">不变量</div>
-        <div class="tab" data-pane="paneFind">发现</div>
-      </div>
-
-      <!-- ── 读数 ── -->
-      <div class="pane on" id="paneLive">
-        <h3>状态机（协议 §6）</h3>
-        <div class="kv">
-          <div>core state</div><div id="vState">—</div>
-          <div>提示条 / 发送使能</div><div id="vSendEnable">—</div>
-          <div>停止使能</div><div id="vStopEnable">—</div>
-          <div>回放</div><div id="vReplay">—</div>
-        </div>
-
-        <h3>协议派生计数（必须与 evals/*.json 一致）</h3>
-        <table>
-          <thead><tr><th>字段</th><th style="text-align:right">原型</th><th style="text-align:right">evals</th><th></th></tr></thead>
-          <tbody id="refTable"></tbody>
-        </table>
-
-        <h3>机器相关读数（浏览器侧近似）</h3>
-        <table>
-          <thead><tr><th>字段</th><th style="text-align:right">原型</th><th>说明</th></tr></thead>
-          <tbody id="liveTable"></tbody>
-        </table>
-        <p><span class="tag prop">提案</span> 真值只能由 <code>harness_gui.exe --out</code> 产出。
-        原型这里的数字是 DOM 渲染耗时，量级与 GDI 无关，<b>不可用于评估</b>，仅用于观察
-        「重绘请求 → 实际重绘」的合并比例。</p>
-
-        <h3>本次运行写入的摘要（原型模拟 §6.3）</h3>
-        <pre id="summaryJson" style="font-family:var(--ecdi-mono);font-size:11.5px;line-height:1.5;background:#141821;border:1px solid var(--sh-line);border-radius:8px;padding:10px;overflow:auto;max-height:230px;margin:0">—</pre>
-      </div>
-
-      <!-- ── 映射表 ── -->
-      <div class="pane" id="paneMap">
-        <h3>块 kind → 行渲染 → ECDI 控件</h3>
-        <table>
-          <thead><tr><th>kind</th><th>渲染</th><th>ECDI 控件（实测调用）</th></tr></thead>
-          <tbody>
-            <tr><td><code>user</code></td><td>整行 kUserBg 底 + 右侧对齐 Label</td><td><code>Panel</code> + <code>Label</code></td></tr>
-            <tr><td><code>assistant</code></td><td>透明行 + 左对齐 Label（delta 追加）</td><td><code>Panel</code> + <code>Label</code></td></tr>
-            <tr><td><code>system</code></td><td>同 assistant，文本色 (110,110,110)</td><td><code>Label::SetTextColor</code></td></tr>
-            <tr><td><code>error</code></td><td>同 assistant，文本色 (178,34,34)</td><td><code>Label::SetTextColor</code></td></tr>
-            <tr><td><code>tool_call</code></td><td>卡片：Button 标题(26) + CollapsiblePanel 展开体，默认折叠</td><td><code>Button</code> + <code>CollapsiblePanel</code></td></tr>
-            <tr><td><code>tool_result</code></td><td>同上；标题在 <code>block_end</code> 时改为「成功/失败 · summary」</td><td>同上</td></tr>
-            <tr><td><code>ask</code></td><td>kAskBg 行 + 「允许 / 拒绝」各 70×28</td><td><code>Panel</code> + 2×<code>Button</code></td></tr>
-            <tr><td><code>state</code> / <code>usage</code></td><td class="warn">v1 完全不渲染（App.cpp:249）</td><td>—</td></tr>
-          </tbody>
-        </table>
-
-        <h3>几何常量（App.cpp:21-24 / PromptBar.cpp:39-51）</h3>
-        <div class="kv">
-          <div>kRowGap 行间距</div><div>4 px</div>
-          <div>kRowPadX 行内边距</div><div>10 px</div>
-          <div>kHeaderH 卡片标题高</div><div>26 px</div>
-          <div>kListRowHeight（listlayout）</div><div>28 px / spacing 2</div>
-          <div>CountingPanel padding</div><div>6 px（VerticalLayout(0,true,6)）</div>
-          <div>PromptBar 高</div><div>52 px（控件高 30，y=11）</div>
-          <div>按钮宽</div><div>70 px，间距 8 / 12</div>
-          <div>ScrollView 步长</div><div>40 px</div>
-          <div>contentWidth</div><div>scrollWidth − 40 = 908</div>
-        </div>
-
-        <h3>行布局 A/B（规格 §5.3）</h3>
-        <table>
-          <thead><tr><th>模式</th><th>行为</th><th>测量量</th></tr></thead>
-          <tbody>
-            <tr><td><code>autosize</code>（默认）</td><td>每行 <code>Label::AutoSize()</code> → 行高 = labelH + 10</td><td>每帧对所有行做文本测量</td></tr>
-            <tr><td><code>listlayout</code></td><td><code>ListLayout(28, 2)</code> 固定行高、不测量</td><td>无</td></tr>
-          </tbody>
-        </table>
-        <p class="warn">⚠ 见「发现」F1：当前 ECDI 的 Label 测量是**单行**的，两组可能没有区分度。</p>
-      </div>
-
-      <!-- ── 不变量 ── -->
-      <div class="pane" id="paneInv">
-        <h3>协议 §5 不变量（判定逻辑镜像 gui/src/Transcript.cpp）</h3>
-        <table>
-          <thead><tr><th>#</th><th>内容</th><th>当前夹具触发</th></tr></thead>
-          <tbody id="invTable"></tbody>
-        </table>
-        <p>注意：<code>I4</code> 的提示文案逐字对齐实现 ——
-        <code>[I4] seq gap 3 -&gt; 5: messages lost</code>。
-        它所在的 <b>本行仍会被处理</b>（缺口提示 ≠ 丢弃消息）。</p>
-      </div>
-
-      <!-- ── 发现 ── -->
-      <div class="pane" id="paneFind">
-        <div class="banner">
-          <b>这批结论是原型的第一产出。</b>
-          它们来自对 <code>gui/src</code> 与已安装 ECDI 头文件（<code>third_party/ecdi/include</code>，
-          commit <code>9ad0697</code>）的逐行核对。<b>待实测确认</b>的条目已显式标注。
-        </div>
-        <div id="findingList"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-/* ════════════════════════════════════════════════════════════════
-   0. 夹具（由脚本从 protocol/fixtures/ 原样注入，保证字节保真）
-   ════════════════════════════════════════════════════════════════ */
-const FIXTURES =   {
-    "demo-session.jsonl": {
-      "label": "demo-session.jsonl",
-      "trailingLf": true,
-      "lines": [
-        "{\"t\":\"hello\",\"seq\":0,\"ts\":\"2026-10-03T10:40:00.000Z\",\"protocol\":1,\"core\":\"0.1.0\",\"session\":\"s-0001\",\"caps\":[\"tools\",\"ask\"]}",
-        "{\"t\":\"state\",\"seq\":1,\"ts\":\"2026-10-03T10:40:00.010Z\",\"value\":\"running\"}",
-        "{\"t\":\"block_start\",\"seq\":2,\"ts\":\"2026-10-03T10:40:00.020Z\",\"id\":\"b1\",\"kind\":\"user\",\"text\":\"看一下 docs/README.md 里有没有过期的数字，有就改掉\"}",
-        "{\"t\":\"block_end\",\"seq\":3,\"ts\":\"2026-10-03T10:40:00.030Z\",\"id\":\"b1\",\"ok\":true}",
-        "{\"t\":\"block_start\",\"seq\":4,\"ts\":\"2026-10-03T10:40:00.410Z\",\"id\":\"b2\",\"kind\":\"assistant\"}",
-        "{\"t\":\"delta\",\"seq\":5,\"ts\":\"2026-10-03T10:40:00.430Z\",\"id\":\"b2\",\"text\":\"我先\"}",
-        "{\"t\":\"delta\",\"seq\":6,\"ts\":\"2026-10-03T10:40:00.455Z\",\"id\":\"b2\",\"text\":\"读一下\"}",
-        "{\"t\":\"delta\",\"seq\":7,\"ts\":\"2026-10-03T10:40:00.480Z\",\"id\":\"b2\",\"text\":\"那个文件，\"}",
-        "{\"t\":\"delta\",\"seq\":8,\"ts\":\"2026-10-03T10:40:00.512Z\",\"id\":\"b2\",\"text\":\"重点核对\"}",
-        "{\"t\":\"delta\",\"seq\":9,\"ts\":\"2026-10-03T10:40:00.540Z\",\"id\":\"b2\",\"text\":\"用例数、\"}",
-        "{\"t\":\"delta\",\"seq\":10,\"ts\":\"2026-10-03T10:40:00.566Z\",\"id\":\"b2\",\"text\":\"公共头数和\"}",
-        "{\"t\":\"delta\",\"seq\":11,\"ts\":\"2026-10-03T10:40:00.600Z\",\"id\":\"b2\",\"text\":\"文档篇数\"}",
-        "{\"t\":\"delta\",\"seq\":12,\"ts\":\"2026-10-03T10:40:00.640Z\",\"id\":\"b2\",\"text\":\"这三个锚点。\"}",
-        "{\"t\":\"block_end\",\"seq\":13,\"ts\":\"2026-10-03T10:40:00.700Z\",\"id\":\"b2\",\"ok\":true,\"summary\":\"一段说明\"}",
-        "{\"t\":\"block_start\",\"seq\":14,\"ts\":\"2026-10-03T10:40:00.980Z\",\"id\":\"b3\",\"kind\":\"tool_call\",\"name\":\"read_file\",\"args\":{\"path\":\"docs/README.md\",\"max_lines\":400}}",
-        "{\"t\":\"block_end\",\"seq\":15,\"ts\":\"2026-10-03T10:40:01.120Z\",\"id\":\"b3\",\"ok\":true,\"summary\":\"575 行\"}",
-        "{\"t\":\"block_start\",\"seq\":16,\"ts\":\"2026-10-03T10:40:01.130Z\",\"id\":\"b4\",\"kind\":\"tool_result\",\"for\":\"b3\"}",
-        "{\"t\":\"delta\",\"seq\":17,\"ts\":\"2026-10-03T10:40:01.150Z\",\"id\":\"b4\",\"text\":\"> 当前规模锚点：测试 307 用例\"}",
-        "{\"t\":\"delta\",\"seq\":18,\"ts\":\"2026-10-03T10:40:01.180Z\",\"id\":\"b4\",\"text\":\" · Public 头 94 · 设计文档 155 篇\"}",
-        "{\"t\":\"delta\",\"seq\":19,\"ts\":\"2026-10-03T10:40:01.210Z\",\"id\":\"b4\",\"text\":\"…（截断，共 575 行）\"}",
-        "{\"t\":\"block_end\",\"seq\":20,\"ts\":\"2026-10-03T10:40:01.260Z\",\"id\":\"b4\",\"ok\":true}",
-        "{\"t\":\"block_start\",\"seq\":21,\"ts\":\"2026-10-03T10:40:01.640Z\",\"id\":\"b5\",\"kind\":\"assistant\"}",
-        "{\"t\":\"delta\",\"seq\":22,\"ts\":\"2026-10-03T10:40:01.660Z\",\"id\":\"b5\",\"text\":\"锚点\"}",
-        "{\"t\":\"delta\",\"seq\":23,\"ts\":\"2026-10-03T10:40:01.690Z\",\"id\":\"b5\",\"text\":\"本身是对的，\"}",
-        "{\"t\":\"delta\",\"seq\":24,\"ts\":\"2026-10-03T10:40:01.730Z\",\"id\":\"b5\",\"text\":\"但根 README 第 22 行\"}",
-        "{\"t\":\"delta\",\"seq\":25,\"ts\":\"2026-10-03T10:40:01.770Z\",\"id\":\"b5\",\"text\":\"还写着 153 篇，\"}",
-        "{\"t\":\"delta\",\"seq\":26,\"ts\":\"2026-10-03T10:40:01.810Z\",\"id\":\"b5\",\"text\":\"与实测 155 不符。\"}",
-        "{\"t\":\"block_end\",\"seq\":27,\"ts\":\"2026-10-03T10:40:01.860Z\",\"id\":\"b5\",\"ok\":true}",
-        "{\"t\":\"block_start\",\"seq\":28,\"ts\":\"2026-10-03T10:40:02.200Z\",\"id\":\"b6\",\"kind\":\"tool_call\",\"name\":\"edit_file\",\"args\":{\"path\":\"README.md\",\"line\":22,\"from\":\"153 design documents\",\"to\":\"155 design documents\"}}",
-        "{\"t\":\"ask\",\"seq\":29,\"ts\":\"2026-10-03T10:40:02.240Z\",\"id\":\"q1\",\"kind\":\"permission\",\"question\":\"允许修改 README.md 吗？（1 处替换）\",\"options\":[{\"key\":\"allow\",\"label\":\"允许\"},{\"key\":\"deny\",\"label\":\"拒绝\"}],\"default\":\"deny\"}",
-        "{\"t\":\"state\",\"seq\":30,\"ts\":\"2026-10-03T10:40:02.250Z\",\"value\":\"waiting\"}",
-        "{\"t\":\"state\",\"seq\":31,\"ts\":\"2026-10-03T10:40:05.900Z\",\"value\":\"running\"}",
-        "{\"t\":\"block_end\",\"seq\":32,\"ts\":\"2026-10-03T10:40:05.940Z\",\"id\":\"b6\",\"ok\":true,\"summary\":\"1 处已替换\"}",
-        "{\"t\":\"block_start\",\"seq\":33,\"ts\":\"2026-10-03T10:40:06.300Z\",\"id\":\"b7\",\"kind\":\"tool_call\",\"name\":\"run_tests\",\"args\":{\"target\":\"ecdi_tests\",\"jobs\":8}}",
-        "{\"t\":\"block_end\",\"seq\":34,\"ts\":\"2026-10-03T10:40:06.360Z\",\"id\":\"b7\",\"ok\":true,\"summary\":\"已启动\"}",
-        "{\"t\":\"block_start\",\"seq\":35,\"ts\":\"2026-10-03T10:41:12.400Z\",\"id\":\"b8\",\"kind\":\"tool_result\",\"for\":\"b7\"}",
-        "{\"t\":\"delta\",\"seq\":36,\"ts\":\"2026-10-03T10:41:12.430Z\",\"id\":\"b8\",\"text\":\"Test summary: 305 passed, 2 failed, 307 total\"}",
-        "{\"t\":\"delta\",\"seq\":37,\"ts\":\"2026-10-03T10:41:12.480Z\",\"id\":\"b8\",\"text\":\"\\nFAIL Layout.ListHiddenParked\"}",
-        "{\"t\":\"delta\",\"seq\":38,\"ts\":\"2026-10-03T10:41:12.520Z\",\"id\":\"b8\",\"text\":\"\\nFAIL Layout.GridPositions\"}",
-        "{\"t\":\"block_end\",\"seq\":39,\"ts\":\"2026-10-03T10:41:12.600Z\",\"id\":\"b8\",\"ok\":false,\"summary\":\"2 项失败\"}",
-        "{\"t\":\"usage\",\"seq\":40,\"ts\":\"2026-10-03T10:41:12.700Z\",\"turn\":3,\"input\":18422,\"output\":913}",
-        "{\"t\":\"state\",\"seq\":41,\"ts\":\"2026-10-03T10:41:12.720Z\",\"value\":\"idle\"}",
-        "{\"t\":\"bye\",\"seq\":42,\"ts\":\"2026-10-03T10:41:12.760Z\",\"reason\":\"eof\",\"code\":0}"
-      ]
-    },
-    "hostile/seq-gap.jsonl": {
-      "label": "seq-gap.jsonl",
-      "trailingLf": true,
-      "lines": [
-        "{\"t\":\"hello\",\"seq\":0,\"ts\":\"2026-10-03T11:00:00.000Z\",\"protocol\":1,\"core\":\"0.1.0\",\"session\":\"s-hostile-1\",\"caps\":[\"tools\",\"ask\"]}",
-        "{\"t\":\"state\",\"seq\":1,\"ts\":\"2026-10-03T11:00:00.010Z\",\"value\":\"running\"}",
-        "{\"t\":\"block_start\",\"seq\":2,\"ts\":\"2026-10-03T11:00:00.100Z\",\"id\":\"b1\",\"kind\":\"assistant\"}",
-        "{\"t\":\"delta\",\"seq\":3,\"ts\":\"2026-10-03T11:00:00.130Z\",\"id\":\"b1\",\"text\":\"这条会到达。\"}",
-        "{\"t\":\"delta\",\"seq\":5,\"ts\":\"2026-10-03T11:00:00.190Z\",\"id\":\"b1\",\"text\":\" seq 4 丢了——GUI 必须显式提示，不得静默继续（I4）。\"}",
-        "{\"t\":\"delta\",\"seq\":6,\"ts\":\"2026-10-03T11:00:00.220Z\",\"id\":\"b1\",\"text\":\"这条也会到达。\"}",
-        "{\"t\":\"block_end\",\"seq\":7,\"ts\":\"2026-10-03T11:00:00.260Z\",\"id\":\"b1\",\"ok\":true}",
-        "{\"t\":\"telemetry\",\"seq\":8,\"ts\":\"2026-10-03T11:00:00.300Z\",\"value\":{\"cpu\":0.12}}",
-        "{\"t\":\"block_end\",\"seq\":9,\"ts\":\"2026-10-03T11:00:00.340Z\",\"id\":\"b-never-started\",\"ok\":true}",
-        "{\"t\":\"delta\",\"seq\":10,\"ts\":\"2026-10-03T11:00:00.380Z\",\"id\":\"b1\",\"text\":\"块已 end 之后的 delta——违反 I2/I6，应被拒绝或计入异常。\"}",
-        "{\"t\":\"usage\",\"seq\":11,\"ts\":\"2026-10-03T11:00:00.400Z\",\"turn\":1,\"input\":100,\"output\":20}",
-        "{\"t\":\"state\",\"seq\":12,\"ts\":\"2026-10-03T11:00:00.420Z\",\"value\":\"idle\"}",
-        "{\"t\":\"bye\",\"seq\":13,\"ts\":\"2026-10-03T11:00:00.450Z\",\"reason\":\"eof\",\"code\":0}"
-      ]
-    },
-    "hostile/truncated-final-line.jsonl": {
-      "label": "truncated-final-line.jsonl",
-      "trailingLf": true,
-      "lines": [
-        "{\"t\":\"hello\",\"seq\":0,\"ts\":\"2026-10-03T11:10:00.000Z\",\"protocol\":1,\"core\":\"0.1.0\",\"session\":\"s-hostile-2\",\"caps\":[\"tools\"]}",
-        "{\"t\":\"state\",\"seq\":1,\"ts\":\"2026-10-03T11:10:00.010Z\",\"value\":\"running\"}",
-        "{\"t\":\"block_start\",\"seq\":2,\"ts\":\"2026-10-03T11:10:00.100Z\",\"id\":\"b1\",\"kind\":\"assistant\"}",
-        "{\"t\":\"delta\",\"seq\":3,\"ts\":\"2026-10-03T11:10:00.140Z\",\"id\":\"b1\",\"text\":\"这一行是完整的，之后的那一行被截断了。\"}",
-        "{\"t\":\"delta\",\"seq\":4,\"ts\":\"2026-10-03T11:10:00.180Z\",\"id\":\"b1\",\"text\":\"半个 JSON：{\"t\":\"delta\",\"seq\":5"
-      ]
-    }
-  };
-
-/* evals/*.json 实测记录（用于实时比对协议派生的计数） */
-const REFERENCE = {
-  "demo-session.jsonl|instant|autosize":      {blocks:8,deltas:19,messages:43,seqGaps:0,violations:0,unknownTypes:0},
-  "demo-session.jsonl|timed|autosize":        {blocks:7,deltas:16,messages:43,seqGaps:0,violations:0,unknownTypes:0},
-  "hostile/seq-gap.jsonl|instant|autosize":   {blocks:1,deltas:3,messages:13,seqGaps:1,violations:3,unknownTypes:1},
-  "hostile/truncated-final-line.jsonl|instant|autosize":{blocks:1,deltas:1,messages:5,seqGaps:0,violations:1,unknownTypes:0}
-};
-
-/* ════════════════════════════════════════════════════════════════
-   1. 几何常量（App.cpp:21-24 / PromptBar.cpp:39-51）
-   ════════════════════════════════════════════════════════════════ */
-const GEO = {
-  rowGap:4, rowPadX:10, headerH:26,
-  listRowH:28, listSpacing:2,
-  countingPad:6, barH:52, ctrlH:30, btnW:70,
-  clientW:960, clientH:720,
-  contentW:908   // scrollWidth(948) - 40
-};
-
-/* ════════════════════════════════════════════════════════════════
-   2. 迷你协议引擎 —— 逐条镜像 gui/src/Transcript.cpp
-   ════════════════════════════════════════════════════════════════ */
-const KNOWN_TYPES = ["hello","state","block_start","delta","block_end","ask","usage","error","bye"];
-
-class Engine {
-  constructor(){ this.reset(); }
-  reset(){
-    this.blocks = new Map();       // id -> {id,kind,name,argsPretty,text,forId,ok,summary,ended}
-    this.last = null;
-    this.lastSeq = 0; this.seenSeq = false;
-    this.blocksStarted = 0; this.deltas = 0;
-    this.seqGaps = 0; this.violations = 0; this.unknownTypes = 0;
-  }
-  /* 返回 {ok, notice} —— ok=false 表示该行被拒绝（不进入 Route） */
-  onLine(raw){
-    this.last = null;
-    let msg;
-    try { msg = JSON.parse(raw); }
-    catch(e){
-      this.violations++;
-      return {ok:false, notice:"[PARSE] line rejected: " + (e && e.message ? e.message : "invalid JSON")};
-    }
-    this.last = msg;
-    const t = typeof msg.t === "string" ? msg.t : "";
-    let notice = null, ok = true;
-
-    // I4：seq 每方向从 0 起、严格递增且连续；缺口必须显式提示，本行仍处理
-    if (typeof msg.seq === "number"){
-      const cur = msg.seq;
-      if (this.seenSeq && cur !== this.lastSeq + 1){
-        this.seqGaps++; this.violations++;
-        notice = "[I4] seq gap " + this.lastSeq + " -> " + cur + ": messages lost";
-      }
-      this.lastSeq = cur; this.seenSeq = true;
-    }
-
-    if (t === "block_start"){
-      const id = typeof msg.id === "string" ? msg.id : "";
-      if (!id || this.blocks.has(id)){
-        this.violations++;
-        return {ok:false, notice:(notice ? notice + " | " : "") + "[I1] duplicate block_start: " + id};
-      }
-      const b = {id, kind:msg.kind||"", name:msg.name||"", forId:msg.for||"", text:msg.text||"",
-                 argsPretty:"", ok:false, summary:"", ended:false};
-      if (b.kind === "tool_call" && msg.args && typeof msg.args === "object")
-        b.argsPretty = JSON.stringify(msg.args, null, 2);
-      if (b.kind === "tool_result"){
-        const ref = this.blocks.get(b.forId);
-        if (!ref || ref.kind !== "tool_call"){
-          this.violations++;
-          notice = (notice ? notice + " | " : "") + "[I7] tool_result 'for' does not name a tool_call: " + b.forId;
-        }
-      }
-      this.blocks.set(id, b);
-      this.blocksStarted++;
-      return {ok:true, notice};
-    }
-
-    if (t === "delta"){
-      const id = msg.id || "";
-      const b = this.blocks.get(id);
-      if (!b || b.ended){
-        this.violations++;
-        return {ok:false, notice:(notice?notice+" | ":"") + "[I2] delta outside block lifetime: " + id};
-      }
-      b.text += (msg.text || "");
-      this.deltas++;
-      return {ok:true, notice};
-    }
-
-    if (t === "block_end"){
-      const id = msg.id || "";
-      const b = this.blocks.get(id);
-      if (!b || b.ended){
-        this.violations++;
-        return {ok:false, notice:(notice?notice+" | ":"") + "[I1] block_end without matching start: " + id};
-      }
-      b.ok = (msg.ok === true);
-      b.summary = msg.summary || "";
-      b.ended = true;
-      return {ok:true, notice};
-    }
-
-    // I5：未知 t 忽略并记录（不计入 violations —— 与实现一致）
-    if (!KNOWN_TYPES.includes(t)){
-      this.unknownTypes++;
-      notice = "[I5] unknown message type ignored: " + t;
-    }
-    return {ok:true, notice};
-  }
-}
-
-/* ════════════════════════════════════════════════════════════════
-   3. 状态
-   ════════════════════════════════════════════════════════════════ */
-const S = {
-  fixture:"demo-session.jsonl", mode:"timed", speed:4,
-  rowMode:"autosize", wrap:"spec",
-  lines:[], offsets:[], idx:0, loaded:false, truncated:false,
-  run:false, settled:false, instantDone:false,
-  coreState:"", waitAnswer:false,
-  rows:[], blockRows:new Map(),
-  invalidations:0, paints:0, frames:0, maxUs:0, sumUs:0,
-  anchorMs:0, elapsedMs:0, lastTick:0,
-  dirty:false, timer:null
-};
-
-const engine = new Engine();
-const $ = id => document.getElementById(id);
-const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
-const content = $("content");   // ScrollContent（内容坐标空间的根）
-
-/* ════════════════════════════════════════════════════════════════
-   4. 加载夹具（镜像 ReplaySource::Load）
-   ════════════════════════════════════════════════════════════════ */
-function loadFixture(name){
-  const fx = FIXTURES[name];
-  S.lines = fx.lines.slice();
-  // ts → 相对首条 ts 的毫秒偏移（无 ts 视为立即到期）
-  const tsOf = raw => {
-    const m = /"ts":"([^"]+)"/.exec(raw);
-    if (!m) return null;
-    const d = Date.parse(m[1]);
-    return isNaN(d) ? null : d;
-  };
-  let first = null;
-  S.offsets = S.lines.map(raw => {
-    const t = tsOf(raw);
-    if (t === null) return 0;
-    if (first === null) first = t;
-    return t - first;
-  });
-  // §1.2：EOF 截断（缺尾 LF）必须显式报错
-  S.truncated = !fx.trailingLf;
-  S.loaded = true;
-}
-
-/* ════════════════════════════════════════════════════════════════
-   5. 行构建（镜像 App.cpp CreateBlockRow / CreateAskRow / AddNoticeRow）
-   ════════════════════════════════════════════════════════════════ */
-function makeLabel(text){
-  const l = el("div","label"); l.textContent = text; return l;
-}
-
-function addRow(kind, rec){
-  // kind: plain | user | tool | ask
-  const panel = el("div","row " + kind);
-  if (S.wrap === "ecdi") panel.classList.add("nosize");
-  rec.panel = panel; rec.kind = kind;
-  if (rec.tool){                       // tool 行 = Button 标题 + CollapsiblePanel 展开体
-    panel.appendChild(rec.headerBtn);
-    panel.appendChild(rec.body);
-  } else {
-    panel.appendChild(rec.label);
-  }
-  if (rec.askBtns) panel.appendChild(rec.askBtns);
-  content.appendChild(panel);
-  S.rows.push(rec);
-  return rec;
-}
-
-function createBlockRow(b){
-  if (b.kind === "user"){
-    const l = makeLabel(b.text);
-    l.style.position = "absolute"; l.style.top = "5px";
-    const rec = {id:b.id, tool:false, alignRight:true, ask:false, label:l, expanded:false, answered:false, block:b};
-    addRow("user", rec);
-    return;
-  }
-  if (b.kind === "assistant" || b.kind === "system" || b.kind === "error"){
-    const l = makeLabel(b.text);
-    l.style.position = "absolute"; l.style.top = "5px";
-    if (b.kind === "system") l.style.color = "#6e6e6e";
-    if (b.kind === "error")  l.style.color = "#b22222";
-    const rec = {id:b.id, tool:false, alignRight:false, ask:false, label:l, expanded:false, answered:false, block:b};
-    addRow("plain", rec);
-    return;
-  }
-
-  // tool_call / tool_result
-  const hdr = el("div","hdr");
-  const caret = el("span","caret"); caret.textContent = "▶";
-  const hname = el("span","hname");
-  hdr.appendChild(caret); hdr.appendChild(hname);
-
-  const body = el("div","body");
-  const bodyLabel = makeLabel("");
-  bodyLabel.classList.add("wrapbreak");
-  body.appendChild(bodyLabel);
-
-  let title, bodyText;
-  if (b.kind === "tool_call"){
-    title = b.name || "tool_call";
-    bodyText = b.argsPretty || "{}";
-  } else {
-    title = "等待结果";
-    bodyText = b.text || b.summary || "";
-  }
-  hname.textContent = title;
-  bodyLabel.textContent = bodyText;
-
-  const rec = {id:b.id, tool:true, alignRight:false, ask:false,
-               label:bodyLabel, headerBtn:hdr, hname, body, bodyLabel,
-               expanded:false, answered:false, block:b};
-  const row = addRow("tool", rec);
-  hdr.addEventListener("click", () => {
-    rec.expanded = !rec.expanded;
-    hdr.classList.toggle("open", rec.expanded);
-    relayout(); requestRepaint();
-  });
-  // I7 引用关系提示（原型提案：真机未渲染，见「发现」F4）
-  if (b.kind === "tool_result" && b.forId){
-    const ri = el("div","ri"); ri.textContent = "for " + b.forId; row.panel.appendChild(ri);
-  }
-  return rec;
-}
-
-function createAskRow(msg){
-  const panel = el("div","row ask");
-  const l = makeLabel("权限 " + (msg.question || ""));
-  l.style.position = "absolute"; l.style.top = "5px";
-  panel.appendChild(l);
-
-  const btns = el("div","askbtns");
-  const allow = el("button","ecdi-btn"); allow.textContent = "允许";
-  const deny  = el("button","ecdi-btn"); deny.textContent  = "拒绝";
-  btns.appendChild(allow); btns.appendChild(deny);
-  panel.appendChild(btns);
-
-  const rec = {panel, id:msg.id||"", tool:false, alignRight:false, ask:true, label:l, askBtns:btns,
-               allowBtn:allow, denyBtn:deny, expanded:false, answered:false};
-  content.appendChild(panel);
-  S.rows.push(rec);
-  S.blockRows.set(rec.id, rec);
-  allow.addEventListener("click", () => markAnswered(rec, "allow"));
-  deny.addEventListener("click",  () => markAnswered(rec, "deny"));
-  // 协议 §8.3：timed 回放遇到 ask → 停在 waiting，等用户点选才继续
-  if (S.mode === "timed") S.waitAnswer = true;
-  return rec;
-}
-
-function markAnswered(rec, choice){
-  if (rec.answered) return;
-  rec.answered = true;
-  rec.allowBtn.disabled = true; rec.denyBtn.disabled = true;
-  S.waitAnswer = false;
-  addNoticeRow("[answer] " + choice, "#6e6e6e");
-  requestRepaint();
-  if (S.mode === "timed") tick();
-}
-
-function addNoticeRow(text, color){
-  const l = makeLabel(text);
-  l.style.position = "absolute"; l.style.top = "5px";
-  l.style.color = color;
-  const rec = {id:"", tool:false, alignRight:false, ask:false, label:l, expanded:false, answered:false};
-  addRow("plain", rec);
-  return rec;
-}
-
-/* ════════════════════════════════════════════════════════════════
-   6. 消息路由（镜像 App.cpp RouteLastMessage）
-   ════════════════════════════════════════════════════════════════ */
-function route(){
-  const msg = engine.last; if (!msg) return;
-  const t = msg.t;
-
-  if (t === "block_start"){
-    const b = engine.blocks.get(msg.id);
-    if (b){
-      const rec = createBlockRow(b);
-      if (rec && rec.id) S.blockRows.set(rec.id, rec);
-    }
-    return;
-  }
-  if (t === "delta"){
-    const rec = S.blockRows.get(msg.id || "");
-    const b = engine.blocks.get(msg.id || "");
-    if (rec && b && rec.label) rec.label.textContent = b.text;
-    return;
-  }
-  if (t === "block_end"){
-    const b = engine.blocks.get(msg.id || "");
-    const rec = S.blockRows.get(msg.id || "");
-    if (b && b.kind === "tool_result" && rec && rec.hname){
-      let title = b.ok ? "成功" : "失败";
-      if (b.summary) title += " · " + b.summary;
-      rec.hname.textContent = title;
-    }
-    return;
-  }
-  if (t === "ask"){ createAskRow(msg); return; }
-  if (t === "error"){ addNoticeRow("[error] " + (msg.message||""), "#b22222"); return; }
-  if (t === "hello"){
-    addNoticeRow("core " + (msg.core||"") + " · session " + (msg.session||"") +
-                 " · protocol " + (msg.protocol!=null?msg.protocol:""), "#6e6e6e");
-    return;
-  }
-  if (t === "bye"){
-    addNoticeRow("会话结束 (" + (msg.reason||"") + ", code " + (msg.code!=null?msg.code:0) + ")", "#6e6e6e");
-    return;
-  }
-  if (t === "state"){ S.coreState = msg.value || ""; updateStateUi(); return; }
-  // usage：v1 不渲染（App.cpp:249）
-}
-
-/* ════════════════════════════════════════════════════════════════
-   7. 布局（镜像 App.cpp Relayout）
-   ════════════════════════════════════════════════════════════════ */
-function relayout(){
-  const contentW = GEO.contentW;
-  const wrapMode = S.wrap === "spec";
-
-  if (S.rowMode === "listlayout"){
-    // ListLayout(28, 2)：固定行高、不测量
-    let y = 0;
-    for (const r of S.rows){
-      r.panel.style.height = GEO.listRowH + "px";
-      r.panel.style.top = y + "px";
-      r.panel.style.position = "absolute";
-      r.panel.style.marginBottom = "0";
-      if (r.label){ r.label.style.maxWidth = (contentW - 20) + "px"; r.label.style.overflow = "hidden"; }
-      if (r.tool){
-        r.headerBtn.style.width = (contentW - 20) + "px";
-        r.body.style.height = "0px";
-      }
-      y += GEO.listRowH + GEO.listSpacing;
-    }
-    content.style.height = Math.max(0, y - GEO.listSpacing) + "px";
-    return;
-  }
-
-  // autosize：每行 AutoSize → 行高随（测量到的）内容变化
-  let y = 0;
-  for (const r of S.rows){
-    r.panel.style.position = "absolute";
-    r.panel.style.marginBottom = "0";
-    r.panel.style.width = contentW + "px";
-    let rowH;
-
-    if (r.tool){
-      const w = contentW - 2 * GEO.rowPadX;
-      r.label.style.width = w + "px";
-      r.bodyLabel.style.width = (contentW - 20) + "px";
-      // ECDI 实测语义：Label 测量是单行的 ⇒ bodyH 取单行高，多行正文被裁（F2）
-      const labelH = wrapMode ? Math.max(17, r.bodyLabel.offsetHeight) : 17;
-      const bodyH = labelH + 8;
-      r.headerBtn.style.width = w + "px";
-      r.body.style.width = w + "px";
-      r.body.style.height = (r.expanded ? bodyH : 0) + "px";
-      r.body.style.visibility = r.expanded ? "visible" : "hidden";
-      rowH = 2 + GEO.headerH + 2 + (r.expanded ? bodyH : 0);
-    } else {
-      const pad = 2 * GEO.rowPadX;
-      if (wrapMode){
-        r.label.style.width = (contentW - pad) + "px";
-        r.label.style.whiteSpace = "pre-wrap";
-      } else {
-        // ECDI 实测语义：Label::GetPreferredSize 是单行测量 —— 宽 = 文本自然宽，不换行
-        r.label.style.width = "auto";
-        r.label.style.whiteSpace = "pre";
-      }
-      const labelH = Math.max(20, r.label.offsetHeight);
-      const labelW = r.label.offsetWidth;
-      if (r.ask){
-        r.askBtns.style.left = (contentW - 160) + "px";
-        r.label.style.left = GEO.rowPadX + "px";
-      } else if (r.alignRight){
-        const x = Math.max(GEO.rowPadX, contentW - GEO.rowPadX - labelW);
-        r.label.style.left = x + "px";
-        r.label.style.maxWidth = "none";
-      } else {
-        r.label.style.left = GEO.rowPadX + "px";
-        r.label.style.maxWidth = "none";
-      }
-      rowH = Math.max(labelH + 10, r.ask ? 38 : 0);
-    }
-
-    r.panel.style.height = rowH + "px";
-    r.panel.style.top = y + "px";
-    // listlayout 之外仍不允许横向溢出到 ScrollContent 之外
-    r.panel.style.overflow = (r.tool || wrapMode) ? "hidden" : "visible";
-    y += rowH + GEO.rowGap;
-  }
-  content.style.height = Math.max(0, y - GEO.rowGap) + "px";
-}
-
-function followTailIfPinned(){
-  const sc = $("scroll");
-  const maxY = sc.scrollHeight - sc.clientHeight;
-  const pinned = sc.scrollTop >= maxY - 60;
-  if (pinned) sc.scrollTop = maxY;
-}
-
-/* ════════════════════════════════════════════════════════════════
-   8. 重绘（镜像 §6.1 单定时器 + §6.2 测量）
-   ════════════════════════════════════════════════════════════════ */
-function requestRepaint(){ S.invalidations++; S.dirty = true; if (!S.raf) S.raf = requestAnimationFrame(paintFrame); }
-
-function paintFrame(){
-  S.raf = 0;
-  if (!S.dirty) return;
-  S.dirty = false;
-  const t0 = performance.now();
-  relayout();                       // 浏览器侧重排 ≈ 真机一次重绘的内容
-  const us = (performance.now() - t0) * 1000;
-  S.paints++; S.frames++;
-  S.maxUs = Math.max(S.maxUs, us); S.sumUs += us;
-  updateLiveUi();
-}
-
-/* ════════════════════════════════════════════════════════════════
-   9. 回放驱动
-   ════════════════════════════════════════════════════════════════ */
-function handleLine(raw){
-  const {ok, notice} = engine.onLine(raw);
-  if (notice) addNoticeRow(notice, "#b22222");
-  if (ok) route();
-}
-
-function drainInstant(){
-  if (S.instantDone) return;
-  S.instantDone = true;
-  handleLine(S.lines[S.idx++]);
-  while (S.idx < S.lines.length) handleLine(S.lines[S.idx++]);
-  if (S.truncated) addNoticeRow("final line truncated (missing LF) - dropped per protocol 1.2", "#b22222");
-}
-
-function drainTimed(){
-  if (S.waitAnswer) return;                     // I3
-  while (S.idx < S.lines.length && S.offsets[S.idx] <= S.elapsedMs){
-    handleLine(S.lines[S.idx++]);
-    if (S.waitAnswer) break;                    // ask 已显示 → 停在 waiting（§8.3）
-  }
-  if (S.idx >= S.lines.length && S.truncated){
-    addNoticeRow("final line truncated (missing LF) - dropped per protocol 1.2", "#b22222");
-    S.truncated = false;
-  }
-}
-
-function tick(){
-  if (!S.run) return;
-  if (S.idx >= S.lines.length && !S.waitAnswer){
-    if (S.settled){ updateSummary(); return; }   // 已拉完：不再制造重绘
-    S.settled = true;
-    updateReplayUi();
-    updateSummary();
-  }
-  if (S.mode === "timed"){
-    S.elapsedMs += 33 * S.speed;
-    drainTimed();
-  } else {
-    drainInstant();
-  }
-  requestRepaint();
-  followTailIfPinned();
-  updateLiveUi();
-  updateSummary();
-}
-
-/* ════════════════════════════════════════════════════════════════
-   10. UI 刷新
-   ════════════════════════════════════════════════════════════════ */
-function updateStateUi(){
-  $("vState").textContent = S.coreState || "—";
-  // 协议 §6：按钮使能只由 state 驱动（P1 未实现 —— 见「发现」F5）
-  const idle = S.coreState === "idle" || S.coreState === "";
-  const running = S.coreState === "running";
-  $("btnSend").disabled = !idle;
-  $("btnStop").disabled = !running;
-  $("vSendEnable").textContent = idle ? "可用" : "禁用";
-  $("vStopEnable").textContent = running ? "可用" : "禁用";
-}
-
-function updateReplayUi(){
-  $("vReplay").textContent = S.settled ? "已拉完（停止制造重绘）"
-    : (S.run ? (S.waitAnswer ? "等待回答" : "进行中") : "未开始");
-}
-
-function updateLiveUi(){
-  const T = $("liveTable");
-  const rows = [
-    ["invalidations", S.invalidations, "应用侧 Invalidate() 调用数"],
-    ["paints", S.paints, "原型：实际渲染帧数"],
-    ["frameCount", S.frames, "= paints"],
-    ["maxPaintUs", S.maxUs.toFixed(1), "原型：单帧重排耗时（µs）"],
-    ["avgPaintUs", (S.frames ? (S.sumUs / S.frames) : 0).toFixed(1), "原型：平均重排耗时"],
-    ["合并比", S.invalidations ? (S.paints / S.invalidations).toFixed(2) : "—", "paints / invalidations"],
-  ];
-  T.innerHTML = rows.map(([k,v,n]) =>
-    `<tr><td>${k}</td><td class="num">${v}</td><td class="ref">${n}</td></tr>`).join("");
-  updateRefUi();
-}
-
-function updateRefUi(){
-  const key = S.fixture + "|" + S.mode + "|" + S.rowMode;
-  const ref = REFERENCE[key];
-  const fields = ["blocks","deltas","messages","seqGaps","violations","unknownTypes"];
-  const cur = {
-    blocks: engine.blocks.size, deltas: engine.deltas, messages: S.lines.length,
-    seqGaps: engine.seqGaps, violations: engine.violations, unknownTypes: engine.unknownTypes
-  };
-  const T = $("refTable");
-  if (!ref){
-    T.innerHTML = `<tr><td colspan="4" class="ref">该组合没有 evals 记录可比对</td></tr>`;
-  } else {
-    T.innerHTML = fields.map(f => {
-      // messages 恒 = 夹具行数（ReplaySource::Total），不受消费进度影响
-      const same = cur[f] === ref[f];
-      return `<tr><td>${f}</td><td class="num">${cur[f]}</td><td class="num ref">${ref[f]}</td>`
-           + `<td class="${same ? "ok" : "bad"}">${same ? "✓" : "✗"}</td></tr>`;
-    }).join("");
-  }
-  updateInvUi();
-}
-
-const INV_TEXT = {
-  I1:"id 的 block_start / block_end 各恰好一次",
-  I2:"delta 只能落在 start 与 end 之间",
-  I3:"发出 ask 后不得再发消息（usage 除外）",
-  I4:"seq 严格递增且连续，缺口必须显式提示",
-  I5:"未知 t / 未知字段忽略并记录",
-  I6:"block_end 之后该块只读",
-  I7:"tool_result 必须带 for 指向已存在的 tool_call"
-};
-function updateInvUi(){
-  const T = $("invTable");
-  T.innerHTML = Object.keys(INV_TEXT).map(k => {
-    let mark = "—";
-    if (k === "I4" && engine.seqGaps) mark = `<span class="bad">${engine.seqGaps} 次</span>`;
-    else if (k === "I5" && engine.unknownTypes) mark = `<span class="bad">${engine.unknownTypes} 次</span>`;
-    return `<tr><td><code>${k}</code></td><td>${INV_TEXT[k]}</td><td>${mark}</td></tr>`;
-  }).join("");
-}
-
-function updateSummary(){
-  const avg = S.frames ? (S.sumUs / S.frames) : 0;
-  const obj = {
-    fixture: S.fixture.split("/").pop(),
-    mode: S.mode,
-    rowMode: S.rowMode,
-    ecdiCommit: "9ad0697e97a246c70c496bad03f00ab4e000302e",
-    blocks: engine.blocks.size,
-    deltas: engine.deltas,
-    messages: S.lines.length,
-    invalidations: S.invalidations,
-    paints: S.paints,
-    frameCount: S.frames,
-    maxPaintUs: Math.round(S.maxUs),
-    avgPaintUs: Math.round(avg),
-    seqGaps: engine.seqGaps,
-    violations: engine.violations,
-    unknownTypes: engine.unknownTypes
-  };
-  $("summaryJson").textContent = JSON.stringify(obj, null, 2);
-}
-
-/* ════════════════════════════════════════════════════════════════
-   11. 发现（原型的第一产出）
-   ════════════════════════════════════════════════════════════════ */
-const FINDINGS = [
-  ["crit", "F1 · autosize 对照组可能不成立（待实测）",
-   "规格 §5.3 预期 autosize「行高随内容变化」。但 <code>TextWidget::GetPreferredSize()</code> 的契约是" +
-   "<b>单行文本宽 + 行高</b>（<code>TextWidget.h:55</code> 注释与 <code>DoMeasureText:83</code>），" +
-   "<code>Label</code> 未 override（<code>Label.h</code> 全文核对）；<code>AutoSize()</code> = " +
-   "<code>SetSize(GetPreferredSize())</code>（<code>Widget.h:106-111</code>）。" +
-   "⇒ 非 tool 行行高恒为 lineHeight+10，与 listlayout 的固定 28 差别极小，A/B 两组失去区分度。" +
-   "★ <b>待实测</b>：<code>TextWidget.cpp</code> 未随 install 前缀提供，绘制是否多行无法从头部契约断定。"],
-  ["crit", "F2 · 多行文本的高度测量缺失",
-   "tool_call 展开体是 <code>argsPretty</code>（多行 JSON），但 <code>bodyH = label->GetHeight() + 8</code> " +
-   "（<code>App.cpp:400-404</code>）—— 高度取的是**单行**测量值。⇒ 展开体高度注定不足，正文被裁。" +
-   "这是要回灌 ECDI 的明确需求：<b>Label 需要多行测量（或显式 SetMaxWidth + 换行测量）</b>。" +
-   "原型里用「文本=换行（规格预期）」展示应有的样子。"],
-  ["warn", "F3 · tool_call 卡片吞掉了结果摘要",
-   "<code>block_end</code> 只在 <code>kind == \"tool_result\"</code> 时更新标题（<code>App.cpp:216-227</code>）。" +
-   "而 <code>read_file</code> 的 <code>summary=\"575 行\"</code>、<code>edit_file</code> 的" +
-   "<code>\"1 处已替换\"</code> 属于 <b>tool_call</b> 块 ⇒ 永远不显示。卡片标题恒为工具名。" +
-   "建议：tool_call 的 header 也要在 <code>block_end</code> 时补 summary。"],
-  ["warn", "F4 · I7 的 for 引用关系不可见",
-   "规格 §5.2 明确要求 tool_result「需展示 <code>for</code> 引用关系（I7）」。" +
-   "<code>App.cpp</code> 只把 <code>for</code> 存进 <code>Block.forId</code>（<code>Transcript.cpp:43</code>），" +
-   "从未用于渲染 ⇒ 调用卡片与结果卡片在视觉上互不相识。" +
-   "原型在结果卡片右上角加了 <code>for b3</code> 角标作为提案形态。"],
-  ["info", "F5 · 按钮使能未按 state 驱动（已知范围裁剪）",
-   "协议 §6 要求 <code>prompt</code>/<code>cancel</code> 的按钮使能<b>只由 state 驱动</b>；" +
-   "P1 两个按钮恒可点（<code>App.cpp:123-130</code> 仅记录，从未 <code>SetEnabled</code>）。" +
-   "规格 §1.1 第 6 条已声明「v1 仅 UI」⇒ 属已声明裁剪，不是缺陷。原型按协议目标实现并在此标注差异。"],
-  ["info", "F6 · state / usage 完全不渲染",
-   "<code>App.cpp:249</code> 注释即写明「state / usage：v1 不渲染」。" +
-   "⇒ 用户看不到 idle/running/waiting，也看不到 <code>usage.turn/input/output</code>（数据被丢弃）。" +
-   "是否上屏属产品决策；建议至少把 state 做成状态点。"],
-  ["crit", "F7 · truncated 夹具没有覆盖「缺尾 LF」分支",
-   "夹具名与 PROTOCOL §8.4 描述为「最后一行被截断」。但 <code>od -c</code> 核对：文件<b>实际以 LF 结尾</b>，" +
-   "<code>raw.back() != '\\n'</code> 为假 ⇒ <code>ReplaySource</code> 的 " +
-   "<code>\"final line truncated (missing LF)\"</code> 分支<b>从未被触发</b>；真正拦住它的是 JSON 解析失败（PARSE）。" +
-   "⇒ 正是协议 §8.5 自己警告的「恒成立的负向用例」。<b>建议补一个真正无尾 LF 的夹具</b>。"],
-  ["warn", "F8 · evals 数据卫生（三处）",
-   "① <code>evals/scale-list.json</code> 记 <code>\"mode\":\"instant\"</code>，与规格 §7.2 的 " +
-   "<code>--timed</code> 命令不符。<br>" +
-   "② <code>evals/demo-timed.json</code> blocks=7/deltas=16 ≠ 夹具的 8/19 ⇒ 该次未跑完。" +
-   "而 <code>messages</code> 字段恒为夹具行数（<code>ReplaySource::Total()</code>）" +
-   "⇒ <b>摘要里没有任何字段能反映「消费了多远」</b>。建议拆成 <code>messagesTotal</code> / " +
-   "<code>messagesConsumed</code>。<br>" +
-   "③ <code>evals/hostile-seq-gap.json</code> 的 <code>ecdiCommit</code> 是 8 位短哈希，其余 40 位 ⇒ 统一成全哈希。"]
-];
-
-function renderFindings(){
-  $("findingList").innerHTML = FINDINGS.map(([lv, t, body]) =>
-    `<div class="finding ${lv}"><span class="ft">${t}</span>${body}</div>`).join("");
-}
-
-/* ════════════════════════════════════════════════════════════════
-   12. 控制条
-   ════════════════════════════════════════════════════════════════ */
-function resetAll(){
-  if (S.timer) { clearInterval(S.timer); S.timer = null; }
-  Object.assign(S, {idx:0, run:false, settled:false, instantDone:false,
-    coreState:"", waitAnswer:false, rows:[], invalidations:0, paints:0, frames:0,
-    maxUs:0, sumUs:0, elapsedMs:0, dirty:false});
-  S.blockRows = new Map();
-  engine.reset();
-  content.innerHTML = "";
-  addContentAnno();
-  $("summaryJson").textContent = "—";
-  updateStateUi(); updateReplayUi(); updateLiveUi(); updateSummary();
-}
-
-function startRun(){
-  resetAll();
-  loadFixture(S.fixture);
-  $("winTitle").textContent = "ECDI harness - " + S.fixture.split("/").pop();
-  S.run = true;
-  updateReplayUi();
-  S.timer = setInterval(tick, 33);   // ~30Hz（App.cpp:84）
-  tick();
-}
-
-$("selFixture").addEventListener("change", e => { S.fixture = e.target.value; resetAll(); loadFixture(S.fixture);
-  $("winTitle").textContent = "ECDI harness - " + S.fixture.split("/").pop(); });
-$("selMode").addEventListener("change", e => { S.mode = e.target.value; resetAll(); });
-$("selSpeed").addEventListener("change", e => { S.speed = Number(e.target.value); });
-$("selRowMode").addEventListener("change", e => { S.rowMode = e.target.value; requestRepaint(); });
-$("selWrap").addEventListener("change", e => {
-  S.wrap = e.target.value;
-  content.querySelectorAll(".row").forEach(r => r.classList.toggle("nosize", S.wrap === "ecdi"));
-  requestRepaint();
-});
-$("btnRun").addEventListener("click", startRun);
-$("btnReset").addEventListener("click", resetAll);
-$("btnAnnot").addEventListener("click", e => {
-  const on = document.body.classList.toggle("annot-on");
-  e.target.dataset.on = on ? "1" : "0";
-});
-
-$("btnSend").addEventListener("click", () => {
-  const v = $("promptInput").value.trim();
-  if (!v) return;
-  addNoticeRow("[prompt 仅记录] " + v, "#6e6e6e");
-  $("promptInput").value = "";
-  requestRepaint();
-});
-$("btnStop").addEventListener("click", () => { addNoticeRow("[cancel 仅记录]", "#6e6e6e"); requestRepaint(); });
-
-document.querySelectorAll(".tab").forEach(tab => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach(t => t.classList.remove("on"));
-    document.querySelectorAll(".pane").forEach(p => p.classList.remove("on"));
-    tab.classList.add("on");
-    $(tab.dataset.pane).classList.add("on");
-  });
-});
-
-/* 标注热区：把编号点贴在对应节点上 */
-function addContentAnno(){
-  const a4 = el("span","anno"); a4.style.cssText = "left:8px;top:6px;z-index:30";
-  a4.innerHTML = '<span class="anno-badge">4</span>';
-  a4.title = "contentWidth = scrollWidth − 40 = 908（App.cpp:33-36）";
-  content.appendChild(a4);
-}
-$("annTitle").querySelector(".anno-badge").title = "窗口标题 = \"ECDI harness - \" + 夹具名（App.cpp:76）";
-$("annCounting").querySelector(".anno-badge").title = "CountingPanel：root 唯一子节点；VerticalLayout(0,true,6) ⇒ 6px padding（App.cpp:103-107）";
-$("annBar").querySelector(".anno-badge").title = "PromptBar：固定 52 高，输入框高 30（App.cpp:122 / PromptBar.cpp:39-51）";
-
-/* 启动 */
-renderFindings();
-loadFixture(S.fixture);
-addContentAnno();
-updateStateUi(); updateLiveUi(); updateSummary();
-$("winTitle").textContent = "ECDI harness - " + S.fixture.split("/").pop();
-</script>
-</body>
-</html>
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ECDI harness · GUI 原型（P1 参考）</title>
+<!--
+  ECDI_fake_harness · GUI 原型
+  ────────────────────────────────────────────────────────────────
+  定位：P1 harness_gui 的**可视化参考**，不是应用本体。
+  依据（全部为仓库内实测，非推测）：
+    · docs/P1-gui-implementation-spec.md            §3 文件清单 / §5 渲染映射 / §6 测量
+    · protocol/PROTOCOL.md                          §3 消息 / §5 不变量 / §7 渲染映射
+    · gui/src/App.cpp                               行构建 / 布局 / 摘要字段
+    · gui/src/PromptBar.cpp                         底栏几何（52 高、按钮 70×30）
+    · gui/src/Transcript.cpp                        不变量判定（逐条镜像）
+    · third_party/ecdi/include/ECDI/Widget/*.h      控件契约（Label 单行测量等）
+  几何：窗口客户区 960×720 DIP，1 DIP = 1 px @100% 缩放。
+  说明：渲染用浏览器 DOM 近似 GDI，文本度量与真机有偏差；协议派生的
+        计数器（blocks/deltas/seqGaps/violations/unknownTypes）与真机**必须一致**，
+        「读数」页会拿 evals/*.json 做实时比对。
+-->
+<style>
+/* ═══════════ 原型外壳（非应用 UI） ═══════════ */
+:root{
+  --sh-bg:#0f1116;
+  --sh-panel:#171a21;
+  --sh-panel2:#1d212a;
+  --sh-line:#2b303c;
+  --sh-fg:#e7eaf0;
+  --sh-fg-dim:#98a0b0;
+  --sh-accent:#5b9dff;
+  --sh-ok:#3fbf7f;
+  --sh-warn:#e0a33c;
+  --sh-err:#e0564a;
+
+  /* ECDI 应用调色板 —— 逐条对应 gui/src/App.cpp:26-31 与 PromptBar.cpp:9-10 */
+  --ecdi-panel-bg:#fafafb;    /* kPanelBg   (250,250,251) */
+  --ecdi-user-bg:#e9f1ff;     /* kUserBg    (233,241,255) */
+  --ecdi-tool-bg:#f3f3f5;     /* kToolBg    (243,243,245) */
+  --ecdi-ask-bg:#fff7e1;      /* kAskBg     (255,247,225) */
+  --ecdi-bar-bg:#f4f4f6;      /* PromptBar  (244,244,246) */
+  --ecdi-text:#1b1d21;
+  --ecdi-system:#6e6e6e;      /* kSystemColor (110,110,110) */
+  --ecdi-error:#b22222;       /* kErrorColor  (178,34,34) */
+  --ecdi-line:#d8dae0;
+  --ecdi-btn:#e8e9ed;
+  --ecdi-btn-line:#c9ccd4;
+  --ecdi-mono:"Cascadia Mono",Consolas,"Courier New",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--sh-bg); color:var(--sh-fg);
+  font:13px/1.5 -apple-system,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.shell{display:flex;flex-direction:column;min-height:100vh}
+
+/* ── 顶部控制条 ── */
+.toolbar{
+  display:flex;flex-wrap:wrap;align-items:center;gap:14px;
+  padding:10px 16px;background:var(--sh-panel);border-bottom:1px solid var(--sh-line);
+  position:sticky;top:0;z-index:50;
+}
+.tb-brand{font-weight:600;letter-spacing:.02em;margin-right:6px}
+.tb-brand small{display:block;font-weight:400;color:var(--sh-fg-dim);font-size:11px;letter-spacing:0}
+.tb-group{display:flex;align-items:center;gap:6px}
+.tb-group>label{color:var(--sh-fg-dim);font-size:11px}
+select,.tb-btn,input[type=number]{
+  background:var(--sh-panel2);color:var(--sh-fg);border:1px solid var(--sh-line);
+  border-radius:6px;padding:5px 8px;font:inherit;font-size:12px;cursor:pointer;
+}
+.tb-btn:hover,select:hover{border-color:#3d4658}
+.tb-btn.primary{background:var(--sh-accent);border-color:var(--sh-accent);color:#0b1220;font-weight:600}
+.tb-btn[data-on="1"]{background:#263449;border-color:var(--sh-accent);color:#cfe1ff}
+.tb-spacer{flex:1}
+.tb-note{color:var(--sh-fg-dim);font-size:11px}
+
+/* ── 主体 ── */
+.stage{display:flex;gap:18px;padding:18px;align-items:flex-start;flex-wrap:wrap}
+.stage-left{display:flex;flex-direction:column;gap:10px}
+
+/* ═══════════ 应用窗口（这是原型主体） ═══════════ */
+.appwin{
+  width:960px;background:#fff;border:1px solid #05070c;border-radius:8px;
+  box-shadow:0 18px 50px rgba(0,0,0,.55);overflow:hidden;position:relative;
+}
+.appwin-titlebar{
+  height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;
+  background:#e9eaee;border-bottom:1px solid #d3d5db;color:#23262c;
+  font-size:12px;position:relative;
+}
+.appwin-titlebar .dot{width:9px;height:9px;border-radius:50%;background:#b9bcc4}
+.appwin-titlebar .title{flex:1;text-align:center;color:#4a4f59;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 40px}
+
+/* CountingPanel：VerticalLayout(0, true, 6) ⇒ 6px padding，fillCrossAxis */
+.counting{
+  width:960px;height:720px;padding:6px;display:flex;flex-direction:column;
+  background:var(--ecdi-panel-bg);position:relative;
+}
+
+/* ScrollView：stretch=1 */
+.scroll{
+  flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;position:relative;
+  scrollbar-width:thin;scrollbar-color:#b9bcc4 transparent;
+}
+.scroll::-webkit-scrollbar{width:12px}
+.scroll::-webkit-scrollbar-thumb{background:#c2c5cc;border-radius:6px;border:3px solid transparent;background-clip:content-box}
+.scrollcontent{width:908px;position:relative}
+
+/* ── 行 ── */
+.row{position:relative;width:908px;margin-bottom:4px;overflow:hidden}
+.row.plain{background:transparent}
+.row.user{background:var(--ecdi-user-bg)}
+.row.tool{background:var(--ecdi-tool-bg)}
+.row.ask{background:var(--ecdi-ask-bg)}
+.row .label{
+  color:var(--ecdi-text);font-size:14px;line-height:20px;
+  white-space:pre-wrap;word-break:break-word;
+}
+.row.nosize .label{white-space:pre;word-break:normal;overflow:visible}
+.row .hdr{
+  position:absolute;left:10px;top:2px;width:888px;height:26px;
+  display:flex;align-items:center;padding:0 8px;
+  background:var(--ecdi-btn);border:1px solid var(--ecdi-btn-line);border-radius:4px;
+  font-size:13px;color:var(--ecdi-text);cursor:pointer;user-select:none;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.row .hdr:hover{background:#dfe1e7}
+.row .hdr .caret{width:12px;flex:0 0 12px;color:#7c828d;transition:transform .12s}
+.row .hdr.open .caret{transform:rotate(90deg)}
+.row .hdr .hname{font-family:var(--ecdi-mono);font-size:12.5px}
+.row .body{position:absolute;left:10px;top:30px;width:888px;overflow:hidden;transition:height .12s ease}
+.row .body .label{font-family:var(--ecdi-mono);font-size:12.5px;line-height:17px;color:#33373d}
+.row .body .label.wrapbreak{white-space:pre-wrap}
+.row .ri{position:absolute;right:10px;top:0;height:26px;display:flex;align-items:center;
+  font-size:11px;color:#8a909b;gap:6px}
+
+/* ask 行按钮 */
+.ecdi-btn{
+  background:var(--ecdi-btn);border:1px solid var(--ecdi-btn-line);border-radius:4px;
+  font:inherit;font-size:13px;color:var(--ecdi-text);cursor:pointer;padding:0;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.ecdi-btn:hover:not(:disabled){background:#dfe1e7}
+.ecdi-btn:disabled{opacity:.45;cursor:default}
+.row .askbtns{position:absolute;top:5px;display:flex;gap:8px}
+.row .askbtns .ecdi-btn{width:70px;height:28px}
+
+/* PromptBar：固定 52 高 */
+.promptbar{
+  height:52px;flex:0 0 52px;background:var(--ecdi-bar-bg);position:relative;
+  border-top:1px solid #e4e6ea;
+}
+.promptbar .tb-input{
+  position:absolute;left:10px;top:11px;height:30px;width:764px;
+  background:#fff;border:1px solid var(--ecdi-btn-line);border-radius:4px;
+  padding:0 8px;font-size:14px;color:var(--ecdi-text);outline:none;
+}
+.promptbar .tb-input:focus{border-color:#7aa7e8}
+.promptbar .ecdi-btn{position:absolute;top:11px;width:70px;height:30px}
+
+/* ── 标注层 ── */
+.anno{display:none;position:absolute;z-index:20}
+.annot-on .anno{display:block}
+.anno-badge{
+  width:17px;height:17px;border-radius:50%;background:var(--sh-accent);color:#0b1220;
+  font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 0 0 2px rgba(91,157,255,.28);cursor:help;
+}
+.annot-on .anno-target{outline:1px dashed rgba(91,157,255,.85);outline-offset:0}
+
+/* ── 右侧面板 ── */
+.side{
+  flex:1;min-width:430px;max-width:620px;background:var(--sh-panel);
+  border:1px solid var(--sh-line);border-radius:10px;overflow:hidden;
+}
+.tabs{display:flex;border-bottom:1px solid var(--sh-line);background:var(--sh-panel2)}
+.tab{
+  flex:1;padding:9px 6px;text-align:center;font-size:12px;color:var(--sh-fg-dim);
+  cursor:pointer;border-right:1px solid var(--sh-line);user-select:none;
+}
+.tab:last-child{border-right:0}
+.tab.on{color:var(--sh-fg);background:var(--sh-panel);box-shadow:inset 0 -2px 0 var(--sh-accent)}
+.pane{display:none;padding:14px 16px;max-height:calc(100vh - 190px);overflow-y:auto}
+.pane.on{display:block}
+.pane h3{margin:0 0 8px;font-size:13px;letter-spacing:.02em}
+.pane h3:not(:first-child){margin-top:20px}
+.pane p{margin:0 0 8px;color:var(--sh-fg-dim);font-size:12px;line-height:1.65}
+.pane code{font-family:var(--ecdi-mono);font-size:11.5px;background:#232833;padding:1px 5px;border-radius:4px;color:#bcd2f5}
+table{width:100%;border-collapse:collapse;font-size:12px;margin:0 0 6px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--sh-line);vertical-align:top}
+th{color:var(--sh-fg-dim);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+td.num{text-align:right;font-family:var(--ecdi-mono);font-size:12px}
+td .ref{color:var(--sh-fg-dim)}
+.ok{color:var(--sh-ok);font-weight:600}
+.bad{color:var(--sh-err);font-weight:600}
+.warn{color:var(--sh-warn)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:12px}
+.kv div:nth-child(odd){color:var(--sh-fg-dim)}
+.kv div:nth-child(even){text-align:right;font-family:var(--ecdi-mono)}
+.banner{
+  background:#2a1f16;border:1px solid #5a3d21;border-radius:8px;padding:10px 12px;
+  font-size:12px;line-height:1.6;color:#f0d0a6;margin-bottom:14px;
+}
+.banner b{color:#ffca7a}
+.legend{display:flex;flex-direction:column;gap:7px}
+.legend .li{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.55}
+.legend .li b{color:var(--sh-fg)}
+.legend .li .nb{
+  flex:0 0 17px;width:17px;height:17px;border-radius:50%;background:var(--sh-accent);color:#0b1220;
+  font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:2px;
+}
+.finding{border-left:3px solid var(--sh-warn);background:#1c1a15;border-radius:0 6px 6px 0;padding:9px 12px;margin-bottom:10px;font-size:12px;line-height:1.65}
+.finding.crit{border-left-color:var(--sh-err);background:#1e1616}
+.finding.info{border-left-color:#3a5f96;background:#151a24}
+.finding .ft{font-weight:600;display:block;margin-bottom:3px;color:var(--sh-fg)}
+.finding code{background:#232833}
+.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:20px;border:1px solid var(--sh-line);color:var(--sh-fg-dim);vertical-align:1px}
+.tag.prop{border-color:#5a3d21;color:#ffca7a}
+.tag.impl{border-color:#2c4a35;color:#78d6a4}
+.muted{color:var(--sh-fg-dim)}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ══════════ 原型控制条（不是应用 UI） ══════════ -->
+  <div class="toolbar">
+    <div class="tb-brand">ECDI harness · GUI 原型<small>P1 开发参考 · 依据 gui/src + PROTOCOL.md v1</small></div>
+
+    <div class="tb-group">
+      <label>夹具</label>
+      <select id="selFixture">
+        <option value="demo-session.jsonl">demo-session.jsonl（正常路径）</option>
+        <option value="hostile/seq-gap.jsonl">hostile/seq-gap.jsonl（I1/I2/I4/I5）</option>
+        <option value="hostile/truncated-final-line.jsonl">hostile/truncated-final-line.jsonl（PARSE）</option>
+      </select>
+    </div>
+
+    <div class="tb-group">
+      <label>回放</label>
+      <select id="selMode">
+        <option value="instant">instant</option>
+        <option value="timed" selected>timed</option>
+      </select>
+    </div>
+
+    <div class="tb-group">
+      <label>倍速</label>
+      <select id="selSpeed">
+        <option value="1">1×</option>
+        <option value="4" selected>4×</option>
+        <option value="16">16×</option>
+      </select>
+    </div>
+
+    <div class="tb-group">
+      <label>行模式</label>
+      <select id="selRowMode">
+        <option value="autosize" selected>autosize</option>
+        <option value="listlayout">listlayout</option>
+      </select>
+    </div>
+
+    <div class="tb-group">
+      <label>文本</label>
+      <select id="selWrap">
+        <option value="spec" selected>换行（规格预期）</option>
+        <option value="ecdi">单行测量（ECDI 实测语义）</option>
+      </select>
+    </div>
+
+    <button class="tb-btn primary" id="btnRun">▶ 开始回放</button>
+    <button class="tb-btn" id="btnReset">⟲ 重置</button>
+    <button class="tb-btn" id="btnAnnot">标注</button>
+
+    <div class="tb-spacer"></div>
+    <div class="tb-note">客户区 960×720 DIP · 1 DIP = 1 px</div>
+  </div>
+
+  <div class="stage">
+    <div class="stage-left">
+
+      <!-- ══════════ 应用窗口 ══════════ -->
+      <div class="appwin" id="appwin">
+        <div class="appwin-titlebar anno-target" id="annTitle">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          <span class="title" id="winTitle">ECDI harness - demo-session.jsonl</span>
+          <span class="anno" style="right:6px;top:6px"><span class="anno-badge">1</span></span>
+        </div>
+
+        <div class="counting anno-target" id="annCounting">
+          <span class="anno" style="left:6px;bottom:58px"><span class="anno-badge">2</span></span>
+
+          <div class="scroll" id="scroll">
+            <span class="anno" style="right:14px;top:6px;z-index:30"><span class="anno-badge">3</span></span>
+            <div class="scrollcontent" id="content"></div>
+          </div>
+
+          <div class="promptbar anno-target" id="annBar">
+            <span class="anno" style="left:6px;top:-8px"><span class="anno-badge">7</span></span>
+            <input class="tb-input" id="promptInput" type="text" autocomplete="off"
+                   placeholder="单行 TextBox（ECDI 多行输入 = 记账 #16）">
+            <button class="ecdi-btn" id="btnSend" style="left:782px">发送</button>
+            <button class="ecdi-btn" id="btnStop" style="left:866px">停止</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tb-note">
+        提示：点 tool 卡片标题可展开/折叠；timed 模式下回放会在 <code>ask</code> 处停在
+        <code>waiting</code>，等你点「允许 / 拒绝」才继续。倍速是原型专用的加速器（真机没有）。
+      </div>
+    </div>
+
+    <!-- ══════════ 右侧参考面板 ══════════ -->
+    <div class="side">
+      <div class="tabs">
+        <div class="tab on" data-pane="paneLive">读数</div>
+        <div class="tab" data-pane="paneMap">映射表</div>
+        <div class="tab" data-pane="paneInv">不变量</div>
+        <div class="tab" data-pane="paneFind">发现</div>
+      </div>
+
+      <!-- ── 读数 ── -->
+      <div class="pane on" id="paneLive">
+        <h3>状态机（协议 §6）</h3>
+        <div class="kv">
+          <div>core state</div><div id="vState">—</div>
+          <div>提示条 / 发送使能</div><div id="vSendEnable">—</div>
+          <div>停止使能</div><div id="vStopEnable">—</div>
+          <div>回放</div><div id="vReplay">—</div>
+        </div>
+
+        <h3>协议派生计数（必须与 evals/*.json 一致）</h3>
+        <table>
+          <thead><tr><th>字段</th><th style="text-align:right">原型</th><th style="text-align:right">evals</th><th></th></tr></thead>
+          <tbody id="refTable"></tbody>
+        </table>
+
+        <h3>机器相关读数（浏览器侧近似）</h3>
+        <table>
+          <thead><tr><th>字段</th><th style="text-align:right">原型</th><th>说明</th></tr></thead>
+          <tbody id="liveTable"></tbody>
+        </table>
+        <p><span class="tag prop">提案</span> 真值只能由 <code>harness_gui.exe --out</code> 产出。
+        原型这里的数字是 DOM 渲染耗时，量级与 GDI 无关，<b>不可用于评估</b>，仅用于观察
+        「重绘请求 → 实际重绘」的合并比例。</p>
+
+        <h3>本次运行写入的摘要（原型模拟 §6.3）</h3>
+        <pre id="summaryJson" style="font-family:var(--ecdi-mono);font-size:11.5px;line-height:1.5;background:#141821;border:1px solid var(--sh-line);border-radius:8px;padding:10px;overflow:auto;max-height:230px;margin:0">—</pre>
+      </div>
+
+      <!-- ── 映射表 ── -->
+      <div class="pane" id="paneMap">
+        <h3>块 kind → 行渲染 → ECDI 控件</h3>
+        <table>
+          <thead><tr><th>kind</th><th>渲染</th><th>ECDI 控件（实测调用）</th></tr></thead>
+          <tbody>
+            <tr><td><code>user</code></td><td>整行 kUserBg 底 + 右侧对齐 Label</td><td><code>Panel</code> + <code>Label</code></td></tr>
+            <tr><td><code>assistant</code></td><td>透明行 + 左对齐 Label（delta 追加）</td><td><code>Panel</code> + <code>Label</code></td></tr>
+            <tr><td><code>system</code></td><td>同 assistant，文本色 (110,110,110)</td><td><code>Label::SetTextColor</code></td></tr>
+            <tr><td><code>error</code></td><td>同 assistant，文本色 (178,34,34)</td><td><code>Label::SetTextColor</code></td></tr>
+            <tr><td><code>tool_call</code></td><td>卡片：Button 标题(26) + CollapsiblePanel 展开体，默认折叠</td><td><code>Button</code> + <code>CollapsiblePanel</code></td></tr>
+            <tr><td><code>tool_result</code></td><td>同上；标题在 <code>block_end</code> 时改为「成功/失败 · summary」</td><td>同上</td></tr>
+            <tr><td><code>ask</code></td><td>kAskBg 行 + 「允许 / 拒绝」各 70×28</td><td><code>Panel</code> + 2×<code>Button</code></td></tr>
+            <tr><td><code>state</code> / <code>usage</code></td><td class="warn">v1 完全不渲染（App.cpp:249）</td><td>—</td></tr>
+          </tbody>
+        </table>
+
+        <h3>几何常量（App.cpp:21-24 / PromptBar.cpp:39-51）</h3>
+        <div class="kv">
+          <div>kRowGap 行间距</div><div>4 px</div>
+          <div>kRowPadX 行内边距</div><div>10 px</div>
+          <div>kHeaderH 卡片标题高</div><div>26 px</div>
+          <div>kListRowHeight（listlayout）</div><div>28 px / spacing 2</div>
+          <div>CountingPanel padding</div><div>6 px（VerticalLayout(0,true,6)）</div>
+          <div>PromptBar 高</div><div>52 px（控件高 30，y=11）</div>
+          <div>按钮宽</div><div>70 px，间距 8 / 12</div>
+          <div>ScrollView 步长</div><div>40 px</div>
+          <div>contentWidth</div><div>scrollWidth − 40 = 908</div>
+        </div>
+
+        <h3>行布局 A/B（规格 §5.3）</h3>
+        <table>
+          <thead><tr><th>模式</th><th>行为</th><th>测量量</th></tr></thead>
+          <tbody>
+            <tr><td><code>autosize</code>（默认）</td><td>每行 <code>Label::AutoSize()</code> → 行高 = labelH + 10</td><td>每帧对所有行做文本测量</td></tr>
+            <tr><td><code>listlayout</code></td><td><code>ListLayout(28, 2)</code> 固定行高、不测量</td><td>无</td></tr>
+          </tbody>
+        </table>
+        <p class="warn">⚠ 见「发现」F1：当前 ECDI 的 Label 测量是**单行**的，两组可能没有区分度。</p>
+      </div>
+
+      <!-- ── 不变量 ── -->
+      <div class="pane" id="paneInv">
+        <h3>协议 §5 不变量（判定逻辑镜像 gui/src/Transcript.cpp）</h3>
+        <table>
+          <thead><tr><th>#</th><th>内容</th><th>当前夹具触发</th></tr></thead>
+          <tbody id="invTable"></tbody>
+        </table>
+        <p>注意：<code>I4</code> 的提示文案逐字对齐实现 ——
+        <code>[I4] seq gap 3 -&gt; 5: messages lost</code>。
+        它所在的 <b>本行仍会被处理</b>（缺口提示 ≠ 丢弃消息）。</p>
+      </div>
+
+      <!-- ── 发现 ── -->
+      <div class="pane" id="paneFind">
+        <div class="banner">
+          <b>这批结论是原型的第一产出。</b>
+          它们来自对 <code>gui/src</code> 与已安装 ECDI 头文件（<code>third_party/ecdi/include</code>，
+          commit <code>9ad0697</code>）的逐行核对。<b>待实测确认</b>的条目已显式标注。
+        </div>
+        <div id="findingList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   0. 夹具（由脚本从 protocol/fixtures/ 原样注入，保证字节保真）
+   ════════════════════════════════════════════════════════════════ */
+const FIXTURES =   {
+    "demo-session.jsonl": {
+      "label": "demo-session.jsonl",
+      "trailingLf": true,
+      "lines": [
+        "{\"t\":\"hello\",\"seq\":0,\"ts\":\"2026-10-03T10:40:00.000Z\",\"protocol\":1,\"core\":\"0.1.0\",\"session\":\"s-0001\",\"caps\":[\"tools\",\"ask\"]}",
+        "{\"t\":\"state\",\"seq\":1,\"ts\":\"2026-10-03T10:40:00.010Z\",\"value\":\"running\"}",
+        "{\"t\":\"block_start\",\"seq\":2,\"ts\":\"2026-10-03T10:40:00.020Z\",\"id\":\"b1\",\"kind\":\"user\",\"text\":\"看一下 docs/README.md 里有没有过期的数字，有就改掉\"}",
+        "{\"t\":\"block_end\",\"seq\":3,\"ts\":\"2026-10-03T10:40:00.030Z\",\"id\":\"b1\",\"ok\":true}",
+        "{\"t\":\"block_start\",\"seq\":4,\"ts\":\"2026-10-03T10:40:00.410Z\",\"id\":\"b2\",\"kind\":\"assistant\"}",
+        "{\"t\":\"delta\",\"seq\":5,\"ts\":\"2026-10-03T10:40:00.430Z\",\"id\":\"b2\",\"text\":\"我先\"}",
+        "{\"t\":\"delta\",\"seq\":6,\"ts\":\"2026-10-03T10:40:00.455Z\",\"id\":\"b2\",\"text\":\"读一下\"}",
+        "{\"t\":\"delta\",\"seq\":7,\"ts\":\"2026-10-03T10:40:00.480Z\",\"id\":\"b2\",\"text\":\"那个文件，\"}",
+        "{\"t\":\"delta\",\"seq\":8,\"ts\":\"2026-10-03T10:40:00.512Z\",\"id\":\"b2\",\"text\":\"重点核对\"}",
+        "{\"t\":\"delta\",\"seq\":9,\"ts\":\"2026-10-03T10:40:00.540Z\",\"id\":\"b2\",\"text\":\"用例数、\"}",
+        "{\"t\":\"delta\",\"seq\":10,\"ts\":\"2026-10-03T10:40:00.566Z\",\"id\":\"b2\",\"text\":\"公共头数和\"}",
+        "{\"t\":\"delta\",\"seq\":11,\"ts\":\"2026-10-03T10:40:00.600Z\",\"id\":\"b2\",\"text\":\"文档篇数\"}",
+        "{\"t\":\"delta\",\"seq\":12,\"ts\":\"2026-10-03T10:40:00.640Z\",\"id\":\"b2\",\"text\":\"这三个锚点。\"}",
+        "{\"t\":\"block_end\",\"seq\":13,\"ts\":\"2026-10-03T10:40:00.700Z\",\"id\":\"b2\",\"ok\":true,\"summary\":\"一段说明\"}",
+        "{\"t\":\"block_start\",\"seq\":14,\"ts\":\"2026-10-03T10:40:00.980Z\",\"id\":\"b3\",\"kind\":\"tool_call\",\"name\":\"read_file\",\"args\":{\"path\":\"docs/README.md\",\"max_lines\":400}}",
+        "{\"t\":\"block_end\",\"seq\":15,\"ts\":\"2026-10-03T10:40:01.120Z\",\"id\":\"b3\",\"ok\":true,\"summary\":\"575 行\"}",
+        "{\"t\":\"block_start\",\"seq\":16,\"ts\":\"2026-10-03T10:40:01.130Z\",\"id\":\"b4\",\"kind\":\"tool_result\",\"for\":\"b3\"}",
+        "{\"t\":\"delta\",\"seq\":17,\"ts\":\"2026-10-03T10:40:01.150Z\",\"id\":\"b4\",\"text\":\"> 当前规模锚点：测试 307 用例\"}",
+        "{\"t\":\"delta\",\"seq\":18,\"ts\":\"2026-10-03T10:40:01.180Z\",\"id\":\"b4\",\"text\":\" · Public 头 94 · 设计文档 155 篇\"}",
+        "{\"t\":\"delta\",\"seq\":19,\"ts\":\"2026-10-03T10:40:01.210Z\",\"id\":\"b4\",\"text\":\"…（截断，共 575 行）\"}",
+        "{\"t\":\"block_end\",\"seq\":20,\"ts\":\"2026-10-03T10:40:01.260Z\",\"id\":\"b4\",\"ok\":true}",
+        "{\"t\":\"block_start\",\"seq\":21,\"ts\":\"2026-10-03T10:40:01.640Z\",\"id\":\"b5\",\"kind\":\"assistant\"}",
+        "{\"t\":\"delta\",\"seq\":22,\"ts\":\"2026-10-03T10:40:01.660Z\",\"id\":\"b5\",\"text\":\"锚点\"}",
+        "{\"t\":\"delta\",\"seq\":23,\"ts\":\"2026-10-03T10:40:01.690Z\",\"id\":\"b5\",\"text\":\"本身是对的，\"}",
+        "{\"t\":\"delta\",\"seq\":24,\"ts\":\"2026-10-03T10:40:01.730Z\",\"id\":\"b5\",\"text\":\"但根 README 第 22 行\"}",
+        "{\"t\":\"delta\",\"seq\":25,\"ts\":\"2026-10-03T10:40:01.770Z\",\"id\":\"b5\",\"text\":\"还写着 153 篇，\"}",
+        "{\"t\":\"delta\",\"seq\":26,\"ts\":\"2026-10-03T10:40:01.810Z\",\"id\":\"b5\",\"text\":\"与实测 155 不符。\"}",
+        "{\"t\":\"block_end\",\"seq\":27,\"ts\":\"2026-10-03T10:40:01.860Z\",\"id\":\"b5\",\"ok\":true}",
+        "{\"t\":\"block_start\",\"seq\":28,\"ts\":\"2026-10-03T10:40:02.200Z\",\"id\":\"b6\",\"kind\":\"tool_call\",\"name\":\"edit_file\",\"args\":{\"path\":\"README.md\",\"line\":22,\"from\":\"153 design documents\",\"to\":\"155 design documents\"}}",
+        "{\"t\":\"ask\",\"seq\":29,\"ts\":\"2026-10-03T10:40:02.240Z\",\"id\":\"q1\",\"kind\":\"permission\",\"question\":\"允许修改 README.md 吗？（1 处替换）\",\"options\":[{\"key\":\"allow\",\"label\":\"允许\"},{\"key\":\"deny\",\"label\":\"拒绝\"}],\"default\":\"deny\"}",
+        "{\"t\":\"state\",\"seq\":30,\"ts\":\"2026-10-03T10:40:02.250Z\",\"value\":\"waiting\"}",
+        "{\"t\":\"state\",\"seq\":31,\"ts\":\"2026-10-03T10:40:05.900Z\",\"value\":\"running\"}",
+        "{\"t\":\"block_end\",\"seq\":32,\"ts\":\"2026-10-03T10:40:05.940Z\",\"id\":\"b6\",\"ok\":true,\"summary\":\"1 处已替换\"}",
+        "{\"t\":\"block_start\",\"seq\":33,\"ts\":\"2026-10-03T10:40:06.300Z\",\"id\":\"b7\",\"kind\":\"tool_call\",\"name\":\"run_tests\",\"args\":{\"target\":\"ecdi_tests\",\"jobs\":8}}",
+        "{\"t\":\"block_end\",\"seq\":34,\"ts\":\"2026-10-03T10:40:06.360Z\",\"id\":\"b7\",\"ok\":true,\"summary\":\"已启动\"}",
+        "{\"t\":\"block_start\",\"seq\":35,\"ts\":\"2026-10-03T10:41:12.400Z\",\"id\":\"b8\",\"kind\":\"tool_result\",\"for\":\"b7\"}",
+        "{\"t\":\"delta\",\"seq\":36,\"ts\":\"2026-10-03T10:41:12.430Z\",\"id\":\"b8\",\"text\":\"Test summary: 305 passed, 2 failed, 307 total\"}",
+        "{\"t\":\"delta\",\"seq\":37,\"ts\":\"2026-10-03T10:41:12.480Z\",\"id\":\"b8\",\"text\":\"\\nFAIL Layout.ListHiddenParked\"}",
+        "{\"t\":\"delta\",\"seq\":38,\"ts\":\"2026-10-03T10:41:12.520Z\",\"id\":\"b8\",\"text\":\"\\nFAIL Layout.GridPositions\"}",
+        "{\"t\":\"block_end\",\"seq\":39,\"ts\":\"2026-10-03T10:41:12.600Z\",\"id\":\"b8\",\"ok\":false,\"summary\":\"2 项失败\"}",
+        "{\"t\":\"usage\",\"seq\":40,\"ts\":\"2026-10-03T10:41:12.700Z\",\"turn\":3,\"input\":18422,\"output\":913}",
+        "{\"t\":\"state\",\"seq\":41,\"ts\":\"2026-10-03T10:41:12.720Z\",\"value\":\"idle\"}",
+        "{\"t\":\"bye\",\"seq\":42,\"ts\":\"2026-10-03T10:41:12.760Z\",\"reason\":\"eof\",\"code\":0}"
+      ]
+    },
+    "hostile/seq-gap.jsonl": {
+      "label": "seq-gap.jsonl",
+      "trailingLf": true,
+      "lines": [
+        "{\"t\":\"hello\",\"seq\":0,\"ts\":\"2026-10-03T11:00:00.000Z\",\"protocol\":1,\"core\":\"0.1.0\",\"session\":\"s-hostile-1\",\"caps\":[\"tools\",\"ask\"]}",
+        "{\"t\":\"state\",\"seq\":1,\"ts\":\"2026-10-03T11:00:00.010Z\",\"value\":\"running\"}",
+        "{\"t\":\"block_start\",\"seq\":2,\"ts\":\"2026-10-03T11:00:00.100Z\",\"id\":\"b1\",\"kind\":\"assistant\"}",
+        "{\"t\":\"delta\",\"seq\":3,\"ts\":\"2026-10-03T11:00:00.130Z\",\"id\":\"b1\",\"text\":\"这条会到达。\"}",
+        "{\"t\":\"delta\",\"seq\":5,\"ts\":\"2026-10-03T11:00:00.190Z\",\"id\":\"b1\",\"text\":\" seq 4 丢了——GUI 必须显式提示，不得静默继续（I4）。\"}",
+        "{\"t\":\"delta\",\"seq\":6,\"ts\":\"2026-10-03T11:00:00.220Z\",\"id\":\"b1\",\"text\":\"这条也会到达。\"}",
+        "{\"t\":\"block_end\",\"seq\":7,\"ts\":\"2026-10-03T11:00:00.260Z\",\"id\":\"b1\",\"ok\":true}",
+        "{\"t\":\"telemetry\",\"seq\":8,\"ts\":\"2026-10-03T11:00:00.300Z\",\"value\":{\"cpu\":0.12}}",
+        "{\"t\":\"block_end\",\"seq\":9,\"ts\":\"2026-10-03T11:00:00.340Z\",\"id\":\"b-never-started\",\"ok\":true}",
+        "{\"t\":\"delta\",\"seq\":10,\"ts\":\"2026-10-03T11:00:00.380Z\",\"id\":\"b1\",\"text\":\"块已 end 之后的 delta——违反 I2/I6，应被拒绝或计入异常。\"}",
+        "{\"t\":\"usage\",\"seq\":11,\"ts\":\"2026-10-03T11:00:00.400Z\",\"turn\":1,\"input\":100,\"output\":20}",
+        "{\"t\":\"state\",\"seq\":12,\"ts\":\"2026-10-03T11:00:00.420Z\",\"value\":\"idle\"}",
+        "{\"t\":\"bye\",\"seq\":13,\"ts\":\"2026-10-03T11:00:00.450Z\",\"reason\":\"eof\",\"code\":0}"
+      ]
+    },
+    "hostile/truncated-final-line.jsonl": {
+      "label": "truncated-final-line.jsonl",
+      "trailingLf": true,
+      "lines": [
+        "{\"t\":\"hello\",\"seq\":0,\"ts\":\"2026-10-03T11:10:00.000Z\",\"protocol\":1,\"core\":\"0.1.0\",\"session\":\"s-hostile-2\",\"caps\":[\"tools\"]}",
+        "{\"t\":\"state\",\"seq\":1,\"ts\":\"2026-10-03T11:10:00.010Z\",\"value\":\"running\"}",
+        "{\"t\":\"block_start\",\"seq\":2,\"ts\":\"2026-10-03T11:10:00.100Z\",\"id\":\"b1\",\"kind\":\"assistant\"}",
+        "{\"t\":\"delta\",\"seq\":3,\"ts\":\"2026-10-03T11:10:00.140Z\",\"id\":\"b1\",\"text\":\"这一行是完整的，之后的那一行被截断了。\"}",
+        "{\"t\":\"delta\",\"seq\":4,\"ts\":\"2026-10-03T11:10:00.180Z\",\"id\":\"b1\",\"text\":\"半个 JSON：{\"t\":\"delta\",\"seq\":5"
+      ]
+    }
+  };
+
+/* evals/*.json 实测记录（用于实时比对协议派生的计数） */
+const REFERENCE = {
+  "demo-session.jsonl|instant|autosize":      {blocks:8,deltas:19,messages:43,seqGaps:0,violations:0,unknownTypes:0},
+  "demo-session.jsonl|timed|autosize":        {blocks:7,deltas:16,messages:43,seqGaps:0,violations:0,unknownTypes:0},
+  "hostile/seq-gap.jsonl|instant|autosize":   {blocks:1,deltas:3,messages:13,seqGaps:1,violations:3,unknownTypes:1},
+  "hostile/truncated-final-line.jsonl|instant|autosize":{blocks:1,deltas:1,messages:5,seqGaps:0,violations:1,unknownTypes:0}
+};
+
+/* ════════════════════════════════════════════════════════════════
+   1. 几何常量（App.cpp:21-24 / PromptBar.cpp:39-51）
+   ════════════════════════════════════════════════════════════════ */
+const GEO = {
+  rowGap:4, rowPadX:10, headerH:26,
+  listRowH:28, listSpacing:2,
+  countingPad:6, barH:52, ctrlH:30, btnW:70,
+  clientW:960, clientH:720,
+  contentW:908   // scrollWidth(948) - 40
+};
+
+/* ════════════════════════════════════════════════════════════════
+   2. 迷你协议引擎 —— 逐条镜像 gui/src/Transcript.cpp
+   ════════════════════════════════════════════════════════════════ */
+const KNOWN_TYPES = ["hello","state","block_start","delta","block_end","ask","usage","error","bye"];
+
+class Engine {
+  constructor(){ this.reset(); }
+  reset(){
+    this.blocks = new Map();       // id -> {id,kind,name,argsPretty,text,forId,ok,summary,ended}
+    this.last = null;
+    this.lastSeq = 0; this.seenSeq = false;
+    this.blocksStarted = 0; this.deltas = 0;
+    this.seqGaps = 0; this.violations = 0; this.unknownTypes = 0;
+  }
+  /* 返回 {ok, notice} —— ok=false 表示该行被拒绝（不进入 Route） */
+  onLine(raw){
+    this.last = null;
+    let msg;
+    try { msg = JSON.parse(raw); }
+    catch(e){
+      this.violations++;
+      return {ok:false, notice:"[PARSE] line rejected: " + (e && e.message ? e.message : "invalid JSON")};
+    }
+    this.last = msg;
+    const t = typeof msg.t === "string" ? msg.t : "";
+    let notice = null, ok = true;
+
+    // I4：seq 每方向从 0 起、严格递增且连续；缺口必须显式提示，本行仍处理
+    if (typeof msg.seq === "number"){
+      const cur = msg.seq;
+      if (this.seenSeq && cur !== this.lastSeq + 1){
+        this.seqGaps++; this.violations++;
+        notice = "[I4] seq gap " + this.lastSeq + " -> " + cur + ": messages lost";
+      }
+      this.lastSeq = cur; this.seenSeq = true;
+    }
+
+    if (t === "block_start"){
+      const id = typeof msg.id === "string" ? msg.id : "";
+      if (!id || this.blocks.has(id)){
+        this.violations++;
+        return {ok:false, notice:(notice ? notice + " | " : "") + "[I1] duplicate block_start: " + id};
+      }
+      const b = {id, kind:msg.kind||"", name:msg.name||"", forId:msg.for||"", text:msg.text||"",
+                 argsPretty:"", ok:false, summary:"", ended:false};
+      if (b.kind === "tool_call" && msg.args && typeof msg.args === "object")
+        b.argsPretty = JSON.stringify(msg.args, null, 2);
+      if (b.kind === "tool_result"){
+        const ref = this.blocks.get(b.forId);
+        if (!ref || ref.kind !== "tool_call"){
+          this.violations++;
+          notice = (notice ? notice + " | " : "") + "[I7] tool_result 'for' does not name a tool_call: " + b.forId;
+        }
+      }
+      this.blocks.set(id, b);
+      this.blocksStarted++;
+      return {ok:true, notice};
+    }
+
+    if (t === "delta"){
+      const id = msg.id || "";
+      const b = this.blocks.get(id);
+      if (!b || b.ended){
+        this.violations++;
+        return {ok:false, notice:(notice?notice+" | ":"") + "[I2] delta outside block lifetime: " + id};
+      }
+      b.text += (msg.text || "");
+      this.deltas++;
+      return {ok:true, notice};
+    }
+
+    if (t === "block_end"){
+      const id = msg.id || "";
+      const b = this.blocks.get(id);
+      if (!b || b.ended){
+        this.violations++;
+        return {ok:false, notice:(notice?notice+" | ":"") + "[I1] block_end without matching start: " + id};
+      }
+      b.ok = (msg.ok === true);
+      b.summary = msg.summary || "";
+      b.ended = true;
+      return {ok:true, notice};
+    }
+
+    // I5：未知 t 忽略并记录（不计入 violations —— 与实现一致）
+    if (!KNOWN_TYPES.includes(t)){
+      this.unknownTypes++;
+      notice = "[I5] unknown message type ignored: " + t;
+    }
+    return {ok:true, notice};
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   3. 状态
+   ════════════════════════════════════════════════════════════════ */
+const S = {
+  fixture:"demo-session.jsonl", mode:"timed", speed:4,
+  rowMode:"autosize", wrap:"spec",
+  lines:[], offsets:[], idx:0, loaded:false, truncated:false,
+  run:false, settled:false, instantDone:false,
+  coreState:"", waitAnswer:false,
+  rows:[], blockRows:new Map(),
+  invalidations:0, paints:0, frames:0, maxUs:0, sumUs:0,
+  anchorMs:0, elapsedMs:0, lastTick:0,
+  dirty:false, timer:null
+};
+
+const engine = new Engine();
+const $ = id => document.getElementById(id);
+const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
+const content = $("content");   // ScrollContent（内容坐标空间的根）
+
+/* ════════════════════════════════════════════════════════════════
+   4. 加载夹具（镜像 ReplaySource::Load）
+   ════════════════════════════════════════════════════════════════ */
+function loadFixture(name){
+  const fx = FIXTURES[name];
+  S.lines = fx.lines.slice();
+  // ts → 相对首条 ts 的毫秒偏移（无 ts 视为立即到期）
+  const tsOf = raw => {
+    const m = /"ts":"([^"]+)"/.exec(raw);
+    if (!m) return null;
+    const d = Date.parse(m[1]);
+    return isNaN(d) ? null : d;
+  };
+  let first = null;
+  S.offsets = S.lines.map(raw => {
+    const t = tsOf(raw);
+    if (t === null) return 0;
+    if (first === null) first = t;
+    return t - first;
+  });
+  // §1.2：EOF 截断（缺尾 LF）必须显式报错
+  S.truncated = !fx.trailingLf;
+  S.loaded = true;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   5. 行构建（镜像 App.cpp CreateBlockRow / CreateAskRow / AddNoticeRow）
+   ════════════════════════════════════════════════════════════════ */
+function makeLabel(text){
+  const l = el("div","label"); l.textContent = text; return l;
+}
+
+function addRow(kind, rec){
+  // kind: plain | user | tool | ask
+  const panel = el("div","row " + kind);
+  if (S.wrap === "ecdi") panel.classList.add("nosize");
+  rec.panel = panel; rec.kind = kind;
+  if (rec.tool){                       // tool 行 = Button 标题 + CollapsiblePanel 展开体
+    panel.appendChild(rec.headerBtn);
+    panel.appendChild(rec.body);
+  } else {
+    panel.appendChild(rec.label);
+  }
+  if (rec.askBtns) panel.appendChild(rec.askBtns);
+  content.appendChild(panel);
+  S.rows.push(rec);
+  return rec;
+}
+
+function createBlockRow(b){
+  if (b.kind === "user"){
+    const l = makeLabel(b.text);
+    l.style.position = "absolute"; l.style.top = "5px";
+    const rec = {id:b.id, tool:false, alignRight:true, ask:false, label:l, expanded:false, answered:false, block:b};
+    addRow("user", rec);
+    return;
+  }
+  if (b.kind === "assistant" || b.kind === "system" || b.kind === "error"){
+    const l = makeLabel(b.text);
+    l.style.position = "absolute"; l.style.top = "5px";
+    if (b.kind === "system") l.style.color = "#6e6e6e";
+    if (b.kind === "error")  l.style.color = "#b22222";
+    const rec = {id:b.id, tool:false, alignRight:false, ask:false, label:l, expanded:false, answered:false, block:b};
+    addRow("plain", rec);
+    return;
+  }
+
+  // tool_call / tool_result
+  const hdr = el("div","hdr");
+  const caret = el("span","caret"); caret.textContent = "▶";
+  const hname = el("span","hname");
+  hdr.appendChild(caret); hdr.appendChild(hname);
+
+  const body = el("div","body");
+  const bodyLabel = makeLabel("");
+  bodyLabel.classList.add("wrapbreak");
+  body.appendChild(bodyLabel);
+
+  let title, bodyText;
+  if (b.kind === "tool_call"){
+    title = b.name || "tool_call";
+    bodyText = b.argsPretty || "{}";
+  } else {
+    title = "等待结果";
+    bodyText = b.text || b.summary || "";
+  }
+  hname.textContent = title;
+  bodyLabel.textContent = bodyText;
+
+  const rec = {id:b.id, tool:true, alignRight:false, ask:false,
+               label:bodyLabel, headerBtn:hdr, hname, body, bodyLabel,
+               expanded:false, answered:false, block:b};
+  const row = addRow("tool", rec);
+  hdr.addEventListener("click", () => {
+    rec.expanded = !rec.expanded;
+    hdr.classList.toggle("open", rec.expanded);
+    relayout(); requestRepaint();
+  });
+  // I7 引用关系提示（原型提案：真机未渲染，见「发现」F4）
+  if (b.kind === "tool_result" && b.forId){
+    const ri = el("div","ri"); ri.textContent = "for " + b.forId; row.panel.appendChild(ri);
+  }
+  return rec;
+}
+
+function createAskRow(msg){
+  const panel = el("div","row ask");
+  const l = makeLabel("权限 " + (msg.question || ""));
+  l.style.position = "absolute"; l.style.top = "5px";
+  panel.appendChild(l);
+
+  const btns = el("div","askbtns");
+  const allow = el("button","ecdi-btn"); allow.textContent = "允许";
+  const deny  = el("button","ecdi-btn"); deny.textContent  = "拒绝";
+  btns.appendChild(allow); btns.appendChild(deny);
+  panel.appendChild(btns);
+
+  const rec = {panel, id:msg.id||"", tool:false, alignRight:false, ask:true, label:l, askBtns:btns,
+               allowBtn:allow, denyBtn:deny, expanded:false, answered:false};
+  content.appendChild(panel);
+  S.rows.push(rec);
+  S.blockRows.set(rec.id, rec);
+  allow.addEventListener("click", () => markAnswered(rec, "allow"));
+  deny.addEventListener("click",  () => markAnswered(rec, "deny"));
+  // 协议 §8.3：timed 回放遇到 ask → 停在 waiting，等用户点选才继续
+  if (S.mode === "timed") S.waitAnswer = true;
+  return rec;
+}
+
+function markAnswered(rec, choice){
+  if (rec.answered) return;
+  rec.answered = true;
+  rec.allowBtn.disabled = true; rec.denyBtn.disabled = true;
+  S.waitAnswer = false;
+  addNoticeRow("[answer] " + choice, "#6e6e6e");
+  requestRepaint();
+  if (S.mode === "timed") tick();
+}
+
+function addNoticeRow(text, color){
+  const l = makeLabel(text);
+  l.style.position = "absolute"; l.style.top = "5px";
+  l.style.color = color;
+  const rec = {id:"", tool:false, alignRight:false, ask:false, label:l, expanded:false, answered:false};
+  addRow("plain", rec);
+  return rec;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   6. 消息路由（镜像 App.cpp RouteLastMessage）
+   ════════════════════════════════════════════════════════════════ */
+function route(){
+  const msg = engine.last; if (!msg) return;
+  const t = msg.t;
+
+  if (t === "block_start"){
+    const b = engine.blocks.get(msg.id);
+    if (b){
+      const rec = createBlockRow(b);
+      if (rec && rec.id) S.blockRows.set(rec.id, rec);
+    }
+    return;
+  }
+  if (t === "delta"){
+    const rec = S.blockRows.get(msg.id || "");
+    const b = engine.blocks.get(msg.id || "");
+    if (rec && b && rec.label) rec.label.textContent = b.text;
+    return;
+  }
+  if (t === "block_end"){
+    const b = engine.blocks.get(msg.id || "");
+    const rec = S.blockRows.get(msg.id || "");
+    if (b && b.kind === "tool_result" && rec && rec.hname){
+      let title = b.ok ? "成功" : "失败";
+      if (b.summary) title += " · " + b.summary;
+      rec.hname.textContent = title;
+    }
+    return;
+  }
+  if (t === "ask"){ createAskRow(msg); return; }
+  if (t === "error"){ addNoticeRow("[error] " + (msg.message||""), "#b22222"); return; }
+  if (t === "hello"){
+    addNoticeRow("core " + (msg.core||"") + " · session " + (msg.session||"") +
+                 " · protocol " + (msg.protocol!=null?msg.protocol:""), "#6e6e6e");
+    return;
+  }
+  if (t === "bye"){
+    addNoticeRow("会话结束 (" + (msg.reason||"") + ", code " + (msg.code!=null?msg.code:0) + ")", "#6e6e6e");
+    return;
+  }
+  if (t === "state"){ S.coreState = msg.value || ""; updateStateUi(); return; }
+  // usage：v1 不渲染（App.cpp:249）
+}
+
+/* ════════════════════════════════════════════════════════════════
+   7. 布局（镜像 App.cpp Relayout）
+   ════════════════════════════════════════════════════════════════ */
+function relayout(){
+  const contentW = GEO.contentW;
+  const wrapMode = S.wrap === "spec";
+
+  if (S.rowMode === "listlayout"){
+    // ListLayout(28, 2)：固定行高、不测量
+    let y = 0;
+    for (const r of S.rows){
+      r.panel.style.height = GEO.listRowH + "px";
+      r.panel.style.top = y + "px";
+      r.panel.style.position = "absolute";
+      r.panel.style.marginBottom = "0";
+      if (r.label){ r.label.style.maxWidth = (contentW - 20) + "px"; r.label.style.overflow = "hidden"; }
+      if (r.tool){
+        r.headerBtn.style.width = (contentW - 20) + "px";
+        r.body.style.height = "0px";
+      }
+      y += GEO.listRowH + GEO.listSpacing;
+    }
+    content.style.height = Math.max(0, y - GEO.listSpacing) + "px";
+    return;
+  }
+
+  // autosize：每行 AutoSize → 行高随（测量到的）内容变化
+  let y = 0;
+  for (const r of S.rows){
+    r.panel.style.position = "absolute";
+    r.panel.style.marginBottom = "0";
+    r.panel.style.width = contentW + "px";
+    let rowH;
+
+    if (r.tool){
+      const w = contentW - 2 * GEO.rowPadX;
+      r.label.style.width = w + "px";
+      r.bodyLabel.style.width = (contentW - 20) + "px";
+      // ECDI 实测语义：Label 测量是单行的 ⇒ bodyH 取单行高，多行正文被裁（F2）
+      const labelH = wrapMode ? Math.max(17, r.bodyLabel.offsetHeight) : 17;
+      const bodyH = labelH + 8;
+      r.headerBtn.style.width = w + "px";
+      r.body.style.width = w + "px";
+      r.body.style.height = (r.expanded ? bodyH : 0) + "px";
+      r.body.style.visibility = r.expanded ? "visible" : "hidden";
+      rowH = 2 + GEO.headerH + 2 + (r.expanded ? bodyH : 0);
+    } else {
+      const pad = 2 * GEO.rowPadX;
+      if (wrapMode){
+        r.label.style.width = (contentW - pad) + "px";
+        r.label.style.whiteSpace = "pre-wrap";
+      } else {
+        // ECDI 实测语义：Label::GetPreferredSize 是单行测量 —— 宽 = 文本自然宽，不换行
+        r.label.style.width = "auto";
+        r.label.style.whiteSpace = "pre";
+      }
+      const labelH = Math.max(20, r.label.offsetHeight);
+      const labelW = r.label.offsetWidth;
+      if (r.ask){
+        r.askBtns.style.left = (contentW - 160) + "px";
+        r.label.style.left = GEO.rowPadX + "px";
+      } else if (r.alignRight){
+        const x = Math.max(GEO.rowPadX, contentW - GEO.rowPadX - labelW);
+        r.label.style.left = x + "px";
+        r.label.style.maxWidth = "none";
+      } else {
+        r.label.style.left = GEO.rowPadX + "px";
+        r.label.style.maxWidth = "none";
+      }
+      rowH = Math.max(labelH + 10, r.ask ? 38 : 0);
+    }
+
+    r.panel.style.height = rowH + "px";
+    r.panel.style.top = y + "px";
+    // listlayout 之外仍不允许横向溢出到 ScrollContent 之外
+    r.panel.style.overflow = (r.tool || wrapMode) ? "hidden" : "visible";
+    y += rowH + GEO.rowGap;
+  }
+  content.style.height = Math.max(0, y - GEO.rowGap) + "px";
+}
+
+function followTailIfPinned(){
+  const sc = $("scroll");
+  const maxY = sc.scrollHeight - sc.clientHeight;
+  const pinned = sc.scrollTop >= maxY - 60;
+  if (pinned) sc.scrollTop = maxY;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   8. 重绘（镜像 §6.1 单定时器 + §6.2 测量）
+   ════════════════════════════════════════════════════════════════ */
+function requestRepaint(){ S.invalidations++; S.dirty = true; if (!S.raf) S.raf = requestAnimationFrame(paintFrame); }
+
+function paintFrame(){
+  S.raf = 0;
+  if (!S.dirty) return;
+  S.dirty = false;
+  const t0 = performance.now();
+  relayout();                       // 浏览器侧重排 ≈ 真机一次重绘的内容
+  const us = (performance.now() - t0) * 1000;
+  S.paints++; S.frames++;
+  S.maxUs = Math.max(S.maxUs, us); S.sumUs += us;
+  updateLiveUi();
+}
+
+/* ════════════════════════════════════════════════════════════════
+   9. 回放驱动
+   ════════════════════════════════════════════════════════════════ */
+function handleLine(raw){
+  const {ok, notice} = engine.onLine(raw);
+  if (notice) addNoticeRow(notice, "#b22222");
+  if (ok) route();
+}
+
+function drainInstant(){
+  if (S.instantDone) return;
+  S.instantDone = true;
+  handleLine(S.lines[S.idx++]);
+  while (S.idx < S.lines.length) handleLine(S.lines[S.idx++]);
+  if (S.truncated) addNoticeRow("final line truncated (missing LF) - dropped per protocol 1.2", "#b22222");
+}
+
+function drainTimed(){
+  if (S.waitAnswer) return;                     // I3
+  while (S.idx < S.lines.length && S.offsets[S.idx] <= S.elapsedMs){
+    handleLine(S.lines[S.idx++]);
+    if (S.waitAnswer) break;                    // ask 已显示 → 停在 waiting（§8.3）
+  }
+  if (S.idx >= S.lines.length && S.truncated){
+    addNoticeRow("final line truncated (missing LF) - dropped per protocol 1.2", "#b22222");
+    S.truncated = false;
+  }
+}
+
+function tick(){
+  if (!S.run) return;
+  if (S.idx >= S.lines.length && !S.waitAnswer){
+    if (S.settled){ updateSummary(); return; }   // 已拉完：不再制造重绘
+    S.settled = true;
+    updateReplayUi();
+    updateSummary();
+  }
+  if (S.mode === "timed"){
+    S.elapsedMs += 33 * S.speed;
+    drainTimed();
+  } else {
+    drainInstant();
+  }
+  requestRepaint();
+  followTailIfPinned();
+  updateLiveUi();
+  updateSummary();
+}
+
+/* ════════════════════════════════════════════════════════════════
+   10. UI 刷新
+   ════════════════════════════════════════════════════════════════ */
+function updateStateUi(){
+  $("vState").textContent = S.coreState || "—";
+  // 协议 §6：按钮使能只由 state 驱动（P1 未实现 —— 见「发现」F5）
+  const idle = S.coreState === "idle" || S.coreState === "";
+  const running = S.coreState === "running";
+  $("btnSend").disabled = !idle;
+  $("btnStop").disabled = !running;
+  $("vSendEnable").textContent = idle ? "可用" : "禁用";
+  $("vStopEnable").textContent = running ? "可用" : "禁用";
+}
+
+function updateReplayUi(){
+  $("vReplay").textContent = S.settled ? "已拉完（停止制造重绘）"
+    : (S.run ? (S.waitAnswer ? "等待回答" : "进行中") : "未开始");
+}
+
+function updateLiveUi(){
+  const T = $("liveTable");
+  const rows = [
+    ["invalidations", S.invalidations, "应用侧 Invalidate() 调用数"],
+    ["paints", S.paints, "原型：实际渲染帧数"],
+    ["frameCount", S.frames, "= paints"],
+    ["maxPaintUs", S.maxUs.toFixed(1), "原型：单帧重排耗时（µs）"],
+    ["avgPaintUs", (S.frames ? (S.sumUs / S.frames) : 0).toFixed(1), "原型：平均重排耗时"],
+    ["合并比", S.invalidations ? (S.paints / S.invalidations).toFixed(2) : "—", "paints / invalidations"],
+  ];
+  T.innerHTML = rows.map(([k,v,n]) =>
+    `<tr><td>${k}</td><td class="num">${v}</td><td class="ref">${n}</td></tr>`).join("");
+  updateRefUi();
+}
+
+function updateRefUi(){
+  const key = S.fixture + "|" + S.mode + "|" + S.rowMode;
+  const ref = REFERENCE[key];
+  const fields = ["blocks","deltas","messages","seqGaps","violations","unknownTypes"];
+  const cur = {
+    blocks: engine.blocks.size, deltas: engine.deltas, messages: S.lines.length,
+    seqGaps: engine.seqGaps, violations: engine.violations, unknownTypes: engine.unknownTypes
+  };
+  const T = $("refTable");
+  if (!ref){
+    T.innerHTML = `<tr><td colspan="4" class="ref">该组合没有 evals 记录可比对</td></tr>`;
+  } else {
+    T.innerHTML = fields.map(f => {
+      // messages 恒 = 夹具行数（ReplaySource::Total），不受消费进度影响
+      const same = cur[f] === ref[f];
+      return `<tr><td>${f}</td><td class="num">${cur[f]}</td><td class="num ref">${ref[f]}</td>`
+           + `<td class="${same ? "ok" : "bad"}">${same ? "✓" : "✗"}</td></tr>`;
+    }).join("");
+  }
+  updateInvUi();
+}
+
+const INV_TEXT = {
+  I1:"id 的 block_start / block_end 各恰好一次",
+  I2:"delta 只能落在 start 与 end 之间",
+  I3:"发出 ask 后不得再发消息（usage 除外）",
+  I4:"seq 严格递增且连续，缺口必须显式提示",
+  I5:"未知 t / 未知字段忽略并记录",
+  I6:"block_end 之后该块只读",
+  I7:"tool_result 必须带 for 指向已存在的 tool_call"
+};
+function updateInvUi(){
+  const T = $("invTable");
+  T.innerHTML = Object.keys(INV_TEXT).map(k => {
+    let mark = "—";
+    if (k === "I4" && engine.seqGaps) mark = `<span class="bad">${engine.seqGaps} 次</span>`;
+    else if (k === "I5" && engine.unknownTypes) mark = `<span class="bad">${engine.unknownTypes} 次</span>`;
+    return `<tr><td><code>${k}</code></td><td>${INV_TEXT[k]}</td><td>${mark}</td></tr>`;
+  }).join("");
+}
+
+function updateSummary(){
+  const avg = S.frames ? (S.sumUs / S.frames) : 0;
+  const obj = {
+    fixture: S.fixture.split("/").pop(),
+    mode: S.mode,
+    rowMode: S.rowMode,
+    ecdiCommit: "9ad0697e97a246c70c496bad03f00ab4e000302e",
+    blocks: engine.blocks.size,
+    deltas: engine.deltas,
+    messages: S.lines.length,
+    invalidations: S.invalidations,
+    paints: S.paints,
+    frameCount: S.frames,
+    maxPaintUs: Math.round(S.maxUs),
+    avgPaintUs: Math.round(avg),
+    seqGaps: engine.seqGaps,
+    violations: engine.violations,
+    unknownTypes: engine.unknownTypes
+  };
+  $("summaryJson").textContent = JSON.stringify(obj, null, 2);
+}
+
+/* ════════════════════════════════════════════════════════════════
+   11. 发现（原型的第一产出）
+   ════════════════════════════════════════════════════════════════ */
+const FINDINGS = [
+  ["crit", "F1 · autosize 对照组可能不成立（待实测）",
+   "规格 §5.3 预期 autosize「行高随内容变化」。但 <code>TextWidget::GetPreferredSize()</code> 的契约是" +
+   "<b>单行文本宽 + 行高</b>（<code>TextWidget.h:55</code> 注释与 <code>DoMeasureText:83</code>），" +
+   "<code>Label</code> 未 override（<code>Label.h</code> 全文核对）；<code>AutoSize()</code> = " +
+   "<code>SetSize(GetPreferredSize())</code>（<code>Widget.h:106-111</code>）。" +
+   "⇒ 非 tool 行行高恒为 lineHeight+10，与 listlayout 的固定 28 差别极小，A/B 两组失去区分度。" +
+   "★ <b>待实测</b>：<code>TextWidget.cpp</code> 未随 install 前缀提供，绘制是否多行无法从头部契约断定。"],
+  ["crit", "F2 · 多行文本的高度测量缺失",
+   "tool_call 展开体是 <code>argsPretty</code>（多行 JSON），但 <code>bodyH = label->GetHeight() + 8</code> " +
+   "（<code>App.cpp:400-404</code>）—— 高度取的是**单行**测量值。⇒ 展开体高度注定不足，正文被裁。" +
+   "这是要回灌 ECDI 的明确需求：<b>Label 需要多行测量（或显式 SetMaxWidth + 换行测量）</b>。" +
+   "原型里用「文本=换行（规格预期）」展示应有的样子。"],
+  ["warn", "F3 · tool_call 卡片吞掉了结果摘要",
+   "<code>block_end</code> 只在 <code>kind == \"tool_result\"</code> 时更新标题（<code>App.cpp:216-227</code>）。" +
+   "而 <code>read_file</code> 的 <code>summary=\"575 行\"</code>、<code>edit_file</code> 的" +
+   "<code>\"1 处已替换\"</code> 属于 <b>tool_call</b> 块 ⇒ 永远不显示。卡片标题恒为工具名。" +
+   "建议：tool_call 的 header 也要在 <code>block_end</code> 时补 summary。"],
+  ["warn", "F4 · I7 的 for 引用关系不可见",
+   "规格 §5.2 明确要求 tool_result「需展示 <code>for</code> 引用关系（I7）」。" +
+   "<code>App.cpp</code> 只把 <code>for</code> 存进 <code>Block.forId</code>（<code>Transcript.cpp:43</code>），" +
+   "从未用于渲染 ⇒ 调用卡片与结果卡片在视觉上互不相识。" +
+   "原型在结果卡片右上角加了 <code>for b3</code> 角标作为提案形态。"],
+  ["info", "F5 · 按钮使能未按 state 驱动（已知范围裁剪）",
+   "协议 §6 要求 <code>prompt</code>/<code>cancel</code> 的按钮使能<b>只由 state 驱动</b>；" +
+   "P1 两个按钮恒可点（<code>App.cpp:123-130</code> 仅记录，从未 <code>SetEnabled</code>）。" +
+   "规格 §1.1 第 6 条已声明「v1 仅 UI」⇒ 属已声明裁剪，不是缺陷。原型按协议目标实现并在此标注差异。"],
+  ["info", "F6 · state / usage 完全不渲染",
+   "<code>App.cpp:249</code> 注释即写明「state / usage：v1 不渲染」。" +
+   "⇒ 用户看不到 idle/running/waiting，也看不到 <code>usage.turn/input/output</code>（数据被丢弃）。" +
+   "是否上屏属产品决策；建议至少把 state 做成状态点。"],
+  ["crit", "F7 · truncated 夹具没有覆盖「缺尾 LF」分支",
+   "夹具名与 PROTOCOL §8.4 描述为「最后一行被截断」。但 <code>od -c</code> 核对：文件<b>实际以 LF 结尾</b>，" +
+   "<code>raw.back() != '\\n'</code> 为假 ⇒ <code>ReplaySource</code> 的 " +
+   "<code>\"final line truncated (missing LF)\"</code> 分支<b>从未被触发</b>；真正拦住它的是 JSON 解析失败（PARSE）。" +
+   "⇒ 正是协议 §8.5 自己警告的「恒成立的负向用例」。<b>建议补一个真正无尾 LF 的夹具</b>。"],
+  ["warn", "F8 · evals 数据卫生（三处）",
+   "① <code>evals/scale-list.json</code> 记 <code>\"mode\":\"instant\"</code>，与规格 §7.2 的 " +
+   "<code>--timed</code> 命令不符。<br>" +
+   "② <code>evals/demo-timed.json</code> blocks=7/deltas=16 ≠ 夹具的 8/19 ⇒ 该次未跑完。" +
+   "而 <code>messages</code> 字段恒为夹具行数（<code>ReplaySource::Total()</code>）" +
+   "⇒ <b>摘要里没有任何字段能反映「消费了多远」</b>。建议拆成 <code>messagesTotal</code> / " +
+   "<code>messagesConsumed</code>。<br>" +
+   "③ <code>evals/hostile-seq-gap.json</code> 的 <code>ecdiCommit</code> 是 8 位短哈希，其余 40 位 ⇒ 统一成全哈希。"]
+];
+
+function renderFindings(){
+  $("findingList").innerHTML = FINDINGS.map(([lv, t, body]) =>
+    `<div class="finding ${lv}"><span class="ft">${t}</span>${body}</div>`).join("");
+}
+
+/* ════════════════════════════════════════════════════════════════
+   12. 控制条
+   ════════════════════════════════════════════════════════════════ */
+function resetAll(){
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  Object.assign(S, {idx:0, run:false, settled:false, instantDone:false,
+    coreState:"", waitAnswer:false, rows:[], invalidations:0, paints:0, frames:0,
+    maxUs:0, sumUs:0, elapsedMs:0, dirty:false});
+  S.blockRows = new Map();
+  engine.reset();
+  content.innerHTML = "";
+  addContentAnno();
+  $("summaryJson").textContent = "—";
+  updateStateUi(); updateReplayUi(); updateLiveUi(); updateSummary();
+}
+
+function startRun(){
+  resetAll();
+  loadFixture(S.fixture);
+  $("winTitle").textContent = "ECDI harness - " + S.fixture.split("/").pop();
+  S.run = true;
+  updateReplayUi();
+  S.timer = setInterval(tick, 33);   // ~30Hz（App.cpp:84）
+  tick();
+}
+
+$("selFixture").addEventListener("change", e => { S.fixture = e.target.value; resetAll(); loadFixture(S.fixture);
+  $("winTitle").textContent = "ECDI harness - " + S.fixture.split("/").pop(); });
+$("selMode").addEventListener("change", e => { S.mode = e.target.value; resetAll(); });
+$("selSpeed").addEventListener("change", e => { S.speed = Number(e.target.value); });
+$("selRowMode").addEventListener("change", e => { S.rowMode = e.target.value; requestRepaint(); });
+$("selWrap").addEventListener("change", e => {
+  S.wrap = e.target.value;
+  content.querySelectorAll(".row").forEach(r => r.classList.toggle("nosize", S.wrap === "ecdi"));
+  requestRepaint();
+});
+$("btnRun").addEventListener("click", startRun);
+$("btnReset").addEventListener("click", resetAll);
+$("btnAnnot").addEventListener("click", e => {
+  const on = document.body.classList.toggle("annot-on");
+  e.target.dataset.on = on ? "1" : "0";
+});
+
+$("btnSend").addEventListener("click", () => {
+  const v = $("promptInput").value.trim();
+  if (!v) return;
+  addNoticeRow("[prompt 仅记录] " + v, "#6e6e6e");
+  $("promptInput").value = "";
+  requestRepaint();
+});
+$("btnStop").addEventListener("click", () => { addNoticeRow("[cancel 仅记录]", "#6e6e6e"); requestRepaint(); });
+
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("on"));
+    document.querySelectorAll(".pane").forEach(p => p.classList.remove("on"));
+    tab.classList.add("on");
+    $(tab.dataset.pane).classList.add("on");
+  });
+});
+
+/* 标注热区：把编号点贴在对应节点上 */
+function addContentAnno(){
+  const a4 = el("span","anno"); a4.style.cssText = "left:8px;top:6px;z-index:30";
+  a4.innerHTML = '<span class="anno-badge">4</span>';
+  a4.title = "contentWidth = scrollWidth − 40 = 908（App.cpp:33-36）";
+  content.appendChild(a4);
+}
+$("annTitle").querySelector(".anno-badge").title = "窗口标题 = \"ECDI harness - \" + 夹具名（App.cpp:76）";
+$("annCounting").querySelector(".anno-badge").title = "CountingPanel：root 唯一子节点；VerticalLayout(0,true,6) ⇒ 6px padding（App.cpp:103-107）";
+$("annBar").querySelector(".anno-badge").title = "PromptBar：固定 52 高，输入框高 30（App.cpp:122 / PromptBar.cpp:39-51）";
+
+/* 启动 */
+renderFindings();
+loadFixture(S.fixture);
+addContentAnno();
+updateStateUi(); updateLiveUi(); updateSummary();
+$("winTitle").textContent = "ECDI harness - " + S.fixture.split("/").pop();
+</script>
+</body>
+</html>

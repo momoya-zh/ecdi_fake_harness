@@ -1272,6 +1272,34 @@ void HarnessApp::RefreshHud() {
     if (m_promptBar) {
         m_promptBar->SetStateDrivenEnabled(!active);
     }
+    // ★★ REQ-04 直接回读探针（--state-probe，2026-10-14）
+    //   · `SetEnabled` 不内建 Invalidate（Widget.h:185-187）⇒ 使能翻转**没有**绘制侧读数
+    //     ⇒ 用**只读回读**替代：把按钮的真实 IsEnabled() 与 GetText() 取出来记档。
+    //   · 只在「与上次不同」时记一行 ⇒ 摘要是一份状态翻转轨迹，可逐行核对协议 §6。
+    //   · 放在 SetStateDrivenEnabled **之后**——读到的才是本次驱动后的结果。
+    if (m_options.stateProbe && m_promptBar) {
+        ECDI::Button* send = m_promptBar->sendButton();
+        ECDI::Button* stop = m_promptBar->stopButton();
+        if (send && stop) {
+            const bool sendEnabled = send->IsEnabled();
+            const bool stopEnabled = stop->IsEnabled();
+            const std::string sendTitle = send->GetText();
+            const bool changed = !m_stateProbeLastValid ||
+                                 sendEnabled != m_stateProbeLastSend ||
+                                 stopEnabled != m_stateProbeLastStop;
+            if (changed) {
+                StateProbeRec rec;
+                rec.coreState = m_coreState.empty() ? "idle" : m_coreState;
+                rec.sendEnabled = sendEnabled;
+                rec.stopEnabled = stopEnabled;
+                rec.sendTitle = sendTitle;
+                m_stateProbeLog.push_back(std::move(rec));
+                m_stateProbeLastSend = sendEnabled;
+                m_stateProbeLastStop = stopEnabled;
+                m_stateProbeLastValid = true;
+            }
+        }
+    }
     if (m_hud.stateChip) {
         m_hud.stateChip->SetText(stateText);
         m_hud.stateChip->SetTextColor(kDarkMuted);
@@ -1484,6 +1512,22 @@ void HarnessApp::WriteSummary() {
         std::snprintf(buf, sizeof(buf), "  \"measureChars\": %zu,\n",
                       m_measureProbe->TotalChars());
         json += buf;
+    }
+    if (m_options.stateProbe && !m_stateProbeLog.empty()) {
+        // ★★ REQ-04 机读证据（2026-10-14）：状态翻转轨迹。
+        //   每条 = {core state, 发送使能, 停止使能, 发送标题}——**只在变化时**记，
+        //   故可逐行核对协议 §6「发送/停止只由 state 驱动」。
+        //   ★ 标题文本来自 `Button::GetText()` **直接回读**（不靠像素/截图）。
+        json += "  \"stateProbe\": [";
+        for (size_t i = 0; i < m_stateProbeLog.size(); ++i) {
+            const StateProbeRec& r = m_stateProbeLog[i];
+            json += (i ? ", " : "");
+            json += "{\"state\": \"" + r.coreState + "\", \"sendEnabled\": " +
+                    (r.sendEnabled ? "true" : "false") + ", \"stopEnabled\": " +
+                    (r.stopEnabled ? "true" : "false") + ", \"sendTitle\": \"" +
+                    r.sendTitle + "\"}";
+        }
+        json += "],\n";
     }
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_transcript.SeqGaps());
     json += buf;
