@@ -110,6 +110,20 @@ int ContentWidth(const ECDI::ScrollView* scroll) {
     return w > 80 ? w - 40 : 600;   // 扣除滚动条与边距；未布局前给初值
 }
 
+// ★★ 未知 `kind` 行的正文拼法（2026-10-13）——**单一真相源**。
+//   为何要抽成函数：该文本在**两处**生成（`CreateBlockRow` 建行、
+//   `RouteLastMessage` 的 delta 分支更新），首版在两处各写一份 ⇒ delta 一到
+//   就把 `[未知 kind: …]` 前缀擦掉（实测截图可见）。同源即不可能再漂移。
+std::string UnknownKindText(const Block& block) {
+    std::string shown = block.kind.empty()
+                            ? "[未知 kind: (字段缺失)]"
+                            : "[未知 kind: " + block.kind + "]";
+    shown += "\n";
+    shown += block.text;
+    if (!block.summary.empty()) shown += "\n(" + block.summary + ")";
+    return shown;
+}
+
 // 侧栏/状态栏的一行小标签；返回裸指针（树拥有），供 HUD 动态 SetText
 ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
                      const ECDI::Color& color, bool heading = false, int width = 170,
@@ -570,16 +584,21 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     {
         auto card = makeCard(70);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
-        auto hrow = [&card](ECDI::Label** vOut) {
+        // ★ 第三行（2026-10-13）：未知 kind 单独一行。
+        //   为何不并进 healthViol：实测把「未知kind N」追加到同一 label 后**被裁掉**
+        //   （该 label 宽 150，`违规 N · 未知 N · 未知kind N` 放不下，截图可见「未知k」）。
+        //   单独一行既避免裁切，也让「协议未规定的事」有一处固定的可见落点。
+        auto hrow = [&card](ECDI::Label** vOut, const char* initial = "—") {
             auto row = uikit::Row(178, 16, 8);
             row->AddChild(uikit::Dot(8, kOkDark));
-            auto vl = uikit::Label("—", 150, 16, kDarkInk);
+            auto vl = uikit::Label(initial, 150, 16, kDarkInk);
             *vOut = vl.get();
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
         };
         hrow(&m_hud.healthSeq);
         hrow(&m_hud.healthViol);
+        hrow(&m_hud.healthKind, "未知 kind · 0");
         insp->AddChild(std::move(card));
     }
 
@@ -776,7 +795,15 @@ void HarnessApp::RouteLastMessage() {
         const auto row = m_blockRows.find(id);
         const Block* block = m_transcript.FindBlock(id);
         if (row != m_blockRows.end() && block && row->second->label) {
-            row->second->label->SetText(block->text);   // 合并：只追加到文本缓冲，不逐字符刷新
+            // ★ 未知 kind 的行有**前缀**（`[未知 kind: xxx]`）——不能整段覆盖，
+            //   否则流式 delta 一到就把前缀擦掉（2026-10-13 实测：截图里 r2 的
+            //   `[未知 kind: thinking]` 前缀正是这样丢的）。此处保持与
+            //   `CreateBlockRow` 同一拼法。
+            if (block->unknownKind) {
+                row->second->label->SetText(UnknownKindText(*block));
+            } else {
+                row->second->label->SetText(block->text);   // 合并：只追加到文本缓冲，不逐字符刷新
+            }
         }
         return;
     }
@@ -918,6 +945,35 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
         if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
+        panel->AddChild(std::move(label));
+        AddRow(std::move(panel), rec, block.id);
+        return;
+    }
+
+    // ★★ 未知 `kind` 的**中性落点**（2026-10-13）。
+    //   问题（实测取证，见 `.scratch/kind-probe.png` / `cot-findings.md`）：
+    //     §3.3 只列六个 kind，而 I5 只管信封层的 `t` ⇒ 未知 `kind` **不被任何不变量覆盖**。
+    //     此前的三分支写法让它们**静默掉进工具卡分支**，而该分支的 else 把标题写死成
+    //     「等待结果」——那正是 `tool_result` 在 `block_end` 到达**前**的占位标题
+    //     ⇒ **思维链块与「正在等的工具结果」视觉上无法区分**（不是难看，是**误导**）。
+    //   ★ 归属 **harness 侧**（ECDI 只是忠实渲染调用方给的控件树）。
+    //   ★ 处置 = **中性渲染**：弱化色 + 明写 `[未知 kind: xxx]` + 普通气泡（不折叠、
+    //     不占工具卡的位置）。理由：既保住 I5 的前向兼容精神（内容仍被渲染、不被丢弃），
+    //     又不让它**伪装成有语义的形态**。
+    //   ★ 思维链（`reasoning` / `thinking` …）正是这条路径的主要真实来源——
+    //     给它一个**一等公民的位置**需要协议 v2（`kind:"reasoning"`），
+    //     在那之前，中性渲染是「不误导」的最小正确行为。
+    if (block.unknownKind) {
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = Pick(m_options.probeContrast, kCardBg, kProbeBg),
+            .cornerRadius = kRadiusCard,
+            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .borderColor = kWarn});   // 琥珀描边：视觉上明确「这不是普通助手文本」
+        // 前缀显式标出不认识的 kind；正文仍按原样展示（不丢内容）
+        std::string shown = UnknownKindText(block);
+        auto label = std::make_unique<ECDI::Label>(shown);
+        rec.label = label.get();
+        label->SetTextColor(Pick(m_options.probeContrast, kWarn, kProbeInk));
         panel->AddChild(std::move(label));
         AddRow(std::move(panel), rec, block.id);
         return;
@@ -1355,6 +1411,20 @@ void HarnessApp::RefreshHud() {
         m_hud.healthViol->SetText("违规 " + std::to_string(m_transcript.Violations()) +
                                   " · 未知 " + std::to_string(m_transcript.UnknownTypes()));
     }
+    // ★ 未知 kind 单列一行（2026-10-13）：它与「未知 t」管辖**不同的判别符**，
+    //   合并会同时导致①语义误读（把「协议空白」读成「I5 已覆盖」）
+    //   ②文本裁切（并进上行实测被裁，见 BuildInspector 注释）。
+    if (m_hud.healthKind) {
+        const size_t uk = m_transcript.UnknownKinds();
+        if (uk == 0) {
+            m_hud.healthKind->SetText("未知 kind · 0");
+            m_hud.healthKind->SetTextColor(kDarkMuted);
+        } else {
+            // 协议 §3.3 没有这些值 ⇒ 用琥珀色（与 seq 缺口的红、正常的灰区分）
+            m_hud.healthKind->SetText("未知 kind · " + std::to_string(uk) + " ⚠");
+            m_hud.healthKind->SetTextColor(kWarn);
+        }
+    }
     if (m_hud.evalPaints) {
         m_hud.evalPaints->SetText(std::to_string(m_evalPaints) + " 次 · 请求 " +
                                   std::to_string(m_invalidations));
@@ -1533,7 +1603,11 @@ void HarnessApp::WriteSummary() {
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_transcript.Violations());
     json += buf;
-    std::snprintf(buf, sizeof(buf), "  \"unknownTypes\": %zu\n", m_transcript.UnknownTypes());
+    std::snprintf(buf, sizeof(buf), "  \"unknownTypes\": %zu,\n", m_transcript.UnknownTypes());
+    json += buf;
+    // ★ 未知 block_start.kind（2026-10-13）：与 unknownTypes **并列而非合并**——
+    //   前者是信封层 `t`（I5 明文覆盖），后者是 `kind`（协议未规定，属**空白**）。
+    std::snprintf(buf, sizeof(buf), "  \"unknownKinds\": %zu\n", m_transcript.UnknownKinds());
     json += buf;
     json += "}\n";
 

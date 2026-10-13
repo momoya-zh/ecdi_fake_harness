@@ -37,6 +37,11 @@ KNOWN_TYPES = {
 CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
               "usage", "error", "bye"}
 
+# PROTOCOL 3.3 block kinds.  Kept here so the validator and the GUI agree on one
+# list: Transcript::IsKnownKind in gui/src/Transcript.cpp is the C++ twin, and a
+# new kind must be added in both (the note below fires if they drift apart).
+KNOWN_KINDS = {"user", "assistant", "tool_call", "tool_result", "system", "error"}
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURES = os.path.join(HERE, "fixtures")
 
@@ -195,6 +200,39 @@ def check_stream(parsed, findings):
                 findings.hit("I3", i, "state=waiting with no preceding ask")
     # A fixture may legitimately end while an ask is still pending: the stream
     # simply stops there, and nothing follows, so there is nothing to check.
+
+    # ── unknown block kind: recorded explicitly (2026-10-13) ───────────────
+    # WHY this exists: PROTOCOL 3.3 lists exactly six block kinds, and I5 only
+    # governs the ENVELOPE discriminant `t` -- so an unknown `kind` is covered by
+    # no invariant at all.  That gap was found the hard way: a fixture full of
+    # reasoning/thinking blocks validated green while the GUI rendered every one
+    # of them as a collapsed card titled with the tool_result placeholder
+    # ("等待结果"), making chain-of-thought indistinguishable from a pending tool
+    # result.  See .scratch/cot-findings.md for the probe and screenshot.
+    # Open-source models emit chain-of-thought, so this path is not hypothetical.
+    #
+    # A note, not a violation: I5's forward-compatibility spirit says unknown
+    # content is ignored-and-recorded, not rejected.  But silence was the actual
+    # defect, so this must be visible in the report either way.
+    # `m.get("kind") is not None` guards the sort: a missing field yields None,
+    # and sorted() would then compare str with NoneType (hit for real on the
+    # first run of this check -- the absent-kind fixture crashed the validator).
+    unknown_kinds = sorted({
+        m.get("kind") for _i, m in parsed
+        if m is not None and m["t"] == "block_start"
+        and m.get("kind") is not None and m.get("kind") not in KNOWN_KINDS})
+    # An absent `kind` is its own case (GetString would yield ""), and it lands in
+    # the same neutral rendering path -- so report it rather than hiding it.
+    missing_kind = sum(
+        1 for _i, m in parsed
+        if m is not None and m["t"] == "block_start" and not m.get("kind"))
+    if unknown_kinds:
+        findings.note("unknown block kind(s) %s -- rendered neutrally, not as "
+                      "tool cards (PROTOCOL 3.3 has no such value)"
+                      % ", ".join(repr(k) for k in unknown_kinds))
+    if missing_kind:
+        findings.note("%d block_start without a 'kind' field -- rendered "
+                      "neutrally" % missing_kind)
 
     # shape notes -- informational, never fatal
     first = next((m for _i, m in parsed if m is not None), None)

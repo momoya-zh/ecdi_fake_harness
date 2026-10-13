@@ -105,6 +105,7 @@ private:
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
         ECDI::Label* healthSeq = nullptr;    // 右栏：seq 连续性（I4）
         ECDI::Label* healthViol = nullptr;   // 右栏：违规 · 未知
+        ECDI::Label* healthKind = nullptr;   // ★ 右栏：未知 kind 计数（2026-10-13，协议空白）
         ECDI::Label* evalPaints = nullptr;   // 右栏：重绘读数
         ECDI::Label* probeCmds = nullptr;    // 右栏：命令/帧 avg
         ECDI::Label* probeExec = nullptr;    // 右栏：执行 avg us

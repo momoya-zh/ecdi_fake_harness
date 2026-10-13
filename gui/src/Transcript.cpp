@@ -42,6 +42,23 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         block.name = m_last.GetString("name");
         block.forId = m_last.GetString("for");
         block.text = m_last.GetString("text");
+        // ★★ 未知 `kind`（2026-10-13）：协议 §3.3 只列了六个值，而 I5 只管信封层的 `t`
+        //   ⇒ 未知 `kind` **不被任何不变量覆盖**。此前它静默掉进 App 的工具卡分支、
+        //   标题写死「等待结果」⇒ 与「正在等的 tool_result」视觉上无法区分（**误导**）。
+        //   此处**只记账 + 显式提示**（不改块的解析结果——I5 的前向兼容精神：
+        //   未知内容仍被保留与渲染，只是不再伪装成有语义的形态）。
+        //   ★ 思维链（`reasoning` / `thinking` …）正是这条路径的主要真实来源。
+        //   ★★ **缺失 `kind` 字段与「未知 kind」同等处置**（2026-10-13 实测补漏）：
+        //      首版写成 `!block.kind.empty() && !IsKnownKind(...)`，导致**没有 `kind` 的
+        //      block_start 被漏掉**——它照样掉进工具卡分支（探针 r4 实测仍是
+        //      「等待结果」卡）。空串同样是「不在六个已知值里」，必须一并走中性路径。
+        if (!IsKnownKind(block.kind)) {
+            block.unknownKind = true;
+            ++m_unknownKinds;
+            error = block.kind.empty()
+                        ? std::string("[I5-kind] block_start without 'kind' rendered neutrally")
+                        : "[I5-kind] unknown block kind rendered neutrally: " + block.kind;
+        }
         if (block.kind == "tool_call") {
             const json::Value* args = m_last.Find("args");
             if (args && args->IsObject()) block.argsPretty = args->Pretty(2);
@@ -100,4 +117,13 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
 const Block* Transcript::FindBlock(const std::string& id) const {
     const auto it = m_blocks.find(id);
     return it == m_blocks.end() ? nullptr : &it->second;
+}
+
+// ★★ §3.3 的六个已知 kind（2026-10-13 收进单一判据）。
+//   为何要独立成函数：App 的渲染分支与 Transcript 的记账**必须同源**——
+//   若两处各写一份列表，加一个 kind 时漏改一处 ⇒ 又会出现「渲染成一个样、
+//   记账成另一个样」的静默不一致。
+bool Transcript::IsKnownKind(const std::string& kind) {
+    return kind == "user" || kind == "assistant" || kind == "tool_call" ||
+           kind == "tool_result" || kind == "system" || kind == "error";
 }

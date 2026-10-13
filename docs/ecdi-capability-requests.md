@@ -39,6 +39,7 @@
 ---
 
 ## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；REQ-06 待裁决）
+> ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 
 ### REQ-01 ✅ 含 `\n` 的短文本丢换行（**归属反转：harness 侧** → **已修复闭合**）
 
@@ -237,6 +238,49 @@
 
 ★ **本轮的 harness 侧自伤（已修）**：`edit` 工具会按**无 BOM** 重写文件 ⇒ `App.cpp` / `App.h` / `main.cpp` / `PromptBar.h` 一度全部丢失 BOM（4 个文件**缺 BOM 且含中文** = **已确认缺陷**，MSVC 按 CP936 读会触发 C4819）。已按条 70 判据补齐（`new == BOM + old`，行数不变），全目录复查缺 BOM 数 = **0**。
 
+### 思维链与未知 `kind`（2026-10-13 晚新增）
+
+> 触发：用户提出「harness 这种 agent 用**开源模型**时是会传**思维链**的」。
+> 取证：`.scratch/cot-findings.md`（现象）· `.scratch/D-attribution-conclusion.md`（归属）·
+> 探针夹具 `.scratch/probe-kind.jsonl` · 截图 `.scratch/kind-probe.png`。
+
+#### ① 协议空白：§3.3 没有思维链的位置（**待协议 v2**）
+
+| 项 | 内容 |
+|---|---|
+| 现象 | §3.3 的 `kind` 枚举 = `user` / `assistant` / `tool_call` / `tool_result` / `system` / `error` **六个值**，**没有思维链** |
+| 严重性 | 未知 `kind` **不被任何不变量覆盖**——I5 只管信封层的 `t`（子判别符不归它管）⇒ 实测 `unknownTypes=0`、`validate.py` **退出码 0**。一份满屏思维链的夹具会**全绿通过** |
+| 性质 | **协议空白**（不是 ECDI 缺陷，也不是单纯 harness 缺陷）⇒ 与协议 §8.5 自己的纪律冲突：「一个恒成立的负向用例，与没有这个用例无法区分」 |
+| 建议 | 协议 **v2** 增 `kind:"reasoning"`（附带 `tokens` 可选字段）**并补一条 I8**：未知 `kind` 必须以**中性形态**渲染（不得伪装成工具卡/权限门等有语义的形态）+ 显式提示。★ 渲染形态（默认折叠？显 token 数？）建议先用评估夹具取读数再定 |
+
+#### ② ★★ 候选 ECDI 需求被复核**否决**（第 4 次归属反转）
+
+| 项 | 内容 |
+|---|---|
+| 候选条目 | 曾拟记 `REQ-07`：**ECDI 的 `CollapsiblePanel` 收起后，其内容仍被逐帧测量** ⇒ 请框架提供「跳过不可见内容布局/测量」的能力 |
+| 复核结论 | ❌ **不成立，不登记**。归属 = **harness 侧** |
+| 判据（ECDI 侧**已有**正确契约） | `ECDI/src/Layout/VerticalLayout.cpp:37` `if (!child->IsVisible()) continue;`（注释明写 `// C-VIS-1：隐藏子不进任何统计`）· `HorizontalLayout.cpp:37,69` · `GridLayout.cpp:28` · `ListLayout.cpp:23` **四处同款** |
+| 判据（harness 侧失效点） | `gui/src/App.cpp:1123` `r.label->AutoSize();` **无条件执行**（不看 `r.expanded`、不看内容 `IsVisible()`）；且工具卡 `panel` **未 `SetLayout`**（子节点手动摆位）⇒ 没有任何 Layout 会替它跳过 |
+| 实测 | 受控 4 档剂量（body 40/400/4000/8000 字符，**全部默认折叠**）：`measureChars` = 15,796 / 19,875 / 139,043 / 454,946 ⇒ **1.00× / 1.26× / 8.80× / 28.80×**，帧数基本持平 ⇒ 测量确未被跳过 |
+| ★ 方法教训 | 这是本项目**第 4 次**「候选 ECDI 缺陷 → 复核后判 harness 侧」（前三次 = `REQ-01`/`REQ-03`/`REQ-04`），**成因同一**：没先查 ECDI 源码仓。本轮**先做了这一步**，故没有给 ECDI 记一条不存在的需求 |
+
+★ **旁证（值得记的框架事实）**：`Widget::ArrangeInternal()`（`Widget.cpp:272-286`）**自身不查 `IsVisible`**——它无条件递归子节点；跳过与否**完全由各 Layout 决定**。而 `Paint`（`Widget.cpp:363`）与 `HitTest`（`Widget.cpp:188`）**都有**门控。⇒ 「Arrange 不门控」是**有意分工**，不是疏漏；判断这类问题时**不能只看 `ArrangeInternal`**。
+
+#### ③ 已落地的 harness 侧处置（`A-1`）
+
+| 改动 | 位置 |
+|---|---|
+| 未知 `kind`（含**缺失字段**）不再落工具卡 ⇒ **中性气泡**（琥珀描边 + 明写 `[未知 kind: xxx]`，正文原样保留不丢内容） | `App.cpp` `CreateBlockRow` 新增分支 |
+| 前缀文本**单一真相源**（建行与 delta 更新同源——首版两处各写一份，delta 一到就擦掉前缀，实测踩中） | `App.cpp` `UnknownKindText()` |
+| `Transcript::UnknownKinds()` 计数 + `Block::unknownKind` 标记；已知 kind 判据收进 `Transcript::IsKnownKind()`（与渲染分支同源） | `Transcript.h` / `Transcript.cpp` |
+| 摘要新增 `unknownKinds` 字段（与 `unknownTypes` **并列不合并**：前者是 `kind`，后者是 `t`） | `App.cpp` `WriteSummary` |
+| 右栏「协议健康」**独立一行**显示未知 kind（并进上行实测被裁切） | `App.cpp` `BuildInspector` / `RefreshHud` |
+| 可执行规格增检查：未知 `kind` 记 note（**不判违规**——I5 前向兼容精神：忽略并记录，不是拒绝） | `protocol/validate.py` |
+
+★ **实测复验**：探针 7 块（1 正常 assistant + 4 未知 kind + 2 真工具块）⇒ 四个未知块**全部中性渲染**（截图可辨），真工具卡 `read_file · 已发起` / `read_file · 42 行` 不受影响；摘要 `unknownKinds=4`、`unknownTypes=0`；`validate.py` 对全库 5 份夹具仍 **exit 0**，对探针夹具给出 note。
+
+★ **首版两个 bug（自测发现并修）**：① `!block.kind.empty() && !IsKnownKind(...)` 漏掉**缺失 `kind`** 的块（它照样掉工具卡）⇒ 改为 `!IsKnownKind(block.kind)`；② `validate.py` 的 `sorted(...)` 在字段缺失时对 `None` 排序 ⇒ `TypeError` 崩溃，已加 `is not None` 守卫。
+
 ---
 
 ## §3 已闭合条目（保留历史链条）
@@ -262,6 +306,8 @@
 |---|---|---|
 | `F7` | `truncated` 夹具实际**以 LF 结尾** ⇒ `ReplaySource` 的「缺尾 LF」分支**零覆盖**（协议 §8.5 自己警告的形态） | 🔄 **仍成立**（2026-10-08 复核：末字节 = `0x0A`）⇒ 需补一份**真缺尾 LF** 的夹具，或改现有夹具 |
 | `F8` | evals 数据卫生（3 项） | 🔄 **仍成立且扩到 5 项**，见 `MEMORY.md`「待澄清的数据卫生问题」 |
+| ★ `A-1` | **未知 `kind` 的中性渲染 + 记账**（`reasoning`/`thinking`/缺失 `kind` 曾静默长成「等待结果」工具卡，与未完成的 `tool_result` 无法区分） | ✅ **已落地并实机复验**（2026-10-13）：`App.cpp` 中性分支 + `Transcript::UnknownKinds()` + 摘要 `unknownKinds` 字段 + 右栏独立行 + `validate.py` 记 note。探针 `probe-kind.jsonl` 四个块全部中性渲染，`unknownKinds=4` |
+| ★ `A-2` | **折叠态仍在全量测量**（`App.cpp:1123` 无条件 `AutoSize()`）：折叠卡里的长文本每帧照样测量 ⇒ 为看不见的内容付全部成本 | 🔄 **仍成立**（2026-10-13 受控 4 档剂量实测：body 40→4000 字符，`measureChars` 15,796→139,043，**8.80×**）⇒ 属 harness 侧，修法见 `.scratch/D-attribution-conclusion.md` §五 |
 
 ---
 
@@ -290,6 +336,11 @@
 
 ## §6 修订记录（新在前）
 
+- **v1.6（2026-10-13 晚）思维链 / 未知 `kind` 专项 + 一条候选 ECDI 需求被否决**：
+  ① 登记**协议空白**——§3.3 的 `kind` 无思维链位置，且未知 `kind` 不被任何不变量覆盖（实测 `unknownTypes=0` + `validate.py` exit 0，满屏思维链可全绿）⇒ 建议协议 v2 增 `kind:"reasoning"` 并补 **I8**（未知 `kind` 必须中性渲染 + 显式提示）。
+  ② ★★ **候选 `REQ-07` 复核否决**：曾拟记「ECDI 折叠件收起后仍测量」为框架需求；查 ECDI 源码仓发现其 Layout **四处**均有 `C-VIS-1` 跳过不可见子节点的契约（`VerticalLayout.cpp:37` 等）⇒ 归属 **harness 侧**（`App.cpp:1123` 无条件 `AutoSize()`）。**不登记为 ECDI 需求**。这是本项目**第 4 次**归属反转，成因同前三次（未先查 ECDI 源码仓）。
+  ③ 落地 harness 侧处置（`A-1`）：未知 `kind` 中性渲染 + `UnknownKinds()` 记账 + 摘要 `unknownKinds` + 右栏独立行 + `validate.py` 记 note；实机复验通过，全库 5 份夹具仍 exit 0。
+  ④ 另记 harness 待办 `A-2`：折叠态仍全量测量（受控 4 档实测 8.80×），修法已设计未实施。
 - **v1.5（2026-10-13）`REQ-01` / `REQ-02` / `REQ-04` 三条 harness 侧修复落地并闭合**：`needWrap` 认 `\n` · `block_end` 认 `tool_call` · `PromptBar` 暴露按钮 + `state` 驱动使能（**判据 A5 兑现**）。三处均实机复测取证。
   ★ `REQ-04` 附带：ECDI 有意不做 disabled 绘制（YAGNI）⇒ 灰化由应用侧自备（`Theme.h` +3 禁用态令牌）——**仍不需要 ECDI 改动**。
   ★ 本轮自伤并修复：`edit` 工具按无 BOM 重写 ⇒ 4 个源文件一度缺 BOM（含中文 = 已确认缺陷），已按条 70 补齐。
