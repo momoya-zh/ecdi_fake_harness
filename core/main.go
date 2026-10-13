@@ -1,4 +1,4 @@
-// ecdi-fake-core —— ECDI_fake_harness 的「假 core」（P1.5 子进程真路径）。
+﻿// ecdi-fake-core —— ECDI_fake_harness 的「假 core」（P1.5 子进程真路径）。
 //
 // 定位：只实现 protocol/PROTOCOL.md v1 的消息流，与 core↔gui 契约严格同构。
 // 不接真实模型、不执行真实工具、不读写用户文件——它的唯一职责是让 GUI 面对

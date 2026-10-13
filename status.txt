@@ -1,2 +1,5 @@
 P1.5 done: fake Go core + ChildSource + reverse channel, all 4 acceptance gates passed (live E2E / I4 28=28 / replay regression / no zombies)
 ECDI release a1f843f (MSVC Release, from user-rebuilt VS tree) installed to third_party/ecdi and consumed: harness_gui rebuilt; ECDI suite Debug+Release 445/445 each, replay smoke seqGaps 0 / violations 0, live E2E no zombies, I4 negative 74/74 (evals/p32-*)
+FIX done: three harness-side fixes landed and verified -- REQ-01 needWrap honours '\n' (GDI 8 bands/16px, was 1 merged band) / REQ-02 block_end updates tool_call title / REQ-04 PromptBar exposes buttons + state-driven enablement (acceptance A5 satisfied)
+REPO done: github.com/momoya-zh/ecdi_fake_harness -- 2 commits (f243579 init, cf64574 chore), 129 files; .workbuddy/ deliberately excluded; .gitattributes pins *.jsonl to LF per PROTOCOL.md 1.1
+OPEN: REQ-06 cross-backend baseline offset (+1px latin / +2px CJK) awaiting ECDI decision; 5 data-hygiene items; REQ-02/REQ-04 evidence still screenshot-only (machine-readable pass pending)

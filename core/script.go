@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 // script.go —— 假 core 的"剧本"：模板文本 / 假工具 / 结果文本。
 //

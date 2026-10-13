@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 // session.go —— 假 core 的会话状态机与出站写入。
 //
