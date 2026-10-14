@@ -141,26 +141,42 @@ std::string UnknownKindText(const Block& block) {
 }
 
 // ★★ 思维链卡的标题拼法（协议 v2 §7，2026-10-14）——**单一真相源**。
-//   为何要抽成函数：该文本在**两处**生成（建行、点击展开/收起），两处各写一份必然漂移
-//   （本项目已踩过同类坑：`UnknownKindText` 首版两处各写一份，delta 一到就把前缀擦掉）。
-//   同源即不可能再漂移。
+//   为何要抽成函数：该文本在**三处**生成（建行、`block_end` 到达、点击展开/收起），
+//   三处各写一份必然漂移（本项目已踩过同类坑：`UnknownKindText` 首版两处各写一份，
+//   delta 一到就把前缀擦掉）。同源即不可能再漂移。
 //
-//   ★ 用户口径（逐字）：「默认应当不渲染，显示『思考中』这几个字，加一个**向下的
-//     **不带柄的箭头**，点击展开后箭头变为**朝上**的」。
-//     ⇒ 收起 = `▼ 思考中` · 展开 = `▲ 思考中`。**只有两态、一个标签**。
-//     ★ 不带柄 ⇒ 不用 `⯆`/`⌄` 一类字形；也不用工具卡那套 `▸`（那是收起态实心右三角）。
+//   ★ 箭头字形（2026-10-14，**用户指定**）：用户嫌 `▼`/`▲` 难看，并要求
+//     「类似于 `<` 尖括号这种……**向下的尖括号和向上的尖括号**的样子，但是要**钝角**，
+//     大概 **120°** 的样子」，随后**直接给出字形**：**`﹀`(U+FE40) / `︿`(U+FE3F)**。
 //
-//   ★★ 曾经被我"改进"成三态（`▼ 思考中` / `▶ 思考过程` / `▲`），**已撤回**——
-//     截图暴露了它的问题：绝大多数块**都已结束** ⇒ 屏幕上看到的几乎全是 `▶`，
-//     而用户要的是**向下**箭头。那是我**自己发明的第三种字形**，不是需求。
-//     ⇒ 纪律：**用户给了可见形态的具体规格时，不要擅自替换成"更好"的形态**；
-//       有异议就**提出来问**，不要先改了再说。
-//   ⚠️ **仍待用户裁决的一点**（已提出、未擅自实施）：块**已结束**后仍显示「思考中」
-//     存在失真风险（与 `等待结果` 占位标题同类）。若要区分，`block.ended` 已在手边，
-//     改本函数一处即可；**在用户答复前保持用户给定的两态**。
-std::string ReasoningTitle(bool expanded) {
-    return expanded ? "\xE2\x96\xB2 \xE6\x80\x9D\xE8\x80\x83\xE4\xB8\xAD"      // ▲ 思考中
-                    : "\xE2\x96\xBC \xE6\x80\x9D\xE8\x80\x83\xE4\xB8\xAD";     // ▼ 思考中
+//   ★★ **我此前两次都测错了角度（根因 = 量具公式符号反了）**——记此以免重犯：
+//     首版公式写成 `acos((k²-1)/(k²+1))`，**正确应为 `acos((1-k²)/(1+k²))`**
+//     ⇒ 每个读数都被**镜像**成 `180° - 真值`。后果：
+//       · 我说「`▼` 本来就是 118°、角度已达标」——**错**，它其实是 **62°（锐角）**；
+//       · 我据此换上的 `∨`/`∧`，我说 127.7°/131.4°——**错**，其实是 **53.1°/49.1°（锐角）**
+//         ⇒ 用户要**钝角**，我给的却是**锐角**，方向完全反了。
+//     ⇒ 修正后实测（`.scratch/probe_chevron.py`，**先校准再测量**）：
+//         `﹀` **134.5°** / `︿` **135.7°**（钝角、细笔画、上下仅差 **1.2°**）⇒ **采用**。
+//     ★★ **教训（本轮最该记的一条）**：**测量函数本身是仪器，未校准的仪器会给出自信的错数**。
+//       修正版先喂**解析式已知角度**的合成 V 形做校准（60/90/110/120/130/150，
+//       误差 ≤1.4°），通过后才测真实字形。**不校准就不报数。**
+//
+//   ★ 字形可用性是**实测**的，不是按名字猜的（同一次取证）：`⌄`(U+2304) / `⯆`(U+2BC6) /
+//     `〈`(U+2329) 等在当前字体**缺字**；缺字会被 Windows **静默字体链接**到别的 face
+//     ⇒ 字重/基线错位，**比原样更难看**。⇒ 选字形必须实测存在性。
+std::string ReasoningTitle(const Block& block, bool expanded) {
+    // ★ 字节序列**由 Python 反查得到**（`chr(cp).encode('utf-8')`），**不靠心算**：
+    //   U+FE40 ﹀ = EF B9 80 · U+FE3F ︿ = EF B8 BF
+    //   （我第一版凭记忆写成 EF B8 80 / EF B9 80 —— **错了**，那是 U+FE00/U+FE40 的错配。
+    //     教训：多字节字面量一律程序化生成/核对，别手写——同条 64「字面量不得凭阅读记忆重打」。）
+    std::string out = expanded ? "\xEF\xB8\xBF "      // ︿ U+FE3F（展开）
+                               : "\xEF\xB9\x80 ";     // ﹀ U+FE40（收起）
+    out += block.ended ? "\xE5\xB7\xB2\xE5\xAE\x8C\xE6\x88\x90"      // 已完成
+                       : "\xE6\x80\x9D\xE8\x80\x83\xE4\xB8\xAD";     // 思考中
+    if (block.tokens > 0) {
+        out += " \xC2\xB7 " + std::to_string(block.tokens) + " tokens";
+    }
+    return out;
 }
 
 // 侧栏/状态栏的一行小标签；返回裸指针（树拥有），供 HUD 动态 SetText
@@ -596,17 +612,28 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     AddLine(*insp, "用量", kDarkMuted, true, 200, 11.0f);
     {
-        auto card = makeCard(70);
+        auto card = makeCard(92);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        // ★★ 协议 v2（2026-10-14）上下文占用百分比——**用户要求**。
+        //   ★ 为什么必须有 `hello.context`：百分比**需要分母**，而 v1 协议里
+        //     **没有任何容量字段** ⇒ 此前两根条只能拿 `max(input, output)` 当分母，
+        //     那是**拿输入跟输出比**（两个不同量纲的东西相除）⇒ 读数无意义。
+        //     现分母 = `hello.context`，缺字段 ⇒ 显示 `—`（**不猜**）。
+        //   ★ 为何是**百分比条**而不是圆环：用户提议圆环并猜「ECDI 应该还没实现」——
+        //     实测**猜对了**：ECDI 后端只有 6 个绘制原语，**没有圆弧/扇形**
+        //     （`RenderingBackend.h:72-115`；GL 侧同样，`GLRenderer.cpp:208-496`）。
+        //     「环」能用两个同心实心圆叠出来（`DrawRoundedRect` 半径钳到 min(w,h)/2），
+        //     但**按角度的进度弧画不了** ⇒ 环形进度条须靠应用侧拼大量小段逼近，
+        //     那是 workaround、不是框架能力 ⇒ 本轮先用现有能力兑现，并登记 REQ-08。
         auto urow = [&card](const std::string& k, ECDI::Label** vOut,
-                            ECDI::ProgressBar** barOut) {
+                            ECDI::ProgressBar** barOut, const ECDI::Color& fill) {
             auto row = uikit::Row(178, 16, 8);
             row->AddChild(uikit::Label(k, 40, 16, kDarkMuted));
             auto bar = std::make_unique<ECDI::ProgressBar>();
             *barOut = bar.get();
             bar->SetSize(70, 5);
             bar->SetStyle(ECDI::ProgressBarStyleOverride{
-                .trackColor = kTrackBg, .fillColor = harness::kDarkAccent,
+                .trackColor = kTrackBg, .fillColor = fill,
                 .cornerRadius = 2.0f});
             row->AddChild(std::move(bar));
             auto vl = uikit::Label("—", 52, 16, kDarkInk, 11.0f, /*mono=*/true);
@@ -614,8 +641,10 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
         };
-        urow("输入", &m_hud.usageInV, &m_usageBarIn);
-        urow("输出", &m_hud.usageOutV, &m_usageBarOut);
+        // 上下文行置顶：它是**决策相关**读数（"还能聊多久"），输入/输出只是明细
+        urow("上下文", &m_hud.ctxPct, &m_ctxBar, harness::kOkDark);
+        urow("输入", &m_hud.usageInV, &m_usageBarIn, harness::kDarkAccent);
+        urow("输出", &m_hud.usageOutV, &m_usageBarOut, harness::kDarkAccent);
         insp->AddChild(std::move(card));
     }
 
@@ -881,11 +910,17 @@ void HarnessApp::RouteLastMessage() {
         if (row == m_blockRows.end() || !row->second->headerBtn) {
             return;
         }
-        // ★ 协议 v2：思维链块结束时**标题不变**（用户口径只有「思考中」一个标签，
-        //   箭头只由展开态决定 ⇒ 结束不产生任何可见变化）。
-        //   ★ `ended` 仍记录（探针与将来可能的形态变更会用到），但不改标题。
+        // ★ 协议 v2 §7：思维链块结束时标题改为「**已完成**」（用户裁决）。
+        //   ★ **箭头不变**——箭头只由展开态决定，与是否结束无关。
+        //     （我一度连箭头一起换成 `▶`，被截图证明违背用户明确给出的规格，已撤回。）
+        //   ★ token 副标也在此刻出现（`tokens` 是 `block_end` 才有的字段）。
+        //   ★ 展开态也要更新文案：用户看到的是「已完成」+ `▲`。
         if (row->second->reasoning && block) {
             row->second->ended = true;
+            if (row->second->headerBtn) {
+                row->second->headerBtn->SetText(
+                    ReasoningTitle(*block, row->second->expanded));
+            }
             RequestRepaint();
             return;
         }
@@ -961,6 +996,12 @@ void HarnessApp::RouteLastMessage() {
                 joined += cap.text;
             }
             m_capsStr = joined;
+        }
+        // ★ 协议 v2 §3.1：上下文容量（百分比的分母）。缺字段 ⇒ 保持 0 ⇒ 显示 `—`。
+        //   ★ **不猜容量**：分母未知时百分比无定义，猜一个比不显示更糟（编造读数）。
+        if (const json::Value* ctx = msg.Find("context");
+            ctx && ctx->IsNumber() && ctx->number > 0) {
+            m_contextLimit = static_cast<long long>(ctx->number);
         }
         m_hudDirty = true;
         AddNoticeRow("core " + msg.GetString("core") + " · session " +
@@ -1061,7 +1102,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
             .borderColor = kReasoningBorder});
 
         // 标题 = 单一真相源（箭头两态）；默认收起 ⇒ ▼
-        auto header = std::make_unique<ECDI::Button>(ReasoningTitle(false));
+        auto header = std::make_unique<ECDI::Button>(ReasoningTitle(block, false));
         rec.headerBtn = header.get();
         header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
         {
@@ -1096,13 +1137,22 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         AddRow(std::move(panel), rec, block.id);
 
         RowRec& stored = m_rows.back();
+        // ★ 在**建行时刻**抓流式态标题（`block_start` 刚到、`block_end` 还没来）。
+        //   为何必须此刻抓：`--instant` 在同一 tick 抽干夹具 ⇒ 事后回读永远是
+        //   「已完成」，`▼ 思考中` 那一态**根本采不到**（首版就栽在这里）。
+        if (m_options.reasoningProbe && m_reasoningTitleStreaming.empty()) {
+            m_reasoningTitleStreaming = stored.headerBtn->GetText();
+        }
         stored.headerBtn->SetOnClick([this, &stored] {
             if (m_options.rowModeList) return;   // 固定行高模式：展开体被后续行覆盖，v1 禁用
             stored.expanded = !stored.expanded;
             if (stored.body) stored.body->Toggle();
-            // 箭头随展开态翻转（▼ ⇄ ▲）——标签不变（用户口径只有两态）
+            // 箭头随展开态翻转（▼ ⇄ ▲）；文案与 token 副标由**单一真相源**决定，
+            // 故回查块（`block_end` 可能已到达 ⇒ 文案应为「已完成」+ tokens）
             if (stored.headerBtn) {
-                stored.headerBtn->SetText(ReasoningTitle(stored.expanded));
+                if (const Block* b = m_transcript.FindBlock(stored.blockId)) {
+                    stored.headerBtn->SetText(ReasoningTitle(*b, stored.expanded));
+                }
             }
             m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
             Relayout();
@@ -1842,16 +1892,51 @@ void HarnessApp::RefreshHud() {
         m_hud.usageOutV->SetText(m_usageOut < 0 ? "—"
                                                 : std::to_string(m_usageOut));
     }
+    // ★★ 上下文占用百分比（协议 v2 §3.1，2026-10-14）——**用户要求**。
+    //   ★ 分母 = `hello.context`（**唯一来源**）；**不再**用 `max(input, output)`。
+    //     旧写法是**拿输入跟输出比**（两个不同量纲的东西相除）⇒ 读数无意义，
+    //     现已被"真正的分母"取代。这是本行**修掉的一个既有缺陷**，不只是新增。
+    //   ★ 分子 = `usage.input`（= 本轮送进模型的上下文规模）。**不含 output**：
+    //     output 是本轮新生成的，尚未回到下一轮的上下文里。
+    //   ★ 三者任一未知 ⇒ 显示 `—` 且条归零（**不猜**；分母未知时百分比无定义）。
+    const bool ctxKnown = (m_contextLimit > 0 && m_usageIn >= 0);
+    if (m_hud.ctxPct) {
+        if (!ctxKnown) {
+            m_hud.ctxPct->SetText("—");
+            m_hud.ctxPct->SetTextColor(kDarkMuted);
+        } else {
+            // 四舍五入到整数百分比；占用可能 >100%（core 低估容量）⇒ 如实显示，不钳
+            const long long pct =
+                (m_usageIn * 100 + m_contextLimit / 2) / m_contextLimit;
+            m_hud.ctxPct->SetText(std::to_string(pct) + "%");
+            // 配色：<70% 常规 · 70–90% 琥珀（该收尾了）· >90% 红（快溢出）
+            m_hud.ctxPct->SetTextColor(pct >= 90 ? kErrorDark
+                                                 : (pct >= 70 ? kWarn : kOkDark));
+        }
+    }
+    if (m_ctxBar) {
+        const float frac = ctxKnown
+                               ? static_cast<float>(m_usageIn) /
+                                     static_cast<float>(m_contextLimit)
+                               : 0.0f;
+        // 条本身钳到 [0,1]（SetProgress 契约）；文本仍如实显示 >100%
+        m_ctxBar->SetProgress(frac > 1.0f ? 1.0f : frac);
+    }
     if (m_usageBarIn && m_usageBarOut) {
-        const long long peak = std::max(m_usageIn, m_usageOut);
-        const float inFrac = (m_usageIn >= 0 && peak > 0)
-                                 ? static_cast<float>(m_usageIn) / static_cast<float>(peak)
+        // ★ 输入/输出两根条改为**以上下文容量为共同分母**（原来拿二者峰值互比，
+        //   两个不同量纲相除 ⇒ 无意义）。容量未知时退化为二者峰值互比，
+        //   仅作"相对大小"提示——**不**声称是占用率。
+        const long long denom = (m_contextLimit > 0)
+                                    ? m_contextLimit
+                                    : std::max(m_usageIn, m_usageOut);
+        const float inFrac = (m_usageIn >= 0 && denom > 0)
+                                 ? static_cast<float>(m_usageIn) / static_cast<float>(denom)
                                  : 0.0f;
-        const float outFrac = (m_usageOut >= 0 && peak > 0)
-                                  ? static_cast<float>(m_usageOut) / static_cast<float>(peak)
+        const float outFrac = (m_usageOut >= 0 && denom > 0)
+                                  ? static_cast<float>(m_usageOut) / static_cast<float>(denom)
                                   : 0.0f;
-        m_usageBarIn->SetProgress(inFrac);
-        m_usageBarOut->SetProgress(outFrac);
+        m_usageBarIn->SetProgress(inFrac > 1.0f ? 1.0f : inFrac);
+        m_usageBarOut->SetProgress(outFrac > 1.0f ? 1.0f : outFrac);
     }
     for (size_t i = 0; i < 3; ++i) {
         if (m_hud.histChip[i] && m_hud.histWhat[i]) {
@@ -2039,6 +2124,10 @@ void HarnessApp::WriteSummary() {
         }
         json += "],\n";
     }
+    // ★ 流式态标题（**建行时刻**抓的，见 App.h 注释：事后回读永远是终态）
+    if (m_options.reasoningProbe && !m_reasoningTitleStreaming.empty()) {
+        json += "  \"reasoningStreamingTitle\": \"" + m_reasoningTitleStreaming + "\",\n";
+    }
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_transcript.SeqGaps());
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_transcript.Violations());
@@ -2059,8 +2148,16 @@ void HarnessApp::WriteSummary() {
     std::snprintf(buf, sizeof(buf), "  \"protocolMaxSupported\": %d,\n",
                   kProtocolMaxSupported);
     json += buf;
-    std::snprintf(buf, sizeof(buf), "  \"protocolIncompatible\": %s\n",
+    std::snprintf(buf, sizeof(buf), "  \"protocolIncompatible\": %s,\n",
                   m_protocolIncompatible ? "true" : "false");
+    json += buf;
+    // ★ 协议 v2 §3.1：上下文容量的读数（0 = core 未声明 ⇒ 百分比显示 `—`）
+    std::snprintf(buf, sizeof(buf), "  \"contextLimit\": %lld,\n",
+                  static_cast<long long>(m_contextLimit));
+    json += buf;
+    // ★ 上下文占用读数（分子/分母都如实输出，便于复核百分比是否算对）
+    std::snprintf(buf, sizeof(buf), "  \"usageInput\": %lld\n",
+                  static_cast<long long>(m_usageIn));
     json += buf;
     json += "}\n";
 

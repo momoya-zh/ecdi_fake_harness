@@ -98,6 +98,10 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         }
         it->second.ok = m_last.GetBool("ok", false);
         it->second.summary = m_last.GetString("summary");
+        // ★ 协议 v2 §3.5：可选的 token 数（`reasoning` 标题副标用）。
+        //   缺字段 ⇒ GetNumber 返回 fallback 0 ⇒ 保持 0 ⇒ 标题**不显示**副标。
+        //   ★ **绝不用字符数兜底**——那是编造读数（本项目纪律：不把没测到的写成测到了）。
+        it->second.tokens = static_cast<long long>(m_last.GetNumber("tokens", 0.0));
         it->second.ended = true;
         return true;
     }

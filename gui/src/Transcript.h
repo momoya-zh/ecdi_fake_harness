@@ -10,13 +10,18 @@
 // 一个转录块：block_start .. block_end 之间可被 delta 追加（I6：end 后只读）
 struct Block {
     std::string id;
-    std::string kind;         // user / assistant / tool_call / tool_result / system / error
+    std::string kind;         // user / assistant / reasoning / tool_call / tool_result / system / error
     std::string name;         // tool_call 的工具名
     std::string argsPretty;   // tool_call 的 args 美化文本
     std::string forId;        // tool_result 引用的 tool_call id（I7）
     std::string text;         // block_start.text + 顺序拼接的全部 delta
     bool ok = false;          // block_end.ok
     std::string summary;      // block_end.summary
+    // ★★ 协议 v2 §3.5（2026-10-14）：该块的 token 数（**可选**——`block_end.tokens`）。
+    //   用途：`reasoning` 卡的标题副标（`▼ 已完成 · 1843 tokens`）。
+    //   ★ 0 = 「core 没给」⇒ **不显示**，且**不得**用字符数冒充（那是编造读数）。
+    //   ★ 放在 `block_end` 而非 `block_start` 是协议的决定：token 数只有内容产完才知道。
+    long long tokens = 0;
     bool ended = false;
     // ★★ 待澄清的 kind（2026-10-13）：`kind` 不在 §3.3 的六个已知值里。
     //   动机：harness 面向的 agent 用**开源模型**时会传**思维链**

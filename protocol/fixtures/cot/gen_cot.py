@@ -26,10 +26,22 @@ the protocol gap and for why the harness must render unknown kinds NEUTRALLY
 STATUS UPDATE (2026-10-14): that gap is now CLOSED -- PROTOCOL v2 added
 `kind:"reasoning"` as a first-class kind plus invariant I8 (unknown kinds must
 render neutrally).  So `--kind reasoning` is now the REAL protocol value, and
-the default rendering is a COLLAPSED block ("思考中" while streaming, "思考过程"
+the default rendering is a COLLAPSED block ("thinking" while streaming, "done"
 once ended) that expands on click.  `--kind unknown` still exercises the I8
 path with a value v2 does not name (`thinking`), which is exactly what a v1-era
 consumer would receive.
+
+v2 also added two fields this generator emits:
+  * `hello.context` (--context) -- the DENOMINATOR of the context-usage
+    percentage.  Without it a percentage is undefined, so --context 0 omits the
+    field and exercises the GUI's "show a dash, do not guess" path.
+  * `block_end.tokens` (--tokens) -- the reasoning subtitle.  Emitted on
+    block_end because the count is only known once the body is complete;
+    --tokens 0 omits it and exercises the "no subtitle" path.
+The default token count is a DETERMINISTIC ESTIMATE from body length, not a real
+tokenizer -- this is a fake core, and the field is defined as "what core
+reports", so a plausible number is honest here.  It must not be read as a
+measured tokenizer result.
 
 The intended measurement
 ------------------------
@@ -59,6 +71,8 @@ Usage:
   python gen_cot.py --turns 12 --kind unknown --out cot-unknown.jsonl
   python gen_cot.py --turns 12 --thinking-chars 4000 --out cot-long.jsonl
   python gen_cot.py --turns 8 --kind assistant --out cot-assistant.jsonl
+  python gen_cot.py --turns 3 --context 0 --out cot-no-ctx.jsonl
+  python gen_cot.py --turns 3 --tokens 0 --out cot-no-tokens.jsonl
 """
 
 import argparse
@@ -184,6 +198,17 @@ def main(argv=None):
                         help="session id (default derived from turn count)")
     parser.add_argument("--pace", type=float, default=1.0,
                         help="ts pacing multiplier (1.0 = realistic, 0.05 = fast)")
+    parser.add_argument("--context", type=int, default=128000,
+                        help="context window size in tokens, emitted as "
+                             "hello.context (PROTOCOL 3.1). This is the "
+                             "DENOMINATOR of the context-usage percentage; "
+                             "0 = omit the field, exercising the GUI's "
+                             "'unknown denominator => show dash' path")
+    parser.add_argument("--tokens", type=int, default=None,
+                        help="tokens reported on each reasoning block_end "
+                             "(PROTOCOL 3.5). Default = a deterministic "
+                             "estimate from the body length; 0 = omit the "
+                             "field, exercising the 'no subtitle' path")
     opts = parser.parse_args(argv)
 
     if opts.turns < 1:
@@ -197,6 +222,12 @@ def main(argv=None):
         return 2
     if opts.pace <= 0:
         sys.stderr.write("gen_cot: --pace must be > 0\n")
+        return 2
+    if opts.context < 0:
+        sys.stderr.write("gen_cot: --context must be >= 0\n")
+        return 2
+    if opts.tokens is not None and opts.tokens < 0:
+        sys.stderr.write("gen_cot: --tokens must be >= 0\n")
         return 2
 
     rng = random.Random(opts.seed)
@@ -219,8 +250,13 @@ def main(argv=None):
         ordered.update(payload)
         messages.append(ordered)
 
-    emit({"t": "hello", "protocol": 2, "core": "0.1.0", "session": session,
-          "caps": ["tools", "ask"]}, 0)
+    hello = {"t": "hello", "protocol": 2, "core": "0.1.0", "session": session,
+             "caps": ["tools", "ask"]}
+    # context is the DENOMINATOR of the usage percentage; --context 0 omits it
+    # so the fixture can exercise "no denominator => show a dash" (PROTOCOL 3.1).
+    if opts.context > 0:
+        hello["context"] = opts.context
+    emit(hello, 0)
     emit({"t": "state", "value": "running"}, 10)
 
     made = 0
@@ -249,8 +285,22 @@ def main(argv=None):
                 for start in range(0, len(text), cut):
                     emit({"t": "delta", "id": rid, "text": text[start:start + cut]},
                          rng.uniform(8, 60))
-            emit({"t": "block_end", "id": rid, "ok": True,
-                  "summary": "%d 字" % len(text)}, 200)
+            end = {"t": "block_end", "id": rid, "ok": True,
+                   "summary": "%d 字" % len(text)}
+            # PROTOCOL 3.5: optional per-block token count, used by the GUI as the
+            # reasoning subtitle.  Emitted on block_end (not block_start) because
+            # the count is only known once the body is complete.  --tokens 0
+            # omits it, exercising the "no subtitle" path.
+            #
+            # The default is a DETERMINISTIC estimate from the body length, not a
+            # real tokenizer: this is a FAKE core, and inventing a plausible number
+            # is honest here precisely because the field is defined as "what core
+            # reports".  It must NOT be mistaken for a measured tokenizer result.
+            if opts.tokens != 0:
+                tok = opts.tokens if opts.tokens is not None else (len(text) // 2)
+                if tok > 0:
+                    end["tokens"] = tok
+            emit(end, 200)
             made += 1
 
         # ── a tool round sometimes: interleaving reasoning and tools is what

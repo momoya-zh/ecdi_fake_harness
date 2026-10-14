@@ -131,6 +131,10 @@ private:
         ECDI::Label* probeExec = nullptr;    // 右栏：执行 avg us
         ECDI::Label* usageInV = nullptr;     // 右栏：输入 tokens 值
         ECDI::Label* usageOutV = nullptr;    // 右栏：输出 tokens 值
+        // ★★ 协议 v2 §3.1（2026-10-14）：上下文占用百分比（用户要求）。
+        //   ★ 环形进度条**当前做不了**——ECDI 后端没有圆弧原语（见账本 REQ-08），
+        //     故本轮用**百分比条 + 百分比文本**（现有能力即可兑现）。
+        ECDI::Label* ctxPct = nullptr;       // 右栏：上下文占用 `42%` / `—`
         ECDI::Label* histChip[3] = {nullptr, nullptr, nullptr};  // 权限历史 allow/deny
         ECDI::Label* histWhat[3] = {nullptr, nullptr, nullptr};
         ECDI::Label* stState = nullptr;      // 状态栏：state
@@ -214,6 +218,8 @@ private:
     PromptBar* m_promptBar = nullptr;              // 非拥有
     ECDI::ProgressBar* m_usageBarIn = nullptr;     // 右栏用量条（非拥有）
     ECDI::ProgressBar* m_usageBarOut = nullptr;
+    // ★ 上下文占用条（协议 v2 §3.1）：分母 = `hello.context`（**不是** max(in,out)）
+    ECDI::ProgressBar* m_ctxBar = nullptr;
     ECDI::ProgressBar* m_replayBar = nullptr;      // 左栏回放进度条（非拥有）
     Hud m_hud;
 
@@ -232,6 +238,12 @@ private:
     int m_usageTurn = -1;                          // usage 捕获（HUD 右栏/状态栏）
     long long m_usageIn = -1;
     long long m_usageOut = -1;
+    // ★★ 协议 v2 §3.1（2026-10-14）：上下文窗口容量 = 「上下文占用百分比」的**分母**。
+    //   ★ 来源**只有** `hello.context` 一处；缺字段 ⇒ 保持 0 ⇒ 百分比显示 `—`。
+    //   ★ **不得**猜测容量、也**不得**按 0 当分母（分母未知 ⇒ 百分比无定义）。
+    //   ★ 这正是本轮之前那两根用量条的问题：分母取 `max(input, output)`，
+    //     即**拿输入跟输出比**——两个不同量纲的东西相除，读数无意义。
+    long long m_contextLimit = 0;
     bool m_waitForAnswer = false;                  // timed 模式：ask 未答，暂停拉取
     bool m_instantDone = false;
     bool m_replaySettled = false;                  // 夹具拉取完毕（停止制造重绘）
@@ -302,6 +314,11 @@ private:
     int m_reasoningProbeStep = 0;
     std::chrono::steady_clock::time_point m_reasoningProbeNextAt;
     bool m_reasoningProbeDone = false;
+    // ★★ 流式态标题必须在**建行时刻**抓，不能事后补（2026-10-14 用户裁决后重新需要）：
+    //   标题现在**真的会变**（`▼ 思考中` → `▼ 已完成 · N tokens`），而 `--instant`
+    //   在同一 tick 抽干整个夹具 ⇒ 事后回读**永远**是「已完成」，「思考中」采不到。
+    //   ★ 与首版同一个坑（那次三条读数全一样），故这次保留该捕获点。
+    std::string m_reasoningTitleStreaming;   // 建行时读到的标题（应为 ▼ 思考中）
     void RunReasoningProbe();
 
 
