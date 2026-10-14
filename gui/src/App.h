@@ -56,6 +56,22 @@ struct CliOptions {
     //     **判不出** state 驱动（B 与 C 的 inval 均为 25，B-C=+0）。
     //   ★ 默认 false ⇒ 零行为变化（只在 RefreshHud 里多几次只读查询）。
     bool stateProbe = false;              // --state-probe：回读按钮使能/标题到摘要
+    // ★★ REQ-04 **边界**探针（2026-10-14）：`--state-probe` 只证明了「使能位被置对」，
+    //   而 REQ-04 的边界是「**禁用后点击不达**」——使能位正确 ≠ 命中门控生效。
+    //   本开关在**同一个点**上做受控对照（同几何、只改 enabled）：
+    //     · as-is           —— 落定后的真实状态（正对照：enabled 时应命中并触发点击）
+    //     · off-point       —— 同状态、点移到按钮**外侧**（负对照：位置门控）
+    //     · forced-enabled  —— 显式置使能
+    //     · forced-disabled —— 显式置禁用（判据：`HitTest` 不再返回该按钮 ∧ 点击不达）
+    //   ★ 观测通道 = `Widget::HitTest` 返回值 + `SendPrompt` 被进入的次数（不靠像素/注入）。
+    //   ★ 默认 false ⇒ 不跑探针。★ 开启时的**已实测副作用**（条 57③：自己的仪器会污染实验）：
+    //     合成点击走真实派发链 ⇒ `Application::OnMouseButtonDown` 会 `SetFocusedWidget`
+    //     （`Button::CanFocus()==true`）⇒ 输入框失焦 ⇒ `TextBox::OnFocusLost` 停掉
+    //     caret 闪烁定时器。本探针在结束时**已复原焦点**，但定时器随之重启 ⇒
+    //     `paints`/`frames` 有 **±1~2 的相位扰动**（实测 cot 夹具 0/0/−2/−1，随跑批时长变）。
+    //     ⇒ 结论：**探针自身读数（hitProbe）不受影响**；但**不要**拿「探针开」的
+    //     paints/frames 与「探针关」的做性能对比。
+    bool hitProbe = false;                // --hit-probe：命中门控回读（REQ-04 边界）
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -227,6 +243,32 @@ private:
     bool m_stateProbeLastValid = false;            // 是否已有「上次」可比
     bool m_stateProbeLastSend = true;
     bool m_stateProbeLastStop = false;
+
+    // ★★ REQ-04 边界探针（--hit-probe，2026-10-14）
+    //   `--state-probe` 回答的是「使能位对不对」；本组回答的是「**禁用后点击到不到**」。
+    //   两者是 REQ-04 的**两个不同断言**——前者为真**推不出**后者（命中门控是另一段代码，
+    //   `Widget.cpp:188/195`），故必须单独取证。
+    //   ★ 每条 = {场景, 坐标, 使能, 命中者是否==发送按钮, 命中者类型, 点击是否达}。
+    struct HitProbeRec {
+        std::string scene;           // as-is / off-point / forced-enabled / forced-disabled
+        int px = 0;                  // 本场景的客户区坐标（可复核）
+        int py = 0;
+        bool sendEnabled = false;    // 本场景下发送按钮的真实 IsEnabled()
+        bool hitIsSend = false;      // HitTest 返回的是否**正是**发送按钮
+        bool hitIsNull = false;      // HitTest 是否返回 nullptr
+        bool hitIsRoot = false;      // 命中者是否**就是 RootWidget**（禁用后被跳过的典型落点）
+        bool hitConsumes = false;    // 命中者是否 `ConsumesMouseInput()`（D9：可交互判据）
+        std::string hitClass;        // 命中者类型名（"(null)" / Widget / Button / …）
+        bool clickReached = false;   // 合成 Down+Up 后 SendPrompt 是否被进入
+    };
+    std::vector<HitProbeRec> m_hitProbeLog;
+    int m_hitProbeSendCalls = 0;      // SendPrompt 进入次数（探针期间唯一观测通道）
+    bool m_hitProbeActive = false;    // 探针执行中：SendPrompt 只计数、零副作用
+    bool m_hitProbeDone = false;      // 已跑过（夹具 settle 后只跑一次）
+
+    void RunHitProbe();                       // 跑四组受控对照并写入 m_hitProbeLog
+    void SynthesizeClickAt(int x, int y);     // 合成 Down+Up 走**真实**派发链
+    static std::string WidgetKindName(const ECDI::Widget* w);
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）

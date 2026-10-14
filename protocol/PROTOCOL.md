@@ -222,6 +222,20 @@ core 退出前的**最后一条**。
 
 GUI 侧对 `prompt` / `cancel` 的按钮使能**只由 `state` 驱动**（不要自己推测）。
 
+★ **「使能」有两个断言，必须分别兑现**（2026-10-14 补）：
+① **位**——按钮的 enabled 状态按上表翻转（`idle` ⇒ 发送可用 / `running`·`waiting` ⇒ 发送不可用）；
+② **边界**——禁用后**点击不得到达**（不是「到了再忽略」）。
+
+②**不能由 ① 推出**：两者是**独立的两段代码**（使能位是应用侧 `SetEnabled`，命中门控是
+`Widget::HitTest` 的 `if (!IsEnabled()) return nullptr;`）⇒ 必须单独取证。
+本仓库的取证方式 = `harness_gui --hit-probe`（在**同一点**上做 `as-is` / `off-point` /
+`forced-enabled` / `forced-disabled` 四组受控对照，观测 `HitTest` 返回值 + 发送回调是否被进入；
+**不注入系统输入**）。实测结论见 `docs/ecdi-capability-requests.md` 的 `REQ-04` 边界取证节。
+
+★ 一条易混事实：控件禁用时 `HitTest` **不返回 `nullptr`**，而是**跳过该控件、回落到祖先**
+（通常是 `RootWidget`，其命中区覆盖整个客户区）⇒ 「命中者不是该按钮」与「命中 `nullptr`」
+是两种不同读数，别混为一谈。
+
 ---
 
 ## 7. 渲染映射（v1）

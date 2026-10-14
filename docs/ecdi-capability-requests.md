@@ -136,7 +136,7 @@
 | 项 | 内容 |
 |---|---|
 | 原编号 | `F5`（P1）· `R-3`（P1.5） |
-| 状态 | ✅ **已闭合**（harness 侧修复落地，2026-10-13——**判据 A5 已兑现**） |
+| 状态 | ✅ **已闭合**（harness 侧修复落地，2026-10-13——**判据 A5 已兑现**；**边界**亦于 2026-10-14 实测闭合，见下） |
 | 现象 | 协议 §6 硬要求「发送 / 停止按钮**只由 `state` 驱动**」，但 harness 侧**当前未做到** |
 | ★ 能力侧事实 | **框架能力完全具备**：① `Widget::SetEnabled` / `IsEnabled` **自 Phase 3 即在**（`Widget.h:150-152`；`git blame` 确认引入提交 `a11cb9b7`，2026-08-07）；② `HitTest` **已按 `IsEnabled` 门控**（`Widget.cpp:114-128`：`if (!IsEnabled()) return nullptr;`）⇒ 禁用控件不参与命中 |
 | ★ 真正的缺口 | harness 的 `PromptBar` **没暴露 `m_send` / `m_stop`**（`PromptBar.h:36-37` 私有且**无访问器**）⇒ `App` 拿不到这两个 `Button*`，无从 `SetEnabled`。全库 `SetEnabled` 仅 2 处（`App.cpp:1017-1018`，权限门按钮） |
@@ -146,6 +146,35 @@
 但这是**有意的设计决策**（YAGNI），非缺陷：`modelprobe-p1-preliminary-design.md:130` 记「disabled 视觉灰化：**demo 层处理**…**框架不做 disabled 绘制**——YAG」；
 `phase13-captionbar-detailed-design.md:695` 亦记「**不做**：…禁用态视觉（禁用时 `HitTest` 已过滤）」。
 ⇒ harness 若要禁用态「看起来灰」，**须自行 `SetStyle`**（ECDI 侧已有先例：`modelprobe` 的 busy 态自设灰底灰字）。
+
+#### ★★ REQ-04 **边界**取证（2026-10-14）：禁用 ⇒ 点击**不达**（已实测闭合）
+
+> ★ 为何要单独取证：`REQ-04` 此前只有「使能**位**被置对」的证据（`--state-probe` 回读
+> `IsEnabled()` + 标题）。而本条的**边界**是「禁用后点击**到不到**」——中间隔着
+> `Widget::HitTest` 的 `if (!IsEnabled()) return nullptr;`。**两段是独立代码**，
+> 使能位为真**推不出**命中门控生效 ⇒ 必须单独测（条 81b：否定型断言必须自带正对照）。
+
+| 项 | 内容 |
+|---|---|
+| 状态 | ✅ **已实测闭合**（harness 侧探针 `--hit-probe`，2026-10-14） |
+| 取证工具 | `harness_gui --hit-probe`（新增）· 跑批与裁定脚本 `.scratch/probe_hit_gate.py` |
+| 静态链条 | `WindowMessageHandler.cpp:148`（`WM_LBUTTONDOWN` → DIP）→ `Application::OnMouseButtonDown`（`Application.cpp:334`）→ `FindTargetWidget`（`Application.cpp:253`）→ `rootWidget.HitTest` → `Widget::HitTest`（`Widget.cpp:185`）门控在 `:188`（可见）/`:195`（使能）⇒ 返回 nullptr 则**不派发**、`Button::OnClick` 不被调 |
+| 观测通道 | `HitTest` 返回值 + **`SendPrompt` 被进入的次数**（合成 `MouseButtonDown/UpEvent` 喂给 `Application::OnEvent`）——**不靠像素、不靠 `SendInput` 注入**（注入会抢前台/移光标，且此前实测 hover 色始终不出现，正对照失败） |
+| 四组受控对照 | ① `as-is` 落定态+按钮中心（**正对照**）② `off-point` 同态+输入框中心（**负对照**）③ `forced-enabled` 同点+`SetEnabled(true)` ④ `forced-disabled` 同点+`SetEnabled(false)`（**判据**） |
+| 实测读数（6 份夹具 × 3 轮，全部 PASS） | ①③ `hitIsSend=true, hitClass=Button, clickReached=true`；④ `hitIsSend=false, clickReached=false`，落点回落到 **RootWidget**（`hitIsRoot=true`, `hitClass=Widget`, `hitConsumes=false`） |
+| ★ 关键细节 | 禁用时 `HitTest` **不是**返回 `nullptr`——按钮被跳过，命中**回落**到祖先 `RootWidget`（其 `ContainsPoint` 覆盖整个客户区）。**「命中者 != 发送按钮」与「命中 nullptr」是两回事**，读数里分开记（`hitIsSend` / `hitIsNull` / `hitIsRoot`） |
+| 结论 | ECDI 的 `HitTest` 使能门控**按契约生效** ⇒ 本条**不需要 ECDI 任何改动**（与 v1.1 归属反转的结论一致，本次补上此前缺的**边界**证据） |
+
+★ **附：ECDI 自身测试未覆盖此门控**（值得记的框架事实）——ECDI 的 `WidgetTests.cpp:1356/1390`
+覆盖的是**键盘**通道的 `IsEnabled` 门控（焦点/派发），`CollapsiblePanelTests.cpp:56` 覆盖的是
+**不可见子树**的命中跳过；**「禁用控件不被鼠标命中」这一条没有直接用例**。本探针因此在
+harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补测试）。
+
+★ **探针自身的已知副作用（条 57③：自己的仪器会污染实验）**：合成点击走真实派发链 ⇒
+`Application::OnMouseButtonDown` 会 `SetFocusedWidget`（`Button::CanFocus()==true`）⇒ 输入框失焦
+⇒ `TextBox::OnFocusLost` 停掉 caret 闪烁定时器（`TextBox.cpp:215-232`）。探针结束时**已复原焦点**，
+但定时器重启带来 **±1~2 的 `paints`/`frames` 相位扰动**（实测 cot 夹具 0/0/−2/−1，随跑批时长变）。
+⇒ **探针自身读数不受影响**；但**不要**拿「探针开」的 paints/frames 与「探针关」的做性能对比。
 
 **原判（已作废，保留历史链条）**
 
@@ -359,11 +388,19 @@
   ② 我原写「三种 kind 渲染路径不同」，**命令计数否证**——极差仅 145 条 text（噪声内），三者都是文本气泡，差别只在颜色令牌与前缀文本，**不在渲染规模**⇒ 该组只作对照，唯一可用判据是 `unknownKinds`（reasoning/unknown = 8 · assistant = 0）。
   ★ 主读数（**帧数无关**判据 `chars/call`，`--thinking-chars` 400/1200/2600/5200）：
   **53.58 → 131.94 → 272.39 → 512.33**（单调，5200 档是 400 档的 **9.6×**），`avgExecuteUs` 7,355 → 14,014 μs（**+90%**）⇒ 思维链长度线性推高每帧测量成本，直接兑现评估指标 ①/④。
+- **v1.9（2026-10-14）`REQ-04` 边界取证闭合 + 新探针 `--hit-probe`**：
+  ① 此前 `REQ-04` 只有「使能**位**被置对」的证据（`--state-probe`）；本条**边界**（禁用 ⇒ 点击**不达**）**未证**。新增 `--hit-probe`：**合成 `MouseButtonDown/UpEvent` 喂给 `Application::OnEvent`**（走真实派发链，**不注入系统输入** ⇒ 不动光标、不抢前台），在**同一点**上做四组受控对照（`as-is` / `off-point` / `forced-enabled` / `forced-disabled`），观测通道 = `HitTest` 返回值 + `SendPrompt` 进入次数。
+  ② 实测（6 份夹具 × 3 轮，**全部 PASS**）：`forced-enabled` ⇒ `hitIsSend=true ∧ clickReached=true`（正对照成立）；`forced-disabled` ⇒ 两者皆 false，落点**回落 RootWidget**（`hitIsRoot=true`）。裁定脚本 `.scratch/probe_hit_gate.py`（带正/负对照，多数轮裁定，条 75/81b）。
+  ③ ★ 记下一条易混事实：禁用时 `HitTest` **不返回 `nullptr`**，而是**跳过按钮、回落到祖先 `RootWidget`** ⇒ 「命中者不是按钮」与「命中 nullptr」是两回事，读数分列 `hitIsSend`/`hitIsNull`/`hitIsRoot`。
+  ④ ★ 另记：ECDI 自身测试**未覆盖**鼠标通道的 `IsEnabled` 门控（`WidgetTests.cpp:1356/1390` 是键盘通道；`CollapsiblePanelTests.cpp:56` 是不可见子树）——本探针在 harness 侧补上这份读数（属评估数据，非要求 ECDI 补测试）。
+  ⑤ 诚实边界：探针因合成点击会挪焦点（`Button::CanFocus()==true`）⇒ `TextBox` caret 闪烁定时器重启，`paints`/`frames` 有 **±1~2 相位扰动**（已复原焦点，但相位不还原）⇒ 探针自身读数不受影响，但**不可**用探针开启时的 paints/frames 做性能对比。
+- **v1.8（2026-10-13 晚）`A-2` 复核否决**：`A-2`（折叠态仍全量测量）**撤回**——把 `chars` 分解为 `a(一次性) + b(每帧)·frames` 后实测 `b` 与文本长度**无关**（body 4000 vs 40 的 b = 504 vs 502，**1.00×**）⇒ 长文本成本全在**一次性**布局建立，ECDI 的 C29-10 缓存**按文档生效**，**不需要**框架提供「跳过折叠态测量」的能力。`Relayout` 保持无条件 `AutoSize()`（代码骨架与 HEAD 逐行一致，仅增注释）。
+- **v1.7（2026-10-13 晚）`C-1` 落地**：思维链评估夹具 `protocol/fixtures/cot/`（生成器 + 基线，12 轮 / 44 块 / 934 delta，可逐字节复现）。
 - **v1.6（2026-10-13 晚）思维链 / 未知 `kind` 专项 + 一条候选 ECDI 需求被否决**：
   ① 登记**协议空白**——§3.3 的 `kind` 无思维链位置，且未知 `kind` 不被任何不变量覆盖（实测 `unknownTypes=0` + `validate.py` exit 0，满屏思维链可全绿）⇒ 建议协议 v2 增 `kind:"reasoning"` 并补 **I8**（未知 `kind` 必须中性渲染 + 显式提示）。
   ② ★★ **候选 `REQ-07` 复核否决**：曾拟记「ECDI 折叠件收起后仍测量」为框架需求；查 ECDI 源码仓发现其 Layout **四处**均有 `C-VIS-1` 跳过不可见子节点的契约（`VerticalLayout.cpp:37` 等）⇒ 归属 **harness 侧**（`App.cpp:1123` 无条件 `AutoSize()`）。**不登记为 ECDI 需求**。这是本项目**第 4 次**归属反转，成因同前三次（未先查 ECDI 源码仓）。
   ③ 落地 harness 侧处置（`A-1`）：未知 `kind` 中性渲染 + `UnknownKinds()` 记账 + 摘要 `unknownKinds` + 右栏独立行 + `validate.py` 记 note；实机复验通过，全库 5 份夹具仍 exit 0。
-  ④ 另记 harness 待办 `A-2`：折叠态仍全量测量（受控 4 档实测 8.80×），修法已设计未实施。
+  ④ 另记 harness 待办 `A-2`：折叠态仍全量测量（受控 4 档实测 8.80×），修法已设计未实施。★ **该条已于 v1.8 复核否决**（分解为一次性/每帧两分量后，每帧成本与文本长度无关）。
 - **v1.5（2026-10-13）`REQ-01` / `REQ-02` / `REQ-04` 三条 harness 侧修复落地并闭合**：`needWrap` 认 `\n` · `block_end` 认 `tool_call` · `PromptBar` 暴露按钮 + `state` 驱动使能（**判据 A5 兑现**）。三处均实机复测取证。
   ★ `REQ-04` 附带：ECDI 有意不做 disabled 绘制（YAGNI）⇒ 灰化由应用侧自备（`Theme.h` +3 禁用态令牌）——**仍不需要 ECDI 改动**。
   ★ 本轮自伤并修复：`edit` 工具按无 BOM 重写 ⇒ 4 个源文件一度缺 BOM（含中文 = 已确认缺陷），已按条 70 补齐。

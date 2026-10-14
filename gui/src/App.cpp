@@ -14,6 +14,12 @@
 #include "ECDI/Core/String.h"
 #include "ECDI/Platform/PlatformWindow.h"
 #include "ECDI/Render/BackendFactory.h"
+// ★ --hit-probe（REQ-04 边界）：合成鼠标事件走**真实派发链**
+//   （Application::OnEvent → OnMouseButtonDown/Up → FindTargetWidget → HitTest → Bubbling）
+//   ——不注入系统输入、不动光标、不抢前台，故对用户零干扰（对比 SendInput 路线）。
+#include "ECDI/EventSystem/Input/Mouse/MouseButton.h"
+#include "ECDI/EventSystem/Input/Mouse/MouseButtonDownEvent.h"
+#include "ECDI/EventSystem/Input/Mouse/MouseButtonUpEvent.h"
 #include "ECDI/EventSystem/Window/TimerEvent.h"
 #include "ECDI/Layout/HorizontalLayout.h"
 #include "ECDI/Layout/ListLayout.h"
@@ -719,6 +725,13 @@ void HarnessApp::OnReplayTick() {
     }
     CacheEvalMetrics();
     RefreshHud();
+    // ★★ --hit-probe（REQ-04 边界）：夹具拉完 + `Relayout()` 之后**跑一次**。
+    //   位置理由：此刻几何已定（按钮位置/尺寸是探针坐标的来源），
+    //   且只跑一次（否则 30Hz 每 tick 都合成点击，读数被自身重复污染）。
+    if (m_options.hitProbe && m_replaySettled && !m_hitProbeDone) {
+        m_hitProbeDone = true;
+        RunHitProbe();
+    }
     RequestRepaint();
 }
 
@@ -1101,8 +1114,133 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     }
 }
 
+// ── ★★ REQ-04 **边界**探针（--hit-probe，2026-10-14）────────────────────
+// 目的：把「按钮禁用 ⇒ 点击不达」变成**机读证据**，且**不注入系统输入**。
+//
+// 为什么不能用 `--state-probe` 代替：那一条读的是 `IsEnabled()`（使能**位**）。
+// REQ-04 的边界是「禁用后点击**到不到**」——中间隔着 `Widget::HitTest` 的
+// `if (!IsEnabled()) return nullptr;`（`Widget.cpp:195`）。使能位对 ⇒ 命中门控
+// **仍可能**不生效（两段独立代码）⇒ 必须单独取证，不能从前者推出后者。
+//
+// 为什么不用 `SendInput` 注入：注入会移动真实光标、抢前台（用户正在看视频时
+// 被抢屏一次）。而**合成 `MouseButtonDown/UpEvent` 直接喂给 `Application::OnEvent`**
+// 走的是**完全同一条**内部派发链（`OnMouseButtonDown` → `FindTargetWidget` →
+// `rootWidget.HitTest` → 冒泡 → `Button::OnMouseButtonUp` → `RaiseClick`），
+// 只是**跳过了 Win32 消息翻译层**（`WindowMessageHandler` 的坐标折算）。
+// 本探针要证的正是**命中门控**（在 Application/Widget 层），故这层跳过不影响判据；
+// 且坐标本就用 DIP、与翻译层输出同口径。
+//
+// 四组**受控对照**（同一个点、只改 enabled —— 单变量）：
+//   ① as-is            落定后的真实状态（**正对照**：enabled 时必须命中且点击达）
+//   ② off-point        同状态、点移到按钮**外侧**（**负对照**：证明坐标确实在起作用）
+//   ③ forced-enabled   显式 `SetEnabled(true)`
+//   ④ forced-disabled  显式 `SetEnabled(false)`（判据：命中者不再是它 ∧ 点击不达）
+// ★ 没有 ①② 这两个对照，「④ 点击不达」无法区分「门控生效」与「探针根本没工作」（条 81b）。
+
+std::string HarnessApp::WidgetKindName(const ECDI::Widget* w) {
+    if (w == nullptr) return "(null)";
+    // 只区分本探针用得到的几类——为的是让读数**自解释**（"命中者是谁"）
+    // ★ 顺序敏感：具体类在前（Button 是 TextWidget 子类）。
+    if (dynamic_cast<const ECDI::Button*>(w)) return "Button";
+    if (dynamic_cast<const ECDI::TextBox*>(w)) return "TextBox";
+    if (dynamic_cast<const ECDI::Label*>(w)) return "Label";
+    if (dynamic_cast<const ECDI::Panel*>(w)) return "Panel";
+    return "Widget";
+}
+
+void HarnessApp::SynthesizeClickAt(int x, int y) {
+    // ★ 走**真实入口** `Application::OnEvent`——与系统消息到达后的路径完全同源
+    //   （`Window::OnEvent` → `Application::OnEvent` → 具名 handler）。
+    //   `m_application` 是 Run() 栈上的 HarnessApplication（Application 子类）。
+    if (!m_window || !m_application) return;
+    ECDI::MouseButtonDownEvent down(m_window, x, y, ECDI::MouseButton::Left);
+    m_application->OnEvent(down);
+    ECDI::MouseButtonUpEvent up(m_window, x, y, ECDI::MouseButton::Left);
+    m_application->OnEvent(up);
+}
+
+void HarnessApp::RunHitProbe() {
+    if (!m_window || !m_promptBar) return;
+    ECDI::Button* send = m_promptBar->sendButton();
+    if (!send) return;
+
+    // 坐标一律用 ECDI 的 `GetAbsolutePosition()`（父链累加，含内容偏移）——
+    // ★ 不手算父链、不硬编码偏移（手算必漏某一层；同「不硬编码 DPI/边框」纪律）。
+    auto centerOf = [](ECDI::Widget* w, int& x, int& y) {
+        const ECDI::Point abs = w->GetAbsolutePosition();
+        x = static_cast<int>(abs.x) + w->GetWidth() / 2;
+        y = static_cast<int>(abs.y) + w->GetHeight() / 2;
+    };
+    int cx = 0, cy = 0;
+    centerOf(send, cx, cy);
+
+    // ② 负对照点：**输入框中心**——同一时刻、同一段代码路径、且**必命中一个活控件**
+    //   （比「移到窗口外」强：窗口外命中 nullptr 无法区分「门控生效」与「探针失效」）。
+    int nx = cx, ny = cy;
+    ECDI::TextBox* input = m_promptBar->input();
+    if (input) centerOf(input, nx, ny);
+
+    m_hitProbeActive = true;   // 此后 SendPrompt 只计数、零副作用
+
+    // ★ 保存焦点并在探针结束后**复原**：合成的点击会走 `Application::OnMouseButtonDown`
+    //   里的 `SetFocusedWidget(...)`，把焦点从输入框挪到按钮（`Button::CanFocus() == true`）
+    //   ⇒ `TextBox::OnFocusLost` 会 `StopTimer(kCaretBlinkTimer)` ⇒ **光标闪烁重绘消失**。
+    //   实测后果：探针开启时 paints 由 17 掉到 15（确定复现，5/5 次）。这不是本探针要测的
+    //   量，属**仪器污染实验**（条 57③）⇒ 必须复原，否则「探针关闭 = 零行为变化」不成立。
+    ECDI::Widget* const focusBefore = m_window->GetFocusedWidget();
+
+    auto scene = [&](const char* name, int x, int y) {
+        HitProbeRec rec;
+        rec.scene = name;
+        rec.px = x;
+        rec.py = y;
+        rec.sendEnabled = send->IsEnabled();
+        ECDI::Widget* hit = m_window->GetRootWidget().HitTest(x, y);
+        rec.hitIsNull = (hit == nullptr);
+        rec.hitIsSend = (hit == send);
+        // ★ 禁用时 `HitTest` **不是**返回 nullptr——按钮被跳过，落点回落到祖先
+        //   （RootWidget，其 `ContainsPoint` 覆盖整个客户区）⇒ 必须**如实记录落点**，
+        //   否则「命中者 != 发送按钮」这句话在读数里看不出"落到了哪"。
+        rec.hitIsRoot = (hit == &m_window->GetRootWidget());
+        rec.hitConsumes = (hit != nullptr && hit->ConsumesMouseInput());
+        rec.hitClass = WidgetKindName(hit);
+        // 点击是否达：先取计数 → 合成 Down+Up → 看 SendPrompt 有没有被进入
+        const int before = m_hitProbeSendCalls;
+        SynthesizeClickAt(x, y);
+        rec.clickReached = (m_hitProbeSendCalls > before);
+        m_hitProbeLog.push_back(std::move(rec));
+    };
+
+    // ① **正对照**：真实状态 + 按钮中心 ⇒ 应「命中即它 ∧ 点击达」
+    //    （这一条同时是「探针本身有效」的证明——没有它，④ 的「不达」不可解读，条 81b）
+    scene("as-is", cx, cy);
+    // ② **负对照**：同一状态 + 输入框中心 ⇒ 必命中 TextBox、但**不得**达 SendPrompt
+    scene("off-point", nx, ny);
+    // ③④ **单变量对照**：同一点、只翻 enabled
+    send->SetEnabled(true);
+    scene("forced-enabled", cx, cy);
+    send->SetEnabled(false);
+    scene("forced-disabled", cx, cy);
+    // ★ 复原：把使能位还给 state 驱动的结果（探针不得留下状态）。
+    //   下一次 RefreshHud 会按 state 重新驱动，此处只是不留"半路"状态。
+    const bool active = (m_coreState == "running" || m_coreState == "waiting");
+    send->SetEnabled(!active);
+    if (m_promptBar->stopButton()) m_promptBar->stopButton()->SetEnabled(active);
+
+    // ★ 焦点复原（见上：不清干净会改变 caret 闪烁重绘 ⇒ 污染 paints/frames 读数）
+    m_window->SetFocusedWidget(focusBefore);
+
+    m_hitProbeActive = false;
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
+    // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
+    //   否则每跑一次探针就会往转录里塞一行 "[prompt 仅记录] …"，污染摘要读数。
+    if (m_hitProbeActive) {
+        ++m_hitProbeSendCalls;
+        return;
+    }
     if (m_writer) {
         // live：真发 prompt（协议 §6：仅 idle 合法——按钮使能已由 state 驱动）
         const bool ok = m_writer->Prompt(text);
@@ -1610,6 +1748,32 @@ void HarnessApp::WriteSummary() {
                     (r.sendEnabled ? "true" : "false") + ", \"stopEnabled\": " +
                     (r.stopEnabled ? "true" : "false") + ", \"sendTitle\": \"" +
                     r.sendTitle + "\"}";
+        }
+        json += "],\n";
+    }
+    if (m_options.hitProbe && !m_hitProbeLog.empty()) {
+        // ★★ REQ-04 **边界**机读证据（2026-10-14）：命中门控受控对照。
+        //   读法：`hitIsSend` = HitTest 是否返回发送按钮本身；`clickReached` = 合成
+        //   Down+Up 后 SendPrompt 是否被进入。判据 = 正对照全 true ∧ forced-disabled 全 false。
+        json += "  \"hitProbe\": [";
+        for (size_t i = 0; i < m_hitProbeLog.size(); ++i) {
+            const HitProbeRec& r = m_hitProbeLog[i];
+            json += (i ? ", " : "");
+            char b[320];
+            std::snprintf(b, sizeof(b),
+                          "{\"scene\": \"%s\", \"px\": %d, \"py\": %d, "
+                          "\"sendEnabled\": %s, \"hitIsSend\": %s, \"hitIsNull\": %s, "
+                          "\"hitIsRoot\": %s, \"hitConsumes\": %s, "
+                          "\"hitClass\": \"%s\", \"clickReached\": %s}",
+                          r.scene.c_str(), r.px, r.py,
+                          r.sendEnabled ? "true" : "false",
+                          r.hitIsSend ? "true" : "false",
+                          r.hitIsNull ? "true" : "false",
+                          r.hitIsRoot ? "true" : "false",
+                          r.hitConsumes ? "true" : "false",
+                          r.hitClass.c_str(),
+                          r.clickReached ? "true" : "false");
+            json += b;
         }
         json += "],\n";
     }
