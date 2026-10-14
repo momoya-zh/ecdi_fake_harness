@@ -45,6 +45,11 @@ constexpr int kRowPadX = 10;
 constexpr int kHeaderH = 26;         // tool 卡片标题高
 
 // 视觉令牌唯一来源 = Theme.h（2026-10-06 v6：对齐用户高保真模型）
+// ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
+//   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 `RouteLastMessage`）。
+//   ★ 改这一处 = 声明支持新的主版本——与 `protocol/PROTOCOL.md` §9 的表格**必须同步**。
+constexpr int kProtocolMaxSupported = 2;
+
 using harness::kDarkInk;
 using harness::kDarkMuted;
 using harness::kDarkAccent;
@@ -68,6 +73,11 @@ using harness::kToolHeaderBg;
 using harness::kToolHeaderHover;
 using harness::kToolHeaderPressed;
 using harness::kToolHeaderBorder;
+using harness::kReasoningBg;
+using harness::kReasoningBorder;
+using harness::kReasoningHeaderBg;
+using harness::kReasoningHover;
+using harness::kReasoningInk;
 using harness::kAskBg;
 using harness::kAskBorder;
 using harness::kAskQInk;
@@ -128,6 +138,29 @@ std::string UnknownKindText(const Block& block) {
     shown += block.text;
     if (!block.summary.empty()) shown += "\n(" + block.summary + ")";
     return shown;
+}
+
+// ★★ 思维链卡的标题拼法（协议 v2 §7，2026-10-14）——**单一真相源**。
+//   为何要抽成函数：该文本在**两处**生成（建行、点击展开/收起），两处各写一份必然漂移
+//   （本项目已踩过同类坑：`UnknownKindText` 首版两处各写一份，delta 一到就把前缀擦掉）。
+//   同源即不可能再漂移。
+//
+//   ★ 用户口径（逐字）：「默认应当不渲染，显示『思考中』这几个字，加一个**向下的
+//     **不带柄的箭头**，点击展开后箭头变为**朝上**的」。
+//     ⇒ 收起 = `▼ 思考中` · 展开 = `▲ 思考中`。**只有两态、一个标签**。
+//     ★ 不带柄 ⇒ 不用 `⯆`/`⌄` 一类字形；也不用工具卡那套 `▸`（那是收起态实心右三角）。
+//
+//   ★★ 曾经被我"改进"成三态（`▼ 思考中` / `▶ 思考过程` / `▲`），**已撤回**——
+//     截图暴露了它的问题：绝大多数块**都已结束** ⇒ 屏幕上看到的几乎全是 `▶`，
+//     而用户要的是**向下**箭头。那是我**自己发明的第三种字形**，不是需求。
+//     ⇒ 纪律：**用户给了可见形态的具体规格时，不要擅自替换成"更好"的形态**；
+//       有异议就**提出来问**，不要先改了再说。
+//   ⚠️ **仍待用户裁决的一点**（已提出、未擅自实施）：块**已结束**后仍显示「思考中」
+//     存在失真风险（与 `等待结果` 占位标题同类）。若要区分，`block.ended` 已在手边，
+//     改本函数一处即可；**在用户答复前保持用户给定的两态**。
+std::string ReasoningTitle(bool expanded) {
+    return expanded ? "\xE2\x96\xB2 \xE6\x80\x9D\xE8\x80\x83\xE4\xB8\xAD"      // ▲ 思考中
+                    : "\xE2\x96\xBC \xE6\x80\x9D\xE8\x80\x83\xE4\xB8\xAD";     // ▼ 思考中
 }
 
 // 侧栏/状态栏的一行小标签；返回裸指针（树拥有），供 HUD 动态 SetText
@@ -704,6 +737,12 @@ void HarnessApp::OnReplayTick() {
                 CacheEvalMetrics();
                 RefreshHud();
             }
+            // ★★ 思维链折叠探针必须**在这里**推进：夹具拉完后本函数会从上面 `return`，
+            //   走不到末尾那段。第一版把调用只放在末尾 ⇒ 状态机永远停在 step 0
+            //   （只有 settle 那一 tick 采到 default，之后再不前进）。
+            if (m_options.reasoningProbe && !m_reasoningProbeDone) {
+                RunReasoningProbe();
+            }
             return;
         }
         m_replaySettled = true;
@@ -731,6 +770,11 @@ void HarnessApp::OnReplayTick() {
     if (m_options.hitProbe && m_replaySettled && !m_hitProbeDone) {
         m_hitProbeDone = true;
         RunHitProbe();
+    }
+    // ★ 思维链折叠行为取证（协议 v2 §7）：跨 tick 状态机（每次只推进一步，
+    //   步间等过 200ms 折叠动画）⇒ 不能像 --hit-probe 那样一次跑完。
+    if (m_options.reasoningProbe && m_replaySettled && !m_reasoningProbeDone) {
+        RunReasoningProbe();
     }
     RequestRepaint();
 }
@@ -762,7 +806,15 @@ void HarnessApp::DrainInstant() {
     if (m_instantDone) return;
     m_instantDone = true;
     std::string line;
-    while (m_source->Next(line)) HandleLine(line);
+    // ★ 协议 §9：版本不兼容 ⇒ **停止消费**（"拒绝连接"的实质）。
+    //   只在 `HandleLine` 返回后检查：`Exit()` 只让消息循环退出，**不打断本循环**，
+    //   而 `--instant` 会在同一 tick 抽干整个夹具 ⇒ 若不在此处 break，
+    //   "拒绝"就只是打印一行提示、随后照常把整条流处理完（实测：protocol:3 的
+    //   夹具仍读到 blocks=44）——那不是拒绝，是"边抱怨边照做"。
+    while (m_source->Next(line)) {
+        HandleLine(line);
+        if (m_protocolIncompatible) break;
+    }
     if (!m_pendingTruncated.empty()) {
         AddNoticeRow(m_pendingTruncated, kErrorDark);   // 协议 §1.2：截断必须显式报错
         m_pendingTruncated.clear();
@@ -771,6 +823,7 @@ void HarnessApp::DrainInstant() {
 
 void HarnessApp::DrainTimed() {
     if (m_waitForAnswer) return;   // I3：ask 未答前 core 不再发消息
+    if (m_protocolIncompatible) return;   // ★ 协议 §9：版本不兼容 ⇒ 不再消费
     const double elapsedMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                   m_timedAnchor)
@@ -779,6 +832,7 @@ void HarnessApp::DrainTimed() {
     while (m_replay->NextDue(elapsedMs, line)) {
         HandleLine(line);
         if (m_waitForAnswer) break;   // ask 已显示，停在 waiting（协议 §8.3）
+        if (m_protocolIncompatible) break;   // ★ 协议 §9：版本不兼容 ⇒ 停止消费
     }
     if (m_replay->Empty() && !m_pendingTruncated.empty()) {
         AddNoticeRow(m_pendingTruncated, kErrorDark);
@@ -825,6 +879,14 @@ void HarnessApp::RouteLastMessage() {
         const Block* block = m_transcript.FindBlock(id);
         const auto row = m_blockRows.find(id);
         if (row == m_blockRows.end() || !row->second->headerBtn) {
+            return;
+        }
+        // ★ 协议 v2：思维链块结束时**标题不变**（用户口径只有「思考中」一个标签，
+        //   箭头只由展开态决定 ⇒ 结束不产生任何可见变化）。
+        //   ★ `ended` 仍记录（探针与将来可能的形态变更会用到），但不改标题。
+        if (row->second->reasoning && block) {
+            row->second->ended = true;
+            RequestRepaint();
             return;
         }
         // ★ REQ-02（2026-10-13）：`tool_call` 的 `summary` 此前被吞——原条件只认
@@ -874,6 +936,24 @@ void HarnessApp::RouteLastMessage() {
         m_sessionId = msg.GetString("session");
         m_coreVer = msg.GetString("core");
         m_protocolVer = static_cast<int>(msg.GetNumber("protocol"));
+        // ★★ 协议 §9（v2 落地，2026-10-14）：core 声明的版本**高于**本 GUI 支持的上限
+        //   ⇒ **拒绝连接并显示原因，不做降级猜测**。
+        //   ★ 为何现在才实现：该规则自 v1 就写在文档里，但**从未被实现**——
+        //     在只有 v1 的世界里它恒不触发，属"写在纸上但没人执行"的条款。
+        //     v2 出现的这一刻它才真正开始起作用（也正是它存在的理由）。
+        //   ★ 缺字段 ⇒ 按 v1 处理（宽容优于拒连：缺字段不是"更高的版本"）。
+        if (m_protocolVer > kProtocolMaxSupported) {
+            char buf[192];
+            std::snprintf(buf, sizeof(buf),
+                          "[协议不兼容] core 声明 protocol %d，本 GUI 支持到 %d"
+                          " —— 按 §9 拒绝连接（不做降级猜测）",
+                          m_protocolVer, kProtocolMaxSupported);
+            AddNoticeRow(buf, kErrorDark);
+            m_protocolIncompatible = true;
+            m_hudDirty = true;
+            if (m_application) m_application->Exit();   // 不进入渲染路径
+            return;
+        }
         if (const json::Value* caps = msg.Find("caps"); caps && caps->IsArray()) {
             std::string joined;
             for (const auto& cap : caps->array) {
@@ -960,6 +1040,74 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
         panel->AddChild(std::move(label));
         AddRow(std::move(panel), rec, block.id);
+        return;
+    }
+
+    // ★★ 思维链卡（协议 v2 §7，2026-10-14）——**默认收起**，点击标题展开，箭头翻转。
+    //   ★ 为何必须有这条**显式分支**：`reasoning` 一旦进入 `IsKnownKind`，
+    //     `block.unknownKind` 就是 **false** ⇒ 它会**直接掉到本函数末尾的工具卡分支**，
+    //     而那个分支的 else 把标题写死成「等待结果」——**正是 2026-10-13 修掉的那个 bug
+    //     换个方式复活**（思维链又一次伪装成"正在等的工具结果"）。加 kind 必须同时加分支。
+    //   ★ 复用 `CollapsiblePanel`（与工具卡同机制，不新造控件）：
+    //     折叠动画、内容可见性、展开基准全由框架既有能力承担。
+    if (block.kind == "reasoning") {
+        rec.reasoning = true;
+        rec.ended = block.ended;
+        rec.blockId = block.id;
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = Pick(m_options.probeContrast, kReasoningBg, kProbeBg),
+            .cornerRadius = kRadiusTool,
+            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .borderColor = kReasoningBorder});
+
+        // 标题 = 单一真相源（箭头两态）；默认收起 ⇒ ▼
+        auto header = std::make_unique<ECDI::Button>(ReasoningTitle(false));
+        rec.headerBtn = header.get();
+        header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
+        {
+            ECDI::Font f; f.size = 12.0f;
+            header->SetFont(f);
+        }
+        header->SetStyle(ECDI::ButtonStyleOverride{
+            .background = Pick(m_options.probeContrast, kReasoningHeaderBg, kProbeBg),
+            .border = kReasoningBorder,
+            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kReasoningHover,
+            .textAlignment = ECDI::TextAlignment::Left});
+        panel->AddChild(std::move(header));
+
+        auto body = std::make_unique<ECDI::CollapsiblePanel>();
+        rec.body = body.get();
+        rec.body->SetExpandDirection(ECDI::ExpandDirection::Down);
+        auto label = std::make_unique<ECDI::Label>(block.text);
+        rec.label = label.get();
+        // 展开后是**用户主动要读**的内容 ⇒ 用常规 ink（不再弱化）
+        label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        label->SetWordWrap(true);   // 思维链很长，必须按宽断行
+        {
+            ECDI::Font f; f.size = 12.0f;
+            label->SetFont(f);
+        }
+        rec.body->GetContent()->AddChild(std::move(label));
+        panel->AddChild(std::move(body));
+
+        AddRow(std::move(panel), rec, block.id);
+
+        RowRec& stored = m_rows.back();
+        stored.headerBtn->SetOnClick([this, &stored] {
+            if (m_options.rowModeList) return;   // 固定行高模式：展开体被后续行覆盖，v1 禁用
+            stored.expanded = !stored.expanded;
+            if (stored.body) stored.body->Toggle();
+            // 箭头随展开态翻转（▼ ⇄ ▲）——标签不变（用户口径只有两态）
+            if (stored.headerBtn) {
+                stored.headerBtn->SetText(ReasoningTitle(stored.expanded));
+            }
+            m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
+            Relayout();
+            RequestRepaint();
+        });
         return;
     }
 
@@ -1233,6 +1381,94 @@ void HarnessApp::RunHitProbe() {
     m_hitProbeActive = false;
 }
 
+// ── ★★ 协议 v2 §7 思维链折叠行为的机读取证（--reasoning-probe）────────────
+// 用户口径是**渲染行为**：默认不渲染正文、点标题展开、箭头由朝下变朝上。
+// 截图只能证明"某一刻像素长这样"，**不能**证明"点一下真的翻了、再点一下真的回去了"
+// ——后者才是"可交互"的定义。故沿用 `--hit-probe` 的同一套纪律：
+//   · 合成点击走**真实派发链**（不注入系统输入、不动光标）；
+//   · 观测 = 标题文本（箭头+两态文本）、`IsExpanded()`、内容容器 `IsVisible()`、行高。
+//
+// ★★ 为什么必须是**跨 tick 状态机**（第一版在一个 tick 里做完，读数错了两处）：
+//   ① 折叠动画 200ms，而 `SetContentVisible(false)` 在动画的 **onFinished** 里
+//      （`CollapsiblePanel.cpp:110-115`）⇒ 点完**立刻**读会读到"内容仍可见"，
+//      把正确实现误判成"没折叠"。这是**动画中间态**，不是终态。
+//   ② 标题两态（`思考中`/`思考过程`）取决于 `block_end` 是否到达；`--instant` 在同一
+//      tick 抽干整个夹具 ⇒ 事后再读**永远**是 `思考过程`，`思考中` 那一态**根本采不到**。
+//   ⇒ 分步推进：每次 tick 只做一步，步间等待 > 动画时长；两态标题在**真实事件时刻**抓。
+void HarnessApp::RunReasoningProbe() {
+    if (!m_window) return;
+
+    RowRec* target = nullptr;
+    for (RowRec& r : m_rows) {
+        if (r.reasoning && r.headerBtn && r.body) {
+            target = &r;
+            break;
+        }
+    }
+    if (!target) { m_reasoningProbeDone = true; return; }
+
+    // 步进节流：给折叠动画（200ms）留足时间，确保读到的是**终态**
+    const auto now = std::chrono::steady_clock::now();
+    if (m_reasoningProbeStep > 0 && now < m_reasoningProbeNextAt) return;
+    const auto settle = std::chrono::milliseconds(400);   // > 200ms 动画
+
+    auto snapshot = [&](const char* phase) {
+        ReasoningProbeRec rec;
+        rec.phase = phase;
+        rec.headerText = target->headerBtn->GetText();
+        rec.expanded = target->body->IsExpanded();
+        rec.contentVisible = target->body->GetContent()->IsVisible();
+        rec.panelH = target->panel->GetHeight();
+        m_reasoningProbeLog.push_back(std::move(rec));
+    };
+
+    switch (m_reasoningProbeStep) {
+        case 0:
+            // ① 默认态：必须**收起**且正文**不可见**（用户口径「默认应当不渲染」）
+            snapshot("default");
+            m_reasoningProbeStep = 1;
+            m_reasoningProbeNextAt = now + settle;
+            return;
+        case 1: {
+            // ② 点标题中心一次 —— 走真实 HitTest + 派发链（与 --hit-probe 同源）
+            const ECDI::Point abs = target->headerBtn->GetAbsolutePosition();
+            const int cx = static_cast<int>(abs.x) + target->headerBtn->GetWidth() / 2;
+            const int cy = static_cast<int>(abs.y) + target->headerBtn->GetHeight() / 2;
+            SynthesizeClickAt(cx, cy);
+            m_reasoningProbeStep = 2;
+            m_reasoningProbeNextAt = now + settle;
+            return;
+        }
+        case 2:
+            // ③ 展开终态：必须 expanded ∧ 内容可见 ∧ 箭头为 ▲
+            Relayout();   // 动画结束后补一次布局，让行高落到终态
+            snapshot("after-click-1");
+            m_reasoningProbeStep = 3;
+            m_reasoningProbeNextAt = now + settle;
+            return;
+        case 3: {
+            // ④ 再点一次：必须**回到收起**（箭头必须翻回去，不能单向）
+            const ECDI::Point abs = target->headerBtn->GetAbsolutePosition();
+            const int cx = static_cast<int>(abs.x) + target->headerBtn->GetWidth() / 2;
+            const int cy = static_cast<int>(abs.y) + target->headerBtn->GetHeight() / 2;
+            SynthesizeClickAt(cx, cy);
+            m_reasoningProbeStep = 4;
+            m_reasoningProbeNextAt = now + settle;
+            return;
+        }
+        case 4:
+            Relayout();
+            snapshot("after-click-2");
+            m_reasoningProbeStep = 5;
+            m_reasoningProbeDone = true;   // 全部采完 ⇒ 可以退出
+            if (m_application) m_application->Exit();
+            return;
+        default:
+            m_reasoningProbeDone = true;
+            return;
+    }
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -1302,7 +1538,8 @@ void HarnessApp::Relayout() {
     int y = 0;
     for (RowRec& r : m_rows) {
         int rowH = 0;
-        if (r.tool) {
+        // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
+        if (r.tool || r.reasoning) {
             const int bodyW = contentW - 2 * kRowPadX;
             const int wrapW = std::max(40, bodyW - 20);
             int bodyH = 0;
@@ -1392,8 +1629,8 @@ void HarnessApp::Relayout() {
             }
             rowH = std::max(r.label ? r.label->GetHeight() + 10 : 0, r.ask ? 38 : 0);
         }
-        if (r.tool || r.ask) {
-            // 工具卡 / 权限门：通栏（hi-fi align-self: stretch）
+        if (r.tool || r.reasoning || r.ask) {
+            // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
             r.panel->SetSize(contentW, rowH);
             r.panel->SetPosition(0, y);
         } else {
@@ -1680,6 +1917,9 @@ void HarnessApp::WriteSummary() {
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"deltas\": %zu,\n", m_transcript.Deltas());
     json += buf;
+    // ★ 注意：这是**夹具总行数**（文件里有多少行），不是"本次消费了多少行"。
+    //   被 §9 拒绝时它仍是全量（文件没变），故判读「是否真的拒绝」要看
+    //   `blocks`（消费后才产生）与 `protocolIncompatible`，不能看本字段。
     std::snprintf(buf, sizeof(buf), "  \"messages\": %zu,\n",
                   m_replay ? m_replay->Total() : m_liveLines);
     json += buf;
@@ -1777,6 +2017,28 @@ void HarnessApp::WriteSummary() {
         }
         json += "],\n";
     }
+    if (m_options.reasoningProbe && !m_reasoningProbeLog.empty()) {
+        // ★★ 协议 v2 §7 机读证据（2026-10-14）：思维链折叠**行为**轨迹。
+        //   判据 = default 必须 expanded=false ∧ contentVisible=false（默认不渲染正文）；
+        //          after-click-1 必须 expanded=true（点开了）；
+        //          after-click-2 必须回到 false（可逆，不是单向）。
+        //   箭头不单列字段——它在 `headerText` 里（`▼`/`▶`/`▲`），
+        //   与用户可见文本**逐字相同**，避免"读数说箭头对了、屏幕上是另一个字"。
+        json += "  \"reasoningProbe\": [";
+        for (size_t i = 0; i < m_reasoningProbeLog.size(); ++i) {
+            const ReasoningProbeRec& r = m_reasoningProbeLog[i];
+            json += (i ? ", " : "");
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"headerText\": \"%s\", "
+                          "\"expanded\": %s, \"contentVisible\": %s, \"panelH\": %d}",
+                          r.phase.c_str(), r.headerText.c_str(),
+                          r.expanded ? "true" : "false",
+                          r.contentVisible ? "true" : "false", r.panelH);
+            json += b;
+        }
+        json += "],\n";
+    }
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_transcript.SeqGaps());
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_transcript.Violations());
@@ -1784,8 +2046,21 @@ void HarnessApp::WriteSummary() {
     std::snprintf(buf, sizeof(buf), "  \"unknownTypes\": %zu,\n", m_transcript.UnknownTypes());
     json += buf;
     // ★ 未知 block_start.kind（2026-10-13）：与 unknownTypes **并列而非合并**——
-    //   前者是信封层 `t`（I5 明文覆盖），后者是 `kind`（协议未规定，属**空白**）。
-    std::snprintf(buf, sizeof(buf), "  \"unknownKinds\": %zu\n", m_transcript.UnknownKinds());
+    //   前者是信封层 `t`（I5 明文覆盖），后者是 `kind`（协议 v2 起由 I8 覆盖）。
+    //   ★ v2（2026-10-14）：`reasoning` 是**已知** kind ⇒ 不再计入本项
+    //     （cot 夹具的读数由 12 变 0，正是这条生效的证据）。
+    std::snprintf(buf, sizeof(buf), "  \"unknownKinds\": %zu,\n", m_transcript.UnknownKinds());
+    json += buf;
+    // ★ 协议 §9（v2）：如实记下 core 声明的版本与本 GUI 的上限，
+    //   以及**是否因版本不兼容而拒绝连接**——否则一次被拒的运行会留下
+    //   一份"看起来跑完了"的空摘要。
+    std::snprintf(buf, sizeof(buf), "  \"protocolDeclared\": %d,\n", m_protocolVer);
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"protocolMaxSupported\": %d,\n",
+                  kProtocolMaxSupported);
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"protocolIncompatible\": %s\n",
+                  m_protocolIncompatible ? "true" : "false");
     json += buf;
     json += "}\n";
 

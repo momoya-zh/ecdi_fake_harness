@@ -40,7 +40,21 @@ CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
 # PROTOCOL 3.3 block kinds.  Kept here so the validator and the GUI agree on one
 # list: Transcript::IsKnownKind in gui/src/Transcript.cpp is the C++ twin, and a
 # new kind must be added in both (the note below fires if they drift apart).
-KNOWN_KINDS = {"user", "assistant", "tool_call", "tool_result", "system", "error"}
+#
+# v2 (2026-10-14) added "reasoning": chain-of-thought from open-source reasoning
+# models.  It is a FIRST-CLASS kind, not a member of the unknown-kind path --
+# I8 governs UNKNOWN values only, and reasoning has its own rendering form
+# (PROTOCOL 7: collapsed by default, click to expand).  Keeping the two apart is
+# the whole point: folding reasoning into the unknown path would make the
+# "unknown kinds render neutrally" rule meaningless.
+KNOWN_KINDS = {"user", "assistant", "reasoning", "tool_call", "tool_result",
+               "system", "error"}
+
+# PROTOCOL 9: the GUI supports up to this protocol major version and REFUSES a
+# higher one (no downgrade guessing).  v2 (2026-10-14) added `reasoning` + I8.
+# Fixtures declaring <= this are fine; anything above is a hard failure here,
+# because such a stream is one the GUI would refuse to connect to at all.
+SUPPORTED_PROTOCOL_MAX = 2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURES = os.path.join(HERE, "fixtures")
@@ -241,6 +255,21 @@ def check_stream(parsed, findings):
         findings.note("first message is not 'hello'")
     if last is not None and last.get("t") != "bye":
         findings.note("last message is not 'bye'")
+
+    # PROTOCOL 9: a declared version above the supported ceiling means the GUI
+    # would refuse to connect -- so a fixture claiming it cannot be "valid".
+    # A MISSING field is not that case (it is not a claim of a higher version),
+    # and the GUI treats it as v1, so it stays a note.
+    if first is not None and first.get("t") == "hello":
+        declared = first.get("protocol")
+        if declared is None:
+            findings.note("hello has no 'protocol' field -- treated as v1")
+        elif not isinstance(declared, int) or declared > SUPPORTED_PROTOCOL_MAX:
+            findings.hit("VERSION", 1,
+                         "hello declares protocol %r, above the supported "
+                         "maximum %d -- GUI refuses such a stream"
+                         % (declared, SUPPORTED_PROTOCOL_MAX))
+
     counts = {}
     for _i, m in parsed:
         if m is not None:

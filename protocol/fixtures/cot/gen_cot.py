@@ -17,39 +17,42 @@ existing fixtures exercise it:
   * gen_realistic.py  human-paced markdown answers, no chain-of-thought;
   * demo-session      one small happy-path session.
 
-Meanwhile PROTOCOL 3.3 has no `kind` for chain-of-thought (six values, none of
-them reasoning), so this fixture also pins down what the GUI does with content
-the protocol never named.  See docs/ecdi-capability-requests.md SS2 for the
-protocol gap and for why the harness must render unknown kinds NEUTRALLY
+Meanwhile PROTOCOL 3.3 originally had no `kind` for chain-of-thought (six values,
+none of them reasoning), so this fixture also pins down what the GUI does with
+content the protocol never named.  See docs/ecdi-capability-requests.md SS2 for
+the protocol gap and for why the harness must render unknown kinds NEUTRALLY
 (never disguised as a tool card).
+
+STATUS UPDATE (2026-10-14): that gap is now CLOSED -- PROTOCOL v2 added
+`kind:"reasoning"` as a first-class kind plus invariant I8 (unknown kinds must
+render neutrally).  So `--kind reasoning` is now the REAL protocol value, and
+the default rendering is a COLLAPSED block ("思考中" while streaming, "思考过程"
+once ended) that expands on click.  `--kind unknown` still exercises the I8
+path with a value v2 does not name (`thinking`), which is exactly what a v1-era
+consumer would receive.
 
 The intended measurement
 ------------------------
-Two readings, both real (see .scratch/probe_cot.py):
+Three readings, all real (see .scratch/probe_cot.py):
 
   1. LENGTH DOSE -- replay with growing --thinking-chars and compare
      `measureChars / measureCalls` (frame-count independent).  This is the
      cost of streaming reasoning at all, and it is the direct reading for
      metrics 1 (redraw/frame time under streaming) and 4 (text measurement).
   2. KIND COMPARISON -- replay the same content emitted as `reasoning`
-     (neutral bubble today), `thinking` (also unknown), and `assistant`
-     (the workaround a consumer must use TODAY).  Same bytes, different
-     render path.
-
-NOT measured yet, and deliberately not faked: the cost of FOLDING reasoning
-away.  The harness currently has no fold affordance for a reasoning block --
-unknown kinds render as neutral (visible) bubbles precisely so they do not
-masquerade as tool cards -- so there is no collapsed state to compare against.
-That absence is itself the finding: `folded` reasoning is a PROTOCOL v2
-rendering decision, and this fixture is the instrument that will measure it
-once such an affordance exists.  (The separate A-2 finding -- that COLLAPSED
-TOOL cards still measure their hidden body -- was measured with tool fixtures,
-not with this one.)
+     (collapsed block as of v2), `thinking` (unknown => neutral visible
+     bubble), and `assistant` (plain text).  Same bytes, different render path.
+  3. FOLD COMPARISON -- as of v2 this is finally measurable: the reasoning
+     block starts COLLAPSED and can be expanded, so the same fixture can be
+     replayed in both states and the difference attributed to folding.  Before
+     v2 there was no fold affordance at all (unknown kinds rendered as visible
+     neutral bubbles precisely so they could not masquerade as tool cards), so
+     this reading simply did not exist and was deliberately NOT faked.
 
 Deterministic: same --blocks/--seed/--kind => identical bytes (same contract as
 gen_scale.py and gen_realistic.py).  The fixture is VALID (satisfies every
-invariant; an unknown `kind` is not itself a violation -- PROTOCOL 3.3 simply
-does not name it).
+invariant; an unknown `kind` is not itself a violation -- I8 requires it be
+rendered neutrally and reported, which is a GUI obligation, not a stream one).
 
 Usage:
   python gen_cot.py --turns 12 --out cot-session.jsonl
@@ -166,13 +169,14 @@ def main(argv=None):
     parser.add_argument("--kind", default="reasoning",
                         choices=["reasoning", "unknown", "assistant"],
                         help="how to emit the reasoning block "
-                             "(reasoning = PROTOCOL v2 proposal; "
-                             "unknown = today's gap; assistant = safe workaround)")
+                             "(reasoning = PROTOCOL v2 first-class kind, rendered "
+                             "collapsed; unknown = a value v2 does not name, "
+                             "exercising I8's neutral path; assistant = plain text)")
     parser.add_argument("--emit-empty", action="store_true",
                         help="emit the reasoning block with NO body text at all "
-                             "(a baseline with the row present but empty; NOT a "
-                             "collapsed state -- the harness has no fold "
-                             "affordance for reasoning blocks)")
+                             "(a baseline with the row present but empty; distinct "
+                             "from the default COLLAPSED state, which still has a "
+                             "body that gets measured)")
     parser.add_argument("--out", required=True, help="output .jsonl path")
     parser.add_argument("--seed", type=int, default=20261013,
                         help="RNG seed; same seed must give identical bytes")
@@ -215,7 +219,7 @@ def main(argv=None):
         ordered.update(payload)
         messages.append(ordered)
 
-    emit({"t": "hello", "protocol": 1, "core": "0.1.0", "session": session,
+    emit({"t": "hello", "protocol": 2, "core": "0.1.0", "session": session,
           "caps": ["tools", "ask"]}, 0)
     emit({"t": "state", "value": "running"}, 10)
 

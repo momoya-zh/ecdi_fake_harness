@@ -47,6 +47,15 @@ inline const ECDI::Color kToolHeaderBg      = ECDI::Color::FromRGBA8(38, 42, 52,
 inline const ECDI::Color kToolHeaderHover   = ECDI::Color::FromRGBA8(42, 46, 56, 255);
 inline const ECDI::Color kToolHeaderPressed = ECDI::Color::FromRGBA8(46, 51, 62, 255);
 inline const ECDI::Color kToolHeaderBorder  = ECDI::Color::FromRGBA8(46, 51, 62, 255);
+// ── ★ 思维链卡（协议 v2 §7；2026-10-14）──────────────────────────
+//   设计意图：思维链是**次要内容**（多数时候用户不读），故整体比工具卡**更弱**——
+//   描边与文字都取 muted 档，让它在转录里"存在但不抢眼"。展开后正文仍用常规 ink
+//   （那时用户是**主动**要读的，不该再弱化）。
+inline const ECDI::Color kReasoningBg       = ECDI::Color::FromRGBA8(28, 31, 38, 255);  // 略深于 tool
+inline const ECDI::Color kReasoningBorder   = ECDI::Color::FromRGBA8(40, 45, 55, 255);
+inline const ECDI::Color kReasoningHeaderBg = ECDI::Color::FromRGBA8(33, 37, 45, 255);
+inline const ECDI::Color kReasoningHover    = ECDI::Color::FromRGBA8(38, 43, 52, 255);
+inline const ECDI::Color kReasoningInk      = ECDI::Color::FromRGBA8(154, 162, 177, 255);  // = kDarkMuted
 inline const ECDI::Color kAskBg        = ECDI::Color::FromRGBA8(58, 47, 29, 255);  // --app-ask
 inline const ECDI::Color kAskBorder    = ECDI::Color::FromRGBA8(138, 109, 59, 255); // --app-ask-line
 inline const ECDI::Color kAskQInk      = ECDI::Color::FromRGBA8(245, 232, 208, 255); // .gate .q #f5e8d0

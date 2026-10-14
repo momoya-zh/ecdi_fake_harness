@@ -72,6 +72,10 @@ struct CliOptions {
     //     ⇒ 结论：**探针自身读数（hitProbe）不受影响**；但**不要**拿「探针开」的
     //     paints/frames 与「探针关」的做性能对比。
     bool hitProbe = false;                // --hit-probe：命中门控回读（REQ-04 边界）
+    // ★★ 协议 v2 §7 思维链折叠行为探针（2026-10-14）：默认收起 / 点击展开 / 箭头翻转
+    //   ——把**渲染行为**变成机读读数（截图只能证明像素，不能证明"点了真的翻"）。
+    //   默认 false ⇒ 零行为变化。
+    bool reasoningProbe = false;          // --reasoning-probe：折叠行为取证
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -159,6 +163,14 @@ private:
         bool alignRight = false;                  // user 行右对齐
         bool ask = false;
         bool answered = false;
+        // ★★ 协议 v2 §7（2026-10-14）：思维链卡。
+        //   与 `tool` **分开记**而非复用：两者虽然共用 `CollapsiblePanel` 机制，
+        //   但标题语义、配色、`block_end` 后的行为都不同（工具卡改标题为「名 · 摘要」，
+        //   思维链卡只把箭头从 ▼ 换成 ▶）。混用一个 bool 会让分支里到处是
+        //   「是工具卡还是思维链」的二次判断。
+        bool reasoning = false;
+        bool ended = false;                       // 该块是否已 `block_end`（标题两态用）
+        std::string blockId;                      // 点开展开时回查块（标题重算用）
         std::string askId;                        // P1.5：协议 ask 的 id（answer 回执用）
         int bodyH = 0;                            // 展开体高度缓存（autosize 布局用）
         // ★ A-2 曾拟在此加 `bodyHDirty`（按需重测），**已复核否决**（2026-10-13 晚）：
@@ -214,6 +226,9 @@ private:
     std::string m_coreVer;
     std::string m_capsStr;
     int m_protocolVer = 0;
+    // ★ 协议 §9：core 声明的版本高于本 GUI 上限 ⇒ 已拒绝连接（2026-10-14）。
+    //   用途：摘要里如实记下"这次运行是被拒的"，避免读到一个空摘要却以为跑成功了。
+    bool m_protocolIncompatible = false;
     int m_usageTurn = -1;                          // usage 捕获（HUD 右栏/状态栏）
     long long m_usageIn = -1;
     long long m_usageOut = -1;
@@ -269,6 +284,25 @@ private:
     void RunHitProbe();                       // 跑四组受控对照并写入 m_hitProbeLog
     void SynthesizeClickAt(int x, int y);     // 合成 Down+Up 走**真实**派发链
     static std::string WidgetKindName(const ECDI::Widget* w);
+
+    // ★★ 协议 v2 §7 思维链折叠行为的机读取证（--reasoning-probe，2026-10-14）
+    //   用户口径是**渲染行为**（默认收起 / 点击展开 / 箭头翻转），截图只能证明"像素长这样"，
+    //   不能证明"点一下真的翻了、再点一下真的回去了"。故沿用 `--hit-probe` 的做法：
+    //   合成点击走真实派发链，把**状态轨迹**写成机读读数。
+    //   ★ 每条 = {阶段, 标题文本, 折叠体是否展开, 内容是否可见, 行高}。
+    struct ReasoningProbeRec {
+        std::string phase;        // default / after-click-1 / after-click-2
+        std::string headerText;   // Button::GetText()——箭头与两态文本都在里面
+        bool expanded = false;    // CollapsiblePanel::IsExpanded()
+        bool contentVisible = false;  // 折叠体内容容器 IsVisible()
+        int panelH = 0;           // 行高（展开应显著变大）
+    };
+    std::vector<ReasoningProbeRec> m_reasoningProbeLog;
+    // ★ 跨 tick 推进的状态机（不能在一个 tick 内做完——见 RunReasoningProbe 注释）
+    int m_reasoningProbeStep = 0;
+    std::chrono::steady_clock::time_point m_reasoningProbeNextAt;
+    bool m_reasoningProbeDone = false;
+    void RunReasoningProbe();
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）

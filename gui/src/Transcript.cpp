@@ -119,11 +119,15 @@ const Block* Transcript::FindBlock(const std::string& id) const {
     return it == m_blocks.end() ? nullptr : &it->second;
 }
 
-// ★★ §3.3 的六个已知 kind（2026-10-13 收进单一判据）。
+// ★★ §3.3 的已知 kind（2026-10-13 收进单一判据；2026-10-14 v2 加 `reasoning`）。
 //   为何要独立成函数：App 的渲染分支与 Transcript 的记账**必须同源**——
 //   若两处各写一份列表，加一个 kind 时漏改一处 ⇒ 又会出现「渲染成一个样、
 //   记账成另一个样」的静默不一致。
+//   ★ `reasoning` = 思维链（协议 v2 §3.3 新增）。**它不属于「未知 kind」**——
+//     §5 的 I8 只管**未知**值，`reasoning` 有专门的渲染形态（§7：默认收起）。
+//     把两者混为一谈会让「未知 kind 要中性渲染」这条通用规则失去意义。
 bool Transcript::IsKnownKind(const std::string& kind) {
-    return kind == "user" || kind == "assistant" || kind == "tool_call" ||
-           kind == "tool_result" || kind == "system" || kind == "error";
+    return kind == "user" || kind == "assistant" || kind == "reasoning" ||
+           kind == "tool_call" || kind == "tool_result" || kind == "system" ||
+           kind == "error";
 }

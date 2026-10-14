@@ -1,4 +1,4 @@
-{"t":"hello","seq":0,"ts":"2026-10-13T21:00:00.001Z","protocol":1,"core":"0.1.0","session":"s-cot-12","caps":["tools","ask"]}
+{"t":"hello","seq":0,"ts":"2026-10-13T21:00:00.001Z","protocol":2,"core":"0.1.0","session":"s-cot-12","caps":["tools","ask"]}
 {"t":"state","seq":1,"ts":"2026-10-13T21:00:00.011Z","value":"running"}
 {"t":"block_start","seq":2,"ts":"2026-10-13T21:00:06.298Z","id":"b0","kind":"user","text":"先别改代码，告诉我你的判断依据是什么"}
 {"t":"block_end","seq":3,"ts":"2026-10-13T21:00:06.313Z","id":"b0","ok":true}
