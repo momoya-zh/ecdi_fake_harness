@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v2.1**（2026-10-14；v1.0 建立于 2026-10-08）。
+> 状态：**v2.6**（2026-10-17；v1.0 建立于 2026-10-08）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；REQ-06/08 待裁决）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -233,7 +233,7 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 这意味着 REQ-01 的「短文本丢换行」在 GDI 上还**叠加**了本条，「不可读」的观感由此而来。两条需分别修。
 ---
 
-### REQ-06 跨后端基线偏移（拉丁 +1 px · CJK +2 px）——**ECDI 记为既有差异，待裁决**
+### REQ-06 跨后端基线偏移——**已裁决结案（2026-10-17，③「记为已知现状」）**；★ 原登记读数「拉丁 +1 · CJK +2」经 112 格复测**订正**
 
 > ★ 本条**不是**我发现的，而是 **ECDI 在 Phase 31 收口时主动登记**（详设 **O10** / §13.2），
 >   并明确判为「**既有（pre-existing），非本 Phase 引入**」；**修复方向留给决策**，未折进 Phase 31。
@@ -242,15 +242,39 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | 项 | 内容 |
 |---|---|
 | 原编号 | ECDI Phase 31 详设 **O10**（§13.2） |
-| 状态 | ⏸️ **待裁决**（ECDI 侧已登记根因；修与不修未定） |
-| 现象 | 同一字形、同字体/字号/DPI/位置，两后端的**字形栅格包围盒**垂直方向差：**拉丁 +1 px · CJK +2 px** |
+| 状态 | ✅ **已裁决结案（2026-10-17）**——ECDI 侧走 O10 候选 **③「记为已知现状」**（用户拍板）；本账本同步结案。**★ 但结案的前提是「不存在既等价又不改默认观感的修法」，与在案理由不同**，见下「复测订正」 |
+| 现象（原登记，**保留为历史引用**） | 同一字形、同字体/字号/DPI/位置，两后端的**字形栅格包围盒**垂直方向差：**拉丁 +1 px · CJK +2 px** ← ★ 该读数出自 **SimSun@14 单点**，非类别规律（订正见下） |
 | 根因（已定位） | ① **基线差 1 px**：GDI 用 `pos.y + tmAscent`（`tmAscent = 12`），GL 用 `floor(pos.y) + floor(FontEngine::Ascent)`（FT `metrics.ascender = 13`）⇒ GL 低 1 px；② **CJK 再叠 1 px**：字形 bearing 取整差（`测` 的 GDI 字形顶 +0 vs GL +2） |
 | 判为 pre-existing 的三条独立理由 | ① GL 基线表达式**本 Phase 未动**；② 它**不查 `LineHeight`** ⇒ 与本 Phase 的改动**正交**；③ **改动前的 GL 截图与新截图逐位相同** |
 | 本仓库实测印证 | 同一夹具 `cjk_short`：GDI 首行 y102–115 / GL y104–115 ⇒ **差 2 px**，与 CJK +2 px 的记录一致（且是**首行偏移**，非行距） |
-| 待裁决 | ECDI 侧原话：「修正它会**全局改变 GL 文本位置**」⇒ 修与不修需拍板（本轮**未改任何 ECDI 代码**） |
+| 待裁决（原表述，保留引用） | ECDI 侧原话：「修正它会**全局改变 GL 文本位置**」⇒ 修与不修需拍板（本轮**未改任何 ECDI 代码**）　★★ **2026-10-17 复测：此话方向反了**——统一到 `round(hhea·px/upem)` 时 **GL 只动 ≤1 px，GDI 最大动 −13 px**（疼的是默认可见链） |
 
 ★ **与 `REQ-05` 的关系**：两条**独立**——`REQ-05` 是**行距**（14 vs 16，已闭合）；本条是**基线/包围盒**（±1–2 px，仍开放）。
   不要把本条的残留误读成「`REQ-05` 没修好」。
+
+★ **2026-10-17 裁决前置取证（14 字体 × 8 字号 = 112 格，DPI 96）**——装置与读数：
+  ECDI 侧 `.workbuddy/spike/p36-baseline/`（本仓库副本 `.scratch/p36-baseline/`）；
+  ECDI 侧结论落点 = **Phase 31 详设 §13.6（v1.5）**；roadmap-deferred **#69 / v2.31**；desktopnest-roadmap **v1.25**。
+
+| 项 | 在案（2026-10-13 收编时） | 112 格实测 | 判定 |
+|---|---|---|---|
+| 拉丁 +1 px | SimSun@14 的 `H`/`g` 各 +1 | 默认字体确为 {0, +1}；跨字体 **GL−GDI 基线差 ∈ [−13, +3]** | ⚠️ **单样本外推** |
+| CJK +2 px | `测`@14 = +2 | 同字体 `测` 在 12/16/20/24/32/48/64px = **+1/+1/+1/0/0/+1/0** | ⚠️ **字号现象，非类别规律**（14px = `Font::size` 默认值，恰是我方夹具采样点） |
+| 80/112 格 | — | Δ ∈ {0, +1} | 常态是「不差」或「差 1」 |
+| 符号方向 | 隐含「GL 恒低 1 px」 | Calibri **−13** / Consolas −11 / Courier New **+3** / YaHei **+2** ⇒ **翻转** | ★ 「统一上移 N px」**结构上不可行** |
+| 包围盒合成式 | 「基线差 + bearing 取整」（未给方向） | 顶差 = **基线差 − bearing 差**（`bearingY` 向上为正）；默认字体 **23/24 格 ≤ ±1**，唯一超差 = `测`@14 | ★ 本仓库 `REQ-05` 之外的 T31-8 ±1 判据**原判过严**，现订正 |
+| FT ascent 来源 | 未测 | `face->ascender == hhea.Ascender` **112/112**、`round(FT) == ceil(hhea·px/upem)` **110/112** | ★ **GL 侧事实上就是 hhea 口径** ⇒ 与 `REQ-05` 已统一的行高口径**同源不同维** |
+| GDI `tmAscent` 可复算性 | 未测 | `== round(hhea)` 62 · `== round(usWin)` 85 · `== otmMacAscent` 69（均 /112） | ★ **无一式可普遍复算** ⇒ ECDI 候选①「FT 无对应量」**成立**，GL **无法**精确追平 |
+
+★ **量具校准（条 76，三件全过才下结论）**：`FontEngine::Ascent` 与直读 FT **0/112 失配**；px=14 的 GDI `tmA/tmD/tmH` 与 Phase 31 归档读数（`p31-lineheight/readout_px14.txt` · `p31-glbbox/cjk_diag.txt`）**0/10 字体不符**；包围盒合成锚 `测`@14 = 基线 +1 / bearing −1 / 顶 +2，与 `bbox_readout.txt` 逐项吻合。
+★ **一处判据错误自我纠正（值得记）**：首版拿 **GDI `tmAscent` 与 FT `ascender` 数值相等**判「两侧同一 face」——**错**，两个不同量具的读数会偶然相同（GDI Consolas tmA=13 恰等于 FT 侧 **回退后 SimSun** 的 ascent=13.00）。改判据 = **串宽**（同单位同语义，DPI 96 下 DIP↔px 1:1）+ 正对照（同 face 两侧同宽：真 Consolas 152 / SimSun 133）。
+★ **未测（条 105 边界，登记不伪造）**：跨 DPI；CFF 字体（本机样本全 TrueType + `head` bit3）；像素级逐字号包围盒（T31-8 那种 `GetPixel`/`glReadPixels` 形态）；非中文语言环境字体集。
+
+| 项 | 内容 |
+|---|---|
+| ★ **结案理由（与在案理由不同）** | 不是「GL 代价太大」，而是 **① GDI 侧不可复算 ⇒ GL 追不平 ② 两侧统一到共同源 ⇒ 代价落在默认 GDI 链（最大 −13 px，违反条 95⑤）** ⇒ **不存在既等价又不改默认观感的修法** |
+| ★ **本仓库的读数的连带订正** | 本轮取证同时暴露 `REQ-09`（`Font::family` 双链语义矛盾）⇒ **我方既有 GDI↔GL 跨后端对比读数中，凡设置过 `family` 的行，两后端渲染的并非同一 face** ⇒ 那些对比的「同一内容」前提不成立，须按 `REQ-09` 标注解读（**未追改历史 evals**） |
+
 ---
 
 ### REQ-08 环形进度条（圆弧原语缺失）——**本项目成为 `DrawArc` 的首个真实消费者**
@@ -262,19 +286,46 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 
 | 项 | 内容 |
 |---|---|
-| 状态 | ⏸️ **登记待裁决**（本轮**未**要求 ECDI 改；已用现有能力兑现需求） |
+| 状态 | ✅ **闭合（2026-10-16）**——ECDI **Phase 33** 落地 `DrawArc`（框架首个曲线原语，D5 裁决**纯虚**，`RenderingBackend.h:110`）与其首个控件消费者 `RingProgressBar`；harness 以**首个真实消费者**身份兑现（右栏「用量」卡上下文行 = 44px 环），机读证据 `commandMix.arc = 350 > 0` |
 | 需求形态 | **环形**（圆环）进度条——按角度画部分环，用于「上下文占用百分比」 |
 | ★ 能力侧事实（**已查源码仓**） | ① **绘制原语只有 6 个**：`DrawRect` / `DrawText` / `DrawLine` / `DrawRoundedRect` / `DrawImage` / `DrawFocusRect`（`Render/RenderingBackend.h:72-115`）；② **GL 侧同样 6 个**（`GLRenderer.cpp:208-496`）；③ **命令 variant 全集亦无**（`Render/RenderCommand.h:93-96`）⇒ 两后端 + 命令层**三处一致地没有圆弧** |
 | ★ 但「实心圆/圆环」**能画** | `DrawRoundedRect` 的半径契约是 `[0, min(w,h)/2]` 钳制（`RenderingBackend.h:93`；`GDIBackend.cpp:117`）⇒ 传 `w==h` + 半径 `w/2` 即**实心圆**；两个同心实心圆叠出**圆环**。⇒ 缺的不是「圆」，是「**按角度的弧**」 |
 | ★★ **ECDI 自己早已登记为挂账项** | 不是我"发现"的：`roadmap-deferred.md:5` 明确列出 **`DrawArc`** 为挂账项；`phase9.6-progressbar-requirements.md:27` 写明「**indeterminate（不确定进度的循环动画 / 转圈）不在 v0.1 范围——它需要 `DrawArc` / `PushTransform`（渲染能力挂账）**」；`phase24-line-antialiasing-requirements.md:120` 的 **N1** 记「曲线/圆弧抗锯齿 = **K12 原语不存在**」 |
 | ⇒ **本条的真正价值** | **本项目是 `DrawArc` 的「首个真实消费者」**——ECDI 的挂账理由是「**无消费者不动**」（`phase9.6-animation-requirements.md:36`「DrawArc / PushTransform 继续记账：**无消费者不动**」）。现在消费者出现了（上下文占用环 / 将来的 spinner），**挂账的前提变了** |
 | 本轮处置 | **不阻塞**：改用**百分比条 + 百分比文本**（`ProgressBar` 现有能力即可兑现，已实测）。环形**待 ECDI 裁决** |
+| ★ **闭合（2026-10-16）** | ECDI **Phase 33** 交付 `DrawArc` + `RingProgressBar`（静态库接入 `third_party/ecdi`，2026-10-16 19:12）。harness 兑现：右栏「用量」卡上下文行由 16px 条改为 **44px 环**（`gui/src/App.cpp` 构建处 + `RefreshHud` 更新处）。**两个实现期发现**：① 轨道色**不能**沿用 `kTrackBg`——它与卡片底色 `kPanel2` **同值**（`Theme.h:82`），环会看不见整圆 ⇒ 改用 `kLine`；② `RingProgressBar::SetStyle` 的头**未**声明「覆盖后 Invalidate」（对比 `Panel.h:39` 明确写了）⇒ harness 只在**颜色档位翻转**时补一次 `RequestRepaint()`（每 tick 补会刷爆 `invalidations`，污染评估读数——条 57③）。**机读证据**：`commandMix.arc = 350 > 0`（`.scratch/ring-verify.json` / `center-verify.json`）；`invalidations` 仅 +1（17 vs 基线 16）。**用户视觉确认**：环与数字正确 |
+| ★ 附带闭合（同日） | 顶栏胶囊文字贴左：`ECDI::Label` **不** override `CalculateTextPosition` ⇒ 基类默认左对齐；**全库只有 `Button`** override 做水平对齐（`Button.cpp:110-124`，Phase 30 △6 三态）。harness 用 ECDI 预留扩展点（`TextWidget.h:74-78`「对齐策略虚方法，不写死」）派生 `uikit::CenteredLabel` 兑现，未向 ECDI 提需求 |
 | 若 ECDI 要做，最小可用面 | 一个 `DrawArc(center, radius, startAngle, sweepAngle, width, color)`（或 `DrawRing`）即可覆盖：环形进度 / spinner / 仪表盘。★ **不必**一次做全（椭圆/贝塞尔等仍可挂账） |
 | 反面做法（**不建议**，但须记录） | 应用侧用 `DrawRoundedRect` 拼大量小段逼近弧——**是 workaround 不是能力**：段数决定平滑度、命令数随精度爆炸（与评估指标 ① 直接冲突），且抗锯齿无从谈起 |
 
 ★ **归属纪律**：本条**不是**「harness 用法问题」（不像 REQ-01/03/04）——`DrawArc` 确实**不存在**，
 且**ECDI 自己也是这么登记的**。⇒ 这是本项目**第 5 条**候选 ECDI 需求，但**第 1 条**
 「先查了源码仓、且 ECDI 已自认挂账」的条目（前 4 条全部反转为 harness 侧）。
+
+---
+
+### REQ-09 `Font::family` 双链语义矛盾——**不存在两侧都对的单一写法**（★★ 本轮唯一「同一字符串在两个后端渲染不同字体」级缺陷）
+
+> ★ **本条不是 ECDI 隐瞒的缺陷**：Phase 26 详设 §9 **L1** 明确登记过「两侧语义不完全对等」，属**已登记的延迟设计**。
+>   本轮的贡献 = 把它**测成了可判定的形状**（双向失效 + 两个真实消费者）， ⇒ 按条 91 五态表，**「出现登记中的消费者」触发条件达成**。
+> ★ **归属判据（条 1.1 铁律）**：已查 ECDI 源码仓 `D:\Project\ECDI\ECDI\src`，且做了**只改一个自变量（family 写法）**的受控对照 ⇒ 不是「只看头文件的推断」。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | （无——本轮取证新立；ECDI 侧对应 **`roadmap-deferred` #69**） |
+| 状态 | ✅ **已闭合（2026-10-17，当日修复 + 验收）**——ECDI 侧 `Win32FontSource::ResolveFile` 补**族名反查**（注册表；禁子串匹配；**文件名直查保留且优先**）⇒ 同一 `Font::family` 两条链落到同一张 face。**ECDI 侧 `roadmap-deferred` #69 已标已修复**；回归 `ecdi_tests` **465/465** |
+| 归属 | **ECDI 侧**（`Win32FontSource::ResolveFile` 把 `family` **当文件名**直查，`Win32FontSource.cpp:113`；GDI 链把同一串送 `LOGFONTW.lfFaceName` = **族名**语义，`GDIBackend.cpp:1362` / `GDITextMeasurer.cpp:71`） |
+| 现象 | **同一个 `Font::family` 字符串，两条链解析到两个不同 face**：族名 ⇒ GDI 命中、**GL 静默回退默认 face（SimSun）**；文件名 ⇒ GL 命中、**GDI 回退宋体** |
+| ★ 实测读数（px=14 / DPI 96，可比量 = **串宽**） | `"Consolas"` ⇒ GDI 152（真 Consolas）/ GL **133**（与 `"simsun.ttc"` 逐格相同 = 回退）· `"consola.ttf"` ⇒ GDI **133**（= 宋体）/ GL 152 · 正对照：同一 face 两侧同宽 152 vs 133 |
+| ★ 覆盖面 | 常见族名 **5/5 在 GL 链回退**（`Courier New` / `Arial` / `Segoe UI` / `Microsoft YaHei` / `Cascadia Mono`，读数全 = SimSun）；同串在 GDI 链 **5/5 解析到真实 face**（`GetTextFaceW` 实测） |
+| ★ 两个真实消费者 | ① **本仓库**：`gui/src/Theme.h:97` 与 `gui/src/UiKit.h:26` 的 `kMonoFamily = "Consolas"` ⇒ **GL 运行时等宽从未生效**（日志/ID 列被排成比例字体，换行宽度与 GDI 不同）；② **ECDI 自家示例**：`examples/ModelProbe/ModelProbe.cpp:474/779` 按 Phase 26 §11.7 勘误写成 `"consola.ttf"` ⇒ 在**默认 GDI 链**上这两行现在显示宋体（★ 即「B 的修法只对 GL 一侧有效」） |
+| ★ 对我方评估的影响 | **所有设置过 `family` 的 GDI↔GL 跨后端对比读数，其「同一内容」前提不成立** ⇒ 历史 `evals/*.json` **不追改**（条 61②），但解读须带此标注；`REQ-06` 的基线差反而是小头　★★ **2026-10-17 修复后**：新取的 GL 读数与 GDI 已同 face ⇒ **今后对比可用**；**历史 `evals/*.json` 仍不追改**（条 61②），但解读须带「GL 侧当时等宽失效」的标注——★ 其中凡与**等宽行**相关的读数（日志/ID/JSON 列）差异会被高估 |
+| ★ ECDI 侧修法候选 | ⓐ `Win32FontSource` 补**族名→文件名反查**（`EnumFontFamiliesExW` + 结果缓存，**零公共 API 增量**，沿 Phase 26 `familyCache` 先例）· ⓑ `RenderServices` 注入按族名的 `FontSource`（动装配）· ⓒ 契约显式禁止族名（则本仓库须改名，且 ②/两侧不可兼得仍在）⇒ **倾向 ⓐ**：一处改动即让两条链同解，且**消费者零改动**（条 95⑤） |
+| ★ 我方本轮处置 | **不改代码**（`kMonoFamily` 保留族名并加注释说明两侧差异）。★ 理由：**改成 `"consola.ttf"` 只会把失效从 GL 侧搬到 GDI 侧**——单字符串喂不了两条链，属**契约层矛盾，非用法问题**（区别于 `REQ-01/03/04/07` 的四次归属反转）　★★ **2026-10-17 更新：该判断已被 ECDI 的修复取代** —— 修复落地后**族名写法在两条链都对**，故我方 `kMonoFamily = "Consolas"` **无需改动即恢复等宽**（GL 侧现在真的拿到 Consolas 而非回退 SimSun）。★ 仍保留此行的历史判断，因为它正确记录了「选文件名只会把失效搬到 GDI 侧」这一当时的边界 |
+| ★ 取证 | ECDI 侧探针 `t36_family_probe.cpp` / `t36_single_family.cpp`（只改一个自变量 + 正对照），读数 `family_readout.txt`；本仓库副本 `.scratch/p36-baseline/`；结论落点 = Phase 31 详设 **§13.6** ④ + roadmap-deferred **#69** |
+
+★ **与 `REQ-06` 的关系**：同源取证、**不同问题**——`REQ-06` 是「同一 face 上两后端的基线差」（已结案为已知现状）；
+  本条是「**两后端拿到的根本不是同一个 face**」。后者会污染前者的读数，故本条**优先级高于** `REQ-06`。
 
 ---
 
@@ -401,6 +452,8 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | `.workbuddy/memory/MEMORY.md` | 项目长期记忆：定位、结构、现状、数据卫生 |
 | `.workbuddy/memory/YYYY-MM-DD.md` | 当日日志：取证过程与原始读数 |
 | `docs/P1-gui-implementation-spec.md` §9 / `docs/P1.5-child-process-spec.md` §7–§8 | 各阶段自己的「已知局限」与实施回写 |
+| ECDI 侧 `docs/phase31-window-geometry-and-line-height-detailed-design.md` **§13.6** | `REQ-06`/`REQ-09` 的**取证结论落点**（112 格读数 + 仪器校准） |
+| ECDI 侧 `docs/roadmap-deferred.md` **#69** · `docs/phase26-freetype-gl-detailed-design.md` **§9 L1** | `REQ-09` 的 ECDI 侧登记处（同一事实的对方载体） |
 | `evals/*.json` | 机器可读读数（评估证据） |
 
 ★ **纪律**（条 117）：「某需求已闭合」这类事实会被**多份文档各自登记** ⇒ 订正时先列载体清单，再按关键词全库回扫，不只在「本次改过的文件」里搜。
@@ -416,6 +469,143 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 
 ## §6 修订记录（新在前）
 
+- **v2.6（2026-10-17 下午）★ `REQ-09` 当日修复并验收（ECDI 侧）+ 一条日志日期漂移的自我纠正**：
+  ① **`REQ-09` 闭合**：ECDI 落地 `Win32FontSource::ResolveFile` 的**族名反查**——查注册表
+  `HKLM\...\Fonts`，**三级匹配强度**（精确 / `"<family> "` 风格变体前缀 / `"<family> & "` 复合头），
+  ★ **禁子串匹配**（实测 `Song` 会命中无关的 `STSong`），★ **文件名直查保留且优先**
+  ⇒ 既有调用点与 T26-6 case 3 **逐位不变**（条 95⑤「消费者零改动」）。
+  ② **验收（`t69_accept.cpp`，8 族名）**：Consolas / Courier New / Arial / Segoe UI / SimSun /
+  Microsoft YaHei / Cascadia Mono / Tahoma ⇒ **8/8 两链同 face**（`consola.ttf` / `cour.ttf` /
+  `arial.ttf` / `segoeui.ttf` / `simsun.ttc` / `msyh.ttc` / `CascadiaMono.ttf` / `tahoma.ttf`），
+  串宽差 **≤2 px**（= `REQ-06` 那条已知光栅差，非解析错误）。对照：`"consola.ttf"` 仍解析；
+  未知文件名/未知族名仍返回空（**无静默降级**）；`"Consolas Bold"` ⇒ `consolab.ttf`。
+  **回归 `ecdi_tests` 465/465**、exit 0、`-D_DEBUG` 257 处（断言启用），与改动前基线同数。
+  ③ ★ **取证期两处仪器/判据自我纠正**（值得单记）：ⓐ 首版探针把 `RegEnumValueW` 的 `REG_SZ`
+  当**窄串**读 ⇒ 每个文件名只回**一个字符**（`consola.ttf` ⇒ `c`）——W 系列 API 的 `REG_SZ` 是 **UTF-16**；
+  ⓑ 验收判据改两次：「FT 读数 ≠ 默认 face」对 **SimSun 不成立**（它的真实 face 本就是默认 face）、
+  「串宽严格相等」**过严**（两链 advance 取整方式不同）⇒ 改为 **≤2 px**。
+  ④ **未闭合的边界（登记不伪造，条 105）**：无**样式选择**（族名恒得 regular）；无 **CJK 族名**
+  （`宋体` 无单名注册表键，需读 OpenType name 表）；无**字体回退**（N6）。
+  ⑤ ★★ **一条日志日期漂移的自我纠正（条 7）**：跨 DPI 矩阵**实际执行于 2026-10-17 11:00–11:11**
+  （证据 = `.scratch/dpi-matrix.json` mtime），但 v2.4 条目与当日日志误记为「2026-10-16 晚」——
+  根因 = 会话跨过午夜后**继续写在 `2026-10-16.md`**（条 7 明写此坑，本轮又踩）。
+  ⇒ 已新建 `2026-10-17.md`，并在 **v2.4 条目 / `status.txt` / 日志 §九** 三处订正日期；
+  ★ 读数本身无误（仅日期标注错），历史措辞**保留加注、不改写**（条 61②）。
+  ⑥ 取证：ECDI 侧 `t69_accept.cpp`；本仓库副本 `.scratch/p36-baseline/`。
+
+- **v2.5（2026-10-17）★★ `REQ-06` 裁决结案 + 在案读数订正 + 新立 `REQ-09`（比 `REQ-06` 严重）**：
+  ① **触发**：`REQ-06` 自 2026-10-13 收编后一直「待裁决」。按项目铁律（条 1.1 + 前四次归属反转的教训），
+    **裁决前先查 ECDI 源码仓并实测**，不采信在案登记的数字。装置 = ECDI 侧库外探针 4 支（零框架改动，沿 p31 先例），
+    读数 112 格（14 字体 × 8 字号，DPI 96），本仓库副本 `.scratch/p36-baseline/`。
+  ② ★★ **`REQ-06` 裁决 = ③「记为已知现状」（用户拍板）**，但**结案理由与在案理由不同**：在案「修正它会全局改变 GL 文本位置」
+    经实测**方向反了**——两侧统一到 `round(hhea·px/upem)` 时 **GL 只动 ≤1 px，GDI 最大动 −13 px**（疼的是默认可见链 ⇒ 违反条 95⑤）；
+    而 GL 精确追平 GDI **做不到**（GDI `tmAscent` 无一式可复算：hhea 62 / usWin 85 / `otmMacAscent` 69，均 /112）。
+    ⇒ 真结案依据 = **不存在既等价又不改默认观感的修法**。
+  ③ ★★ **在案读数订正（第 5 次「先查再判」在本仓库兑现，但这次订正的是 ECDI 登记的数字）**：
+    「拉丁 **+1** · CJK **+2**」= **SimSun@14 单点**；112 格实测 **GL−GDI ∈ [−13, +3] 且符号跨字体翻转**
+    （Calibri −13 / Consolas −11 / Courier New **+3** / YaHei +2），80/112 格 ∈ {0,+1}。
+    「CJK +2」是**字号现象不是类别规律**：同字体 `测` 在 16/24/32px 顶差 = **+1/0/0**——14px 恰是 `Font::size` 默认值、
+    也是我方夹具采样点 ⇒ **采样点选中了最大差的那一档**（条 76「绝对阈值隐含量具已校准」的镜像：**单点采样隐含「该点代表类别」**）。
+  ④ ★ **T31-8 的 ±1 判据原判过严**：包围盒顶差 = **基线差 − bearing 差**（合成方向此前未写明），默认字体上 **23/24 格 ≤ ±1**，
+    唯一超差 = `测`@14 ⇒ 不是「CJK 类别不成立」。根因补全：`face->ascender == hhea` **112/112** ⇒ **GL 侧本就是 hhea 口径**，
+    而 `REQ-05` 已把**行高**统一到 hhea ⇒ **同一 B-2 决策没覆盖基线维度**，这才是跨后端残差的结构性来源。
+  ⑤ ★★ **新立 `REQ-09`（本轮真正的发现，优先级高于 `REQ-06`）**：`Font::family` 在 GDI 链 = **族名**、在 FreeType 链 = **文件名**
+    ⇒ **不存在两侧都对的单一写法**（族名 ⇒ GL 静默回退 SimSun；文件名 ⇒ GDI 回退宋体；常见族名 5/5 在 GL 链回退，均实测）。
+    **两个真实消费者**：我方 `kMonoFamily="Consolas"` ⇒ **GL 等宽行从未生效**；ECDI 自家 `ModelProbe.cpp:474/779` 按 Phase 26
+    §11.7 B 改成文件名 ⇒ 在**默认 GDI 链**显示宋体（⇒ **B 的修法只对 GL 一侧有效**）。ECDI 侧登记 = **roadmap-deferred #69**，
+    定性 = Phase 26 §9 **L1** 已登记的延迟设计，**触发条件已达成**（条 91 五态表），**不是新需求**。
+    ★ **连带影响我方历史读数**：凡设置过 `family` 的 GDI↔GL 跨后端对比，「同一内容」前提不成立 ⇒ 历史 `evals/*.json` **不追改**，
+    但解读须带标注（`REQ-06` 那条「基线差」在此之下反而是小头）。
+  ⑥ ★ **一次判据自我纠正（条 76 量具族）**：首版拿「GDI `tmAscent` == FT `ascender` 数值相等」判两侧同一 face——**错**，
+    两个不同量具的读数会偶然相同（GDI Consolas tmA=13 恰等 FT 侧**回退后 SimSun** 的 13.00）⇒ 改判据为**串宽**（同单位同语义）
+    + 正对照（同 face 两侧同宽 152 / 133）。★ 本轮另有两支探针的**输出被控制台代码页吞掉**（GBK 打不出 `⇒`），已改判：
+    探针读数一律落文件，不在 stdout 上做人眼判读（同条 105「能复制/落文件才算」）。
+  ⑦ ★ **归属纪律自查**：本条**不是**第 5 次归属反转——已核 ECDI 源码行号 + 单变量对照 + 正对照，且**我方代码零改动**
+    （改 `kMonoFamily` 只会把失效从 GL 侧搬到 GDI 侧）。★ 与 `REQ-08` 同为「已核源码仓」的正例。
+  ⑧ 取证：ECDI 侧 `.workbuddy/spike/p36-baseline/`（`t36_ascent_probe` / `t36_bearing` / `t36_family_probe` / `t36_single_family`
+    + `tables_probe.py` / `band.py` / `tahoma_edge.py`，读数 `ascent_readout.txt` / `bearing_readout.txt` / `family_readout.txt`）·
+    本仓库副本 `.scratch/p36-baseline/`。结论落点：Phase 31 详设 **§13.6（v1.5）** · roadmap-deferred **#69/v2.31** ·
+    phase26 详设 **§9 L1 追记（v1.8）** · desktopnest-roadmap **v1.25**（条 118 的旁支载体）。
+  ⑨ **未测（登记不伪造，条 105）**：跨 DPI 的基线差（我方 2026-10-17 DPI 矩阵测的是**帧时/命令数**，不是像素几何量）·
+    CFF 字体 · 像素级逐字号包围盒 · 非中文环境字体集 · 其余 84 格样本外推风险。
+
+- **v2.4（2026-10-17 上午）★ 跨 DPI 矩阵落地（评估指标①/④的 DPI 维度）+ 一条预测自我否证**：
+  ① **补上 2026-10-14 遗留的「跨 DPI 重跑」未测项**。前提勘察（`.scratch/probe_dpi_premise3.py`）：
+  本机**不需要改系统缩放**——副屏物理 125%（phys/DIP=1.2500，两条独立路径交叉验证），把窗口
+  搬过去即触发真实 `WM_DPICHANGED`（`Win32PlatformWindow.cpp:858-884`：更新翻译器→采纳建议
+  矩形→让 `WM_SIZE` 走既有链；建议矩形等比缩放 ⇒ **DIP 尺寸不变** ⇒ 两档布局宽度可比）。
+  矩阵 = 3 夹具（demo/cot/scale-2000）× GDI/GL × 100%/125% = 12 点，`--timed --auto-answer allow`
+  + 25s 窗口（★ 不用 `--instant`：它首个 tick 就抽干，搬窗时布局已在 100% 定型）。
+  **每点回读 `GetDpiForWindow` 验前提：12/12 全过**（100% 档 ==96、125% 档 ==120），两档消费量
+  对齐（demo 7/16=7/16 · cot 4/88=4/88 · scale-gdi 502/1193=502/1193 · scale-gl ±1 截断抖动）。
+  ② **读数 A · DIP 不变契约成立**：`cmds/frame` 125/100 = **0.992–1.002×（均值 0.9991）**
+  ⇒ 同一内容在两档 DPI 下发出的绘制命令数完全相同，布局/命令生成全在 DIP 空间（Phase 20 R3
+  架构约束的直接读数）。
+  ③ **读数 B · 帧时按线性 DPI 走，不按面积**：`avgExecuteUs` 125/100 = **1.19–1.35×（均值 1.26×）**，
+  贴着 DPI 比 1.25 而非面积比 1.5625。评估指标①的 DPI 维度答案。
+  ④ **读数 C · 测量成本无系统性爆炸，但两链敏感度不同**：`us/char` GDI 侧 1.06–1.31×（一致偏大）、
+  GL 侧 0.85–1.16×（噪声内、`cot-gl 0.83×` 反常偏低）。⇒ 记作**倾向**而非结论（单轮不足以定
+  「GDI 对 DPI 更敏感」）。
+  ⑤ **读数 D · 同 DPI 下 GDI vs GL 帧时比 2.07–2.85×（100%）/ 2.30–2.54×（125%）⇒ 跨 DPI 稳定，
+  DPI 不放大两后端差距**。★ 诚实边界：这不是 `REQ-06` 的基线偏移本身（那是像素几何量，需像素
+  探针）——本矩阵答的是帧时/命令/测量成本三项（用户选定的判据）。
+  ⑥ ★★ **一条预测自我否证（判据在构造上就错，同 v2.2 帧数判据同族）**：我在操作单里写
+  「`chars/call` 在 125% ≈ 100% 的 1.25×」——**错**：`measureChars` 数的是**字符数**，DPI 不改变
+  字符数；布局宽度与字号都是 DIP ⇒ 换行位置基本不变 ⇒ `chars/call` 本该近似不变。该看的量是
+  **`us/char`**（每字符耗时）。⇒ 教训：**写判据前先问「这个量的单位里含不含 DPI」**——字符数不含，
+  耗时会含。（与 A-2「分母混性质」、v2.2「同名不同性质」同族：判据用错量。）
+  ⑦ **附带收获**：REQ-08 的环在**两后端 × 两档 DPI 全部 6 组**里 `arc/frame = 2.000` 整
+  （轨道弧+进度弧恰 2 条 `DrawArc`/帧），**GL 后端同样在画** ⇒ D5「纯虚防静默分歧」的裁决
+  按预期兑现。
+  ⑧ 取证：`.scratch/dpi_matrix.py`（矩阵跑批）· `.scratch/dpi-matrix.json`（12 点机读全量）·
+  `.scratch/dpi-premise3.log`（前提勘察）· 操作单见 **`2026-10-17.md` §一**（该跑批实际执行于 10-17；原记于 10-16 日志 §九，已按条 7 移入当日文件）。
+
+- **v2.3（2026-10-16）★ Phase 33 接入：`REQ-08` 闭合 + 胶囊居中 + 一条我报错的自我纠正**：
+  ① **`REQ-08` 闭合**：ECDI Phase 33 落地 `DrawArc`（框架首个曲线原语，D5 = 纯虚）+
+  `RingProgressBar`（其首个控件消费者），静态库接入 `third_party/ecdi`。harness 以**首个真实
+  消费者**身份兑现：右栏「用量」卡上下文行 16px 条 → **44px 环**（轨道 `kLine`、线宽 5、
+  环色与数字同阈值三档）。机读证据 `commandMix.arc = 350 > 0`；`invalidations` 仅 +1。
+  ② **两个实现期发现**（都记进 §3 REQ-08 表）：轨道色不能用 `kTrackBg`（与卡片底色 `kPanel2`
+  **同值** ⇒ 环看不见整圆）；`RingProgressBar::SetStyle` 未声明内建重绘 ⇒ 只在颜色档位翻转时
+  补 `RequestRepaint()`（每 tick 补会把 `invalidations` 从 16 刷到 ~600，污染评估读数）。
+  ③ **顶栏胶囊文字居中**：`Label` 不 override `CalculateTextPosition` ⇒ 左对齐；用 ECDI 预留
+  扩展点派生 `uikit::CenteredLabel`（算法照 `Button.cpp:117`），未向 ECDI 提需求。
+  ④ ★★ **一条我报错的自我纠正（用户勘误）**：我曾写「`CheckBox`/`Radio` 也 override 做水平居中」
+  ——**错**。读 ECDI 源码仓核实：两者的 override 第一行是 `(void)textWidth;`（**显式放弃水平对齐**），
+  只为把文本**垂直**对齐到 16px 指示器；**全库只有 `Button`** 做水平对齐，且已由
+  `ButtonStyle::textAlignment` 三态驱动（Phase 30 △6），我引的 `Button.h:57`「写死居中」是**过时注释**。
+  根因 = 只读了 `third_party/ecdi/include` 的头就下结论，没读 `D:\Project\ECDI\ECDI\src` 的实现
+  ——**本项目第 6 次栽在「判 ECDI 能力前没查源码仓」这根钉子上**（前 5 次是归属反转）。
+  ⑤ **BOM 回归修复**：`App.h`/`App.cpp`/`PaintProbe.h`/`PaintProbe.cpp`/`UiKit.h` 五个文件工作区
+  丢 BOM（HEAD 里都有；`UiKit.h` 含 825 个非 ASCII 字符 ⇒ 按条 69 判据属已确认缺陷）。已修回。
+
+- **v2.2（2026-10-14 晚·二）★ `--timed` 帧时序读数落地 + 一条判据自我否证**：
+  ① **补上 2026-10-14 遗留的「cot 夹具 `--timed` 帧时序」未测项**（此前 `--instant`
+  在同一 tick 抽干夹具 ⇒ 中间态不可观测，A-2 想控帧数也正是因此不得而入）。
+  实测 6 个观测窗口（15/30/60/90/120/150s）+ 3 组 ask 对照，三条主读数：
+  · **节奏忠实**：`--timed` 只消费到 `ts` 到期的行——`consumed/ts-due` = **0.934–0.960**
+    （spread 仅 **1.03×**），且**不可能由「一个 tick 抽干」产生**（该退化形态下
+    每档 consumption 恒等于 978，实测从 91 增到 699）。协议 §8.2「ts 是唯一节奏源」被证实。
+  · **帧率恒定 ~29.3–30.4 Hz**（墙上秒数 × 30Hz，与窗口长度线性），无 burst、无漏拍。
+  · ★★ **帧成本由「已累积内容」驱动，而非由「delta 到达率」驱动**：
+    `cmds/frame` 288 → 360（**1.25×**），而 `deltas/frame` **下降** 0.193 → 0.151。
+    ⇒ 这是 `--timed` **才能**给出的读数（`--instant` 把 934 个 delta 灌进同一个 tick，
+    两个窗口的「每帧 delta 数」根本没有区分意义）。
+  ② **协议 §8.3 的 ask 暂停被证实并量化**：受控单变量（只差 `--auto-answer`）——
+  60s 前后**完全等价**（301 == 301，证明该开关本身不改变任何东西，负对照成立）；
+  **90s 档不能判定**（夹具在 80.55s 与 150s 之间恰好都是 383 个事件 ⇒ 冻结与不冻结落在同一个数上，如实判 INVALID）；
+  **120s 档决定性**：不答冻结在 **383**，答后推进到 **524**（+141）。
+  ③ ★★ **一条判据自我否证（与 v2.1 的量具镜像同族，方向相反）**：我首版判据写
+  「timed frames **<** instant frames」——**方向错了**：`--timed` 在整段窗口内持续 tick，
+  `--instant` 一个 tick 抽干 ⇒ **帧数在两个模式下不是同一个性质的量，不能比大小**。
+  该判据让首轮跑批**在 6 档全跑完后才早退**（12 次运行的帧数读数作废为判据依据）。
+  ★ 修法 = 换成**消费侧**读数（`blocks + deltas`）才成立。**教训**：与 A-2「拿同时长两档比」
+  同源——**判据采用哪个量之前，先问这个量在两个对照组里是否是同一个性质**。
+  ④ **取证产物**：`.scratch/probe_timed.py`（原始跑批）· `.scratch/probe_askctl.py`（ask 对照）·
+  `.scratch/recheck_pace.py`（独立复核，含两条反证）· `.scratch/verdict_timed.py`（终判）·
+  机读版 `.scratch/timed-verdict.json`。
+  **不复测项（显式登记，不假装测过）**：跨 DPI 重跑；第二个 ask（154.17s，所有窗口
+  ≤150s 均未到达，其行为由第一个 ask **推断而非实测**）；per-delta 可见延迟（探针只报帧聚合）。
 - **v1.8（2026-10-13 晚·三）★ `A-2` 复核否决 —— 原判收回**：
   曾登记「折叠卡里的长文本**每帧**都被测量 ⇒ 为用户看不见的内容付全量成本」，并写出修法。
   **实测推翻**：把 `chars` 分解为 `a(一次性) + b(每帧)·frames`（固定夹具、只改 `--auto-close`
