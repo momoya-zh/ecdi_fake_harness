@@ -957,6 +957,11 @@ void HarnessApp::OnReplayTick() {
             if (m_options.reasoningProbe && !m_reasoningProbeDone) {
                 RunReasoningProbe();
             }
+            // ★★ Step 0c 重建探针同理：夹具拉完后本函数从这里 `return`，走不到末尾。
+            //   第一版只放末尾 ⇒ 摘要里连 `rebuildProbe` 键都没有（探针一步没跑）。
+            if (m_options.rebuildProbe && !m_rebuildProbeDone) {
+                RunRebuildProbe();
+            }
             return;
         }
         m_sess.replaySettled = true;
@@ -990,6 +995,8 @@ void HarnessApp::OnReplayTick() {
     if (m_options.reasoningProbe && m_sess.replaySettled && !m_reasoningProbeDone) {
         RunReasoningProbe();
     }
+    // 注：`--rebuild-probe` 的推进在**上面 settle 分支里**（本函数到尾就 `return` 了，
+    //   这里再写一遍是死代码；第一版正是写在这里，所以探针一步都没跑）。
     RequestRepaint();
 }
 
@@ -1227,9 +1234,13 @@ void HarnessApp::RouteLastMessage() {
 // ── 行构建（规格 §5.2 渲染映射）────────────────────────────────
 
 void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
-                        const std::string& blockId) {
+                        const std::string& blockId, size_t timelineIdx) {
     RowRec stored = rec;
     stored.panel = row.get();
+    // ★★ 0c：行与时间线条目**成对**登记。下标由调用方**显式给出**而不是取
+    //   `rows.size()`——重建时若某条目建不出行（块缺失即跳过），两者就会错位，
+    //   而"视图状态写回模型"依赖这个下标指对地方（错位 = 把 A 的展开态写到 B 上）。
+    stored.timelineIdx = timelineIdx;
     if (m_options.rowModeList) {
         stored.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
     }
@@ -1242,9 +1253,52 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     m_relayoutPulse = std::max(m_relayoutPulse, 2);
 }
 
-void HarnessApp::CreateBlockRow(const Block& block) {
+// ★★ 0c（2026-10-19）：行构造拆成**两层**。
+//   `BuildBlockRow` = **纯函数**：只吃 `Block` 值 + `m_options`，产出控件树并填 `rec`；
+//     不追加时间线、不发协议、不写全局状态 ⇒ **可以被重放任意多次**。
+//   `CreateBlockRow` = 增量入口：建行 → 追加时间线条目 → 绑回调 → 探针捕获。
+//   为何必须拆：重建视图要能"把同一个块再画一次"，而增量入口带副作用（时间线会翻倍）。
+//   为何拆得开：本分支历来只读 `block` 的字段（不读会话状态），故纯化是**零成本**的。
+//
+//   ★ 重建保真度的一个隐含要求：**标题必须是 `block` 当前值的函数**。
+//     增量路径里标题由两段代码写（`block_start` 建行时给初值、`block_end` 到达时改写），
+//     重建只有一次机会 ⇒ 那两段必须收敛成同一个函数，否则重建出来的是「初值标题」
+//     （工具卡会永远停在「等待结果」，而这正是历史上那个误导 bug 的形态）。
+//     故 `ToolTitle()` 收口两处，`ReasoningTitle()` 早已是同款收口。
+std::string ToolTitle(const Block& block, const Block* call) {
+    std::string base;
+    if (block.kind == "tool_call") {
+        base = block.name.empty() ? "tool_call" : block.name;
+    } else if (!block.ended) {
+        base = "等待结果";            // 结果块还没结束：不知道是哪个工具的结论
+    } else if (call && !call->name.empty()) {
+        base = call->name;            // 结果块：工具名来自 forId 引用的 call 块
+    } else {
+        base = "tool";
+    }
+    if (block.ended) {
+        // ★ REQ-02（2026-10-13）：`summary` 曾在此被吞——`tool_call` 的 `block_end`
+        //   也会带 `summary`（协议 §3.5 允许），两类都必须落地。
+        if (!block.summary.empty()) {
+            base += " · " + block.summary;
+        } else if (!block.ok) {
+            base += " · 失败";
+        }
+    }
+    // ★ 2026-10-18：`▸`(U+25B8) 两主题 face 都无字形 ⇒ `›`(U+203A)（同右向尖括号语义）
+    return "› " + base;
+}
+
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowRec& rec) {
     auto panel = std::make_unique<ECDI::Panel>();
-    RowRec rec;
+
+    // ★ 0c：**每一**条块行都登记自己的块 id（此前只有 reasoning/tool 两支登记）。
+    //   两个后果，都不是小事：
+    //   ① 重建探针靠"有没有 blockId"区分「块行」与「通知行」——chat 气泡没有 id 时
+    //      会被当成通知，于是负对照只比到可折叠行（实测 5/19/126/500，而真实错位量
+    //      是 0/42/218/1998）⇒ **负对照失去了判别力**，正向全等也就不算证据。
+    //   ② 行不知道自己来自哪个块，任何"按块回查"的诊断都只能靠猜。
+    rec.blockId = block.id;
 
     if (block.kind == "user") {
         rec.alignRight = true;
@@ -1260,8 +1314,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         //   而侧栏/标题走雅黑 ⇒ **同一界面两种中文字形**（浅色下尤其割裂）。
         label->SetFont(harness::SansFont(harness::kFontBody));
         panel->AddChild(std::move(label));
-        AddRow(std::move(panel), rec, block.id);
-        return;
+        return panel;
     }
 
     if (block.kind == "assistant" || block.kind == "system" || block.kind == "error") {
@@ -1277,8 +1330,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
         if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
         panel->AddChild(std::move(label));
-        AddRow(std::move(panel), rec, block.id);
-        return;
+        return panel;
     }
 
     // ★★ 思维链卡（协议 v2 §7，2026-10-14）——**默认收起**，点击标题展开，箭头翻转。
@@ -1298,8 +1350,10 @@ void HarnessApp::CreateBlockRow(const Block& block) {
             .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
             .borderColor = kReasoningBorder});
 
-        // 标题 = 单一真相源（箭头两态）；默认收起 ⇒ ▼
-        auto header = std::make_unique<ECDI::Button>(ReasoningTitle(block, false));
+        // 标题 = 单一真相源（箭头两态）
+        // ★ 0c：箭头取自 `rec.expanded`（重建时先由条目回填）——否则重建出来的行
+        //   一律显示收起态箭头，而控件实际是展开的（读数与屏幕当场打架）。
+        auto header = std::make_unique<ECDI::Button>(ReasoningTitle(block, rec.expanded));
         rec.headerBtn = header.get();
         header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
         {
@@ -1330,32 +1384,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         }
         rec.body->GetContent()->AddChild(std::move(label));
         panel->AddChild(std::move(body));
-
-        AddRow(std::move(panel), rec, block.id);
-
-        RowRec& stored = m_sess.rows.back();
-        // ★ 在**建行时刻**抓流式态标题（`block_start` 刚到、`block_end` 还没来）。
-        //   为何必须此刻抓：`--instant` 在同一 tick 抽干夹具 ⇒ 事后回读永远是
-        //   「已完成」，`▼ 思考中` 那一态**根本采不到**（首版就栽在这里）。
-        if (m_options.reasoningProbe && m_reasoningTitleStreaming.empty()) {
-            m_reasoningTitleStreaming = stored.headerBtn->GetText();
-        }
-        stored.headerBtn->SetOnClick([this, &stored] {
-            if (m_options.rowModeList) return;   // 固定行高模式：展开体被后续行覆盖，v1 禁用
-            stored.expanded = !stored.expanded;
-            if (stored.body) stored.body->Toggle();
-            // 箭头随展开态翻转（▼ ⇄ ▲）；文案与 token 副标由**单一真相源**决定，
-            // 故回查块（`block_end` 可能已到达 ⇒ 文案应为「已完成」+ tokens）
-            if (stored.headerBtn) {
-                if (const Block* b = m_sess.transcript.FindBlock(stored.blockId)) {
-                    stored.headerBtn->SetText(ReasoningTitle(*b, stored.expanded));
-                }
-            }
-            m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
-            Relayout();
-            RequestRepaint();
-        });
-        return;
+        return panel;
     }
 
     // ★★ 未知 `kind` 的**中性落点**（2026-10-13）。
@@ -1384,32 +1413,34 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         label->SetTextColor(Pick(m_options.probeContrast, kWarn, kProbeInk));
         label->SetFont(harness::SansFont(harness::kFontBody));   // 统一中文 face
         panel->AddChild(std::move(label));
-        AddRow(std::move(panel), rec, block.id);
-        return;
+        return panel;
     }
 
     // tool_call / tool_result：可折叠卡片（默认折叠；标题按钮 + CollapsiblePanel 展开体）
     rec.tool = true;
+    rec.blockId = block.id;
     panel->SetStyle(ECDI::PanelStyleOverride{
         .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
         .cornerRadius = kRadiusTool,
         .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
         .borderColor = kCardBorder});
 
-    std::string title;
     std::string bodyText;
     if (block.kind == "tool_call") {
-        title = block.name.empty() ? "tool_call" : block.name;
         bodyText = block.argsPretty.empty() ? "{}" : block.argsPretty;
     } else {
-        title = "等待结果";
         bodyText = block.text.empty() ? block.summary : block.text;
     }
 
-    // ★ 2026-10-18：`▸`(U+25B8) 两主题 face 都无字形 ⇒ `›`(U+203A)（同右向尖括号语义）
-    auto header = std::make_unique<ECDI::Button>("› " + title);
+    const Block* call = (block.kind == "tool_result")
+                            ? m_sess.transcript.FindBlock(block.forId)
+                            : nullptr;
+    auto header = std::make_unique<ECDI::Button>(ToolTitle(block, call));
     rec.headerBtn = header.get();
-    header->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    // 结束且失败 ⇒ 标题转错误色（增量路径在 `block_end` 做，重建在这里做，同一判据）
+    header->SetTextColor((block.ended && !block.ok)
+                             ? kErrorDark
+                             : Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
     {
         ECDI::Font f = harness::SansFont(12.0f);
         header->SetFont(f);
@@ -1438,31 +1469,219 @@ void HarnessApp::CreateBlockRow(const Block& block) {
     // 收起溢绘已由框架修复，应用侧 SetVisible workaround 退役。
     rec.body->GetContent()->AddChild(std::move(label));
     panel->AddChild(std::move(body));
-
-    AddRow(std::move(panel), rec, block.id);
-
-    // deque：push_back 不失效引用——回调捕获行记录指针是安全的
-    RowRec& stored = m_sess.rows.back();
-    stored.headerBtn->SetOnClick([this, &stored] {
-        if (m_options.rowModeList) return;   // 固定行高模式：展开体会被后续行覆盖，v1 禁用
-        stored.expanded = !stored.expanded;
-        if (stored.body) stored.body->Toggle();
-        m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画，行高/后续行位置持续跟随
-        Relayout();             // 立即重排一次（settle 后定时器路径不再经过 Relayout）
-        RequestRepaint();
-    });
+    return panel;
 }
 
-void HarnessApp::CreateAskRow(const json::Value& msg) {
+// 可折叠行的点击绑定（**构建期与重建期共用**）。
+//   ★ 0c 的关键变化：展开态**先写回模型**（`timeline[idx].expanded`），再动控件。
+//     在此之前展开态只活在 `RowRec` 上 ⇒ 任何重建都会把用户的展开操作静默回退。
+void HarnessApp::BindCollapsible(const Block& block, RowRec& stored) {
+    if (!stored.headerBtn) return;
+    const bool reasoning = stored.reasoning;
+    stored.headerBtn->SetOnClick([this, &stored, reasoning] {
+        if (m_options.rowModeList) return;   // 固定行高模式：展开体被后续行覆盖，v1 禁用
+        ToggleRow(stored, reasoning);
+    });
+    (void)block;
+}
+
+// 展开/收起一行（**点击路径与探针共用的唯一入口**）。
+//   ★ 为什么必须抽成函数：0c 的重建探针要构造"用户已经展开过"的状态，而它**不能**
+//     合成点击——探针需要在**任意**行上造状态，包括滚动到视口外、HitTest 命不中的行；
+//     若探针自己再写一遍"改标志 + 翻箭头 + 重排"，那就是**第二份实现**，测的是它自己。
+void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
+    stored.expanded = !stored.expanded;
+    // ★ 视图 → 模型（重建前若来不及扫全表，这一条保证单行状态不丢）
+    if (stored.timelineIdx < m_sess.timeline.size()) {
+        m_sess.timeline[stored.timelineIdx].expanded = stored.expanded;
+    }
+    if (stored.body) stored.body->Toggle();
+    // 箭头随展开态翻转（﹀ ⇄ ︿）；文案与 token 副标由**单一真相源**决定，
+    // 故回查块（`block_end` 可能已到达 ⇒ 文案应为「已完成」+ tokens）
+    if (stored.headerBtn) {
+        if (const Block* b = m_sess.transcript.FindBlock(stored.blockId)) {
+            if (reasoning) {
+                stored.headerBtn->SetText(ReasoningTitle(*b, stored.expanded));
+            } else {
+                // ★ 修 2026-10-19：此前工具卡这一支传的是 `std::string()`
+                //   ⇒ **点一下工具卡，标题就被清空**（卡片从此没有名字）。
+                //   与"箭头两态"同一个道理：标题必须由单一真相源重算，不能置空。
+                const Block* call =
+                    (b->kind == "tool_result") ? m_sess.transcript.FindBlock(b->forId) : nullptr;
+                stored.headerBtn->SetText(ToolTitle(*b, call));
+            }
+        }
+    }
+    m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
+    Relayout();             // 立即重排一次（settle 后定时器路径不再经过 Relayout）
+    RequestRepaint();
+}
+
+void HarnessApp::CreateBlockRow(const Block& block) {
+    RowRec rec;
+    auto panel = BuildBlockRow(block, rec);
+
+    // ★★ 0c：**先**登记模型条目，**再**交给 `AddRow`——
+    //   `AddRow` 用 `rows.size()` 当条目的下标，两者等长同序才成立。
+    TimelineEntry entry;
+    entry.kind = TimelineEntry::Kind::Block;
+    entry.id = block.id;
+    entry.expanded = false;
+    m_sess.timeline.push_back(entry);
+
+    AddRow(std::move(panel), rec, block.id, m_sess.timeline.size() - 1);
+    if (m_sess.rows.empty()) return;
+    RowRec& stored = m_sess.rows.back();
+
+    // ★ 在**建行时刻**抓流式态标题（`block_start` 刚到、`block_end` 还没来）。
+    //   为何必须此刻抓：`--instant` 在同一 tick 抽干夹具 ⇒ 事后回读永远是
+    //   「已完成」，`▼ 思考中` 那一态**根本采不到**（首版就栽在这里）。
+    if (m_options.reasoningProbe && stored.reasoning && m_reasoningTitleStreaming.empty()) {
+        m_reasoningTitleStreaming = stored.headerBtn->GetText();
+    }
+    // 只有可折叠行需要绑回调（普通气泡/未知 kind 无展开体）
+    if (stored.body && stored.headerBtn) BindCollapsible(block, stored);
+}
+
+// ── ★★ 0c：模型 → 视图（重建路径）────────────────────────────────────
+//
+// 为什么需要"重建"而不是就地改：`Theme.h:19-20` 写明令牌是**引用别名**，UI 一旦建好就把
+// 当时的颜色值拷进了各自的 PanelStyle/ButtonStyle ⇒ 之后 `SwitchTheme()` 不会重绘。
+// 故换主题/换会话的唯一可靠手段是**拆掉重来**；而拆掉重来的前提是模型足够把视图原样
+// 再生出来——本组函数就是那条通路，0c 的探针拿它自证（不是靠肉眼）。
+
+// 视图 → 模型：把 `rows` 上的临场状态（展开/已答）写回 `timeline`。
+//   ★ 为何要"扫全表"而不是只靠回调里那句写回：重建可能由**别的**路径触发
+//     （换主题、切会话、探针），那些路径不经过点击回调。重建前统一同步一次，
+//     才能保证"用户看到的"与"模型记下的"在拆树那一刻一致。
+void HarnessApp::SyncRowViewState() {
+    for (RowRec& r : m_sess.rows) {
+        if (r.timelineIdx >= m_sess.timeline.size()) continue;
+        TimelineEntry& entry = m_sess.timeline[r.timelineIdx];
+        if (r.body) entry.expanded = r.expanded;
+        if (r.ask) entry.answered = r.answered;
+    }
+}
+
+// 把一条时间线条目落成一行（构建期与重建期**共用同一个**分派点）。
+//   ★ 重建期**绝不**执行副作用：不重发 answer、不重跑自动应答、不追加通知。
+void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
+    // ★ idx = 本条目在 `timeline` 中的位置，直接当作新行的 `timelineIdx`：
+    //   重建期**不**追加条目、**不**发副作用，行与条目一一对应。
+    (void)idx;
+    switch (entry.kind) {
+        case TimelineEntry::Kind::Block: {
+            const Block* block = m_sess.transcript.FindBlock(entry.id);
+            if (!block) return;   // 模型里指向一个不存在的块：如实跳过，不编造
+            RowRec rec;
+            rec.expanded = entry.expanded;   // ★ 先回填状态再建行：标题箭头据此定态
+            auto panel = BuildBlockRow(*block, rec);
+            AddRow(std::move(panel), rec, block->id, idx);
+            if (m_sess.rows.empty()) return;
+            RowRec& stored = m_sess.rows.back();
+            stored.expanded = entry.expanded;
+            if (stored.body && stored.headerBtn) {
+                BindCollapsible(*block, stored);
+                // ★ 展开态要真的落到控件上（`expanded` 标志只影响行高计算，
+                //   折叠体的内容可见性由控件自己管）
+                if (entry.expanded) stored.body->SetExpanded(true);
+            }
+            return;
+        }
+        case TimelineEntry::Kind::Ask: {
+            RowRec rec;
+            auto panel = BuildAskRow(entry, rec);
+            AddRow(std::move(panel), rec, entry.id, idx);
+            if (m_sess.rows.empty()) return;
+            RowRec& stored = m_sess.rows.back();
+            stored.allowBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "allow"); });
+            stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
+            // ★ 已答状态**静默回填**：只置灰、不重发 answer（否则重建 = 重放一次决策，
+            //   在 live 会话里就是往 core 又答了一遍 —— 那是会改协议状态的真副作用）。
+            if (entry.answered) {
+                stored.answered = true;
+                stored.allowBtn->SetEnabled(false);
+                stored.denyBtn->SetEnabled(false);
+            }
+            return;
+        }
+        case TimelineEntry::Kind::Notice: {
+            RowRec rec;
+            auto panel = BuildNoticeRow(entry.text, entry.color, rec);
+            AddRow(std::move(panel), rec, std::string(), idx);
+            return;
+        }
+    }
+}
+
+void HarnessApp::MaterializeRows() {
+    for (size_t i = 0; i < m_sess.timeline.size(); ++i) {
+        MaterializeOne(i, m_sess.timeline[i]);
+    }
+}
+
+// Level 1 重建：拆掉转录区的全部行控件，再按模型重放一遍。
+//   ★ 只碰 `m_content` 的子树 ⇒ `CountingPanel`/HUD/侧栏/检查器指针全部存活，
+//     评估读数不中断（整树重建才会打死计数器，那是 Level 2，留给 0e）。
+//   ★ 拆之前必须先把视图状态同步进模型，否则等于"照着一份更旧的模型重建"。
+void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOverride) {
+    SyncRowViewState();
+
+    // ★ 重建会让内容重新排一遍 ⇒ 不刻意恢复的话视图会跳回顶部。
+    //   "换主题/切会话之后回到刚才读到的地方"是**可用性**要求，不是装饰：
+    //   转录一长，重排后跳顶等于让人重新找位置。
+    const int keepScroll = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
+
+    // ① 先让**指针表**归零，再动控件树：否则 `Relayout()` 会顺着 `rows` 里
+    //    已经指向已删控件的裸指针走（悬垂读）。顺序反了就是 UAF，不是风格问题。
+    m_sess.rows.clear();
+    m_sess.blockRows.clear();
+    if (m_content) {
+        // `RemoveChild` 返回所有权；逐个摘掉即完成子树销毁（`Widget::RemoveChild`
+        // 内部走 `Window::ForgetSubtree`，焦点/捕获/悬停指针一并清掉）
+        while (m_content->GetChildCount() > 0) {
+            m_content->RemoveChild(m_content->GetChildAt(0));
+        }
+    }
+
+    // ② 按模型重放（或按调用方给的**错误**次序重放——那正是负对照要的形状）
+    if (!orderOverride) {
+        MaterializeRows();
+    } else {
+        // ★ 负对照专用：**只**照块表建块行（不建通知/问句行、不按条目回填状态）
+        //   ——这正是"只拿 `Transcript::m_blocks` 重建视图"这个错误实现的样子。
+        //   `timelineIdx` 给一个越界哨兵值：它**不**参与视图状态写回
+        //   （负对照要复现的是错误实现，不该顺手把状态写坏）。
+        const size_t kNoTimeline = static_cast<size_t>(-1);
+        for (const std::string& id : *orderOverride) {
+            const Block* block = m_sess.transcript.FindBlock(id);
+            if (!block) continue;
+            RowRec rec;
+            auto panel = BuildBlockRow(*block, rec);
+            AddRow(std::move(panel), rec, block->id, kNoTimeline);
+            if (m_sess.rows.empty()) continue;
+            RowRec& stored = m_sess.rows.back();
+            if (stored.body && stored.headerBtn) BindCollapsible(*block, stored);
+        }
+    }
+
+    // ★ 重建后必须自己收尾：重排（几何是新的）再把滚动位置放回去。
+    //   让调用方记得补这一步是设计要求里最容易漏的一环，故内置。
+    Relayout();
+    if (m_scroll) m_scroll->SetContentOffset(0, keepScroll);
+}
+
+// 权限门行：**纯构造**（重建可重放）。问句与 id 都来自模型条目，不是来自"刚到的消息"
+//   ——重建时那条消息早已不存在，若从消息取就等于"重建不出问句"。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry, RowRec& rec) {
     auto panel = std::make_unique<ECDI::Panel>();
     panel->SetStyle(ECDI::PanelStyleOverride{
         .background = kAskBg, .cornerRadius = kRadiusTool,
         .borderWidth = 1.0f, .borderColor = kAskBorder});
-    RowRec rec;
     rec.ask = true;
-    rec.askId = msg.GetString("id");   // P1.5：answer 回执要带 id
+    rec.askId = entry.id;   // P1.5：answer 回执要带 id
 
-    auto label = std::make_unique<ECDI::Label>("权限 " + msg.GetString("question"));
+    auto label = std::make_unique<ECDI::Label>("权限 " + entry.text);
     rec.label = label.get();
     label->SetTextColor(kAskQInk);
     {
@@ -1484,6 +1703,7 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
         .pressedBackground = kWarn,
         .hoverBackground = kAllowHover});
     panel->AddChild(std::move(allow));
+
     auto deny = std::make_unique<ECDI::Button>("拒绝");
     rec.denyBtn = deny.get();
     deny->SetTextColor(kDenyInk);
@@ -1498,8 +1718,22 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
         .cornerRadius = kRadiusBtn,
         .hoverBackground = kDenyHover});
     panel->AddChild(std::move(deny));
+    return panel;
+}
 
-    AddRow(std::move(panel), rec, msg.GetString("id"));
+void HarnessApp::CreateAskRow(const json::Value& msg) {
+    // ★★ 0c：问句进模型。此前它只存在于这条 json 消息里 ⇒ 任何重建都会**
+    //    把权限门变成一问句都没有的空卡**（按钮还在，但不知道在问什么）。
+    TimelineEntry entry;
+    entry.kind = TimelineEntry::Kind::Ask;
+    entry.id = msg.GetString("id");
+    entry.text = msg.GetString("question");
+    m_sess.timeline.push_back(entry);
+
+    RowRec rec;
+    auto panel = BuildAskRow(m_sess.timeline.back(), rec);
+    AddRow(std::move(panel), rec, entry.id, m_sess.timeline.size() - 1);
+
     RowRec& stored = m_sess.rows.back();
     stored.allowBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "allow"); });
     stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
@@ -1510,6 +1744,7 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
         m_sess.waitForAnswer = true;   // timed 回放停在 waiting，直到用户点选
     }
 }
+
 
 // ── ★★ REQ-04 **边界**探针（--hit-probe，2026-10-14）────────────────────
 // 目的：把「按钮禁用 ⇒ 点击不达」变成**机读证据**，且**不注入系统输入**。
@@ -1718,6 +1953,277 @@ void HarnessApp::RunReasoningProbe() {
     }
 }
 
+// ── ★★ Step 0c：重建探针（--rebuild-probe）──────────────────────────────
+//
+// 断言：**照模型重建出来的视图 == 增量构建出来的视图**（逐行、逐字段）。
+//   为什么必须机读：少一条通知、错一位次序、丢一个展开态，屏幕上看都像"差不多"。
+//   故本探针把每行压成一条可比较的字符串，两侧用**同一个**量具比。
+//
+// 判别力（0a 的教训）：demo 夹具上「到达序」与「字典序」恰好一致 ⇒ 只用 demo
+//   验不出顺序错。故本探针**自带负对照**：再按字典序重建一次，必须报出
+//   cot 42 / realistic 218 / scale 1998 / demo 0 处次序错。负对照不报错 = 探针瞎了。
+
+std::vector<std::string> HarnessApp::SnapshotRows() const {
+    std::vector<std::string> out;
+    out.reserve(m_sess.rows.size());
+    for (const RowRec& r : m_sess.rows) {
+        // 行种类：A=权限门 / B=块行 / N=通知行
+        //   ★ 判据必须只用 `RowRec` 上**已经存在**的信息，不能再回头问模型
+        //     ——否则重建前后两侧会拿到同一份答案，比对就恒等。
+        const char* kind = nullptr;
+        const std::string* id = nullptr;
+        if (r.ask) {
+            kind = "A";
+            id = &r.askId;
+        } else if (r.tool || r.reasoning || !r.blockId.empty()) {
+            kind = "B";
+            id = &r.blockId;
+        } else {
+            kind = "N";
+        }
+        std::string line;
+        line += kind;
+        line += '\x1f';
+        if (id) line += *id;
+        line += '\x1f';
+        line += r.expanded ? "1" : "0";
+        line += '\x1f';
+        line += r.answered ? "1" : "0";
+        line += '\x1f';
+        if (r.headerBtn) line += r.headerBtn->GetText();
+        line += '\x1f';
+        if (r.label) line += r.label->GetText();
+        out.push_back(std::move(line));
+    }
+    return out;
+}
+
+HarnessApp::RebuildProbeRec HarnessApp::CompareRows(const char* phase,
+                                                    const std::vector<std::string>& before,
+                                                    const std::vector<std::string>& after,
+                                                    bool blockOnly) const {
+    RebuildProbeRec rec;
+    rec.phase = phase;
+
+    // ① 「只比块行」时两侧都先做**同一次**投影。
+    //   否则"少了通知行"会被读成"次序错"——两种损失混在一个数里就没法归因。
+    auto project = [](const std::vector<std::string>& rows) {
+        std::vector<std::string> out;
+        for (const std::string& r : rows) {
+            if (!r.empty() && r[0] == 'B') out.push_back(r);
+        }
+        return out;
+    };
+    const std::vector<std::string> b = blockOnly ? project(before) : before;
+    const std::vector<std::string> a = blockOnly ? project(after) : after;
+
+    rec.beforeCount = b.size();
+    rec.rowCount = a.size();
+    rec.timelineCount = m_sess.timeline.size();
+    // 滚动位置：重建后由 `RebuildTranscriptView` 自己恢复，这里读**恢复之后**的值，
+    // 与摘要里的 `rebuildScrollBefore` 对读即可判"有没有跳回顶部"。
+    rec.scrollOffset = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
+    rec.maxScrollOffset = m_scroll ? m_scroll->GetMaxOffsetY() : 0;
+
+    // 身份 = 前两段（种类 + 标识）。身份不同 ⇒ 次序/条目错，单独计数。
+    auto identity = [](const std::string& s) {
+        const size_t p1 = s.find('\x1f');
+        if (p1 == std::string::npos) return s;
+        const size_t p2 = s.find('\x1f', p1 + 1);
+        if (p2 == std::string::npos) return s;
+        return s.substr(0, p2);
+    };
+    // ★ 分歧必须报到**字段**一级：负对照的首个分歧常是 `B/b1 -> B/b1`（身份相同、
+    //   展开态不同），只印身份就是一条**假线索**——排查的人会以为次序没错。
+    //   字段名按 `SnapshotRows` 的拼装次序编号。
+    static const char* kFieldName[] = {"kind", "id", "expanded", "answered", "header", "label"};
+    auto firstDiffField = [](const std::string& x, const std::string& y) {
+        std::vector<std::string> fx;
+        std::vector<std::string> fy;
+        auto split = [](const std::string& s, std::vector<std::string>& out) {
+            size_t start = 0;
+            while (true) {
+                const size_t p = s.find('\x1f', start);
+                if (p == std::string::npos) {
+                    out.push_back(s.substr(start));
+                    return;
+                }
+                out.push_back(s.substr(start, p - start));
+                start = p + 1;
+            }
+        };
+        split(x, fx);
+        split(y, fy);
+        for (size_t i = 0; i < std::max(fx.size(), fy.size()); ++i) {
+            const std::string& vx = i < fx.size() ? fx[i] : std::string();
+            const std::string& vy = i < fy.size() ? fy[i] : std::string();
+            if (vx == vy) continue;
+            std::string field = i < sizeof(kFieldName) / sizeof(kFieldName[0]) ? kFieldName[i]
+                                                                             : "field" + std::to_string(i);
+            auto clip = [](const std::string& v) {
+                return v.size() > 28 ? v.substr(0, 28) + "…" : v;
+            };
+            return field + " [" + clip(vx) + "] -> [" + clip(vy) + "]";
+        }
+        return std::string("(fields equal)");
+    };
+    auto show = [&](const std::string& s) {
+        std::string t = identity(s);
+        for (char& c : t) {
+            if (c == '\x1f') c = '/';
+        }
+        return t;
+    };
+
+    const size_t n = std::max(b.size(), a.size());
+    for (size_t i = 0; i < n; ++i) {
+        const bool hasB = i < b.size();
+        const bool hasA = i < a.size();
+        if (!hasB || !hasA) {
+            ++rec.mismatches;   // 长度差也计入（少一行 / 多一行）
+            if (rec.firstDivergence.empty()) {
+                rec.firstDivergence = "idx=" + std::to_string(i) + " len(" +
+                                      std::to_string(b.size()) + " vs " +
+                                      std::to_string(a.size()) + ")";
+            }
+            continue;
+        }
+        if (b[i] == a[i]) continue;
+        ++rec.mismatches;
+        if (identity(b[i]) != identity(a[i])) ++rec.orderMismatches;
+        if (rec.firstDivergence.empty()) {
+            rec.firstDivergence = "idx=" + std::to_string(i) + " " + show(b[i]) + " -> " +
+                                  show(a[i]) + " @" + firstDiffField(b[i], a[i]);
+        }
+    }
+    return rec;
+}
+
+void HarnessApp::RunRebuildProbe() {
+    if (!m_window || !m_sess.replay) return;
+    if (m_options.rowModeList) {
+        // 固定行高模式下"行高随展开变化"这件事本就不成立，探针无从比较 ⇒ 如实不开跑
+        m_rebuildProbeDone = true;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_rebuildProbeStep > 0 && now < m_rebuildProbeNextAt) return;
+    const auto settle = std::chrono::milliseconds(400);   // > 200ms 折叠动画
+
+    switch (m_rebuildProbeStep) {
+        case 0: {
+            // ① 造**必有**区分力的前置条件：真的展开若干可折叠行、真的答掉若干权限门。
+            //   ★ 走 `ToggleRow` / `MarkAnswered`（用户点下去走的**同一条**路径），
+            //     不直接改标志：否则探针测的是"我照着我写的方式再写一遍对不对"。
+            //   ★ 样本数封顶：每次 ToggleRow 都会 Relayout（O(行数)），scale 夹具 2000 行
+            //     若全展开就是 O(n²)。4 个样本已足够判"状态保不保得住"。
+            const int kMaxExpandSamples = 4;
+            const int kMaxAnswerSamples = 2;
+            // ★ 顺手把「展开/收起一次之后标题是否还完整」也留成读数。
+            //   为什么必须单独记：0c 里修的那个 bug（工具卡点一下标题被写成空串，
+            //   因为回调给非 reasoning 分支传的是 `std::string()`）**不会**让重建比对
+            //   失败——重建前后标题都是空的，A == B 照样成立。丢失发生在"点击那一刻"，
+            //   所以只有把点击前后的标题都记下来才看得见。
+            //   ★★ 取样必须**按种类凑齐**：只取"前 4 个可折叠行"在 cot 上全是思维链行
+            //      （夹具里 12 reasoning / 4 tool_call / 4 tool_result，思维链全在前面），
+            //      于是刚修的工具卡分支**一个样本都没有**——读数 0 看着像"没问题"，
+            //      实际是"没测"。先取工具卡，再补思维链。
+            const auto sampleOne = [&](RowRec& r) {
+                const std::string beforeT = r.headerBtn->GetText();
+                ToggleRow(r, r.reasoning);
+                const std::string afterT = r.headerBtn->GetText();
+                if (m_rebuildTitleSample.empty()) {
+                    m_rebuildTitleSample = beforeT;
+                    m_rebuildTitleAfter = afterT;
+                }
+                if (afterT.empty() && !beforeT.empty()) ++m_rebuildTitleEmptied;
+                ++m_rebuildExpandedSamples;
+            };
+            for (RowRec& r : m_sess.rows) {   // 第一轮：工具卡（钉住那个 bug）
+                if (m_rebuildExpandedSamples >= 2) break;
+                if (r.tool && r.body && r.headerBtn && !r.expanded) sampleOne(r);
+            }
+            for (RowRec& r : m_sess.rows) {   // 第二轮：思维链卡
+                if (m_rebuildExpandedSamples >= kMaxExpandSamples) break;
+                if (r.reasoning && r.body && r.headerBtn && !r.expanded) sampleOne(r);
+            }
+            for (RowRec& r : m_sess.rows) {   // 兜底：别的可折叠行
+                if (m_rebuildExpandedSamples >= kMaxExpandSamples) break;
+                if (!r.tool && !r.reasoning && r.body && r.headerBtn && !r.expanded) sampleOne(r);
+            }
+            for (RowRec& r : m_sess.rows) {
+                if (m_rebuildAnsweredSamples >= kMaxAnswerSamples) break;
+                if (r.ask && !r.answered) {
+                    MarkAnswered(r, "allow");
+                    ++m_rebuildAnsweredSamples;
+                }
+            }
+            // 模型里记下的通知条数（"通知进模型"这件事的承重性证据：
+            //   若模型不记通知，重建就会**静默**少这么多行）
+            m_rebuildNoticeCount = 0;
+            for (const TimelineEntry& e : m_sess.timeline) {
+                if (e.kind == TimelineEntry::Kind::Notice) ++m_rebuildNoticeCount;
+            }
+            // ★ 滚动这一项也要**先造出判别力**：夹具抽干后视图停在顶部
+            //   （offset=0，而 scale 的 maxOffset 有 10 万），此时"重建后有没有
+            //   跳回顶部"这一问恒真——0 == 0。先把视图真的滚到中间再重建，
+            //   读数才有意义（否则又是一次"看着全等其实没测"）。
+            if (m_scroll && m_scroll->GetMaxOffsetY() > 200) {
+                m_scroll->SetContentOffset(0, m_scroll->GetMaxOffsetY() / 3);
+            }
+            m_rebuildScrollBefore = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
+            m_rebuildProbeBefore = SnapshotRows();
+            m_rebuildProbeStep = 1;
+            m_rebuildProbeNextAt = now + settle;
+            return;
+        }
+        case 1: {
+            // ② forward：照 `timeline` 重建 ⇒ 判据 A == B（必须全等）
+            RebuildTranscriptView();
+            m_rebuildProbeLog.push_back(
+                CompareRows("forward", m_rebuildProbeBefore, SnapshotRows(), false));
+            m_rebuildProbeStep = 2;
+            m_rebuildProbeNextAt = now + settle;
+            return;
+        }
+        case 2: {
+            // ③ 幂等：**再**重建一次，仍须与 A 全等。
+            //   这一项专抓"状态只落到控件、没落回模型"：第一次重建屏幕上看着对，
+            //   第二次就会塌回收起态，而单看 ② 是看不出来的（② 的 B 是第一次的产物）。
+            RebuildTranscriptView();
+            m_rebuildProbeLog.push_back(
+                CompareRows("forward-again", m_rebuildProbeBefore, SnapshotRows(), false));
+            m_rebuildProbeStep = 3;
+            m_rebuildProbeNextAt = now + settle;
+            return;
+        }
+        case 3: {
+            // ④ 负对照：**只**按块表、按 id 字典序重建（= 只拿 `Transcript::m_blocks`
+            //   遍历这种错误实现的等价物；`std::map` 迭代序就是 `std::less<std::string>`
+            //   序，故这里 `std::sort` 出来的次序与之逐元素相同）。
+            //   预期：orderMismatches = 字典序错位量（cot 42 / realistic 218 /
+            //   scale 1998 / demo 0）。为 0 ⇒ 探针没有判别力，② 的全等不算证据。
+            std::vector<std::string> lex = m_sess.transcript.Order();
+            std::sort(lex.begin(), lex.end());
+            RebuildTranscriptView(&lex);
+            m_rebuildProbeLog.push_back(
+                CompareRows("lexicographic", m_rebuildProbeBefore, SnapshotRows(), true));
+            m_rebuildProbeStep = 4;
+            m_rebuildProbeNextAt = now + settle;
+            return;
+        }
+        case 4: {
+            m_rebuildProbeDone = true;
+            if (m_application) m_application->Exit();
+            return;
+        }
+        default:
+            m_rebuildProbeDone = true;
+            return;
+    }
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -1738,8 +2244,13 @@ void HarnessApp::SendPrompt(const std::string& text) {
     RequestRepaint();
 }
 
-void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {    if (rec.answered) return;
+void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
+    if (rec.answered) return;
     rec.answered = true;
+    // ★ 0c：已答进模型（重建时回填成"置灰"而不是"可再答一次"）
+    if (rec.timelineIdx < m_sess.timeline.size()) {
+        m_sess.timeline[rec.timelineIdx].answered = true;
+    }
     if (rec.allowBtn) rec.allowBtn->SetEnabled(false);
     if (rec.denyBtn) rec.denyBtn->SetEnabled(false);
     m_sess.waitForAnswer = false;
@@ -1756,15 +2267,32 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {    if (r
     RequestRepaint();
 }
 
-void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color) {
+// 通知行：**纯构造**（重建可重放）。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildNoticeRow(const std::string& text,
+                                                        const ECDI::Color& color, RowRec& rec) {
     auto panel = std::make_unique<ECDI::Panel>();
-    RowRec rec;
     auto label = std::make_unique<ECDI::Label>(text);
     rec.label = label.get();
     label->SetTextColor(color);
     label->SetFont(harness::SansFont(harness::kFontSmall));   // 统一中文 face（原先落 SimSun）
     panel->AddChild(std::move(label));
-    AddRow(std::move(panel), rec, std::string());
+    return panel;
+}
+
+void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color) {
+    // ★★ 0c：通知进模型。此前它**只**是控件 —— 而通知恰好承载全部协议健康信息
+    //   （I4/I5 缺口、截断报错、协议 §9 拒连、hello/bye 摘要、发送/回答回执）。
+    //   ⇒ 任何重建都会把"这个会话被截断过""协议版本不兼容被拒"这类信息**静默抹掉**，
+    //     屏幕看起来只是"少了几行灰字"，而丢掉的是**这次运行是否可信**的判据。
+    TimelineEntry entry;
+    entry.kind = TimelineEntry::Kind::Notice;
+    entry.text = text;
+    entry.color = color;
+    m_sess.timeline.push_back(entry);
+
+    RowRec rec;
+    auto panel = BuildNoticeRow(text, color, rec);
+    AddRow(std::move(panel), rec, std::string(), m_sess.timeline.size() - 1);
 }
 
 // ── 布局与重绘（规格 §5.3 / §6.2）──────────────────────────────
@@ -2388,6 +2916,79 @@ void HarnessApp::WriteSummary() {
             json += "\"";
         }
         json += "],\n";
+    }
+    if (m_options.rebuildProbe && !m_rebuildProbeLog.empty()) {
+        // ★★ Step 0c 机读证据（2026-10-19）：照模型重建视图的逐字段比对。
+        //   判据（跑批脚本执行，不由本函数自评）：
+        //     · forward / forward-again 的 mismatches 必须 == 0（视图重放无损）
+        //     · lexicographic 的 orderMismatches 必须 == 字典序错位量
+        //       （cot 42 / realistic 218 / scale 1998 / demo 0）——负对照，
+        //       为 0 说明探针看不出顺序错，于是上面那条"全等"没有意义
+        //     · rebuildNoticeCount > 0 证明"通知进模型"是承重的（否则重建少这么多行）
+        //     · expanded/answeredSamples > 0 证明"状态被保住"这条断言不是空断言
+        json += "  \"rebuildProbe\": [";
+        // ★ `firstDivergence` 现在会带上**行文本**（标题/正文），而转录里的文字是
+        //   JSON 里来的、可能含引号 ⇒ 必须转义，否则整个摘要不是一个合法 JSON，
+        //   跑批脚本读它会**整份**失败（比少一个字段严重得多）。
+        auto esc = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_rebuildProbeLog.size(); ++i) {
+            const RebuildProbeRec& r = m_rebuildProbeLog[i];
+            json += (i ? ", " : "");
+            char b[768];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"rowCount\": %zu, \"beforeCount\": %zu, "
+                          "\"timelineCount\": %zu, \"mismatches\": %zu, "
+                          "\"orderMismatches\": %zu, \"firstDivergence\": \"%s\", "
+                          "\"scrollOffset\": %d, \"maxScrollOffset\": %d}",
+                          r.phase.c_str(), r.rowCount, r.beforeCount, r.timelineCount,
+                          r.mismatches, r.orderMismatches, esc(r.firstDivergence).c_str(),
+                          r.scrollOffset, r.maxScrollOffset);
+            json += b;
+        }
+        json += "],\n";
+        std::snprintf(buf, sizeof(buf), "  \"rebuildNoticeCount\": %zu,\n", m_rebuildNoticeCount);
+        json += buf;
+        std::snprintf(buf, sizeof(buf), "  \"rebuildTimelineCount\": %zu,\n",
+                      m_sess.timeline.size());
+        json += buf;
+        std::snprintf(buf, sizeof(buf), "  \"rebuildExpandedSamples\": %d,\n",
+                      m_rebuildExpandedSamples);
+        json += buf;
+        std::snprintf(buf, sizeof(buf), "  \"rebuildAnsweredSamples\": %d,\n",
+                      m_rebuildAnsweredSamples);
+        json += buf;
+        std::snprintf(buf, sizeof(buf), "  \"rebuildScrollBefore\": %d,\n",
+                      m_rebuildScrollBefore);
+        json += buf;
+        std::snprintf(buf, sizeof(buf), "  \"rebuildRowCount\": %zu,\n", m_sess.rows.size());
+        json += buf;
+        // ★ 点击一次后标题是否还完整（0c 修的工具卡标题被清空那个 bug 的专属读数）
+        std::snprintf(buf, sizeof(buf), "  \"rebuildTitleEmptied\": %d,\n",
+                      m_rebuildTitleEmptied);
+        json += buf;
+        json += "  \"rebuildTitleSample\": \"" + esc(m_rebuildTitleSample) + "\",\n";
+        json += "  \"rebuildTitleAfter\": \"" + esc(m_rebuildTitleAfter) + "\",\n";
     }
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_sess.transcript.SeqGaps());
     json += buf;

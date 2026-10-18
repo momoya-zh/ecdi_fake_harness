@@ -84,6 +84,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.reasoningProbe = true;  // ★ 协议 v2 §7：思维链折叠行为取证
         } else if (arg == L"--order-probe") {
             options.orderProbe = true;      // ★ Step 0a：回读块到达顺序（字典序陷阱取证）
+        } else if (arg == L"--rebuild-probe") {
+            options.rebuildProbe = true;    // ★ Step 0c：照模型重建视图并逐行比对
         }
     }
     if (argv) LocalFree(argv);
@@ -107,6 +109,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --hit-probe                      REQ-04 边界：命中门控受控对照（无注入）\n"
                     L"  --reasoning-probe                协议 v2 §7：思维链折叠行为取证\n"
                     L"  --order-probe                    Step 0a：回读块到达顺序（字典序陷阱取证）\n"
+                    L"  --rebuild-probe                  Step 0c：照模型重建视图并逐行比对（含负对照）\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;

@@ -13,6 +13,7 @@
 #include "Transcript.h"
 
 #include "ECDI/Application/Application.h"
+#include "ECDI/Core/Color.h"
 #include "ECDI/Widget/Button.h"
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/Label.h"
@@ -86,6 +87,16 @@ struct CliOptions {
     //   `.scratch/order_fixture_scan.py`）⇒ 必须让程序把顺序**打印出来**再与夹具对账。
     //   ★ 默认 false ⇒ 既有摘要逐字节不变（所有回归基线仍可比）。
     bool orderProbe = false;              // --order-probe：回读到达到顺序到摘要
+    // ★★ Step 0c 重建探针（2026-10-19）：把「照模型重建视图 ⇒ 视图不变」变成机读读数。
+    //   动机：0c 的断言是「会话模型足够重建出**同一份**转录视图」。这条断言**不能靠眼睛**：
+    //   少一条通知、顺序错一位、展开态丢了，屏幕上看都像「差不多」。
+    //   ★ 做法：建一个**必有**区分力的前置条件（把所有可折叠行展开、所有 ask 标已答），
+    //     快照 → 拆掉全部行重建 → 再快照 → 逐字段比对。
+    //   ★ **必须有负对照**：同一探针再按**字典序**（= `m_blocks` 遍历序）重建一次，
+    //     它**必须**报出 42/218/1998 处次序错（cot/realistic/scale）。否则探针是瞎的
+    //     （0a 已经吃过这个教训：demo 夹具上两种顺序恰好一致，只用 demo 验不出来）。
+    //   ★ 默认 false ⇒ 零行为变化；且**永远不**在测量跑批里自动重建。
+    bool rebuildProbe = false;            // --rebuild-probe：照模型重建视图并比对
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -165,6 +176,29 @@ private:
     void HandleLine(const std::string& line);
     void RouteLastMessage();
 
+    // ★★ 0c（2026-10-19）：**转录时间线**——「该被看见的一行」的模型侧描述。
+    //   为什么必须有它：在此之前「屏幕上有什么行」这件事**只存在于控件树里**
+    //   （`rows` 里全是控件指针）。于是任何"把视图重新建一遍"的诉求都无法成立：
+    //     · 块按什么次序排？——只能去遍历 `Transcript::m_blocks`，
+    //       而那是 **id 字典序**（0a 实测 cot/realistic/scale 分别错 42/218/1998 处）；
+    //     · 通知行（协议健康、hello/bye、截断报错）**根本不在块表里** ⇒ 重建即全丢；
+    //     · `ask` 行的问句只存在于那条 json 消息里 ⇒ 重建即丢失；
+    //     · 展开/已答是**用户状态**，却只挂在 `RowRec` 上 ⇒ 重建即回退。
+    //   本结构逐条解决这四点：一行一条，**顺序即屏幕顺序**，状态也在条目里。
+    //   ★ 与 `rows` 的**不变量**：两表**等长且同序**（`rows[i].timelineIdx == i`）。
+    //     这条不变量可机检，构建期由 `AddRow` 保证，重建期由 `MaterializeRows` 保证。
+    struct TimelineEntry {
+        enum class Kind { Block, Notice, Ask };
+        Kind kind = Kind::Block;
+        // Block ⇒ 块 id（delta/block_end 回查）；Ask ⇒ 协议 ask 的 id（answer 回执用）；
+        // Notice ⇒ 空（通知没有标识——它本来就不是协议对象）。
+        std::string id;
+        std::string text;              // Notice ⇒ 通知文本；Ask ⇒ 问句（`question`）
+        ECDI::Color color;             // Notice ⇒ 文本色（其余不用）
+        bool expanded = false;         // Block(tool/reasoning) ⇒ 用户展开态
+        bool answered = false;         // Ask ⇒ 已答（重建时**只回填状态，不重发 answer**）
+    };
+
     // 行记录：m_rows 用 deque（push_back 不失效指针——回调捕获依赖这一点）
     struct RowRec {
         ECDI::Widget* panel = nullptr;            // 行根（Panel），非拥有
@@ -197,6 +231,11 @@ private:
         //   故 `Relayout` 保持无条件 `AutoSize()`。取证：`.scratch/probe_a2_decompose.py`。
         int lastBodyW = 0;                        // 上次下发给 body 的基准尺寸——
         int lastBodyH = 0;                        // 未变则不重发（动画期间重入会钉死动画）
+        // ★★ 0c：本行对应的时间线条目下标。与 `Session::timeline` **双向**对应关系的一半
+        //   （另一半是 `timeline[i]` 的顺序）。它的用处是把**视图侧**的临场状态
+        //   （展开/已答）写回**模型侧**——否则重建会把用户的操作回退掉。
+        //   ★ 只增不改序：条目一旦建好，下标永不变（时间线只追加）。
+        size_t timelineIdx = 0;
     };
 
     // ★★ 0b（2026-10-18）：**逐会话**状态收进一个可整体替换的对象。
@@ -219,6 +258,10 @@ private:
         Transcript transcript;
 
         // ── 转录行表（行的视图状态也在这里：折叠/已答属于会话，不属于窗口）──
+        // ★★ 0c：`timeline` 是**模型侧**（该看见什么），`rows` 是**视图侧**（控件指针）。
+        //   两表等长同序，`rows[i].timelineIdx == i`。重建 = 清 `rows` 清控件树，
+        //   按 `timeline` 逐条重放构造函数再回填状态。
+        std::vector<TimelineEntry> timeline;
         std::deque<RowRec> rows;
         std::map<std::string, RowRec*> blockRows;  // block id → 行（delta 流式追加用）
 
@@ -254,12 +297,54 @@ private:
         bool liveEof = false;                      // live 模式：源已 EOF（停止空转刷 HUD）
     };
 
+    // timelineIdx = 本行对应的时间线条目下标（**由调用方显式给出**——
+    //   重建时若有条目建不出行，两者会错位，而下标错位会把 A 的展开态写到 B 上）
     void AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
-                const std::string& blockId);
+                const std::string& blockId, size_t timelineIdx);
     void CreateBlockRow(const Block& block);
     void CreateAskRow(const json::Value& msg);
     void MarkAnswered(RowRec& rec, const std::string& choice);
     void AddNoticeRow(const std::string& text, const ECDI::Color& color);
+
+    // ── ★★ 0c：模型 → 视图（重建路径）────────────────────────────────
+    // 为什么要「重建」而不是就地改：`Theme.h:19-20` 写明令牌是**引用别名**，UI 一旦建好
+    // 就把当时的颜色值拷进了各自的 PanelStyle/ButtonStyle ⇒ 事后 SwitchTheme 不会重绘。
+    // 故换主题/换会话的唯一可靠手段是**拆掉重来**。而拆掉重来的前提正是本组函数：
+    // 模型足够把视图原样再生出来（0c 的探针就是拿它自证的）。
+    //
+    // `MaterializeRows()`：按 `timeline` 逐条重放行构造，并把条目上的状态回填到控件
+    //   （展开态 ⇒ `CollapsiblePanel::SetExpanded`；已答 ⇒ 静默置灰**不重发 answer**）。
+    //   ★ 不复用 `RouteLastMessage`——那是**增量**路由（依赖"刚才那一行消息"），
+    //     重建是**全量**重放，两者不能混（混用就会重复 AddNoticeRow 之类）。
+    void MaterializeRows();
+    // `RebuildTranscriptView()`：拆掉 `m_content` 的全部子控件并按模型重建（Level 1）。
+    //   ★ 只碰转录区，**不碰**窗口/侧栏/检查器 ⇒ `CountingPanel` 与 HUD 指针全部存活，
+    //     评估读数不中断（Level 2 的整树重建才需要续接计数器，留给 0e）。
+    //   ★ `orderOverride` **只供负对照**：给一组块 id 就按那组次序重建（探针用字典序
+    //     喂进来，看它能不能被抓出来）。非空时**只建块行**、不建通知/问句行——
+    //     那正是"只照块表重建"这个错误实现会有的样子，损失必须被看见。
+    void RebuildTranscriptView(const std::vector<std::string>* orderOverride = nullptr);
+    // `SyncRowViewState()`：把视图侧的临场状态写回模型（重建前必须调用）。
+    //   ★ 方向是 视图→模型（用户点了展开，模型要记下）；`MaterializeRows` 是模型→视图。
+    void SyncRowViewState();
+    // 把一条时间线条目落成行（三种 Kind 的分派点；重建期专用）。
+    //   ★ 构建期各走 `CreateBlockRow`/`CreateAskRow`/`AddNoticeRow`（它们带**副作用**：
+    //     登记条目、自动应答）。重建期走本函数，**纯渲染、零副作用**——
+    //     否则重建一次就等于把用户做过的决策重放一次。
+    void MaterializeOne(size_t idx, const TimelineEntry& entry);
+    // 可折叠行的点击回调绑定（构建期与重建期共用；含「写回条目」这一步）。
+    void BindCollapsible(const Block& block, RowRec& stored);
+    // 展开/收起一行的**唯一入口**（点击与探针共用）。
+    //   ★ 为什么抽出来：0c 的重建探针要造"已展开"的前置状态，而它不能合成点击
+    //     （要造状态的行可能在视口外、HitTest 命不中）；若探针自己再写一遍
+    //     "改标志 + 翻箭头 + 重排"，那就是**第二份实现**——测的是它自己。
+    void ToggleRow(RowRec& stored, bool reasoning);
+    // 行构造的**纯函数**部分：只建控件、不追加时间线、不发副作用（重建可重放）。
+    std::unique_ptr<ECDI::Widget> BuildBlockRow(const Block& block, RowRec& rec);
+    std::unique_ptr<ECDI::Widget> BuildAskRow(const TimelineEntry& entry, RowRec& rec);
+    std::unique_ptr<ECDI::Widget> BuildNoticeRow(const std::string& text,
+                                                 const ECDI::Color& color, RowRec& rec);
+
     void Relayout();
     void FollowTailIfPinned();
     void RequestRepaint();
@@ -376,6 +461,57 @@ private:
     //   ★ 与首版同一个坑（那次三条读数全一样），故这次保留该捕获点。
     std::string m_reasoningTitleStreaming;   // 建行时读到的标题（应为 ▼ 思考中）
     void RunReasoningProbe();
+
+    // ★★ Step 0c 重建探针（--rebuild-probe，2026-10-19）
+    //   断言：**照模型重建视图 ⇒ 视图逐行不变**。为何必须机读：丢一条通知、错一位次序、
+    //   丢一个展开态，在屏幕上都像"差不多"——肉眼不是量具。
+    //   ★ 三组读数（每组一行快照 + 一次比对）：
+    //     ① forward  —— 按 `timeline` 重建 ⇒ 判据 A == B（必须全等）；
+    //     ② lexicographic —— **故意**按 `m_blocks`（id 字典序）重建的负对照 ⇒
+    //        必须报出次序错（cot 42 / realistic 218 / scale 1998 / demo 0）。
+    //        它证明本探针**看得出**顺序错，否则 ① 全等毫无意义。
+    //     ③ noticeLoss —— 若模型只存块、不存通知，重建会丢几行（这一项用「模型里实际
+    //        记下的通知条数」直接给出，说明第 ② 组之外**还有**一类损失，非零才证明
+    //        通知进模型这件事是承重的）。
+    struct RebuildProbeRec {
+        std::string phase;                 // forward / lexicographic / forward-restore
+        size_t rowCount = 0;               // 重建后行数
+        size_t beforeCount = 0;            // 重建前行数（两者不等 ⇒ 丢了/多了行）
+        size_t timelineCount = 0;          // 模型条目数
+        size_t mismatches = 0;             // 与重建前快照不同的行数（含长度差）
+        size_t orderMismatches = 0;        // 其中属于**次序/条目**不同的行数
+        std::string firstDivergence;       // 首个分歧的可复读写形（空 = 无分歧）
+        int scrollOffset = 0;              // 重建后恢复到的滚动偏移
+        int maxScrollOffset = 0;
+    };
+    std::vector<RebuildProbeRec> m_rebuildProbeLog;
+    // 重建前快照（一行一条，`\x1f` 分隔字段——比对用，不进摘要原文）
+    std::vector<std::string> m_rebuildProbeBefore;
+    size_t m_rebuildNoticeCount = 0;       // 模型里记下的通知行数（承重性证据）
+    int m_rebuildScrollBefore = 0;         // 重建前的滚动偏移（判"有没有跳回顶部"）
+    // ★ 点击一次之后标题是否被清空（0c 顺手修的那个 bug 的**专属**读数）。
+    //   它必须独立于重建比对：那个 bug 让重建前后标题**同为**空串，A == B 照样成立。
+    std::string m_rebuildTitleSample;      // 首个样本点击**前**的标题
+    std::string m_rebuildTitleAfter;       // 同一样本点击**后**的标题
+    int m_rebuildTitleEmptied = 0;         // 点击后有标题被清空的次数
+    // ★ 前置条件是否真的成立（展开样本数 / 已答样本数）。若都为 0，则 forward 全等
+    //   **证明不了"状态被保住"**——那种全等只说明"两边都是空的"，探针是瞎的。
+    int m_rebuildExpandedSamples = 0;
+    int m_rebuildAnsweredSamples = 0;
+    bool m_rebuildProbeDone = false;
+    int m_rebuildProbeStep = 0;
+    std::chrono::steady_clock::time_point m_rebuildProbeNextAt;
+    // 快照 A 的「只含块行」投影（负对照的比对面——不含通知/问句，正是"只照块表重建"
+    // 这个错误实现能产出的全部内容；故两者的差**只**来自次序）
+    std::vector<std::string> m_rebuildProbeBlockOnly;
+    void RunRebuildProbe();
+    // 把当前 `rows` 压成可比较的行快照（探针 A/B 两侧共用**同一个**量具）
+    std::vector<std::string> SnapshotRows() const;
+    // 两侧快照逐字段比对（`before` 为准；长度差也计入 mismatches）
+    RebuildProbeRec CompareRows(const char* phase,
+                                const std::vector<std::string>& before,
+                                const std::vector<std::string>& after,
+                                bool blockOnly) const;
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
