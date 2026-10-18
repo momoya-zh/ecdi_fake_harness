@@ -9,41 +9,75 @@
 
 #include <memory>
 
+namespace {
+
+// ── 输入框：把 ECDI 默认的「点线焦点框」换成「实线描边随焦点变色」──────
+// 为什么要换（实测取证，`.scratch/shot-b/v8-composer-zoom.png`）：
+//   ECDI `TextBox::OnPaint` 有**两套**边框（`TextBox.cpp:1229-1265`）：
+//     ① `borderWidth/borderColor` ⇒ 实心圆角描边环（我们设了 1px 浅灰）；
+//     ② `HasFocus() && ShowFocusRect()` ⇒ `DrawFocusRect` **点线框**，颜色取
+//        `TextBoxStyle.border`（默认品牌蓝）。
+//   本项目的输入框**启动即获焦**（`App.cpp:325` `win.SetFocusedWidget(m_promptBar->input())`，
+//   验收 A2「打开即可打字」），⇒ ②**永远**盖在①上 ⇒ 常态就是一圈蓝色虚线。
+//   variant-c 的 `.composer` 是实线 1px 描边，两者形态冲突。
+// 换法：关掉②，改让①的颜色表达焦点——
+//   失焦 `kInputBorder`（浅灰）/ 获焦 `kDarkAccent`（品牌蓝）。
+// ★ 为何不是直接 `SetShowFocusRect(false)` 了事：那样焦点**完全不可见**，
+//   是拿可访问性换观感。实线描边换色既消掉虚线，焦点指示还比点线框**对比更高**。
+class ComposerBox : public ECDI::TextBox {
+public:
+    ComposerBox() {
+        SetShowFocusRect(false);   // Widget.h:274；焦点改由 borderColor 表达
+        ApplyBorder(false);
+    }
+
+protected:
+    void OnFocusGained() override {
+        ECDI::TextBox::OnFocusGained();
+        ApplyBorder(true);
+    }
+    void OnFocusLost() override {
+        ECDI::TextBox::OnFocusLost();
+        ApplyBorder(false);
+    }
+
+private:
+    void ApplyBorder(bool focused) {
+        SetStyle(ECDI::TextBoxStyleOverride{
+            .background = harness::kInputBg,
+            .caretColor = harness::kInputCaret,
+            .padding = 6.0f,
+            .cornerRadius = harness::kRadiusInput,
+            .borderWidth = 1.0f,
+            .borderColor = focused ? harness::kDarkAccent : harness::kInputBorder});
+    }
+};
+
+}  // namespace
+
 PromptBar::PromptBar() {
     SetStyle(ECDI::PanelStyleOverride{
         .background = harness::kInspBg,
         .borderWidth = 1.0f,
         .borderColor = harness::kLine});
 
-    auto input = std::make_unique<ECDI::TextBox>();
+    auto input = std::make_unique<ComposerBox>();
     m_input = input.get();
     m_input->SetSingleLine(true);
     // Phase 30 caretColor：深底输入框可用（光标 = accent），hi-fi 时代的"浅井"退役。
-    m_input->SetStyle(ECDI::TextBoxStyleOverride{
-        .background = harness::kInputBg,
-        .caretColor = harness::kInputCaret,
-        .padding = 6.0f,
-        .cornerRadius = harness::kRadiusInput,
-        .borderWidth = 1.0f,
-        .borderColor = harness::kInputBorder});
+    // ★ 样式（含焦点描边色）已由 ComposerBox 自管，此处不再 SetStyle。
     AddChild(std::move(input));
 
     auto hint = std::make_unique<ECDI::Label>("Enter 发送 · Shift+Enter 换行");
     m_hint = hint.get();
     m_hint->SetTextColor(harness::kDarkMuted);
-    {
-        ECDI::Font f; f.size = 10.5f;
-        m_hint->SetFont(f);
-    }
+    m_hint->SetFont(harness::SansFont(10.5f));
     AddChild(std::move(hint));
 
     auto send = std::make_unique<ECDI::Button>("发送");
     m_send = send.get();
     m_send->SetTextColor(harness::kBtnPrimaryInk);
-    {
-        ECDI::Font f; f.size = 13.0f;
-        m_send->SetFont(f);
-    }
+    m_send->SetFont(harness::SansFont(13.0f));
     m_send->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
         .cornerRadius = 8.0f,
@@ -57,10 +91,7 @@ PromptBar::PromptBar() {
     auto stop = std::make_unique<ECDI::Button>("停止");
     m_stop = stop.get();
     m_stop->SetTextColor(harness::kDarkMuted);
-    {
-        ECDI::Font f; f.size = 13.0f;
-        m_stop->SetFont(f);
-    }
+    m_stop->SetFont(harness::SansFont(13.0f));
     m_stop->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kInspBg,
         .border = harness::kLine,

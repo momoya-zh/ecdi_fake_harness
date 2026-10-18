@@ -9,7 +9,10 @@
 //   * WarnZeroSized —— 布局完成后巡检，把"静默不可见"降级为日志告警。
 // 约定：新 UI 一律经本头创建容器行；绕过者需在注释里说明理由。
 
+#include "Theme.h"
+
 #include "ECDI/Core/Color.h"
+#include "ECDI/Core/Font.h"
 #include "ECDI/Core/Logger.h"
 #include "ECDI/Core/String.h"
 #include "ECDI/Layout/HorizontalLayout.h"
@@ -23,7 +26,9 @@
 
 namespace uikit {
 
-inline const char* kMonoFamily = "Consolas";
+// ★ 2026-10-18：族名统一走 Theme.h 的字体工厂（中文正文随主题变、等宽恒 Consolas）。
+//   本头不再自己定义字族常量 —— 单一真相源在 Theme.h。
+inline const char* kMonoFamily = harness::kMonoFamily;
 
 // 行容器：HorizontalLayout + 强制成对尺寸。
 // fillCross 默认 false——行内子控件保留各自高度（圆点是圆、进度条是细条）；
@@ -51,12 +56,51 @@ inline std::unique_ptr<ECDI::Label> Label(const std::string& text, int w, int h,
                                           float size = 12.0f, bool mono = false) {
     auto label = std::make_unique<ECDI::Label>(text);
     label->SetTextColor(color);
-    ECDI::Font f;
-    f.size = size;
-    if (mono) {
-        f.family = kMonoFamily;
+    label->SetFont(mono ? harness::MonoFont(size) : harness::SansFont(size));
+    label->SetSize(w, h);
+    return label;
+}
+
+// ── 水平居中标签（2026-10-16 用户反馈：胶囊内文字贴左）────────────────
+// 根因（**已读 ECDI 源码核实**，不是从"有 override"推断的）：
+//   · `ECDI::Label` 不 override `CalculateTextPosition`（`Label.h` 只声明 `OnPaint`）
+//     ⇒ 走 `TextWidget` 基类默认 = **水平左对齐 + 垂直居中**（P7 定案）。
+//   · **全库只有 `Button`** override 它做水平对齐，且已由 `ButtonStyle::textAlignment`
+//     三态驱动（`Button.cpp:110-124`，默认 Center）。
+//   · `CheckBox` / `Radio` 虽也 override，但那是**垂直**对齐到各自的 16px 指示器，
+//     水平**显式放弃**（`CheckBox.cpp:56` 的 `(void)textWidth;`）
+//     —— 别把这两个误当成"框架有水平居中能力"的先例。
+// ★ 本派生用的正是 ECDI 预留的扩展点：`TextWidget.h:74-78` 明写
+//   `CalculateTextPosition` 是「对齐策略虚方法，**不写死**」，且 `textWidth`
+//   参数的注释就是「供派生类使用（**水平居中需要**；基类默认左对齐不用）」
+//   ⇒ harness 侧派生即用，无需向 ECDI 提需求。
+// ★ 只在**胶囊**这类定宽容器里用；转录正文/普通标签保持左对齐（阅读性更好）。
+class CenteredLabel : public ECDI::Label {
+public:
+    using ECDI::Label::Label;
+
+protected:
+    // 水平居中 + 垂直居中。照 `Button.cpp:117` 的算法（`(GetWidth() - textWidth)/2`）。
+    // ★ `textWidth` 是**文本实测宽**、不是控件宽（`TextWidget.h:75`）⇒ 相减即居中偏移。
+    ECDI::Point CalculateTextPosition(int x, int y, float textWidth,
+                                      float lineHeight) const override {
+        const float w = static_cast<float>(GetWidth());
+        const float h = static_cast<float>(GetHeight());
+        float offsetX = (w - textWidth) / 2.0f;
+        if (offsetX < 0.0f) offsetX = 0.0f;   // 文字比容器宽 ⇒ 贴左，不溢出（诚实降级）
+        const float offsetY = (h - lineHeight) / 2.0f;
+        return ECDI::Point{static_cast<float>(x) + offsetX,
+                           static_cast<float>(y) + offsetY};
     }
-    label->SetFont(f);
+};
+
+// 居中标签工厂（尺寸与创建强制成对，同 `Label`）。
+inline std::unique_ptr<CenteredLabel> Centered(const std::string& text, int w, int h,
+                                               const ECDI::Color& color,
+                                               float size = 12.0f, bool mono = false) {
+    auto label = std::make_unique<CenteredLabel>(text);
+    label->SetTextColor(color);
+    label->SetFont(mono ? harness::MonoFont(size) : harness::SansFont(size));
     label->SetSize(w, h);
     return label;
 }

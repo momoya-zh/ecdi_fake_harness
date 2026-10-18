@@ -1,0 +1,442 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness · GUI 高保真模型 · C（浅色舒展 + 协议钩子）</title>
+<style>
+:root{
+  --page:#eef0f4;--surface:#fff;--panel:#f8f9fb;--line:#e7e9ee;
+  --ink:#23262e;--muted:#6b7078;
+  --blue:#596de8;--blue-soft:#eef0ff;--green:#28966b;
+  --amber-bg:#fdf7ea;--amber-line:#ecdcb6;--amber-ink:#7a5a1e;--amber-dot:#b8862a;--amber-strong:#8a6420;
+  --shadow:0 18px 60px #27304c18;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:14px/1.55 var(--font)}
+.frame{height:100vh;min-height:700px;max-width:1600px;margin:auto;padding:22px}
+.app{height:100%;min-height:656px;border:1px solid #e0e3e9;border-radius:16px;background:var(--surface);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column}
+
+/* ---------- titlebar ---------- */
+.titlebar{height:54px;flex:0 0 54px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 20px;gap:14px}
+.brand{font-weight:700;letter-spacing:-.02em;font-size:15px}
+.brandmark{width:27px;height:27px;border-radius:9px;background:#596de8;color:#fff;display:grid;place-items:center;font-size:14px}
+.crumb{color:var(--muted);font-size:13px}
+.crumb b{color:#424753;font-weight:600}
+.top-spacer{flex:1}
+.pill{border:1px solid var(--line);background:#fff;color:#555c69;border-radius:99px;padding:5px 10px;font-size:12px}
+.status{display:flex;align-items:center;gap:7px;color:#5c6660;font-size:12px}
+.status.wait{color:var(--amber-strong)}
+.dot{width:7px;height:7px;background:#43b586;border-radius:50%;box-shadow:0 0 0 3px #43b58618}
+.dot.amber{background:var(--amber-dot);box-shadow:0 0 0 3px #b8862a22}
+.iconbtn{width:31px;height:31px;border:0;border-radius:8px;background:transparent;color:#6b7078;cursor:pointer;font-size:16px}
+.iconbtn:hover{background:#f1f2f6;color:#30343d}
+
+/* ---------- layout  ★ 修：补 grid-template-rows，否则隐式行高 = max-content ---------- */
+.layout{flex:1;min-height:0;display:grid;grid-template-rows:minmax(0,1fr);grid-template-columns:236px minmax(420px,1fr) 286px}
+
+/* ---------- sidebar ---------- */
+.sidebar{background:#fbfbfc;border-right:1px solid var(--line);padding:17px 12px;display:flex;flex-direction:column;min-height:0;overflow:auto}
+.new{height:38px;border:1px solid #dfe2ff;background:#f5f6ff;color:#4c5fd2;border-radius:9px;font:600 13px/1 var(--font);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;margin:0 4px 20px}
+.section{margin:0 8px 8px;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.09em}
+.navitem{padding:8px 10px;border-radius:8px;color:#5c6270;display:flex;align-items:center;gap:9px;font-size:13px;cursor:pointer}
+.navitem:hover{background:#f1f2f6}
+.navitem.selected{background:var(--blue-soft);color:#4f61d1;font-weight:600}
+.navitem .count{margin-left:auto;font-size:11px;color:var(--muted)}
+.divider{border-top:1px solid var(--line);margin:15px 5px}
+.session{display:flex;align-items:center;gap:8px;padding:8px 10px;color:#5c6270;border-radius:8px;font-size:12px;cursor:pointer}
+.session.active{color:#303541;background:#f0f1f5}
+.session .s-dot{width:7px;height:7px;flex:0 0 7px;border:1.5px solid #b2b6c1;border-radius:50%}
+.session.active .s-dot{border-color:var(--blue);background:var(--blue)}
+.session span:nth-child(2){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* ★ 修：time 在 1024 宽会折两行 */
+.session time{margin-left:auto;flex:0 0 auto;white-space:nowrap;color:#7c818d;font-size:10px}
+.side-bottom{margin-top:auto;padding:12px 7px 0;border-top:1px solid var(--line);display:flex;align-items:center;gap:9px;color:#5c6270;font-size:12px}
+.avatar{width:28px;height:28px;border-radius:50%;background:#e8eaff;color:#5264d5;display:grid;place-items:center;font-weight:700}
+
+/* ---------- main ---------- */
+.main{min-width:0;min-height:0;display:flex;flex-direction:column;background:#fff}
+.conversation-head{height:62px;flex:0 0 62px;border-bottom:1px solid #f0f1f4;padding:0 25px;display:flex;align-items:center;gap:10px}
+.conversation-head h1{font-size:14px;margin:0;font-weight:650}
+.subtle{font-size:11px;color:var(--muted)}
+.head-actions{margin-left:auto;display:flex;gap:6px}
+.transcript{flex:1;min-height:0;overflow:auto;padding:27px clamp(24px,6vw,88px) 20px;scrollbar-width:thin;scrollbar-color:#d8dbe2 transparent}
+.date{text-align:center;color:#7c818d;font-size:11px;margin:1px 0 25px}
+.message{max-width:760px;margin-bottom:23px}
+.who{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;font-weight:650;color:#424753}
+.who .mini{height:22px;width:22px;flex:0 0 22px;border-radius:7px;background:var(--blue-soft);color:#5a6bdd;display:grid;place-items:center;font-size:11px}
+.who .mini.warn{background:var(--amber-bg);color:var(--amber-strong)}
+.who time{font-weight:400;color:#7c818d;font-size:10px}
+.copy{color:var(--ink);font-size:13px;line-height:1.8}
+.copy p{margin:0 0 8px}
+.userbox{background:#f6f7fa;border:1px solid #eef0f3;border-radius:12px;padding:12px 15px;color:#2b303a;line-height:1.75}
+.message.user-message{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end}
+.message.user-message .who{flex-direction:row-reverse}
+.message.user-message .userbox{max-width:min(760px,100%);background:#f1f3ff;border-color:#e5e8ff}
+.assistant .copy{padding-left:30px}
+.code{margin:11px 0;border:1px solid #e9ebf0;border-radius:9px;overflow:hidden;background:#fbfbfc}
+.codehead{height:32px;border-bottom:1px solid #eceef2;padding:0 11px;display:flex;align-items:center;color:#5c6270;font-size:11px}
+.codehead span:last-child{margin-left:auto;color:var(--muted)}
+.code pre{margin:0;padding:11px 13px;font:12px/1.6 var(--mono);color:#3d434f;white-space:pre-wrap}
+
+/* ---------- tool card（协议：收起 ▸ / 展开 ▾） ---------- */
+.tool{margin:11px 0 4px;border:1px solid #e9ebf0;border-radius:9px;background:#fff;overflow:hidden}
+.tool-head{height:39px;padding:0 12px;display:flex;align-items:center;gap:8px;cursor:pointer;color:#4c5261;font-size:12px}
+.tool-head .chev{font-size:10px;color:#8a8f9a;flex:0 0 auto}
+.tool-head .chev::before{content:"▸"}
+.tool.open .tool-head .chev::before{content:"▾"}
+.tool-icon{width:20px;height:20px;border-radius:6px;background:#f0f1f5;display:grid;place-items:center;color:#5c6270;font-size:11px}
+.tool-state{margin-left:auto;color:#247d59;font-size:11px}
+.tool-state.fail{color:#b4453a}
+.tool-body{border-top:1px solid #eff0f3;padding:10px 13px;font:11px/1.7 var(--mono);color:#5c6270;background:#fcfcfd;display:none}
+.tool.open .tool-body{display:block}
+
+/* ---------- reasoning（协议 §7：﹀ 思考中/已完成，展开翻 ︿，带 token 副标） ---------- */
+.reasoning{margin:10px 0 0 30px;padding:8px 11px;border-left:2px solid #e4e6f5;color:#5c6270;font-size:11px;cursor:pointer;user-select:none}
+.reasoning .chev{display:inline-block;font-size:10px;color:#8a8f9a;margin-right:4px}
+.reasoning .chev::before{content:"﹀"}
+.reasoning.open .chev::before{content:"︿"}
+.reasoning .rtok{color:#7c818d;margin-left:6px}
+.reasoning p{display:none;margin:7px 0 0;color:#4c5261;line-height:1.75;font-size:11.5px}
+.reasoning.open p{display:block}
+
+/* ---------- ask 权限门（协议 §3.6 + I3） ---------- */
+.ask{max-width:760px;margin:0 0 23px 30px;border:1px solid var(--amber-line);background:var(--amber-bg);border-radius:12px;padding:13px 15px}
+.ask-head{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;color:var(--amber-strong);letter-spacing:.04em;margin-bottom:7px}
+.ask-q{font-size:13px;color:#4a3c1c;line-height:1.7;margin-bottom:11px}
+.ask-q code{background:#f3e6c8;border-radius:4px;padding:1px 5px;font:12px var(--mono)}
+.ask-acts{display:flex;gap:8px;align-items:center}
+.askbtn{height:29px;padding:0 15px;border-radius:8px;font:600 12px/1 var(--font);cursor:pointer;border:1px solid #dcc99c;background:#fff;color:#6b4f18}
+.askbtn.primary{background:#8a6420;border-color:#8a6420;color:#fff}
+.askbtn:hover{filter:brightness(.96)}
+.ask-note{margin-left:auto;font-size:10px;color:#8a6d33}
+.ask.done{background:#f6f8f7;border-color:#e2e6e4}
+.ask.done .ask-head{color:#3f6b55}
+.ask.done .ask-q{color:#4a5158}
+
+/* ---------- seq 缺口（I4） ---------- */
+.gap{display:flex;align-items:center;gap:9px;margin:0 0 20px;padding:9px 13px;border:1px dashed #e0b978;background:#fdfaf2;border-radius:9px;font-size:11.5px;color:#6b5220}
+.gap b{font-weight:700;color:#8a5a12}
+.gap .gapbtn{margin-left:auto;border:0;background:transparent;color:#8a5a12;font:600 11px var(--font);cursor:pointer;text-decoration:underline}
+
+/* ---------- 未知 kind（I8） ---------- */
+.unknown{border:1px solid var(--amber-line);background:#fffdf7;border-radius:12px;padding:12px 15px;color:#4a4433;line-height:1.7;font-size:12.5px}
+.unknown .uk{display:inline-block;font:600 10.5px var(--mono);color:#8a5a12;background:#f7ecd6;border-radius:5px;padding:2px 6px;margin-right:8px;letter-spacing:.02em}
+.unknown .raw{font:11px/1.65 var(--mono);color:#5c5545;margin-top:8px;padding-top:8px;border-top:1px solid #f0e8d8;word-break:break-all}
+
+/* ---------- 异常样本分隔 ---------- */
+.sample-label{display:flex;align-items:center;gap:12px;margin:30px 0 18px;color:#8a8f9a;font-size:10px;letter-spacing:.1em;font-weight:700}
+.sample-label::before,.sample-label::after{content:"";flex:1;border-top:1px dashed #dfe2e8}
+
+/* ---------- composer ---------- */
+.composer-wrap{padding:14px 26px 25px;border-top:1px solid #f0f1f4}
+.composer{border:1px solid #dfe2e9;border-radius:12px;box-shadow:0 3px 12px #303a5608;background:#fff;padding:12px 14px 10px}
+.composer textarea{border:0;outline:0;resize:none;width:100%;height:58px;font:13px/1.6 var(--font);color:#2b303a;background:transparent}
+.composer textarea::placeholder{color:#8a8f9a}
+.compose-foot{display:flex;align-items:center;gap:7px;color:#7c818d;font-size:11px}
+.compose-foot .spacer{flex:1}
+.smallbtn{height:27px;border:0;background:transparent;border-radius:7px;color:#5c6270;padding:0 8px;cursor:pointer;font:11px var(--font)}
+.smallbtn:hover{background:#f2f3f6}
+.send{height:30px;padding:0 14px;border:0;border-radius:8px;background:#4c60d7;color:#fff;font:600 12px/1 var(--font);cursor:pointer}
+.send:hover{background:#4054c9}
+
+/* ---------- inspector ---------- */
+.inspector{border-left:1px solid var(--line);background:#fcfcfd;display:flex;flex-direction:column;min-height:0}
+.inspect-head{height:62px;flex:0 0 62px;padding:0 17px;display:flex;align-items:center;border-bottom:1px solid #f0f1f4}
+.inspect-head b{font-size:13px}
+.tabs{display:flex;gap:17px;padding:0 17px;border-bottom:1px solid #f0f1f4;height:40px;align-items:center;font-size:11px;color:var(--muted)}
+.tabs span{cursor:pointer;height:100%;display:flex;align-items:center;border-bottom:2px solid transparent}
+.tabs .on{color:#4e61d3;border-bottom-color:#6476e8;font-weight:600}
+.inspect-scroll{padding:17px;overflow:auto;flex:1;min-height:0}
+.panel{display:none}
+.panel.on{display:block}
+.card{border:1px solid #eaecf0;background:#fff;border-radius:10px;padding:13px;margin-bottom:12px}
+.card-title{font-size:11px;font-weight:650;color:#5c6270;margin-bottom:12px;display:flex;align-items:center}
+.card-title .more{margin-left:auto;color:var(--muted);font-weight:400;font-size:10px}
+.model-name{font-size:13px;font-weight:650;margin-bottom:3px}
+.model-desc{font-size:10px;color:var(--muted)}
+.kv{display:flex;justify-content:space-between;margin-top:11px;font-size:11px;color:var(--muted)}
+.kv b{color:#424753;font-weight:550;font-variant-numeric:tabular-nums}
+.meter{height:5px;background:#eff0f4;border-radius:8px;margin-top:9px;overflow:hidden}
+.meter i{display:block;width:36%;height:100%;background:#7584eb;border-radius:8px}
+.health{display:flex;align-items:center;gap:7px;font-size:11px;color:#4c5261;margin:8px 0}
+.health .check{width:16px;height:16px;flex:0 0 16px;display:grid;place-items:center;border-radius:50%;background:#e7f6ef;color:#2d9b6d;font-size:10px}
+.health .check.bad{background:#fdf7ea;color:var(--amber-strong)}
+.health .cnt{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted)}
+.activity{font-size:10px;color:var(--muted);margin-top:9px}
+.activity b{color:#424753;font-weight:550}
+.rule{font-size:10.5px;color:#4c5261;margin:7px 0;padding-left:15px;position:relative;line-height:1.6}
+.rule::before{content:"·";position:absolute;left:5px;color:#b6bac2}
+.rule.bad::before{content:"!";color:var(--amber-strong);font-weight:700}
+
+/* ---------- footer ---------- */
+.footer-status{height:27px;flex:0 0 27px;border-top:1px solid var(--line);background:#fbfbfc;display:flex;align-items:center;padding:0 14px;gap:15px;color:#7c818d;font-size:10px;font-variant-numeric:tabular-nums}
+.footer-status .ok{color:#247d59}
+.footer-status .warn{color:var(--amber-strong)}
+
+/* ---------- 响应式 ---------- */
+.right-hidden .layout{grid-template-columns:236px minmax(420px,1fr)}
+.right-hidden .inspector{display:none}
+@media(max-width:1050px){
+  .layout{grid-template-columns:205px minmax(400px,1fr)}
+  .inspector{display:none}
+  .right-hidden .layout{grid-template-columns:205px minmax(400px,1fr)}
+}
+@media(max-width:700px){
+  .frame{padding:0}
+  .app{border-radius:0}
+  .layout{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .conversation-head{padding:0 15px}
+  .transcript{padding:22px 16px}
+  .composer-wrap{padding:8px 12px 12px}
+  .titlebar{padding:0 13px}
+}
+</style>
+</head>
+<body><div class="frame"><div class="app" id="app">
+
+<header class="titlebar">
+  <div class="brandmark">✳</div>
+  <div class="brand">harness</div>
+  <span class="crumb">/</span><span class="crumb"><b>ECDI_fake_harness</b></span>
+  <span class="top-spacer"></span>
+  <span class="pill">DeepSeek · V3</span>
+  <span class="status wait"><i class="dot amber"></i>等待确认</span>
+  <button class="iconbtn" title="设置">⚙</button><button class="iconbtn" title="账户">◉</button>
+</header>
+
+<div class="layout">
+
+<aside class="sidebar">
+  <button class="new"><span>＋</span> 新建对话</button>
+  <div class="section">工作区</div>
+  <div class="navitem selected">▦ <span>对话</span></div>
+  <div class="navitem">⌕ <span>搜索记录</span></div>
+  <div class="divider"></div>
+  <div class="section">最近会话</div>
+  <div class="session active"><i class="s-dot"></i><span>整理 API 错误处理</span><time>现在</time></div>
+  <div class="session"><i class="s-dot"></i><span>检查构建脚本</span><time>12分</time></div>
+  <div class="session"><i class="s-dot"></i><span>更新 README 安装步骤</span><time>昨天</time></div>
+  <div class="session"><i class="s-dot"></i><span>设计设置页面</span><time>周一</time></div>
+  <div class="divider"></div>
+  <div class="section">项目</div>
+  <div class="navitem">▸ <span>ECDI_fake_harness</span><span class="count">⌄</span></div>
+  <div class="navitem" style="padding-left:26px;font-size:12px">⌁ <span>工作区文件</span></div>
+  <div class="side-bottom"><div class="avatar">L</div><span>本地工作区</span><span style="margin-left:auto;color:#7c818d">⋯</span></div>
+</aside>
+
+<main class="main">
+  <div class="conversation-head">
+    <div><h1>整理 API 错误处理</h1><span class="subtle">在 ECDI_fake_harness · 今天 14:32</span></div>
+    <div class="head-actions">
+      <button class="iconbtn" title="分享">↗</button>
+      <button class="iconbtn" id="toggleInspector" title="切换检查器">☷</button>
+      <button class="iconbtn" title="更多">···</button>
+    </div>
+  </div>
+
+  <section class="transcript" id="transcript">
+    <div class="date">今天 · 14:32</div>
+
+    <article class="message user-message">
+      <div class="who"><span class="mini">L</span>你 <time>14:32</time></div>
+      <div class="userbox">帮我看一下 API 请求失败时的错误处理，最好把重试和错误提示也整理一下。</div>
+    </article>
+
+    <article class="message assistant">
+      <div class="who"><span class="mini">✳</span>助手 <time>14:32</time></div>
+      <div class="copy"><p>我先检查一下现有请求封装和调用位置，再按当前项目风格补上错误处理。</p></div>
+      <div class="tool" id="tool1">
+        <div class="tool-head" onclick="this.parentElement.classList.toggle('open')">
+          <span class="chev"></span><span class="tool-icon">⌘</span><b>搜索代码</b><span>src/</span>
+          <span class="tool-state">✓ 已完成</span>
+        </div>
+        <div class="tool-body">搜索 `fetch(` 与 `catch` · 找到 8 个相关文件<br>重点：src/api/client.ts、src/features/session.ts</div>
+      </div>
+      <div class="reasoning" onclick="this.classList.toggle('open')">
+        <span class="chev"></span>已完成<span class="rtok">· 1,843 tokens</span>
+        <p>先统一请求层的错误形态，再保留调用方可读的提示；重试只对网络错误和 5xx 生效，避免重复提交非幂等请求。</p>
+      </div>
+    </article>
+
+    <article class="message assistant">
+      <div class="who"><span class="mini">✳</span>助手 <time>14:33</time></div>
+      <div class="copy">
+        <p>找到一个可以集中处理的位置：<code>src/api/client.ts</code>。建议先把错误分成网络错误、服务端错误和业务错误，然后只对前两类进行有限重试。</p>
+        <div class="code">
+          <div class="codehead"><span>建议方案</span><span>复制</span></div>
+          <pre>网络错误  → 最多重试 2 次（短暂退避）
+5xx 错误  → 重试 1 次
+4xx 错误  → 直接返回可读错误，不重试</pre>
+        </div>
+        <p>我可以直接改请求封装，并补上对应的测试。需要你确认一次。</p>
+      </div>
+    </article>
+
+    <!-- ask 权限门：协议 §3.6，紧随其后是 state=waiting（I3） -->
+    <div class="ask">
+      <div class="ask-head">⚠ 需要你的确认 · 权限门</div>
+      <div class="ask-q">允许修改 <code>src/api/client.ts</code> 并新增 <code>src/api/retry.ts</code> 吗？</div>
+      <div class="ask-acts">
+        <button class="askbtn primary">允许</button>
+        <button class="askbtn">拒绝</button>
+        <span class="ask-note">默认：拒绝 · 超时后按默认处理</span>
+      </div>
+    </div>
+
+    <!-- 异常路径样本 -->
+    <div class="sample-label">异常路径样本 · hostile/seq-gap.jsonl</div>
+
+    <div class="gap">
+      <b>⚠ 消息丢失</b><span>seq 从 3 直接跳到 5，中间 1 条未到达（I4）</span>
+      <button class="gapbtn">查看详情</button>
+    </div>
+
+    <article class="message unknown-msg">
+      <div class="who"><span class="mini warn">?</span>未知消息类型 <time>14:34</time></div>
+      <div class="unknown">
+        <span class="uk">[未知 kind: telemetry]</span>收到一条协议未定义的消息，正文原样保留，不丢弃。
+        <div class="raw">{"t":"telemetry","seq":12,"cpu":0.42,"mem":184320}</div>
+      </div>
+    </article>
+  </section>
+
+  <div class="composer-wrap">
+    <div class="composer">
+      <textarea id="prompt" placeholder="继续描述你想做什么…"></textarea>
+      <div class="compose-foot">
+        <button class="smallbtn">＋ 添加上下文</button>
+        <button class="smallbtn">⌁ 工具</button>
+        <span class="spacer"></span>
+        <span>Enter 发送</span>
+        <button class="send" id="send">发送 ↑</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<aside class="inspector">
+  <div class="inspect-head"><b>会话信息</b><span class="top-spacer"></span><button class="iconbtn" id="closeInspector">×</button></div>
+  <div class="tabs" id="tabs">
+    <span class="on" data-p="p-overview">概览</span>
+    <span data-p="p-perm">权限</span>
+    <span data-p="p-proto">协议</span>
+  </div>
+  <div class="inspect-scroll">
+
+    <div class="panel on" id="p-overview">
+      <div class="card">
+        <div class="card-title">模型与运行 <span class="more">···</span></div>
+        <div class="model-name">DeepSeek · V3</div>
+        <div class="model-desc">工作区默认模型</div>
+        <div class="kv"><span>运行状态</span><b style="color:#b8862a">● 等待确认</b></div>
+        <div class="kv"><span>上下文用量</span><b>29.4k / 128k</b></div>
+        <div class="meter"><i></i></div>
+      </div>
+      <div class="card">
+        <div class="card-title">协议健康 <span class="more">详情 →</span></div>
+        <div class="health"><i class="check">✓</i>消息顺序连续<span class="cnt">seq 0–43</span></div>
+        <div class="health"><i class="check">✓</i>没有丢失消息<span class="cnt">seqGaps 0</span></div>
+        <div class="health"><i class="check">✓</i>未知 kind 已显式呈现<span class="cnt">0</span></div>
+        <div class="health"><i class="check">✓</i>无协议违规<span class="cnt">0</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">本次用量</div>
+        <div class="kv"><span>输入</span><b>1,248 tokens</b></div>
+        <div class="kv"><span>输出</span><b>386 tokens</b></div>
+        <div class="kv"><span>工具调用</span><b>1 次</b></div>
+      </div>
+      <div class="card">
+        <div class="card-title">最近活动</div>
+        <div class="activity"><b>14:33</b>　等待权限确认</div>
+        <div class="activity"><b>14:32</b>　搜索代码已完成</div>
+        <div class="activity"><b>14:32</b>　会话已开始</div>
+      </div>
+    </div>
+
+    <div class="panel" id="p-perm">
+      <div class="card">
+        <div class="card-title">未决请求 <span class="more">1 项</span></div>
+        <div class="kv"><span>来源</span><b>ask · q1</b></div>
+        <div class="kv"><span>类型</span><b>permission</b></div>
+        <div class="kv"><span>默认</span><b>拒绝</b></div>
+        <div class="kv"><span>已等待</span><b>12 秒</b></div>
+      </div>
+      <div class="card">
+        <div class="card-title">权限历史</div>
+        <div class="activity"><b>14:31</b>　读取 src/api/ · 已允许</div>
+        <div class="activity"><b>14:30</b>　执行 npm test · 已允许</div>
+        <div class="activity"><b>14:28</b>　写入 docs/ · 已拒绝</div>
+      </div>
+    </div>
+
+    <div class="panel" id="p-proto">
+      <div class="card">
+        <div class="card-title">协议版本</div>
+        <div class="kv"><span>core 声明</span><b>v2</b></div>
+        <div class="kv"><span>GUI 支持</span><b>v2</b></div>
+      </div>
+      <div class="card">
+        <div class="card-title">消息计数</div>
+        <div class="kv"><span>blocks</span><b>8</b></div>
+        <div class="kv"><span>deltas</span><b>19</b></div>
+        <div class="kv"><span>messages</span><b>43</b></div>
+        <div class="kv"><span>seqGaps</span><b>0</b></div>
+        <div class="kv"><span>unknownKinds</span><b>0</b></div>
+        <div class="kv"><span>violations</span><b>0</b></div>
+      </div>
+      <div class="card">
+        <div class="card-title">不变式</div>
+        <div class="rule">I3 ask 后紧跟 state=waiting</div>
+        <div class="rule">I4 seq 缺口必须显式提示</div>
+        <div class="rule">I5 未知字段忽略并记录</div>
+        <div class="rule">I8 未知 kind 中性渲染</div>
+      </div>
+    </div>
+
+  </div>
+</aside>
+
+</div>
+
+<div class="footer-status">
+  <span class="warn">● 等待确认</span><span>协议 v2</span><span>消息 43</span><span>1,634 tokens</span>
+  <span class="top-spacer"></span><span>ECDI_fake_harness</span><span>⌘ K</span>
+</div>
+
+</div></div>
+<script>
+const app = document.getElementById('app');
+function toggle(){ app.classList.toggle('right-hidden'); }
+document.getElementById('toggleInspector').addEventListener('click', toggle);
+document.getElementById('closeInspector').addEventListener('click', toggle);
+
+/* 右栏 tab 真正切换 */
+document.getElementById('tabs').addEventListener('click', e => {
+  const t = e.target.closest('span[data-p]');
+  if (!t) return;
+  document.querySelectorAll('#tabs span').forEach(s => s.classList.toggle('on', s === t));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('on', p.id === t.dataset.p));
+});
+
+/* 发送 */
+function send(){
+  const t = document.getElementById('prompt');
+  if (!t.value.trim()) { t.focus(); return; }
+  const msg = document.createElement('article');
+  msg.className = 'message user-message';
+  msg.innerHTML = '<div class="who"><span class="mini">L</span>你 <time>现在</time></div><div class="userbox"></div>';
+  msg.querySelector('.userbox').textContent = t.value;
+  const tr = document.getElementById('transcript');
+  tr.append(msg);
+  t.value = '';
+  tr.scrollTop = tr.scrollHeight;
+}
+document.getElementById('send').addEventListener('click', send);
+document.getElementById('prompt').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+</script>
+</body></html>

@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v2.6**（2026-10-17；v1.0 建立于 2026-10-08）。
+> 状态：**v2.8**（2026-10-18；v1.0 建立于 2026-10-08）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力）；REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -329,6 +329,63 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 
 ---
 
+### REQ-10 `Font` 表达力不足——**字重、face index、复合族名第二项三者皆不可达**（★★ 本轮「同一视觉效果两链无公共解」级缺陷）
+
+> ★ **触发（2026-10-18）**：用户给出高保真原型 `docs/prototype/harness-hifi-variant-c.html`，要求评估「落地到 ECDI 还缺什么」。
+>   原型用 **10 处 `font-weight: 600/650/700`** 建立视觉层级 ⇒ 必须先回答「ECDI 能不能画字重」。
+> ★ **归属判据（§1.1 铁律）**：已查 ECDI 源码仓 `D:\Project\ECDI\ECDI\src`，且做了**只改一个自变量**的受控对照
+>   （只改 `lfWeight`、或只改 `Font::family` 字符串），**链接真实 `ECDI.lib`** 调用生产代码 `Win32FontSource::ResolveFile`，不是读注释推断。
+> ★ 本条**推翻了本仓库自己的两个错误结论**（「全框架单字重、字重根本画不出来」与「Bold 是 style 不是 family」），订正过程见 §6 v2.7。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | （无——本轮取证新立；ECDI 侧**无**既有登记，`roadmap-deferred` #69 只覆盖族名反查，不含字重与 face index） |
+| 状态 | 🔄 **开放**（待 ECDI 裁决）——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」** |
+| 归属 | **ECDI 侧**（`Core/Font.h` 只有 `size` + `family` 两个字段，`Font.h:17-18`；GDI 后端硬编码 `lfWeight = FW_NORMAL`，`GDIBackend.cpp:1384`；`FontEngine` 硬编码 face index `0`，`FontEngine.cpp:236`） |
+| 现象 ① **无字重** | `Font` 没有 `weight` 字段，且**框架内部两处硬编码 `FW_NORMAL`**（`GDIBackend.cpp:1384` · `GDITextMeasurer.cpp:63`）⇒ **任何调用方都无法请求粗体**。全源码搜 `lfWeight|FW_BOLD|FW_SEMIBOLD|FontWeight` 仅 4 处命中，**全部赋 `FW_NORMAL`**（另 2 处在 `Tests/TextMeasurerTests.cpp:81`/`:492`） |
+| 现象 ② **无 face index** | `FontEngine.cpp:236` 是 `FT_New_Face(impl.library, path.c_str(), **0**, &face)` ⇒ TTC 永远只加载 **face 0**。实测 `msyh.ttc` 的 face 0 = `Microsoft YaHei / Regular`，**face 1 = `Microsoft YaHei UI / Regular` 永远拿不到**（`msyhbd.ttc` / `msyhl.ttc` / `simsun.ttc` 同型）⇒ **「UI 版与非 UI 版」在 GL 链上根本无法表达** |
+| 现象 ③ **复合族名第二项断链** | 注册表键是复合形式 `Microsoft YaHei & Microsoft YaHei UI (TrueType)` → `msyh.ttc`，而 `FamilyToFileName`（`Win32FontSource.cpp:167-279`）只匹配**首项**（`base.compare(0, familyU8.size()+3, familyU8+" & ") == 0`，强度 1）⇒ 逐键模拟（`.scratch/shot-b/family-sim.py`）读数：`Microsoft YaHei` → `msyh.ttc` ✅ / **`Microsoft YaHei UI` → 无匹配** / **`Microsoft YaHei UI Bold` → 无匹配** ⇒ GL 链 `ResolveFile` 返回**空串**，静默回退 SimSun |
+| ★★ 实测读数（**只改 `lfWeight`**，白底黑字同串同 DPI，判据 = luma<128 的像素数） | `Microsoft YaHei` CJK 14px「整理 API 错误处理」507 → 690 = **1.36×** · 同族拉丁 15px「harness」168 → 277 = **1.65×** · `Microsoft YaHei UI` CJK 507 → 690 = **1.36×** · `DengXian` CJK 414 → 533 = **1.29×** · `Segoe UI` 拉丁 135 → 242 = **1.79×** ⇒ **对 harness 真实用到的 5 个族全部 ≥1.29×**，判「`lfWeight` 路线在 GDI 侧单独就够用」 |
+| ★★ 实测读数（**只改 `Font::family`**） | 四手段矩阵见下；关键行：`Microsoft YaHei Bold` ⇒ GDI **宋体**（回退，墨迹 0.75× = **变细了**）/ GL `msyhbd.ttc` ✅；`Microsoft YaHei UI Bold` ⇒ GDI ✅ / GL **空串** ❌；`微软雅黑 Bold` ⇒ GDI ✅ / GL **空串** ❌ |
+| ★ 覆盖面（四手段矩阵） | `lfWeight=FW_BOLD`：GDI ✅ / GL ❌（无字段、不传 variation 轴）· `family="Microsoft YaHei Bold"`：GDI ❌ / GL ✅ · `family="Microsoft YaHei UI Bold"`：GDI ✅ / GL ❌ · `family="微软雅黑 Bold"`：GDI ✅ / GL ❌ ⇒ **两条链唯一同时可用的是「不加粗」** |
+| ★ 根因（**推翻了「Bold 是 style」的旧解释**） | GDI **同时接受族名与完整 face 名**（`Arial Bold` / `Times New Roman Bold Italic` / `Consolas Bold` / `Segoe UI Bold Italic` / `Microsoft YaHei UI Bold` 全部 ✅ 命中）。真正的失败原因是**本地化规范名**：`GetTextFaceW` 返回的是 face 的**规范名**，`Microsoft YaHei` 的规范名是**中文** `微软雅黑` ⇒ 英文完整名 `Microsoft YaHei Bold` 匹配不上而回退宋体，但 **`微软雅黑 Bold` 就能命中**。⇒ 规律：**规范名是中文的族必须用中文完整名；规范名是英文的族（Segoe UI / Arial / YaHei UI）英文名即可** |
+| ★ 消费者 | **本仓库**：`gui/src` 全部 `ECDI::Font` 只设 `size`，7 处 `family` 赋值**全是** `kMonoFamily = "Consolas"`（`App.cpp:514`/`:522`/`:747`/`:1246`/`:1266` · `UiKit.h:57`/`:106`）⇒ **中文正文全部 `family` 为空**，而空 family 两链**一致落到 SimSun**（`req11_default.cpp`：GDI 空 `lfFaceName` → `宋体`；GL `ResolveFile("")` → `simsun.ttc`）⇒ **harness 现在的中文正文实际渲染在宋体上，不是微软雅黑**。② **ECDI 自家示例**：`examples/ModelProbe/ModelProbe.cpp:474/779` 用 `"consola.ttf"` 文件名写法 |
+| ★ 对我方评估的影响 | **variant-c 的 10 处字重层级（品牌字 700 / 卡片标题 650 / 会话名与按钮 600 / 正文 400）落地后全部塌成一档** ⇒ 只能靠「字号 + 颜色 + 留白」代偿。**这不阻塞功能**（渲染正确、协议读数不受影响），阻塞的是**视觉层级**。★ 反过来说：这也是本项目作为「GUI 载体评估方」的一个**真实负载画像**——一个只有 4 档字重的常规界面，ECDI 目前画不出来 |
+| ★ ECDI 侧修法候选 | ⓐ **给 `Font` 加 `weight`（`uint16_t`，默认 400）**：GDI 后端把它送 `lfWeight`（**一行改动**，`GDIBackend.cpp:1384` 与 `GDITextMeasurer.cpp:63` 各一处）；GL 后端按 `weight` 选 face（同族已有 Bold 文件时）或走 FreeType variation 轴 ⇒ **两链同解，且调用方零改动**（条 95⑤）。**倾向此条** · ⓑ 给 `Font` 加 `faceIndex`（解 TTC face 1）——**优先级低**：`Microsoft YaHei UI` 与 `Microsoft YaHei` 的差异只是行高，可用 `size` 微调代偿 · ⓒ 让 `FamilyToFileName` 支持**复合键的第二项**（解 `Microsoft YaHei UI` 断链）——**独立可做、零风险**，与 REQ-09 同处一个函数 |
+| ★ 我方本轮处置 | **不改代码**。理由：改 `Font` 是 ECDI 公共头变更，harness 侧无法自行绕过（`family` 路线已实测对 CJK 无解，且会给中英文引入两套族名规则）。★ **过渡方案**（若 ECDI 短期不动）：拉丁文用带字重的族名（`Segoe UI Semibold` / `Segoe UI Bold`，两链都通，实测 1.20×/1.38× 方向一致），中文用**字号 + 颜色压深**代偿，**不尝试伪加粗**（描边模拟会在小字号 CJK 上糊成一团） |
+| ★ 取证 | 探针 `.scratch/req11/`：`req11_weight.cpp`（`lfWeight` 400/700 墨迹比，5 个真实用例）· `req11_root.cpp`（23 个族名 × 英文名/本地化名）· `req11_facekind.cpp`（族名 vs 完整 face 名，12 个用例）· `req11_default.cpp`（空 family 双链）· `req11_ink2.cpp`（**链内**墨迹对照，修正了跨链比较的仪器错误）· `family-sim.py`（`FamilyToFileName` 逐键模拟）· `ttc-faces.py` / `ft-index.py`（TTC face 枚举）。对照表 `docs/variant-c-ecdi-mapping.md` §2 |
+
+★ **与 `REQ-09` 的关系**：同源（都在 `Font::family` 的语义上）、**不同问题**——`REQ-09` 是「同一字符串两链解析到不同 face」（**已修**，族名反查），
+  本条是「**一个字符串根本表达不了想要的 style/face**」。`REQ-09` 修复后族名写法在两条链都对，但**能表达的仍只有「常规体 + 单一 face」**。
+
+★ **仪器教训（记录，防复发）**：首版探针直接比较 **GDI 墨迹 vs FreeType 墨迹**，得出「Segoe UI 常规体就 0.58×」——
+  那是**两个渲染器的抗锯齿差异**，不是字重差异。⇒ 正确判据是**只在链内比较**（同一条链的 base 族 vs variant 族）。跨链绝对墨迹量**不可比**。
+
+---
+
+### REQ-11 `Color.a` 在后端间覆盖面不对等——**GDI 链的 `DrawText` / `DrawFocusRect` 恒丢弃 alpha**
+
+> ★ **触发（2026-10-18）**：评估 variant-c 时查「半透明 / 虚线」能否落地，顺手复核 `Color.h:19` 的注释
+>   （原文只写 `DrawRect` / `DrawRoundedRect` 经 `BlendAlphaSolid` 消费）。
+> ★ **归属判据**：已读 ECDI 源码仓两个后端**逐原语**的 alpha 处理，并做了**只改 `Color.a`** 的受控对照（复刻 `DrawTextImpl` 的 GDI 路径）。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | （无——本轮新立） |
+| 状态 | 📋 **已登记（推后）**——**当前零消费者**，不阻塞任何已规划功能；但形态已钉死，将来要用时不必重新取证 |
+| 归属 | **ECDI 侧**（后端能力不对等；`Color.h:19` 的注释只描述了 GDI 的现状，未声明这是**双链发散**） |
+| 现象 | **同一个 `Color` 在两后端合成结果不同**：GL 链**全部 9 个原语**都消费 `alpha`（`GLRenderer.cpp:731-734` `Shade()` → `glColor4f(r,g,b,**a**)`，混合模式 `:201` `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`，调用点 `:215`/`:246`/`:324`/`:329`/`:379`/`:412`/`:642`）；GDI 链**只有部分**消费 |
+| ★★ 实测读数（**只改 `Color.a`**，复刻 `GDIBackend::DrawTextImpl`：`SetBkMode(TRANSPARENT)` + `SetTextColor(ToColorRef(color))`） | 深底 `#16181D` 上画 `kDarkInk (230,233,239)`，取**最亮**字形像素：`a=255` → `#E6E9EF` · `a=128` → **`#E6E9EF`** · `a=64` → **`#E6E9EF`** · `a=16` → **`#E6E9EF`** ⇒ **四档输出逐位相同**，alpha 在光栅化前就被丢弃（`ToColorRef` 只有 RGB 三通道）。若 alpha 生效，`a=128` 应为 `~#7E8186` |
+| ★ 覆盖面（逐原语，GDI 侧） | `DrawRect` ✅（`GDIBackend.cpp:649` `if (color.a < 1.0f) BlendAlphaSolid(...)`）· `DrawRoundedRect` ✅（同款，`DrawRoundedRectBlendedAA` `:1492`）· `DrawArc` ✅（经 `RasterizeMask`，`CoverageRaster.cpp:71`/`:83`）· `DrawLine` ⚠️ **分流**：`:842-850` 若 `!m_antiAliasing \|\| (color.a >= 1.0f && IsAxisAlignedAfterRound(...))` → `DrawLineLegacy`（`:878` `CreatePen(PS_SOLID, penWidth, ToColorRef(color))` ⇒ **丢 alpha**），否则 `DrawLineCoverage` ✅ · **`DrawText` ❌ 恒丢**（`:682`/`:714` `SetTextColor(ToColorRef(color))`）· **`DrawFocusRect` ❌ 恒丢**（`:1214`/`:1222` `CreatePen(PS_SOLID, 1, ToColorRef(color))`） |
+| ★ 已有测试面 | `ECDI/src/Tests/RendererTests.cpp:334-382` `TestDrawRectAlpha`（50% 透明红叠纯蓝底，断言 `\|R-128\|<=3` / `G<=3` / `\|B-127\|<=3`）+ `:214 TestGDIBackendAlphaBlend` ⇒ **只覆盖 `DrawRect`**，`DrawText` / `DrawFocusRect` 的 alpha **从未有用例**（不是回归，是从未覆盖） |
+| ★ 消费者 | **当前为零**：`gui/src` 全部 `Color::FromRGBA8(..., 255)`（`Theme.h` 全表 alpha=255）；`variant-c` 全文搜 `rgba\|opacity` **零命中**（6 处 `transparent` 都是 `background:transparent` = 不画底，不是半透明）⇒ **本条是「将来要用时才疼」的形态，不是当前阻塞项** |
+| ★ 附带缺口：**无虚线** | `RenderCommand::DrawLineCommand` **无 dash/style 字段**，GDI 侧两处 `CreatePen` 都硬编码 `PS_SOLID`（`:878`/`:1222`）⇒ 原型里的 `border:1px dashed`（variant-c `.gap` :119、`.sample-label` :130）**没有任何对应能力**。若要支持，最小面 = `DrawLine` 加一个 `dashPattern` 字段，或另立 `DrawDashedRect` |
+| ★ ECDI 侧修法候选 | ⓐ **`DrawText` 走 alpha 混合**：先按 `a` 把字形光栅化成 mask 再 `BlendAlphaSolid`（`DrawRoundedRectBlendedAA` `:1492` 已有现成先例，可复用同一套合成路径）· ⓑ **至少补测试**：把 `TestDrawRectAlpha` 的模式扩到 `DrawText` / `DrawFocusRect` / 非轴对齐 `DrawLine`，否则「GDI 丢 alpha」这条会随重构漂移 · ⓒ `DrawLine` 的 `PS_SOLID` 分流是**性能优化**（AA 关或轴对齐时走快路径），但**语义上不该在 a<1 时走快路径**——判据里已有 `color.a >= 1.0f`，实际只在「AA 关 + a<1」时漏，属**边角** |
+| ★ 我方本轮处置 | **不规避**（当前无消费者）。★ 但登记在案的理由：这是**继 `REQ-09` 之后第二处「同一输入两后端行为不同」**，形态同型，值得让 ECDI 知道这类发散不是孤例 |
+| ★ 取证 | `.scratch/req11/req12_text.cpp`（四档 alpha，取最亮像素）· `.scratch/req11/req12_alpha.cpp`（GDI vs GL 逐原语对照表）。★ **仪器教训**：深底亮字**不能用「最暗像素」当判据**——首版取到的是背景色，四档 alpha 全一样，看似"证实"实为取错对象 |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -439,6 +496,9 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | ★ `A-1` | **未知 `kind` 的中性渲染 + 记账**（`reasoning`/`thinking`/缺失 `kind` 曾静默长成「等待结果」工具卡，与未完成的 `tool_result` 无法区分） | ✅ **已落地并实机复验**（2026-10-13）：`App.cpp` 中性分支 + `Transcript::UnknownKinds()` + 摘要 `unknownKinds` 字段 + 右栏独立行 + `validate.py` 记 note。探针 `probe-kind.jsonl` 四个块全部中性渲染，`unknownKinds=4` |
 | ★ `A-2` | **折叠态仍在全量测量**（`App.cpp:1123` 无条件 `AutoSize()`）：折叠卡里的长文本每帧照样测量 ⇒ 为看不见的内容付全部成本 | ❌ **已复核否决（2026-10-13 晚）** —— **原判收回**：那条「8.80×」是**同时长下两个不同长度**的对比，差值**全在一次性布局建立成本**上，不是逐帧浪费。实测分解 `chars = a + b·frames`：body=4000 ⇒ a=123,081 / **b=504**；body=40 ⇒ a=138 / **b=502** ⇒ **每帧成本与文本长度无关（b 之比 1.00×）**，ECDI 的 C29-10 缓存**按文档生效**。⇒ 修法（按需重测）实测**零收益**，**已完整回退**（代码骨架与 HEAD 逐行相同）。取证 `.scratch/A2-recheck-conclusion.md`（2026-10-13 受控 4 档剂量实测：body 40→4000 字符，`measureChars` 15,796→139,043，**8.80×**）⇒ 属 harness 侧，修法见 `.scratch/D-attribution-conclusion.md` §五 |
 | ★ `C-1` | **思维链评估夹具**（`fixtures/cot/`）：开源推理模型的 CoT 是「长 + 流式 + 本应折叠」的独立负载画像，既有夹具都不覆盖 | ✅ **已落地**（2026-10-13）：生成器 `gen_cot.py`（`--turns/--thinking-chars/--kind/--emit-empty`）+ 入库基线 `cot-session.jsonl`（44 块 / 934 deltas / 1044 消息 / 172,868 B · sha256 `2b8cb42f…` 可复现）+ PROTOCOL §8.4 登记。读数见 `.scratch/C-cot-eval-conclusion.md` |
+| ★ `TODO-01` | **双主题令牌化**：`Theme.h` 从「编译期常量」改成「运行期可切换」，让 `harness-hifi-variant-c.html` 的浅色形态能在**真 GUI** 上验证，而不是只停在 HTML 原型 | ✅ **已落地**（2026-10-18）：`struct Theme` 53 色 + `sansFamily`，`MakeDark()`/`MakeLight()`，`SwitchTheme()` + **引用别名**（`inline const ECDI::Color& kX = g_theme.x`）⇒ 全仓 ~200 处按名引用**零改动**；`--theme dark\|light` CLI。★ 硬约束：只能在 `BuildUi()` 之前调（颜色值在 BuildUi 时被拷进各 `PanelStyle`）。回归双主题各 5 用例全 PASS。详见 `docs/variant-c-ecdi-mapping.md` §5 |
+| ★ `TODO-02` | **字体工厂**：全仓 `ECDI::Font` 构造散落 18 处、`family` 只有 `Consolas` 一个值，中文正文全部落到 SimSun；且 `AddLine()` 只在传了字号时才 `SetFont` ⇒ 同一界面里两种中文字形混排 | ✅ **已落地**（2026-10-18）：`harness::SansFont(float)` / `MonoFont(float)` 单一入口；`AddLine()` 改为无条件 `SetFont`（默认 `14.0f` = `Font::size` 出厂值）。深色刻意保留 `sansFamily = ""`（SimSun）作**回归基线**，浅色才用 `Microsoft YaHei` |
+| ★ `TODO-03` | **输入框焦点视觉**：ECDI 默认 `DrawFocusRect` 点线框，本项目输入框**启动即获焦**（验收 A2）⇒ 常态就是一圈蓝色虚线，与 variant-c 的实线描边形态冲突 | ✅ **已落地**（2026-10-18）：派生 `ComposerBox` 关掉点线框（`SetShowFocusRect(false)`），改让 `borderColor` 表达焦点（失焦 `kInputBorder` / 获焦 `kDarkAccent`）。★ **不是**直接关掉焦点框——那样焦点完全不可见，是拿可访问性换观感 |
 
 ---
 
@@ -452,8 +512,9 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | `.workbuddy/memory/MEMORY.md` | 项目长期记忆：定位、结构、现状、数据卫生 |
 | `.workbuddy/memory/YYYY-MM-DD.md` | 当日日志：取证过程与原始读数 |
 | `docs/P1-gui-implementation-spec.md` §9 / `docs/P1.5-child-process-spec.md` §7–§8 | 各阶段自己的「已知局限」与实施回写 |
+| `docs/variant-c-ecdi-mapping.md` | 原型的**逐手法落地对照表**（`REQ-10` / `REQ-11` 的取证来源与实现建议） |
 | ECDI 侧 `docs/phase31-window-geometry-and-line-height-detailed-design.md` **§13.6** | `REQ-06`/`REQ-09` 的**取证结论落点**（112 格读数 + 仪器校准） |
-| ECDI 侧 `docs/roadmap-deferred.md` **#69** · `docs/phase26-freetype-gl-detailed-design.md` **§9 L1** | `REQ-09` 的 ECDI 侧登记处（同一事实的对方载体） |
+| ECDI 侧 `docs/roadmap-deferred.md` **#69** · `docs/phase26-freetype-gl-detailed-design.md` **§9 L1** | `REQ-09` 的 ECDI 侧登记处（同一事实的对方载体）；★ 该条**只覆盖族名反查**，**不含**字重 / face index / 复合族名第二项 ⇒ `REQ-10` 在 ECDI 侧**尚无**既有登记 |
 | `evals/*.json` | 机器可读读数（评估证据） |
 
 ★ **纪律**（条 117）：「某需求已闭合」这类事实会被**多份文档各自登记** ⇒ 订正时先列载体清单，再按关键词全库回扫，不只在「本次改过的文件」里搜。
@@ -468,6 +529,85 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+
+- **v2.8（2026-10-18）★ 双主题在真 GUI 上落地，新立 `TODO-01/02/03`（均为 harness 侧，已闭合）+ 落地暴露的四个真问题**：
+  ① **触发**：`harness-hifi-variant-c.html` 的浅色形态若只停在 HTML 原型，就无法回答「这套视觉在真 GUI 上成不成立」。
+  ⇒ 把 `gui/src/Theme.h` 从编译期常量改成运行期双令牌（`TODO-01`），并加 `--theme dark|light`。
+  ★ 手法关键：**不改成员访问**（全仓 ~200 处按名引用会漏改），改**引用别名** `inline const ECDI::Color& kX = g_theme.x`
+  ⇒ 调用点**零改动**。硬约束：只能在 `BuildUi()` 之前调——颜色值在 BuildUi 时被拷进各 `PanelStyle`。
+  ② ★★ **落地才暴露的四个真问题**（静态推演一个都发现不了）：
+  - **助手气泡在浅色下「消失」**：首版 `cardBg` 与 `contentBg` 都设 `#ffffff`，**同值** ⇒ 助手消息只剩 1px 描边，
+    退化成「裸文本」。深色无此问题（`(30,33,40)` vs `(22,24,29)`）。
+    ⇒ 根因是**两套主题的层次方向相反**：深色「越重要越亮」，浅色「越重要越暗」，照抄相对关系必然出错。
+  - **思维链卡几乎不可见**：同源，首版 `reasoningBg #fbfbfc` 只有 dL\* −1.3，且**比助手卡还暗**（层级颠倒）。
+  - **环形进度条轨道消失**：轨道色复用 `kLine`，`#e7e9ee` 压白卡 `#f1f3f7` 只有 **1.09:1**（深色同一对 1.19:1）
+    ⇒ 新增独立令牌 `kRingTrack`（浅色 `#d8dce6`，1.24:1）。
+  - **输入框常态蓝色虚线焦点框**：ECDI `TextBox::OnPaint` 有**两套**边框（`TextBox.cpp:1229-1265`），
+    ① `borderWidth/borderColor` 实心圆角环 ② `HasFocus() && ShowFocusRect()` 的 `DrawFocusRect` 点线框。
+    本项目输入框**启动即获焦**（`App.cpp:325`，验收 A2）⇒ ②**永远**盖在①上 ⇒ `TODO-03` 派生 `ComposerBox` 换掉。
+    ★ **不是**直接 `SetShowFocusRect(false)` 了事——那样焦点完全不可见，是拿可访问性换观感。
+  ③ ★★ **指标教训（本轮最重要的方法论）**：判「表面分不分得开」**不能用 WCAG 比值**——它是为**文字**
+  设计的，在 1.0–1.2 区间几乎没有分辨率。必须用 **CIE L\* 偏移**：
+  | 表面 | 深色 dL\* | 浅色 dL\* |
+  |---|---|---|
+  | 思维链 | +3.49 | −1.75 |
+  | 消息卡 | +4.47 | −2.42 |
+  | 工具卡 | +5.88 | −3.51 |
+  | 工具卡头 | +7.88 | −5.69 |
+  | 环形轨道 | +12.95 | −12.27 |
+  ★ 浅色偏移量约为深色**一半**，**不是错**：白画布 L\*=100 已到顶，向下只有 100 的空间；
+  深色画布 L\*=8.24，向上有 92 的余量 ⇒ **同样的感知分离度，浅色需要的数值更小**。
+  ④ **WCAG 4.5 的适用边界（用户反驳后修正）**：用户指出浅色低对比度问题没那么严重、真正需要对比度的是深色。
+  采样 DSH 自身两套主题后：DSH 浅色正文 **18.90** / 次要 **3.71**；DSH 深色正文 **17.45** / 次要 **8.54**。
+  ⇒ 用户方向对（深色才是高对比刚需，被数据证实）；但「浅色跟 DSH 差不多」这个事实判断**不成立**
+  （variant-b 正文只有 8.20，差一倍多）。
+  ⇒ **正确结论**：4.5 是**正文**门槛，拿它卡次要文字/装饰信息是误用；只拉正文、次要提到 ~4.5 即可。
+  ⑤ **回归**：`--theme light` 与默认深色**两轮全 PASS**，5 用例读数逐项一致
+  （demo 8/19/43 · scale 2000/4590/8906 · realistic 220/717/1213，全部 `seqGaps=0/violations=0/unknownKinds=0`）
+  ⇒ 换主题只改颜色令牌，不动解析/布局。
+  ⑥ **浅色对比度实测**（全部 ≥4.5）：正文 `#23262e`/白 **15.13** · 次要 `#6b7078`/白 **4.98** ·
+  次要/面板 4.73 · 正文/userBg 13.36 · ask 问句 10.06 · 白/品牌蓝 5.30 · 白/琥珀按钮 5.35 · ok/面板 4.80。
+  ⑦ **仍未兑现（诚实边界）**：字重层级（`REQ-10`）· 阴影/渐变（无原语）·
+  **CJK 加粗两链无公共解** · **中文字形只在 `sansFamily` 非空时改善**（深色刻意保留 SimSun 作回归基线；
+  换雅黑行高 +19%：SimSun 16 → YaHei 19 @14px，需连带调所有硬编码行高）。
+- **v2.7（2026-10-18）★ 新立 `REQ-10`（`Font` 表达力）+ `REQ-11`（alpha 双链不对等）+ 推翻本仓库自己的两个错误结论**：
+  ① **触发**：用户给出高保真原型 `docs/prototype/harness-hifi-variant-c.html`，要求评估落地缺口。
+  原型用 10 处 `font-weight: 600/650/700` 建立层级 ⇒ 必须先回答「ECDI 能不能画字重」。
+  ② ★★ **推翻结论 A（「全框架单字重，字重根本画不出来」）**：这是我只读了 `Font.h`（只有 `size`/`family`）
+  和 GDI 后端硬编码 `FW_NORMAL` 就下的判断，**没有做受控对照**。实测：
+  - **GDI 侧 `lfWeight` 对 harness 真实用到的 5 个族全部有效**（`req11_weight.cpp`，只改 `lfWeight`）：
+    `Microsoft YaHei` CJK 14px 墨迹 507→690 = **1.36×** · 同族拉丁 15px 168→277 = **1.65×** ·
+    `Microsoft YaHei UI` 1.36× · `DengXian` 1.29× · `Segoe UI` 1.79× ⇒ **≥1.29× 全部有效**。
+  - **拉丁文用族名就能拿到字重，且两链方向一致**：`Segoe UI` → `Segoe UI Semibold` = GDI **1.20×** / GL **1.21×**；
+    → `Segoe UI Bold` = GDI **1.38×** / GL **1.57×**。
+  ⇒ 正确结论：**缺的不是「字重能力」，是 `Font` 上的一个 `weight` 字段**（GDI 侧改两行即可消费）。
+  ③ ★★ **推翻结论 B（「GDI 里 Bold 是 style 不是 family」）**：`req11_facekind.cpp` 实测
+  **完整 face 名在 GDI 里普遍有效**（`Arial Bold` / `Times New Roman Bold Italic` / `Consolas Bold` /
+  `Segoe UI Bold Italic` / `Microsoft YaHei UI Bold` 全部命中）。真因是**本地化规范名**：
+  `GetTextFaceW` 返回 face 的规范名，`Microsoft YaHei` 的规范名是**中文** `微软雅黑`
+  ⇒ 英文完整名 `Microsoft YaHei Bold` 匹配不上而回退宋体，但 **`微软雅黑 Bold` 能命中**
+  （`req11_root.cpp`，23 个族名 × 英文名/本地化名两两对照）。
+  ⇒ 规律：**规范名是中文的族必须用中文完整名；规范名是英文的族英文名即可**。
+  ★ 但这仍救不了 CJK 字重——`微软雅黑 Bold` 在 GL 链 `ResolveFile` 返回**空串**（头文件明写不支持中文族名）。
+  ④ ★ **仪器教训（记录，防复发）**：首版 `req11_ink.cpp` 直接比较 **GDI 墨迹 vs FreeType 墨迹**，
+  得出「Segoe UI 常规体就 0.58×」——那是**两个渲染器的抗锯齿差异**，不是字重差异。
+  ⇒ 正确判据是**只在链内比较**（同链 base 族 vs variant 族）；跨链绝对墨迹量**不可比**。
+  同类错误在 REQ-11 的取证里又出现一次：深底亮字**用「最暗像素」当判据**，取到的是背景色，
+  四档 alpha 全一样，看似"证实"实为取错对象 ⇒ 改取**最亮**像素才看出真结果。
+  ⑤ **`REQ-10` 的三条子缺陷同源**（`Font` 无法表达「同族不同 style / 不同 face」）：
+  无字重（`Font.h:17-18` + `GDIBackend.cpp:1384` 硬编码 `FW_NORMAL`）·
+  无 face index（`FontEngine.cpp:236` `FT_New_Face(..., **0**, ...)`，TTC 永远只加载 face 0）·
+  复合族名第二项断链（`FamilyToFileName` 只匹配 `"<family> & "` 的**首项**，`Win32FontSource.cpp:167-279`）。
+  ⑥ **`REQ-11` 标 📋 推后**：`gui/src` 全部 `Color::FromRGBA8(..., 255)`、variant-c 全文 `rgba|opacity` **零命中**
+  ⇒ 当前**零消费者**，不阻塞任何已规划功能。但形态已钉死（GDI 的 `DrawText`/`DrawFocusRect` **恒丢** alpha，
+  `DrawLine` 在「AA 关 + a<1」时丢；GL 链 9 个原语全消费）⇒ 将来要用时不必重新取证。
+  ⑦ **附带发现**：`gui/src` 全部 `ECDI::Font` 只设 `size`，7 处 `family` 赋值**全是** `kMonoFamily`
+  ⇒ **中文正文 `family` 为空 ⇒ 两链一致落到 SimSun**（`req11_default.cpp` 验证）
+  ⇒ **harness 现在的中文正文实际渲染在宋体上，不是微软雅黑**。这是一条**纯 harness 侧**待办（换族名即可），
+  但受 ③ 约束：可用的族名只有 `Microsoft YaHei`（两链都通），`Microsoft YaHei UI` 在 GL 链断。
+  ⑧ 取证：探针 `.scratch/req11/`（`req11_weight.cpp` · `req11_root.cpp` · `req11_facekind.cpp` ·
+  `req11_default.cpp` · `req11_ink2.cpp` · `req12_text.cpp` · `req12_alpha.cpp` · `family-sim.py` · `ttc-faces.py`）；
+  对照表 `docs/variant-c-ecdi-mapping.md`（同日订正 §2.3 与 §2.4 两处错误解释）。
 
 - **v2.6（2026-10-17 下午）★ `REQ-09` 当日修复并验收（ECDI 侧）+ 一条日志日期漂移的自我纠正**：
   ① **`REQ-09` 闭合**：ECDI 落地 `Win32FontSource::ResolveFile` 的**族名反查**——查注册表

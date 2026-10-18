@@ -17,6 +17,7 @@
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/ProgressBar.h"
+#include "ECDI/Widget/RingProgressBar.h"
 #include "ECDI/Widget/ScrollView.h"
 
 #include <chrono>
@@ -36,6 +37,9 @@ struct CliOptions {
     std::string autoAnswer;             // --auto-answer allow|deny（无人值守跳过等待）
     int autoCloseMs = 0;                // --auto-close <ms>（跑批/冒烟自动退出；0 = 关闭）
     bool useGl = false;                 // --backend gl（Phase 26 批二：GL 后端 A/B；默认 GDI）
+    // ★ 2026-10-18 v7：--theme light —— 浅色令牌（Theme.h MakeLight）。
+    //   默认 false = 既有深色，**逐位零回归**；浅色是新增路径，用于对照 variant-c。
+    bool lightTheme = false;            // --theme light|dark
     bool cullProbe = false;               // --cull-probe：包 PaintProbe 计数每帧到达后端的命令
     int scrollSweepStep = 0;              // --scroll-sweep <px>：加载完后从顶扫到底（0 = 关）
     std::filesystem::path corePath;       // --core <exe>：拉起假 core 走真子进程（P1.5）
@@ -132,9 +136,10 @@ private:
         ECDI::Label* usageInV = nullptr;     // 右栏：输入 tokens 值
         ECDI::Label* usageOutV = nullptr;    // 右栏：输出 tokens 值
         // ★★ 协议 v2 §3.1（2026-10-14）：上下文占用百分比（用户要求）。
-        //   ★ 环形进度条**当前做不了**——ECDI 后端没有圆弧原语（见账本 REQ-08），
-        //     故本轮用**百分比条 + 百分比文本**（现有能力即可兑现）。
-        ECDI::Label* ctxPct = nullptr;       // 右栏：上下文占用 `42%` / `—`
+        //   ★ 2026-10-16 更新：环形进度条**已可做**——ECDI Phase 33 提供了 `DrawArc`
+        //     （`RenderingBackend.h:110`）与 `RingProgressBar`，`m_ctxRing` 即其消费点。
+        //     （此前这里写「当前做不了」，那是 Phase 33 之前的真实状态，现已失效。）
+        ECDI::Label* ctxPct = nullptr;       // 右栏：上下文占用 `42%` / `—`（环内不叠字，故仍需本标签）
         ECDI::Label* histChip[3] = {nullptr, nullptr, nullptr};  // 权限历史 allow/deny
         ECDI::Label* histWhat[3] = {nullptr, nullptr, nullptr};
         ECDI::Label* stState = nullptr;      // 状态栏：state
@@ -218,8 +223,21 @@ private:
     PromptBar* m_promptBar = nullptr;              // 非拥有
     ECDI::ProgressBar* m_usageBarIn = nullptr;     // 右栏用量条（非拥有）
     ECDI::ProgressBar* m_usageBarOut = nullptr;
-    // ★ 上下文占用条（协议 v2 §3.1）：分母 = `hello.context`（**不是** max(in,out)）
-    ECDI::ProgressBar* m_ctxBar = nullptr;
+    // ★★ 上下文占用环（协议 v2 §3.1 + Phase 33）：分母 = `hello.context`（**不是** max(in,out)）。
+    //   ★ 2026-10-16 由「百分比条」改为「环形进度条」——ECDI Phase 33 落地了框架首个
+    //     曲线原语 `DrawArc`（纯虚，`RenderingBackend.h:110`）与其首个消费者
+    //     `RingProgressBar`，本项目正是账本 `REQ-08` 登记的**首个真实消费者**，
+    //     挂账前提（"无消费者不动"）由此改变 ⇒ 本条兑现。
+    //   ★ 保留 `ProgressBar` 头：输入/输出两行仍用细条（用户裁决：不换）。
+    ECDI::RingProgressBar* m_ctxRing = nullptr;
+    // ★ 环色档位记忆（-1 = 尚未设置；0 = 绿 · 1 = 琥珀 · 2 = 红）。
+    //   为何要记：`RingProgressBar::SetStyle` 的头**未**声明「覆盖后 Invalidate」
+    //   （对比 `Panel.h:39` 明确写了），实现又在 lib 里 ⇒ 不能假定它内建重绘。
+    //   但若**每 tick** 都补一次 `RequestRepaint()`，`invalidations`/`paints`
+    //   会被凭空刷高（cot instant 20s ≈ 600 ticks ⇒ 16 变 ~616），而这两个数
+    //   正是本项目的**评估读数**（与 p32 基线逐位对比）⇒ 那是「自己的仪器污染
+    //   实验」（条 57③）。故只在**档位翻转**时补一次重绘。
+    int m_ctxRingLevel = -1;
     ECDI::ProgressBar* m_replayBar = nullptr;      // 左栏回放进度条（非拥有）
     Hud m_hud;
 

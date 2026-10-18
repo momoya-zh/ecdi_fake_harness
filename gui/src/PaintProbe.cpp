@@ -40,6 +40,15 @@ void PaintProbe::DrawLine(const Point& start, const Point& end,
     m_inner->DrawLine(start, end, width, color);
 }
 
+void PaintProbe::DrawArc(const Point& center, float radius,
+                         float startAngleDeg, float sweepAngleDeg,
+                         float width, const Color& color) {
+    // Phase 33：与其余 Draw* 同形——分类计数 + 命令计数 + 逐参透传（不归一化、不改语义）
+    ++m_arcs;
+    OnCommand();
+    m_inner->DrawArc(center, radius, startAngleDeg, sweepAngleDeg, width, color);
+}
+
 void PaintProbe::DrawRoundedRect(const Rect& rect, float cornerRadius,
                                  const Color& color) {
     ++m_roundedRects;

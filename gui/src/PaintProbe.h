@@ -30,6 +30,9 @@ public:
                   const Color& color, const Font& font) override;
     void DrawLine(const Point& start, const Point& end,
                   float width, const Color& color) override;
+    void DrawArc(const Point& center, float radius,
+                 float startAngleDeg, float sweepAngleDeg,
+                 float width, const Color& color) override;
     void DrawRoundedRect(const Rect& rect, float cornerRadius,
                          const Color& color) override;
     void DrawImage(const Rect& dest, const Image& image) override;
@@ -55,6 +58,7 @@ public:
     [[nodiscard]] size_t RectCommands() const noexcept { return m_rects; }
     [[nodiscard]] size_t TextCommands() const noexcept { return m_texts; }
     [[nodiscard]] size_t LineCommands() const noexcept { return m_lines; }
+    [[nodiscard]] size_t ArcCommands() const noexcept { return m_arcs; }   // Phase 33：DrawArc（曲线原语）
     [[nodiscard]] size_t RoundedRectCommands() const noexcept { return m_roundedRects; }
     [[nodiscard]] size_t ImageCommands() const noexcept { return m_images; }
     [[nodiscard]] size_t PushClipCommands() const noexcept { return m_pushClips; }
@@ -74,6 +78,7 @@ private:
     size_t m_rects = 0;
     size_t m_texts = 0;
     size_t m_lines = 0;
+    size_t m_arcs = 0;                     // Phase 33：DrawArc 分类计数
     size_t m_roundedRects = 0;
     size_t m_images = 0;
     size_t m_pushClips = 0;

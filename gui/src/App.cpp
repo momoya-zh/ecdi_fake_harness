@@ -83,6 +83,7 @@ using harness::kAskBorder;
 using harness::kAskQInk;
 using harness::kDenyInk;
 using harness::kDenyHover;
+using harness::kAllowHover;
 using harness::kCardBg;
 using harness::kCardBorder;
 using harness::kBtnPrimary;
@@ -93,6 +94,7 @@ using harness::kBtnNeutralBg;
 using harness::kBtnNeutralBorder;
 using harness::kBtnDenyBg;
 using harness::kTrackBg;
+using harness::kRingTrack;
 using harness::kDarkPillBg;
 using harness::kRadiusCard;
 using harness::kRadiusTool;
@@ -185,12 +187,16 @@ ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
                      std::optional<float> fontSize = std::nullopt) {
     auto label = std::make_unique<ECDI::Label>(text);
     label->SetTextColor(color);
-    if (fontSize) {
-        ECDI::Font font;
-        font.size = *fontSize;
-        label->SetFont(font);
-    }
-    label->SetSize(width, heading ? 15 : 17);
+    // ★ 2026-10-18 v7：族名走主题（浅色 = 雅黑，深色 = 空/SimSun 基线）。
+    //   原先只在传了 fontSize 时才 SetFont ⇒ 不传的那些落到空 family = SimSun，
+    //   与显式指定的控件**同一界面两种中文字形**。
+    //   默认值取 `ECDI::Font::size` 的出厂值 14.0f（原先不调 SetFont 时就是这个数）。
+    label->SetFont(harness::SansFont(fontSize.value_or(14.0f)));
+    // ★ 行高随字号走（2026-10-16 用户反馈「小节标题字太小」）：
+    //   标题 11f→13f 后，13px 的行盒在原来的 15px 里会被**裁切**
+    //   （`Font::size` 是 DIP 高度，`Font.h:17`）。标题行高 15→18 留出行距。
+    //   正文行高 17 不变（其字号未动）。
+    label->SetSize(width, heading ? 18 : 17);
     ECDI::Label* raw = label.get();
     parent.AddChild(std::move(label));
     return raw;
@@ -301,6 +307,9 @@ int HarnessApp::Run() {
         m_backendName = "gl";
     }
     m_window = &win;
+    // ★ 2026-10-18 v7：主题必须在 **BuildUi 之前** 定下来——令牌是引用别名，
+    //   UI 建好时颜色值已被拷进各控件的 PanelStyle/ButtonStyle，之后再切不会重绘。
+    harness::SwitchTheme(m_options.lightTheme);
     // 窗口底色 = 画布色（默认白——resize/缝隙漏白全靠它兜底）
     // ★ --probe-contrast：白底（探针测量用；默认路径逐位不变）
     win.SetBackgroundColor(m_options.probeContrast ? kProbeCanvas : harness::kContentBg);
@@ -371,9 +380,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     m_hud.title = title.get();
     title->SetTextColor(kDarkInk);
     {
-        ECDI::Font font;
-        font.size = 13.0f;
-        title->SetFont(font);
+        title->SetFont(harness::SansFont(13.0f));
     }
     title->SetSize(64, 20);
     bar->AddChild(std::move(title));
@@ -390,15 +397,13 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
         pill->AddChild(std::move(label));
         return pill;
     };
+    // ★ 用 `uikit::Centered`（`CenteredLabel`）而非裸 `Label`（2026-10-16 用户反馈
+    //   「s-cot-12 / replay 这几个在胶囊内的字位置不对，贴左了，应该居中」）。
+    //   根因：`ECDI::Label` **不** override `CalculateTextPosition` ⇒ 基类默认**左对齐**
+    //   （`Label.h` 只声明 `OnPaint`；全库只有 `Button` 做水平对齐）。
+    //   胶囊是定宽容器 ⇒ 文字必须居中才不显偏。
     auto chipLabel = [](const std::string& text, const ECDI::Color& color, int width) {
-        auto label = std::make_unique<ECDI::Label>(text);
-        label->SetTextColor(color);
-        ECDI::Font font;
-        font.size = 11.0f;
-        font.family = kMonoFamily;
-        label->SetFont(font);
-        label->SetSize(width, 20);
-        return label;
+        return uikit::Centered(text, width, 20, color, 11.0f, /*mono=*/true);
     };
 
     auto sessChipLabel = chipLabel("s-____", kAccentInk, 84);
@@ -411,15 +416,9 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     grow->SetSize(10, 10);
     bar->AddChild(std::move(grow));
 
-    auto rowLabel = std::make_unique<ECDI::Label>("autosize");
+    // ★ 同为胶囊 ⇒ 同样居中（见上方 `chipLabel` 注释）
+    auto rowLabel = uikit::Centered("autosize", 80, 20, kDarkMuted, 11.0f, /*mono=*/false);
     m_hud.rowChip = rowLabel.get();
-    rowLabel->SetTextColor(kDarkMuted);
-    {
-        ECDI::Font font;
-        font.size = 11.0f;
-        rowLabel->SetFont(font);
-    }
-    rowLabel->SetSize(80, 20);   // stretch=0 的子布局不分配主轴尺寸——必须显式给
     bar->AddChild(makeChip(std::move(rowLabel), 80, false));
 
     bar->AddChild(uikit::DotCell(8, kOkDark, 20, &m_hud.statusDot));
@@ -428,9 +427,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     m_hud.stateChip = state.get();
     state->SetTextColor(kDarkMuted);
     {
-        ECDI::Font font;
-        font.size = 12.0f;
-        state->SetFont(font);
+        state->SetFont(harness::SansFont(12.0f));
     }
     state->SetSize(60, 20);
     bar->AddChild(std::move(state));
@@ -467,7 +464,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     });
     side->AddChild(std::move(newSess));
 
-    AddLine(*side, "会 话", kDarkMuted, true, 170, 11.0f);
+    AddLine(*side, "会 话", kDarkMuted, true, 170, 13.0f);
     {
         auto row = uikit::Row(180, 28, 8, 8);
         row->SetStyle(ECDI::PanelStyleOverride{
@@ -482,12 +479,12 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         side->AddChild(std::move(row));
     }
 
-    AddLine(*side, "回 放", kDarkMuted, true, 170, 11.0f);
+    AddLine(*side, "回 放", kDarkMuted, true, 170, 13.0f);
     {
         auto prog = std::make_unique<ECDI::Label>("0 / 0");
         m_hud.sessProgress = prog.get();
         prog->SetTextColor(kDarkInk);
-        { ECDI::Font f; f.size = 12.0f; prog->SetFont(f); }
+        { prog->SetFont(harness::SansFont(12.0f)); }
         prog->SetSize(170, 16);
         side->AddChild(std::move(prog));
         auto bar = std::make_unique<ECDI::ProgressBar>();
@@ -499,7 +496,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         side->AddChild(std::move(bar));
     }
 
-    AddLine(*side, "工 作 区", kDarkMuted, true, 170, 11.0f);
+    AddLine(*side, "工 作 区", kDarkMuted, true, 170, 13.0f);
     {
         // 夹具路径链 → 伪树（dir ▾ / 文件 ·；真实数据 = replayPath 的父目录链）
         std::filesystem::path p = m_options.replayPath;
@@ -515,7 +512,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
             auto lbl = std::make_unique<ECDI::Label>("▾ " + *it + "/");
             lbl->SetTextColor(kDarkInk);
-            ECDI::Font f; f.size = 12.0f; f.family = kMonoFamily;
+            ECDI::Font f = harness::MonoFont(12.0f);
             lbl->SetFont(f);
             lbl->SetSize(180 - indent * 12, 16);
             side->AddChild(std::move(lbl));
@@ -523,7 +520,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         }
         auto fileLbl = std::make_unique<ECDI::Label>("· " + file);
         fileLbl->SetTextColor(kDarkMuted);
-        ECDI::Font ff; ff.size = 12.0f; ff.family = kMonoFamily;
+        ECDI::Font ff = harness::MonoFont(12.0f);
         fileLbl->SetFont(ff);
         fileLbl->SetSize(180 - indent * 12, 16);
         side->AddChild(std::move(fileLbl));
@@ -600,7 +597,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         parent.AddChild(std::move(row));
     };
 
-    AddLine(*insp, "渲染探针", kDarkMuted, true, 200, 11.0f);
+    AddLine(*insp, "渲染探针", kDarkMuted, true, 200, 13.0f);
     {
         auto card = makeCard(92);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
@@ -610,21 +607,28 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         insp->AddChild(std::move(card));
     }
 
-    AddLine(*insp, "用量", kDarkMuted, true, 200, 11.0f);
+    AddLine(*insp, "用量", kDarkMuted, true, 200, 13.0f);
     {
-        auto card = makeCard(92);
+        // ★ 高度 92 → 124（2026-10-16）：上下文行由 16px 条改为 48px 环行。
+        //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
+        auto card = makeCard(124);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
         // ★★ 协议 v2（2026-10-14）上下文占用百分比——**用户要求**。
         //   ★ 为什么必须有 `hello.context`：百分比**需要分母**，而 v1 协议里
         //     **没有任何容量字段** ⇒ 此前两根条只能拿 `max(input, output)` 当分母，
         //     那是**拿输入跟输出比**（两个不同量纲的东西相除）⇒ 读数无意义。
         //     现分母 = `hello.context`，缺字段 ⇒ 显示 `—`（**不猜**）。
-        //   ★ 为何是**百分比条**而不是圆环：用户提议圆环并猜「ECDI 应该还没实现」——
-        //     实测**猜对了**：ECDI 后端只有 6 个绘制原语，**没有圆弧/扇形**
-        //     （`RenderingBackend.h:72-115`；GL 侧同样，`GLRenderer.cpp:208-496`）。
-        //     「环」能用两个同心实心圆叠出来（`DrawRoundedRect` 半径钳到 min(w,h)/2），
-        //     但**按角度的进度弧画不了** ⇒ 环形进度条须靠应用侧拼大量小段逼近，
-        //     那是 workaround、不是框架能力 ⇒ 本轮先用现有能力兑现，并登记 REQ-08。
+        //   ★★ 2026-10-16：**环形兑现**。此前这里是「百分比条」，理由是 ECDI 后端
+        //     只有 6 个绘制原语、**没有圆弧**（当时实测为真，并据此登记账本 `REQ-08`）。
+        //     ECDI **Phase 33** 落地了框架首个曲线原语 `DrawArc`（纯虚，见
+        //     `RenderingBackend.h:92-112` 的完整契约）与其首个消费者 `RingProgressBar`
+        //     ⇒ 本条**挂账前提（"无消费者不动"）改变**，本项目作为首个真实消费者兑现它。
+        //   ★ 轨道色**不用 `kTrackBg`**：它与卡片底色 `kPanel2` **同值**（`Theme.h:82`），
+        //     5px 细条上无所谓（只看得见已完成段），但**环会因此看不见整圆**、
+        //     只剩一段悬空的弧 ⇒ 无法判断"还剩多少"。故轨道改用 `kLine`（亮一档）。
+        //   ★ 环内**不叠百分比文字**（用户裁决）：`RingProgressBar` 是纯视觉控件
+        //     （`RingProgressBarStyle.h:10` 明写无 TextStyle），叠字要靠应用侧手算居中，
+        //     而 ECDI 布局无居中能力 ⇒ 数值仍由右侧 `ctxPct` 标签承担。
         auto urow = [&card](const std::string& k, ECDI::Label** vOut,
                             ECDI::ProgressBar** barOut, const ECDI::Color& fill) {
             auto row = uikit::Row(178, 16, 8);
@@ -641,14 +645,42 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
         };
-        // 上下文行置顶：它是**决策相关**读数（"还能聊多久"），输入/输出只是明细
-        urow("上下文", &m_hud.ctxPct, &m_ctxBar, harness::kOkDark);
+        // 上下文行置顶：它是**决策相关**读数（"还能聊多久"），输入/输出只是明细。
+        // ★ 本行**不走 `urow`**：环要 44px 见方，而 `HorizontalLayout` 的
+        //   `fillCrossAxis=false` 是**顶对齐**（`HorizontalLayout.h:15`；`UiKit.h:74`
+        //   明写「ECDI 布局无居中」）⇒ 16px 的文字会贴到环顶。故左右各套一个
+        //   **48px cell** 手动垂直居中（沿用 `UiKit.h:76-89` `DotCell` 的既有手法）。
+        {
+            auto row = uikit::Row(178, 48, 8);
+            auto cell = [](std::unique_ptr<ECDI::Widget> inner) {
+                auto c = std::make_unique<ECDI::Panel>();   // 无 layout ⇒ 保留子控件 SetPosition
+                c->SetSize(inner->GetWidth(), 48);
+                inner->SetPosition(0, (48 - inner->GetHeight()) / 2);
+                c->AddChild(std::move(inner));
+                return c;
+            };
+            row->AddChild(cell(uikit::Label("上下文", 40, 16, kDarkMuted)));
+
+            auto ring = std::make_unique<ECDI::RingProgressBar>();
+            m_ctxRing = ring.get();
+            ring->SetSize(44, 44);            // min(w,h) 作直径（RingProgressBar.h:16）
+            ring->SetStyle(ECDI::RingProgressBarStyleOverride{
+                .trackColor = kRingTrack,     // ★ 独立令牌：kLine 浅色下压白卡只有 1.09:1，整圈会消失
+                .fillColor = harness::kOkDark,
+                .thickness = 5.0f});
+            row->AddChild(cell(std::move(ring)));
+
+            auto vl = uikit::Label("—", 52, 16, kDarkInk, 11.0f, /*mono=*/true);
+            m_hud.ctxPct = vl.get();
+            row->AddChild(cell(std::move(vl)));
+            card->AddChild(std::move(row));
+        }
         urow("输入", &m_hud.usageInV, &m_usageBarIn, harness::kDarkAccent);
         urow("输出", &m_hud.usageOutV, &m_usageBarOut, harness::kDarkAccent);
         insp->AddChild(std::move(card));
     }
 
-    AddLine(*insp, "协议健康", kDarkMuted, true, 200, 11.0f);
+    AddLine(*insp, "协议健康", kDarkMuted, true, 200, 13.0f);
     {
         auto card = makeCard(70);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
@@ -670,7 +702,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         insp->AddChild(std::move(card));
     }
 
-    AddLine(*insp, "权限历史", kDarkMuted, true, 200, 11.0f);
+    AddLine(*insp, "权限历史", kDarkMuted, true, 200, 13.0f);
     {
         auto card = makeCard(70);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
@@ -713,7 +745,7 @@ void HarnessApp::BuildBottom(ECDI::Widget& root) {
     auto monoLine = [](const std::string& text, int width) {
         auto lbl = std::make_unique<ECDI::Label>(text);
         lbl->SetTextColor(kDarkMuted);
-        ECDI::Font f; f.size = 11.0f; f.family = kMonoFamily;
+        ECDI::Font f = harness::MonoFont(11.0f);
         lbl->SetFont(f);
         lbl->SetSize(width, 16);
         return lbl;
@@ -1106,7 +1138,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         rec.headerBtn = header.get();
         header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
         {
-            ECDI::Font f; f.size = 12.0f;
+            ECDI::Font f = harness::SansFont(12.0f);
             header->SetFont(f);
         }
         header->SetStyle(ECDI::ButtonStyleOverride{
@@ -1128,7 +1160,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         label->SetWordWrap(true);   // 思维链很长，必须按宽断行
         {
-            ECDI::Font f; f.size = 12.0f;
+            ECDI::Font f = harness::SansFont(12.0f);
             label->SetFont(f);
         }
         rec.body->GetContent()->AddChild(std::move(label));
@@ -1212,7 +1244,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
     rec.headerBtn = header.get();
     header->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
     {
-        ECDI::Font f; f.size = 12.0f; f.family = kMonoFamily;
+        ECDI::Font f = harness::MonoFont(12.0f);
         header->SetFont(f);
     }
     header->SetStyle(ECDI::ButtonStyleOverride{
@@ -1232,7 +1264,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
     label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
     label->SetWordWrap(true);   // Phase 29：工具体按 bodyW 断行（JSON/日志长串）
     {
-        ECDI::Font f; f.size = 12.0f; f.family = kMonoFamily;
+        ECDI::Font f = harness::MonoFont(12.0f);
         label->SetFont(f);
     }
     // Phase 30 批二：CollapsiblePanel 收起态钉住内容可见性（#51④）——
@@ -1267,7 +1299,7 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     rec.label = label.get();
     label->SetTextColor(kAskQInk);
     {
-        ECDI::Font f; f.size = 13.0f;
+        ECDI::Font f = harness::SansFont(13.0f);
         label->SetFont(f);
     }
     panel->AddChild(std::move(label));
@@ -1276,20 +1308,20 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     rec.allowBtn = allow.get();
     allow->SetTextColor(kWarnInk);
     {
-        ECDI::Font f; f.size = 12.0f;
+        ECDI::Font f = harness::SansFont(12.0f);
         allow->SetFont(f);
     }
     allow->SetStyle(ECDI::ButtonStyleOverride{
         .background = kWarn,
         .cornerRadius = kRadiusBtn,
         .pressedBackground = kWarn,
-        .hoverBackground = ECDI::Color::FromRGBA8(240, 183, 92, 255)});
+        .hoverBackground = kAllowHover});
     panel->AddChild(std::move(allow));
     auto deny = std::make_unique<ECDI::Button>("拒绝");
     rec.denyBtn = deny.get();
     deny->SetTextColor(kDenyInk);
     {
-        ECDI::Font f; f.size = 12.0f;
+        ECDI::Font f = harness::SansFont(12.0f);
         deny->SetFont(f);
     }
     deny->SetStyle(ECDI::ButtonStyleOverride{
@@ -1914,13 +1946,32 @@ void HarnessApp::RefreshHud() {
                                                  : (pct >= 70 ? kWarn : kOkDark));
         }
     }
-    if (m_ctxBar) {
+    if (m_ctxRing) {
         const float frac = ctxKnown
                                ? static_cast<float>(m_usageIn) /
                                      static_cast<float>(m_contextLimit)
                                : 0.0f;
-        // 条本身钳到 [0,1]（SetProgress 契约）；文本仍如实显示 >100%
-        m_ctxBar->SetProgress(frac > 1.0f ? 1.0f : frac);
+        // 环本身钳到 [0,1]（SetProgress 契约）；文本仍如实显示 >100%
+        m_ctxRing->SetProgress(frac > 1.0f ? 1.0f : frac);
+        // ★ 环色与右侧数字**同源**（同一组阈值），避免「环是绿的、字是红的」自相矛盾。
+        //   阈值沿用既有口径：<70 常规绿 · 70–90 琥珀 · >90 红；分母未知 ⇒ 回退绿（环归零）。
+        const long long pctForColor =
+            ctxKnown ? (m_usageIn * 100 + m_contextLimit / 2) / m_contextLimit : 0;
+        const int level = pctForColor >= 90 ? 2 : (pctForColor >= 70 ? 1 : 0);
+        // ★★ 只在**档位翻转**时 SetStyle + 补重绘——不能每 tick 都做：
+        //   `RingProgressBar::SetStyle` 的头**未**声明「覆盖后 Invalidate」
+        //   （对比 `Panel.h:39` 明确写了），实现又在 lib 里 ⇒ 不能假定它内建重绘；
+        //   但每 tick 补一次 `RequestRepaint()` 会把 `invalidations`/`paints`
+        //   凭空刷高（cot instant 20s ≈ 600 ticks ⇒ 16 变 ~616），而这两个数正是
+        //   本项目的**评估读数**（与 p32 基线逐位对比）⇒ 那是「自己的仪器污染实验」
+        //   （条 57③）。档位翻转全场至多 2 次 ⇒ 污染可忽略且可解释。
+        if (level != m_ctxRingLevel) {
+            m_ctxRingLevel = level;
+            m_ctxRing->SetStyle(ECDI::RingProgressBarStyleOverride{
+                .fillColor = level == 2 ? kErrorDark
+                                        : (level == 1 ? kWarn : harness::kOkDark)});
+            RequestRepaint();   // 颜色变了 ⇒ 确保这一帧被重画
+        }
     }
     if (m_usageBarIn && m_usageBarOut) {
         // ★ 输入/输出两根条改为**以上下文容量为共同分母**（原来拿二者峰值互比，
@@ -1938,6 +1989,12 @@ void HarnessApp::RefreshHud() {
         m_usageBarIn->SetProgress(inFrac > 1.0f ? 1.0f : inFrac);
         m_usageBarOut->SetProgress(outFrac > 1.0f ? 1.0f : outFrac);
     }
+    // 权限历史：无记录时给一行占位（否则是一张 70px 高的空盒子——`v8-light-insp.png` 可见）。
+    // ★ 为何不 `SetVisible(false)` 把卡片藏掉：`Widget::SetVisible` **故意不内建 Invalidate**
+    //   （`Widget.h:160-170` 明写「静默不刷新」），harness 还得自己补重绘；而「协议允许问、
+    //   但本次一次都没问」本身是**有信息量的评估读数**（ask 门是 I3 的可见载体），
+    //   藏掉不如显式说「暂无」。复用现有 3 行控件 ⇒ 零新增控件、零布局改动。
+    const bool noHist = m_askHist.empty();
     for (size_t i = 0; i < 3; ++i) {
         if (m_hud.histChip[i] && m_hud.histWhat[i]) {
             const size_t n = m_askHist.size();
@@ -1947,8 +2004,9 @@ void HarnessApp::RefreshHud() {
                 m_hud.histChip[i]->SetTextColor(choice == "allow" ? kOkDark : kErrorDark);
                 m_hud.histWhat[i]->SetText(what);
             } else {
-                m_hud.histChip[i]->SetText("");
-                m_hud.histWhat[i]->SetText("");
+                m_hud.histChip[i]->SetText(noHist && i == 0 ? "—" : "");
+                m_hud.histChip[i]->SetTextColor(kDarkMuted);
+                m_hud.histWhat[i]->SetText(noHist && i == 0 ? "暂无权限请求" : "");
             }
         }
     }
@@ -2040,6 +2098,7 @@ void HarnessApp::WriteSummary() {
         json += "  \"commandMix\": {\"rect\": " + std::to_string(m_probe->RectCommands()) +
                 ", \"text\": " + std::to_string(m_probe->TextCommands()) +
                 ", \"line\": " + std::to_string(m_probe->LineCommands()) +
+                ", \"arc\": " + std::to_string(m_probe->ArcCommands()) +
                 ", \"roundedRect\": " + std::to_string(m_probe->RoundedRectCommands()) +
                 ", \"image\": " + std::to_string(m_probe->ImageCommands()) +
                 ", \"pushClip\": " + std::to_string(m_probe->PushClipCommands()) +
