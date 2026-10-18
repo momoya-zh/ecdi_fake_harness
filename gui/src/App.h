@@ -199,6 +199,61 @@ private:
         int lastBodyH = 0;                        // 未变则不重发（动画期间重入会钉死动画）
     };
 
+    // ★★ 0b（2026-10-18）：**逐会话**状态收进一个可整体替换的对象。
+    //   为什么需要这样一层：下面这些字段此前和窗口/控件指针平铺在同一个类里，等于
+    //   断言「一个应用 = 一个会话」。于是"新建会话"**无处落脚**——新会话的转录、
+    //   用量、行表该存到哪？没有容器，连暂存的地方都不存在。
+    //   ★ 本步是**纯搬运**：仍只有一个会话，回放读数必须逐位不变才算过（0a 立的规矩）。
+    //     真正的切换逻辑在 0c，UI 重建在 0d。
+    //   ★ 判据不是"字段搬了家"，而是"同一时刻只有一份东西能叫**当前**会话"。
+    //   ★ 不变量（0c 依赖）：`blockRows` 里是指向 `rows` 元素的裸指针，`rows` 用 deque
+    //     保证 push_back 不失效 ⇒ Session 一旦建立就**不得被搬动/拷贝**。0c 用
+    //     unique_ptr 持有正是为了这条；这里先按值放一个，只为把结构立起来。
+    struct Session {
+        // ── 消息源 / 反向通道 ──
+        std::unique_ptr<MessageSource> source;    // 多态持有（Next/Send/IsLive）
+        ReplaySource* replay = nullptr;            // 非拥有；仅回放模式下非空（进度 n/N 用）
+        ChildSource* child = nullptr;              // 非拥有；仅 --core 模式下非空
+        std::unique_ptr<ProtocolWriter> writer;    // 反向通道（仅 live 模式构造）
+        size_t liveLines = 0;                      // live 模式：已消费行数（无"总量"概念）
+        Transcript transcript;
+
+        // ── 转录行表（行的视图状态也在这里：折叠/已答属于会话，不属于窗口）──
+        std::deque<RowRec> rows;
+        std::map<std::string, RowRec*> blockRows;  // block id → 行（delta 流式追加用）
+
+        // ── hello / 协议协商 ──
+        std::string coreState;
+        std::string sessionId;                     // hello 捕获（HUD 左栏）
+        std::string coreVer;
+        std::string capsStr;
+        int protocolVer = 0;
+        // ★ 协议 §9：core 声明的版本高于本 GUI 上限 ⇒ 已拒绝连接（2026-10-14）。
+        //   用途：摘要里如实记下"这次运行是被拒的"，避免读到一个空摘要却以为跑成功了。
+        bool protocolIncompatible = false;
+
+        // ── usage / 上下文容量 ──
+        int usageTurn = -1;                        // usage 捕获（HUD 右栏/状态栏）
+        long long usageIn = -1;
+        long long usageOut = -1;
+        // ★★ 协议 v2 §3.1（2026-10-14）：上下文窗口容量 = 「上下文占用百分比」的**分母**。
+        //   ★ 来源**只有** `hello.context` 一处；缺字段 ⇒ 保持 0 ⇒ 百分比显示 `—`。
+        //   ★ **不得**猜测容量、也**不得**按 0 当分母（分母未知 ⇒ 百分比无定义）。
+        //   ★ 这正是本轮之前那两根用量条的问题：分母取 `max(input, output)`，
+        //     即**拿输入跟输出比**——两个不同量纲的东西相除，读数无意义。
+        long long contextLimit = 0;
+
+        // ── 权限询问历史（右栏三行）──
+        std::deque<std::pair<std::string, std::string>> askHist;   // {choice, question}
+
+        // ── 拉取节拍（各会话各自走到哪一步，互相独立）──
+        bool waitForAnswer = false;                // timed 模式：ask 未答，暂停拉取
+        bool instantDone = false;
+        bool replaySettled = false;                // 夹具拉取完毕（停止制造重绘）
+        std::string pendingTruncated;              // ReplaySource 的 EOF 截断提示（延后展示）
+        bool liveEof = false;                      // live 模式：源已 EOF（停止空转刷 HUD）
+    };
+
     void AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
                 const std::string& blockId);
     void CreateBlockRow(const Block& block);
@@ -213,13 +268,13 @@ private:
     void WriteSummary();
 
     CliOptions m_options;
-    // P1.5：源接口化——回放（ReplaySource）与子进程（ChildSource）二选一。
-    std::unique_ptr<MessageSource> m_source;      // 多态持有（Next/Send/IsLive）
-    ReplaySource* m_replay = nullptr;             // 非拥有；仅回放模式下非空（进度 n/N 用）
-    ChildSource* m_child = nullptr;               // 非拥有；仅 --core 模式下非空
-    std::unique_ptr<ProtocolWriter> m_writer;     // 反向通道（仅 live 模式构造）
-    size_t m_liveLines = 0;                       // live 模式：已消费行数（无"总量"概念）
-    Transcript m_transcript;
+
+    // ★★ 0b：`HarnessApp` 只保留**窗口级**状态；逐会话的东西全在 `m_sess` 里。
+    //   为什么现在就包一层而不是等 0c：包一层之后「当前会话」才有**唯一名字**。
+    //   0c 要做的只是把 `m_sess` 换成 `std::vector<std::unique_ptr<Session>>` +
+    //   一个指向活动会话的指针——调用点因为有了这个名字，届时**不必再改**。
+    //   ★ 位置放在 `m_options` 之后：构造顺序要求先有它，后面的成员声明不得依赖它。
+    Session m_sess;
 
     HarnessApplication* m_application = nullptr;   // Run() 栈上对象，非拥有
     ECDI::Window* m_window = nullptr;              // Application 所有，非拥有
@@ -249,37 +304,12 @@ private:
     ECDI::ProgressBar* m_replayBar = nullptr;      // 左栏回放进度条（非拥有）
     Hud m_hud;
 
-    std::deque<std::pair<std::string, std::string>> m_askHist;   // 权限历史 {choice, question}
-
-    std::deque<RowRec> m_rows;
-    std::map<std::string, RowRec*> m_blockRows;    // block id → 行（delta 流式追加用）
-    std::string m_coreState;
-    std::string m_sessionId;                       // hello 捕获（HUD 左栏）
-    std::string m_coreVer;
-    std::string m_capsStr;
-    int m_protocolVer = 0;
-    // ★ 协议 §9：core 声明的版本高于本 GUI 上限 ⇒ 已拒绝连接（2026-10-14）。
-    //   用途：摘要里如实记下"这次运行是被拒的"，避免读到一个空摘要却以为跑成功了。
-    bool m_protocolIncompatible = false;
-    int m_usageTurn = -1;                          // usage 捕获（HUD 右栏/状态栏）
-    long long m_usageIn = -1;
-    long long m_usageOut = -1;
-    // ★★ 协议 v2 §3.1（2026-10-14）：上下文窗口容量 = 「上下文占用百分比」的**分母**。
-    //   ★ 来源**只有** `hello.context` 一处；缺字段 ⇒ 保持 0 ⇒ 百分比显示 `—`。
-    //   ★ **不得**猜测容量、也**不得**按 0 当分母（分母未知 ⇒ 百分比无定义）。
-    //   ★ 这正是本轮之前那两根用量条的问题：分母取 `max(input, output)`，
-    //     即**拿输入跟输出比**——两个不同量纲的东西相除，读数无意义。
-    long long m_contextLimit = 0;
-    bool m_waitForAnswer = false;                  // timed 模式：ask 未答，暂停拉取
-    bool m_instantDone = false;
-    bool m_replaySettled = false;                  // 夹具拉取完毕（停止制造重绘）
+    // ── 窗口级运行状态（与会话无关：它们描述的是"这一次进程跑了什么"）──
     bool m_sweepStarted = false;                   // --scroll-sweep 已启动（仅一次）
     bool m_sweepDone = false;                      // --scroll-sweep 扫到底（退出）
     bool m_hudDirty = true;                        // HUD 有新数据待刷新
     int m_relayoutPulse = 0;                       // 折叠动画期间的补重排 tick 数（~33ms each）
     bool m_summaryWritten = false;
-    std::string m_pendingTruncated;                // ReplaySource 的 EOF 截断提示（延后展示）
-    bool m_liveEof = false;                        // live 模式：源已 EOF（停止空转刷 HUD）
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
 
     // ★★ REQ-04 探针读数（--state-probe）：每次 RefreshHud 观察到「与上次不同」的
@@ -287,7 +317,7 @@ private:
     //   ★ 只在**变化时**记录（否则 30Hz 下会记几千行相同内容，摘要不可读）。
     //   ★ 与 core 的 `state` 并排输出 ⇒ 可逐行核对「state:X ⇒ 按钮使能应为 Y」。
     struct StateProbeRec {
-        std::string coreState;   // 本次观察时的 core state（来自 m_coreState）
+        std::string coreState;   // 本次观察时的 core state（来自活动会话）
         bool sendEnabled = true;
         bool stopEnabled = false;
         std::string sendTitle;   // Button::GetText()——标题文本直接回读，不靠像素
