@@ -250,6 +250,32 @@ void HarnessApplication::OnTimer(const ECDI::TimerEvent& event) {
 
 HarnessApp::HarnessApp(CliOptions options)
     : m_options(std::move(options)) {
+    // ★★ 0d：构造第一个会话（源选择逻辑搬进 `CreateSessionFromOptions`，
+    //   因为"新建会话"要复用同一段）。
+    //   ★ 这里只**创建 + 设活动指针**，不调 `SwitchToSession`——此刻窗口还没建，
+    //     `m_content` 为空，SwitchToSession 里的 RebuildTranscriptView 会解引用空指针。
+    //     首会话的视图由 `Run()` 里的 `BuildUi` 建；之后 DrainInstant/Timed 增量填行。
+    Session* first = CreateSessionFromOptions();
+    if (first) {
+        m_sess = first;
+        m_activeIndex = m_sessions.size() - 1;
+    }
+    // first 为 nullptr（live 启动失败）⇒ m_sess 保持空 ⇒ Run 里报错退出（return 4）。
+}
+
+// ★ 析构保持 default：`m_sessions` 是 `vector<unique_ptr<Session>>`，
+//   每个 Session 的 source/writer/rows 都是 RAII ⇒ 逐个自动析构。
+//   live 子进程的收尸在 `Run()` 收尾显式做（bye → Stop），不在这里。
+HarnessApp::~HarnessApp() = default;
+
+// 按当前 CLI 选项建一个会话，push 进 m_sessions 并返回（**不**激活）。
+//   ★ 这段就是原构造函数体：--core ⇒ 拉起子进程（真 live），否则夹具回放。
+//   抽成方法是为了让 `NewSession()` 能复用同一套源创建逻辑。
+//   ★ 返回 nullptr = live 启动失败（不 push 坏会话）；调用方必须判空。
+HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
+    auto session = std::make_unique<Session>();
+    Session& s = *session;
+
     // ── 源选择（P1.5）：--core <exe> ⇒ 子进程真路径；否则夹具回放 ──
     if (!m_options.corePath.empty()) {
         auto child = std::make_unique<ChildSource>();
@@ -257,30 +283,142 @@ HarnessApp::HarnessApp(CliOptions options)
         if (!child->Start(m_options.corePath, m_options.coreArgs, error)) {
             ECDI::Logger::Log(ECDI::LogLevel::Error,
                               ECDI::UTF8ToWide("ChildSource: " + error));
-            return;   // m_sess.source 为空 ⇒ Run 里报错退出
+            // 源启动失败 ⇒ 不 push（避免留下一个拉不动的会话），如实返回 nullptr
+            return nullptr;
         }
-        m_sess.child = child.get();
-        m_sess.source = std::move(child);
-        m_sess.writer = std::make_unique<ProtocolWriter>(*m_sess.source);
-        m_options.fixtureName = m_options.corePath.filename().generic_string() + " (live)";
-        return;
+        s.child = child.get();
+        s.source = std::move(child);
+        s.writer = std::make_unique<ProtocolWriter>(*s.source);
+        s.label = m_options.corePath.filename().generic_string() + " (live)";
+        if (m_sessions.empty()) {
+            // 首个 live 会话：把 fixtureName 也定下来（窗口标题 / 摘要用）
+            m_options.fixtureName = s.label;
+        }
+    } else {
+        auto replay = std::make_unique<ReplaySource>();
+        std::string error;
+        if (!replay->Load(m_options.replayPath, error)) {
+            ECDI::Logger::Log(ECDI::LogLevel::Error,
+                              ECDI::UTF8ToWide("ReplaySource: " + error));
+        }
+        s.pendingTruncated = replay->TruncatedError();
+        s.replay = replay.get();
+        s.source = std::move(replay);
+        s.label = m_options.fixtureName;
     }
 
-    auto replay = std::make_unique<ReplaySource>();
-    std::string error;
-    if (!replay->Load(m_options.replayPath, error)) {
-        ECDI::Logger::Log(ECDI::LogLevel::Error,
-                          ECDI::UTF8ToWide("ReplaySource: " + error));
-    }
-    m_sess.pendingTruncated = replay->TruncatedError();
-    m_sess.replay = replay.get();
-    m_sess.source = std::move(replay);
+    // 会话名：首个用 fixtureName；后续在 NewSession 里改成"会话 N"。
+    if (s.label.empty()) s.label = "会话 " + std::to_string(m_sessions.size() + 1);
+
+    m_sessions.push_back(std::move(session));
+    return m_sessions.back().get();
 }
 
-HarnessApp::~HarnessApp() = default;
+// ＋ 新建会话的真实行为（0d）。
+//   ★ live 模式：再拉起一个 core 子进程 —— 这才是"真的新建一个会话"。
+//   ★ 回放模式：没有 core 会对着一个空会话说话，回放夹具是一次性的。硬塞一个
+//     假回复就是伪造读数（本仓最守不住的线）。故如实建一个**空会话**并说明情况——
+//     "能点、有状态、切得过去"，但绝不假装 core 回了话。
+void HarnessApp::NewSession() {
+    // 先把当前活动会话的 timed 时钟冻结（否则它被切走后还在按墙上时间"到期"）
+    PauseActiveTimedClock();
+
+    const bool live = !m_options.corePath.empty();
+    if (live) {
+        // 真新建：拉一个新 core。创建失败（nullptr）⇒ 如实提示，活动会话不变。
+        Session* created = CreateSessionFromOptions();
+        if (!created) {
+            AddNoticeRow("[新建会话失败：core 启动失败，见日志]", kErrorDark);
+            Relayout();
+            RequestRepaint();
+            ResumeSessionTimedClock(*m_sess);
+            return;
+        }
+        created->label = "会话 " + std::to_string(m_sessions.size());
+    } else {
+        // 回放模式：建一个空会话（无 source ⇒ 不拉取；OnReplayTick 见空 source 直接返回）
+        auto session = std::make_unique<Session>();
+        session->label = "会话 " + std::to_string(m_sessions.size() + 1);
+        m_sessions.push_back(std::move(session));
+    }
+
+    const size_t idx = m_sessions.size() - 1;
+    SwitchToSession(idx);
+
+    if (live) {
+        // ★ 协议 §4：GUI 在收到 core 的 hello 之后回 hello（seq 0）。首会话在 Run() 里发；
+        //   运行期新建的会话必须在这里补发，否则新 core 永远等不到握手。
+        Session& s = *m_sessions[idx];
+        if (s.writer) s.writer->Hello("0.0.1");
+        if (m_options.timed) s.timedAnchor = std::chrono::steady_clock::now();
+    } else {
+        // 回放空会话：给一条诚实提示（不伪造 core 回复）
+        AddNoticeRow("[新建会话：回放模式无 core，空会话——切回上一个会话看历史]", kDarkMuted);
+        Relayout();
+        RequestRepaint();
+    }
+}
+
+// 切换活动会话（0d）：拆当前视图 → 指向目标会话 → 按目标会话模型重建。
+void HarnessApp::SwitchToSession(size_t index) {
+    if (index >= m_sessions.size()) return;
+    if (index == m_activeIndex && m_sess == m_sessions[index].get()) return;   // 已在该会话
+
+    // ① 冻结当前活动会话的 timed 时钟（切走 ⇒ 它不该继续"到期"）
+    PauseActiveTimedClock();
+    // ①b ★ 在**还指着旧会话**时把视图状态同步进旧会话的模型。
+    //    顺序要点：RebuildTranscriptView 内部也会 SyncRowViewState，但那时 m_sess
+    //    已指向新会话——同步的是新会话的旧行，旧会话的状态就没人管了。眼下不出事
+    //    只是因为 ToggleRow/MarkAnswered 每次点击都已写回模型；把正确性押在
+    //    "别处恰好也写了"上是本仓最反对的形状，故在这里显式补上。
+    SyncRowViewState();
+
+    // ② 切换活动指针。m_sess 是全部 200+ 处调用点的"当前会话"锚，
+    //    改这一个指针，OnReplayTick/RefreshHud/… 立即指向新会话。
+    m_activeIndex = index;
+    m_sess = m_sessions[index].get();
+
+    // ③ 按新会话的模型重建转录视图（复用 0c 的 RebuildTranscriptView）。
+    //    ★ 这正是 0c 存在的全部理由：没有"从模型重建"，切会话就无处安放视图。
+    //    传 nullptr ⇒ 按 timeline 正向重建（不是负对照）。
+    //    ★ 顺带清掉与旧会话绑定的渲染缓存：环色档位（否则新会话首帧可能不重绘）。
+    m_ctxRingLevel = -1;
+    RebuildTranscriptView();
+
+    // ④ 恢复新会话的 timed 时钟（补偿它被冻结的墙上时间）
+    ResumeSessionTimedClock(*m_sess);
+
+    // ⑤ HUD / 进度 / 使能全部跟着新会话刷新
+    m_hudDirty = true;
+    RefreshHud();
+    RequestRepaint();
+}
+
+// 冻结活动会话的 timed 锚点：记下暂停时刻（幂等——已暂停则不动）。
+void HarnessApp::PauseActiveTimedClock() {
+    if (!m_sess || !m_options.timed) return;
+    if (!m_sess->timedPaused) {
+        m_sess->timedPaused = true;
+        m_sess->timedPausedAt = std::chrono::steady_clock::now();
+    }
+}
+
+// 恢复某会话的 timed 锚点：把锚点整体后移"被冻结了多久"。
+//   ★ 为何需要补偿：elapsedMs = now - anchor。会话被切走期间 anchor 不动而 now 前进，
+//     切回来若不补偿，elapsedMs 会凭空多出"离开的那段墙上时间" ⇒ 一次性抽干夹具。
+void HarnessApp::ResumeSessionTimedClock(Session& s) {
+    if (!m_options.timed) return;
+    if (s.timedPaused) {
+        const auto pausedFor = std::chrono::steady_clock::now() - s.timedPausedAt;
+        s.timedAnchor += pausedFor;
+        s.timedPaused = false;
+    }
+}
 
 int HarnessApp::Run() {
-    if (!m_sess.source) {
+    // ★ 0d：会话创建失败时 m_sess 为**空指针**（构造失败不再 push 坏会话），
+    //   故先判空再解引用。
+    if (!m_sess || !m_sess->source) {
         MessageBoxW(nullptr,
                     L"消息源不可用。\n"
                     L"--core 指定的假 core 启动失败，或 --replay 夹具加载失败。\n"
@@ -343,8 +481,8 @@ int HarnessApp::Run() {
     uikit::WarnZeroSized(win.GetRootWidget());   // F2/D9 巡检：漏 SetSize 的 0×0 静默不可见 → 告警
 
     // P1.5 live：收到 core 的 hello 之后回 hello（协议 §4：seq 0）
-    if (m_sess.writer) {
-        m_sess.writer->Hello("0.0.1");
+    if (m_sess->writer) {
+        m_sess->writer->Hello("0.0.1");
     }
     win.Show();
     if (m_promptBar && m_promptBar->input()) {
@@ -353,25 +491,28 @@ int HarnessApp::Run() {
 
     win.GetPlatformWindow().StartTimer(kReplayTimer, 33);
     if (m_options.timed) {
-        m_timedAnchor = std::chrono::steady_clock::now();   // timed 节奏锚点（协议 §8.2：ts 是唯一真相源）
+        // ★ 0d：timed 锚点逐会话（协议 §8.2：ts 是唯一真相源）。
+        //   放在 Session 里，否则新建/切回的会话会拿别人的锚点算 elapsedMs。
+        m_sess->timedAnchor = std::chrono::steady_clock::now();
     }
     if (m_options.autoCloseMs > 0) {
         win.GetPlatformWindow().StartTimer(kCloseTimer,
                                            static_cast<unsigned int>(m_options.autoCloseMs));
     }
     // P1.5：--auto-prompt（跑批/冒烟——启动后立即走一次真实发送路径）
-    if (!m_options.autoPrompt.empty() && m_sess.writer) {
+    if (!m_options.autoPrompt.empty() && m_sess->writer) {
         SendPrompt(m_options.autoPrompt);
     }
 
     const int code = application.Run();
 
-    // P1.5 live：关窗前发 bye（协议 §4：guest 即将关闭，请 core 退出）→ 关 stdin → 收尸
-    if (m_sess.writer) {
-        m_sess.writer->Bye();
-    }
-    if (m_sess.child) {
-        m_sess.child->Stop();
+    // P1.5 live：关窗前发 bye（协议 §4：guest 即将关闭，请 core 退出）→ 关 stdin → 收尸。
+    // ★ 0d：必须遍历**所有**会话——多会话下活动指针只指一个，而每个 live 会话
+    //   各拉起过一个 core 子进程。只 Bye/Stop 活动会话 ⇒ 其余 core 变僵尸
+    //   （这正是 P1.5 验收里"no zombies"那一项要防的）。
+    for (auto& session : m_sessions) {
+        if (session->writer) session->writer->Bye();
+        if (session->child) session->child->Stop();
     }
 
     WriteSummary();
@@ -496,9 +637,9 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     newSess->SetSize(172, 32);
     newSess->SetFont(harness::SansFont(harness::kFontBody));
     newSess->SetOnClick([this] {
-        AddNoticeRow("[新建会话 仅记录]", kDarkMuted);
-        Relayout();
-        RequestRepaint();
+        // ★★ 0d：不再是「仅记录」——真的新建一个会话并切过去。
+        //   live 模式拉起新 core；回放模式建空会话并如实提示（不伪造转录）。
+        NewSession();
     });
     side->AddChild(std::move(newSess));
 
@@ -707,8 +848,8 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         }
     });
     composer->SetOnStop([this](const std::string&) {
-        if (m_sess.writer) {
-            const bool ok = m_sess.writer->Cancel();
+        if (m_sess->writer) {
+            const bool ok = m_sess->writer->Cancel();
             AddNoticeRow(ok ? "[cancel → core]" : "[cancel 发送失败]",
                          ok ? kDarkMuted : kErrorDark);
         } else {
@@ -912,16 +1053,16 @@ void HarnessApp::BuildBottom(ECDI::Widget& root) {
 // ── 回放拉取（~30Hz 单定时器驱动，规格 §6.1）───────────────────
 
 void HarnessApp::OnReplayTick() {
-    if (!m_sess.source) return;   // 源启动失败（Run 已报错退出路径）
-    if (m_sess.source->IsLive()) {
+    if (!m_sess->source) return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
+    if (m_sess->source->IsLive()) {
         // ── live（子进程）：本 tick 内带超时批量拉取，把时间还给消息循环 ──
         // （v1 定案：UI 线程仍做拉取，但**不无限阻塞**——每 tick 8ms 预算，
         //   否则 WM_PAINT 饿死、窗口全黑；P2 改用 PostToUi 异步投递）
         bool gotAny = false;
         const int budgetMs = 8;
         std::string line;
-        while (m_sess.child->NextWithin(line, gotAny ? 0 : budgetMs)) {
-            ++m_sess.liveLines;
+        while (m_sess->child->NextWithin(line, gotAny ? 0 : budgetMs)) {
+            ++m_sess->liveLines;
             HandleLine(line);
             gotAny = true;
         }
@@ -931,16 +1072,16 @@ void HarnessApp::OnReplayTick() {
             CacheEvalMetrics();
             RefreshHud();
             RequestRepaint();
-        } else if (m_sess.child->Eof() && !m_sess.liveEof) {
-            m_sess.liveEof = true;   // core 退出（stdin EOF 或 bye 收尾）
+        } else if (m_sess->child->Eof() && !m_sess->liveEof) {
+            m_sess->liveEof = true;   // core 退出（stdin EOF 或 bye 收尾）
             m_hudDirty = true;
             RefreshHud();
         }
         return;
     }
 
-    if (m_sess.replay->Empty() && !m_sess.waitForAnswer) {
-        if (m_sess.replaySettled) {
+    if (m_sess->replay->Empty() && !m_sess->waitForAnswer) {
+        if (m_sess->replaySettled) {
             if (m_relayoutPulse > 0) {   // 折叠/展开动画、settle 后新增行：几何持续跟随
                 --m_relayoutPulse;
                 Relayout();
@@ -962,9 +1103,13 @@ void HarnessApp::OnReplayTick() {
             if (m_options.rebuildProbe && !m_rebuildProbeDone) {
                 RunRebuildProbe();
             }
+            // ★★ Step 0d 会话探针：同样放在 settle 分支（回放模式下夹具拉完才跑）。
+            if (m_options.sessionProbe && !m_sessionProbeDone) {
+                RunSessionProbe();
+            }
             return;
         }
-        m_sess.replaySettled = true;
+        m_sess->replaySettled = true;
     }
     if (m_options.timed) {
         DrainTimed();
@@ -973,7 +1118,7 @@ void HarnessApp::OnReplayTick() {
     }
     Relayout();
     FollowTailIfPinned();
-    if (m_sess.replaySettled && m_options.scrollSweepStep > 0 && !m_sweepStarted && m_scroll) {
+    if (m_sess->replaySettled && m_options.scrollSweepStep > 0 && !m_sweepStarted && m_scroll) {
         // --scroll-sweep：等夹具拉完且尾随完成后，从顶部开始逐 tick 扫描到底
         m_sweepStarted = true;
         m_scroll->SetContentOffset(0, 0);
@@ -986,13 +1131,13 @@ void HarnessApp::OnReplayTick() {
     // ★★ --hit-probe（REQ-04 边界）：夹具拉完 + `Relayout()` 之后**跑一次**。
     //   位置理由：此刻几何已定（按钮位置/尺寸是探针坐标的来源），
     //   且只跑一次（否则 30Hz 每 tick 都合成点击，读数被自身重复污染）。
-    if (m_options.hitProbe && m_sess.replaySettled && !m_hitProbeDone) {
+    if (m_options.hitProbe && m_sess->replaySettled && !m_hitProbeDone) {
         m_hitProbeDone = true;
         RunHitProbe();
     }
     // ★ 思维链折叠行为取证（协议 v2 §7）：跨 tick 状态机（每次只推进一步，
     //   步间等过 200ms 折叠动画）⇒ 不能像 --hit-probe 那样一次跑完。
-    if (m_options.reasoningProbe && m_sess.replaySettled && !m_reasoningProbeDone) {
+    if (m_options.reasoningProbe && m_sess->replaySettled && !m_reasoningProbeDone) {
         RunReasoningProbe();
     }
     // 注：`--rebuild-probe` 的推进在**上面 settle 分支里**（本函数到尾就 `return` 了，
@@ -1024,65 +1169,67 @@ void HarnessApp::OnSweepTick() {
 }
 
 void HarnessApp::DrainInstant() {
-    if (m_sess.instantDone) return;
-    m_sess.instantDone = true;
+    if (m_sess->instantDone) return;
+    m_sess->instantDone = true;
     std::string line;
     // ★ 协议 §9：版本不兼容 ⇒ **停止消费**（"拒绝连接"的实质）。
     //   只在 `HandleLine` 返回后检查：`Exit()` 只让消息循环退出，**不打断本循环**，
     //   而 `--instant` 会在同一 tick 抽干整个夹具 ⇒ 若不在此处 break，
     //   "拒绝"就只是打印一行提示、随后照常把整条流处理完（实测：protocol:3 的
     //   夹具仍读到 blocks=44）——那不是拒绝，是"边抱怨边照做"。
-    while (m_sess.source->Next(line)) {
+    while (m_sess->source->Next(line)) {
         HandleLine(line);
-        if (m_sess.protocolIncompatible) break;
+        if (m_sess->protocolIncompatible) break;
     }
-    if (!m_sess.pendingTruncated.empty()) {
-        AddNoticeRow(m_sess.pendingTruncated, kErrorDark);   // 协议 §1.2：截断必须显式报错
-        m_sess.pendingTruncated.clear();
+    if (!m_sess->pendingTruncated.empty()) {
+        AddNoticeRow(m_sess->pendingTruncated, kErrorDark);   // 协议 §1.2：截断必须显式报错
+        m_sess->pendingTruncated.clear();
     }
 }
 
 void HarnessApp::DrainTimed() {
-    if (m_sess.waitForAnswer) return;   // I3：ask 未答前 core 不再发消息
-    if (m_sess.protocolIncompatible) return;   // ★ 协议 §9：版本不兼容 ⇒ 不再消费
+    if (m_sess->waitForAnswer) return;   // I3：ask 未答前 core 不再发消息
+    if (m_sess->protocolIncompatible) return;   // ★ 协议 §9：版本不兼容 ⇒ 不再消费
+    // ★ 0d：会话被切走（冻结）期间不拉取——它不在屏上，"到期"没有意义。
+    if (m_sess->timedPaused) return;
     const double elapsedMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                  m_timedAnchor)
+                                                  m_sess->timedAnchor)
             .count();
     std::string line;
-    while (m_sess.replay->NextDue(elapsedMs, line)) {
+    while (m_sess->replay->NextDue(elapsedMs, line)) {
         HandleLine(line);
-        if (m_sess.waitForAnswer) break;   // ask 已显示，停在 waiting（协议 §8.3）
-        if (m_sess.protocolIncompatible) break;   // ★ 协议 §9：版本不兼容 ⇒ 停止消费
+        if (m_sess->waitForAnswer) break;   // ask 已显示，停在 waiting（协议 §8.3）
+        if (m_sess->protocolIncompatible) break;   // ★ 协议 §9：版本不兼容 ⇒ 停止消费
     }
-    if (m_sess.replay->Empty() && !m_sess.pendingTruncated.empty()) {
-        AddNoticeRow(m_sess.pendingTruncated, kErrorDark);
-        m_sess.pendingTruncated.clear();
+    if (m_sess->replay->Empty() && !m_sess->pendingTruncated.empty()) {
+        AddNoticeRow(m_sess->pendingTruncated, kErrorDark);
+        m_sess->pendingTruncated.clear();
     }
 }
 
 void HarnessApp::HandleLine(const std::string& line) {
     std::string notice;
-    const bool ok = m_sess.transcript.OnLine(line, notice);
+    const bool ok = m_sess->transcript.OnLine(line, notice);
     if (!notice.empty()) AddNoticeRow(notice, kErrorDark);   // I4 / I5 等显式提示
     if (ok) RouteLastMessage();
 }
 
 void HarnessApp::RouteLastMessage() {
-    const json::Value& msg = m_sess.transcript.LastMessage();
+    const json::Value& msg = m_sess->transcript.LastMessage();
     const std::string t = msg.GetString("t");
 
     if (t == "block_start") {
-        if (const Block* block = m_sess.transcript.FindBlock(msg.GetString("id"))) {
+        if (const Block* block = m_sess->transcript.FindBlock(msg.GetString("id"))) {
             CreateBlockRow(*block);
         }
         return;
     }
     if (t == "delta") {
         const std::string id = msg.GetString("id");
-        const auto row = m_sess.blockRows.find(id);
-        const Block* block = m_sess.transcript.FindBlock(id);
-        if (row != m_sess.blockRows.end() && block && row->second->label) {
+        const auto row = m_sess->blockRows.find(id);
+        const Block* block = m_sess->transcript.FindBlock(id);
+        if (row != m_sess->blockRows.end() && block && row->second->label) {
             // ★ 未知 kind 的行有**前缀**（`[未知 kind: xxx]`）——不能整段覆盖，
             //   否则流式 delta 一到就把前缀擦掉（2026-10-13 实测：截图里 r2 的
             //   `[未知 kind: thinking]` 前缀正是这样丢的）。此处保持与
@@ -1097,9 +1244,9 @@ void HarnessApp::RouteLastMessage() {
     }
     if (t == "block_end") {
         const std::string id = msg.GetString("id");
-        const Block* block = m_sess.transcript.FindBlock(id);
-        const auto row = m_sess.blockRows.find(id);
-        if (row == m_sess.blockRows.end() || !row->second->headerBtn) {
+        const Block* block = m_sess->transcript.FindBlock(id);
+        const auto row = m_sess->blockRows.find(id);
+        if (row == m_sess->blockRows.end() || !row->second->headerBtn) {
             return;
         }
         // ★ 协议 v2 §7：思维链块结束时标题改为「**已完成**」（用户裁决）。
@@ -1130,7 +1277,7 @@ void HarnessApp::RouteLastMessage() {
             //   （`.scratch/symcand.py` 两轮实测：GDI 靠字体链接偷画、GL 直接空白）
             //   ⇒ 换成 `›`(U+203A)，同为右向尖括号，两主题都真有。
             std::string title = "› ";
-            if (const Block* call = m_sess.transcript.FindBlock(block->forId)) {
+            if (const Block* call = m_sess->transcript.FindBlock(block->forId)) {
                 title += call->name.empty() ? "tool" : call->name;
             } else {
                 title += "tool";
@@ -1168,23 +1315,23 @@ void HarnessApp::RouteLastMessage() {
     }
     if (t == "hello") {
         // 捕获给 HUD 左栏（转录里仍留一行 core 信息，与原型一致）
-        m_sess.sessionId = msg.GetString("session");
-        m_sess.coreVer = msg.GetString("core");
-        m_sess.protocolVer = static_cast<int>(msg.GetNumber("protocol"));
+        m_sess->sessionId = msg.GetString("session");
+        m_sess->coreVer = msg.GetString("core");
+        m_sess->protocolVer = static_cast<int>(msg.GetNumber("protocol"));
         // ★★ 协议 §9（v2 落地，2026-10-14）：core 声明的版本**高于**本 GUI 支持的上限
         //   ⇒ **拒绝连接并显示原因，不做降级猜测**。
         //   ★ 为何现在才实现：该规则自 v1 就写在文档里，但**从未被实现**——
         //     在只有 v1 的世界里它恒不触发，属"写在纸上但没人执行"的条款。
         //     v2 出现的这一刻它才真正开始起作用（也正是它存在的理由）。
         //   ★ 缺字段 ⇒ 按 v1 处理（宽容优于拒连：缺字段不是"更高的版本"）。
-        if (m_sess.protocolVer > kProtocolMaxSupported) {
+        if (m_sess->protocolVer > kProtocolMaxSupported) {
             char buf[192];
             std::snprintf(buf, sizeof(buf),
                           "[协议不兼容] core 声明 protocol %d，本 GUI 支持到 %d"
                           " —— 按 §9 拒绝连接（不做降级猜测）",
-                          m_sess.protocolVer, kProtocolMaxSupported);
+                          m_sess->protocolVer, kProtocolMaxSupported);
             AddNoticeRow(buf, kErrorDark);
-            m_sess.protocolIncompatible = true;
+            m_sess->protocolIncompatible = true;
             m_hudDirty = true;
             if (m_application) m_application->Exit();   // 不进入渲染路径
             return;
@@ -1195,30 +1342,30 @@ void HarnessApp::RouteLastMessage() {
                 if (!joined.empty()) joined += ", ";
                 joined += cap.text;
             }
-            m_sess.capsStr = joined;
+            m_sess->capsStr = joined;
         }
         // ★ 协议 v2 §3.1：上下文容量（百分比的分母）。缺字段 ⇒ 保持 0 ⇒ 显示 `—`。
         //   ★ **不猜容量**：分母未知时百分比无定义，猜一个比不显示更糟（编造读数）。
         if (const json::Value* ctx = msg.Find("context");
             ctx && ctx->IsNumber() && ctx->number > 0) {
-            m_sess.contextLimit = static_cast<long long>(ctx->number);
+            m_sess->contextLimit = static_cast<long long>(ctx->number);
         }
         m_hudDirty = true;
         AddNoticeRow("core " + msg.GetString("core") + " · session " +
                          msg.GetString("session") + " · protocol " +
-                         std::to_string(m_sess.protocolVer),
+                         std::to_string(m_sess->protocolVer),
                      kDarkMuted);
         return;
     }
     if (t == "state") {
-        m_sess.coreState = msg.GetString("value");
+        m_sess->coreState = msg.GetString("value");
         m_hudDirty = true;
         return;
     }
     if (t == "usage") {
-        m_sess.usageTurn = static_cast<int>(msg.GetNumber("turn"));
-        m_sess.usageIn = static_cast<long long>(msg.GetNumber("input"));
-        m_sess.usageOut = static_cast<long long>(msg.GetNumber("output"));
+        m_sess->usageTurn = static_cast<int>(msg.GetNumber("turn"));
+        m_sess->usageIn = static_cast<long long>(msg.GetNumber("input"));
+        m_sess->usageOut = static_cast<long long>(msg.GetNumber("output"));
         m_hudDirty = true;
         return;
     }
@@ -1244,10 +1391,10 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     if (m_options.rowModeList) {
         stored.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
     }
-    m_sess.rows.push_back(stored);
-    RowRec& ref = m_sess.rows.back();
+    m_sess->rows.push_back(stored);
+    RowRec& ref = m_sess->rows.back();
     m_content->AddChild(std::move(row));
-    if (!blockId.empty()) m_sess.blockRows[blockId] = &ref;
+    if (!blockId.empty()) m_sess->blockRows[blockId] = &ref;
     // settle 后新增的行（发送/停止/回答反馈）没有逐 tick 的 Relayout 可蹭——
     // 排一个补重排脉冲，让定时器把它布局出来
     m_relayoutPulse = std::max(m_relayoutPulse, 2);
@@ -1433,7 +1580,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     }
 
     const Block* call = (block.kind == "tool_result")
-                            ? m_sess.transcript.FindBlock(block.forId)
+                            ? m_sess->transcript.FindBlock(block.forId)
                             : nullptr;
     auto header = std::make_unique<ECDI::Button>(ToolTitle(block, call));
     rec.headerBtn = header.get();
@@ -1492,14 +1639,14 @@ void HarnessApp::BindCollapsible(const Block& block, RowRec& stored) {
 void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
     stored.expanded = !stored.expanded;
     // ★ 视图 → 模型（重建前若来不及扫全表，这一条保证单行状态不丢）
-    if (stored.timelineIdx < m_sess.timeline.size()) {
-        m_sess.timeline[stored.timelineIdx].expanded = stored.expanded;
+    if (stored.timelineIdx < m_sess->timeline.size()) {
+        m_sess->timeline[stored.timelineIdx].expanded = stored.expanded;
     }
     if (stored.body) stored.body->Toggle();
     // 箭头随展开态翻转（﹀ ⇄ ︿）；文案与 token 副标由**单一真相源**决定，
     // 故回查块（`block_end` 可能已到达 ⇒ 文案应为「已完成」+ tokens）
     if (stored.headerBtn) {
-        if (const Block* b = m_sess.transcript.FindBlock(stored.blockId)) {
+        if (const Block* b = m_sess->transcript.FindBlock(stored.blockId)) {
             if (reasoning) {
                 stored.headerBtn->SetText(ReasoningTitle(*b, stored.expanded));
             } else {
@@ -1507,7 +1654,7 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
                 //   ⇒ **点一下工具卡，标题就被清空**（卡片从此没有名字）。
                 //   与"箭头两态"同一个道理：标题必须由单一真相源重算，不能置空。
                 const Block* call =
-                    (b->kind == "tool_result") ? m_sess.transcript.FindBlock(b->forId) : nullptr;
+                    (b->kind == "tool_result") ? m_sess->transcript.FindBlock(b->forId) : nullptr;
                 stored.headerBtn->SetText(ToolTitle(*b, call));
             }
         }
@@ -1527,11 +1674,11 @@ void HarnessApp::CreateBlockRow(const Block& block) {
     entry.kind = TimelineEntry::Kind::Block;
     entry.id = block.id;
     entry.expanded = false;
-    m_sess.timeline.push_back(entry);
+    m_sess->timeline.push_back(entry);
 
-    AddRow(std::move(panel), rec, block.id, m_sess.timeline.size() - 1);
-    if (m_sess.rows.empty()) return;
-    RowRec& stored = m_sess.rows.back();
+    AddRow(std::move(panel), rec, block.id, m_sess->timeline.size() - 1);
+    if (m_sess->rows.empty()) return;
+    RowRec& stored = m_sess->rows.back();
 
     // ★ 在**建行时刻**抓流式态标题（`block_start` 刚到、`block_end` 还没来）。
     //   为何必须此刻抓：`--instant` 在同一 tick 抽干夹具 ⇒ 事后回读永远是
@@ -1555,9 +1702,9 @@ void HarnessApp::CreateBlockRow(const Block& block) {
 //     （换主题、切会话、探针），那些路径不经过点击回调。重建前统一同步一次，
 //     才能保证"用户看到的"与"模型记下的"在拆树那一刻一致。
 void HarnessApp::SyncRowViewState() {
-    for (RowRec& r : m_sess.rows) {
-        if (r.timelineIdx >= m_sess.timeline.size()) continue;
-        TimelineEntry& entry = m_sess.timeline[r.timelineIdx];
+    for (RowRec& r : m_sess->rows) {
+        if (r.timelineIdx >= m_sess->timeline.size()) continue;
+        TimelineEntry& entry = m_sess->timeline[r.timelineIdx];
         if (r.body) entry.expanded = r.expanded;
         if (r.ask) entry.answered = r.answered;
     }
@@ -1571,14 +1718,14 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
     (void)idx;
     switch (entry.kind) {
         case TimelineEntry::Kind::Block: {
-            const Block* block = m_sess.transcript.FindBlock(entry.id);
+            const Block* block = m_sess->transcript.FindBlock(entry.id);
             if (!block) return;   // 模型里指向一个不存在的块：如实跳过，不编造
             RowRec rec;
             rec.expanded = entry.expanded;   // ★ 先回填状态再建行：标题箭头据此定态
             auto panel = BuildBlockRow(*block, rec);
             AddRow(std::move(panel), rec, block->id, idx);
-            if (m_sess.rows.empty()) return;
-            RowRec& stored = m_sess.rows.back();
+            if (m_sess->rows.empty()) return;
+            RowRec& stored = m_sess->rows.back();
             stored.expanded = entry.expanded;
             if (stored.body && stored.headerBtn) {
                 BindCollapsible(*block, stored);
@@ -1592,8 +1739,8 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             RowRec rec;
             auto panel = BuildAskRow(entry, rec);
             AddRow(std::move(panel), rec, entry.id, idx);
-            if (m_sess.rows.empty()) return;
-            RowRec& stored = m_sess.rows.back();
+            if (m_sess->rows.empty()) return;
+            RowRec& stored = m_sess->rows.back();
             stored.allowBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "allow"); });
             stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
             // ★ 已答状态**静默回填**：只置灰、不重发 answer（否则重建 = 重放一次决策，
@@ -1615,8 +1762,8 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
 }
 
 void HarnessApp::MaterializeRows() {
-    for (size_t i = 0; i < m_sess.timeline.size(); ++i) {
-        MaterializeOne(i, m_sess.timeline[i]);
+    for (size_t i = 0; i < m_sess->timeline.size(); ++i) {
+        MaterializeOne(i, m_sess->timeline[i]);
     }
 }
 
@@ -1634,8 +1781,8 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
 
     // ① 先让**指针表**归零，再动控件树：否则 `Relayout()` 会顺着 `rows` 里
     //    已经指向已删控件的裸指针走（悬垂读）。顺序反了就是 UAF，不是风格问题。
-    m_sess.rows.clear();
-    m_sess.blockRows.clear();
+    m_sess->rows.clear();
+    m_sess->blockRows.clear();
     if (m_content) {
         // `RemoveChild` 返回所有权；逐个摘掉即完成子树销毁（`Widget::RemoveChild`
         // 内部走 `Window::ForgetSubtree`，焦点/捕获/悬停指针一并清掉）
@@ -1654,13 +1801,13 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
         //   （负对照要复现的是错误实现，不该顺手把状态写坏）。
         const size_t kNoTimeline = static_cast<size_t>(-1);
         for (const std::string& id : *orderOverride) {
-            const Block* block = m_sess.transcript.FindBlock(id);
+            const Block* block = m_sess->transcript.FindBlock(id);
             if (!block) continue;
             RowRec rec;
             auto panel = BuildBlockRow(*block, rec);
             AddRow(std::move(panel), rec, block->id, kNoTimeline);
-            if (m_sess.rows.empty()) continue;
-            RowRec& stored = m_sess.rows.back();
+            if (m_sess->rows.empty()) continue;
+            RowRec& stored = m_sess->rows.back();
             if (stored.body && stored.headerBtn) BindCollapsible(*block, stored);
         }
     }
@@ -1728,20 +1875,20 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     entry.kind = TimelineEntry::Kind::Ask;
     entry.id = msg.GetString("id");
     entry.text = msg.GetString("question");
-    m_sess.timeline.push_back(entry);
+    m_sess->timeline.push_back(entry);
 
     RowRec rec;
-    auto panel = BuildAskRow(m_sess.timeline.back(), rec);
-    AddRow(std::move(panel), rec, entry.id, m_sess.timeline.size() - 1);
+    auto panel = BuildAskRow(m_sess->timeline.back(), rec);
+    AddRow(std::move(panel), rec, entry.id, m_sess->timeline.size() - 1);
 
-    RowRec& stored = m_sess.rows.back();
+    RowRec& stored = m_sess->rows.back();
     stored.allowBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "allow"); });
     stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
 
     if (!m_options.autoAnswer.empty()) {
         MarkAnswered(stored, m_options.autoAnswer);   // 无人值守：立即回答（协议 §8.3）
     } else if (m_options.timed) {
-        m_sess.waitForAnswer = true;   // timed 回放停在 waiting，直到用户点选
+        m_sess->waitForAnswer = true;   // timed 回放停在 waiting，直到用户点选
     }
 }
 
@@ -1855,7 +2002,7 @@ void HarnessApp::RunHitProbe() {
     scene("forced-disabled", cx, cy);
     // ★ 复原：把使能位还给 state 驱动的结果（探针不得留下状态）。
     //   下一次 RefreshHud 会按 state 重新驱动，此处只是不留"半路"状态。
-    const bool active = (m_sess.coreState == "running" || m_sess.coreState == "waiting");
+    const bool active = (m_sess->coreState == "running" || m_sess->coreState == "waiting");
     send->SetEnabled(!active);
     if (m_promptBar->stopButton()) m_promptBar->stopButton()->SetEnabled(active);
 
@@ -1883,7 +2030,7 @@ void HarnessApp::RunReasoningProbe() {
     if (!m_window) return;
 
     RowRec* target = nullptr;
-    for (RowRec& r : m_sess.rows) {
+    for (RowRec& r : m_sess->rows) {
         if (r.reasoning && r.headerBtn && r.body) {
             target = &r;
             break;
@@ -1965,8 +2112,8 @@ void HarnessApp::RunReasoningProbe() {
 
 std::vector<std::string> HarnessApp::SnapshotRows() const {
     std::vector<std::string> out;
-    out.reserve(m_sess.rows.size());
-    for (const RowRec& r : m_sess.rows) {
+    out.reserve(m_sess->rows.size());
+    for (const RowRec& r : m_sess->rows) {
         // 行种类：A=权限门 / B=块行 / N=通知行
         //   ★ 判据必须只用 `RowRec` 上**已经存在**的信息，不能再回头问模型
         //     ——否则重建前后两侧会拿到同一份答案，比对就恒等。
@@ -2019,7 +2166,7 @@ HarnessApp::RebuildProbeRec HarnessApp::CompareRows(const char* phase,
 
     rec.beforeCount = b.size();
     rec.rowCount = a.size();
-    rec.timelineCount = m_sess.timeline.size();
+    rec.timelineCount = m_sess->timeline.size();
     // 滚动位置：重建后由 `RebuildTranscriptView` 自己恢复，这里读**恢复之后**的值，
     // 与摘要里的 `rebuildScrollBefore` 对读即可判"有没有跳回顶部"。
     rec.scrollOffset = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
@@ -2100,7 +2247,7 @@ HarnessApp::RebuildProbeRec HarnessApp::CompareRows(const char* phase,
 }
 
 void HarnessApp::RunRebuildProbe() {
-    if (!m_window || !m_sess.replay) return;
+    if (!m_window || !m_sess->replay) return;
     if (m_options.rowModeList) {
         // 固定行高模式下"行高随展开变化"这件事本就不成立，探针无从比较 ⇒ 如实不开跑
         m_rebuildProbeDone = true;
@@ -2140,19 +2287,19 @@ void HarnessApp::RunRebuildProbe() {
                 if (afterT.empty() && !beforeT.empty()) ++m_rebuildTitleEmptied;
                 ++m_rebuildExpandedSamples;
             };
-            for (RowRec& r : m_sess.rows) {   // 第一轮：工具卡（钉住那个 bug）
+            for (RowRec& r : m_sess->rows) {   // 第一轮：工具卡（钉住那个 bug）
                 if (m_rebuildExpandedSamples >= 2) break;
                 if (r.tool && r.body && r.headerBtn && !r.expanded) sampleOne(r);
             }
-            for (RowRec& r : m_sess.rows) {   // 第二轮：思维链卡
+            for (RowRec& r : m_sess->rows) {   // 第二轮：思维链卡
                 if (m_rebuildExpandedSamples >= kMaxExpandSamples) break;
                 if (r.reasoning && r.body && r.headerBtn && !r.expanded) sampleOne(r);
             }
-            for (RowRec& r : m_sess.rows) {   // 兜底：别的可折叠行
+            for (RowRec& r : m_sess->rows) {   // 兜底：别的可折叠行
                 if (m_rebuildExpandedSamples >= kMaxExpandSamples) break;
                 if (!r.tool && !r.reasoning && r.body && r.headerBtn && !r.expanded) sampleOne(r);
             }
-            for (RowRec& r : m_sess.rows) {
+            for (RowRec& r : m_sess->rows) {
                 if (m_rebuildAnsweredSamples >= kMaxAnswerSamples) break;
                 if (r.ask && !r.answered) {
                     MarkAnswered(r, "allow");
@@ -2162,7 +2309,7 @@ void HarnessApp::RunRebuildProbe() {
             // 模型里记下的通知条数（"通知进模型"这件事的承重性证据：
             //   若模型不记通知，重建就会**静默**少这么多行）
             m_rebuildNoticeCount = 0;
-            for (const TimelineEntry& e : m_sess.timeline) {
+            for (const TimelineEntry& e : m_sess->timeline) {
                 if (e.kind == TimelineEntry::Kind::Notice) ++m_rebuildNoticeCount;
             }
             // ★ 滚动这一项也要**先造出判别力**：夹具抽干后视图停在顶部
@@ -2204,7 +2351,7 @@ void HarnessApp::RunRebuildProbe() {
             //   序，故这里 `std::sort` 出来的次序与之逐元素相同）。
             //   预期：orderMismatches = 字典序错位量（cot 42 / realistic 218 /
             //   scale 1998 / demo 0）。为 0 ⇒ 探针没有判别力，② 的全等不算证据。
-            std::vector<std::string> lex = m_sess.transcript.Order();
+            std::vector<std::string> lex = m_sess->transcript.Order();
             std::sort(lex.begin(), lex.end());
             RebuildTranscriptView(&lex);
             m_rebuildProbeLog.push_back(
@@ -2224,6 +2371,38 @@ void HarnessApp::RunRebuildProbe() {
     }
 }
 
+// ★★ Step 0d：多会话探针（--session-probe）。同步跑完——三个读数（会话数/活动下标/
+//   行数）都是同步值，不像重建那样要等折叠动画沉降，故不需要跨 tick 状态机。
+void HarnessApp::RunSessionProbe() {
+    if (!m_sess) { m_sessionProbeDone = true; return; }
+    // ★ 只在回放模式跑（契约见 App.h 声明处）：live 下 NewSession 会真拉一个 core
+    //   子进程，探针不该在测量里制造真进程。目前调用点只在 replay settled 分支，
+    //   已间接保证；这里再显式挡一道，防止将来有人从别处调用它。
+    if (!m_sess->replay) { m_sessionProbeDone = true; return; }
+
+    auto snap = [&](const char* phase) {
+        SessionProbeRec rec;
+        rec.phase = phase;
+        rec.sessionCount = m_sessions.size();
+        rec.activeIndex = m_activeIndex;
+        rec.rowCount = m_sess->rows.size();
+        // 块行数（不含通知/问句行）——负对照的关键：新会话的块行数必须为 0。
+        rec.blockRowCount = 0;
+        for (const RowRec& r : m_sess->rows) {
+            if (r.tool || r.reasoning || (!r.blockId.empty() && !r.ask)) ++rec.blockRowCount;
+        }
+        m_sessionProbeLog.push_back(std::move(rec));
+    };
+
+    snap("baseline");                 // ① 起点：当前会话数 / 行数
+    NewSession();                     // ② 真的新建一个会话（回放模式 ⇒ 空会话）
+    snap("new");                      //    读：会话数应 +1；新会话块行数应为 0
+    SwitchToSession(0);               // ③ 切回会话 0
+    snap("back");                     //    读：活动会话应回到 0；行数应回到 baseline
+    m_sessionProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -2232,9 +2411,9 @@ void HarnessApp::SendPrompt(const std::string& text) {
         ++m_hitProbeSendCalls;
         return;
     }
-    if (m_sess.writer) {
+    if (m_sess->writer) {
         // live：真发 prompt（协议 §6：仅 idle 合法——按钮使能已由 state 驱动）
-        const bool ok = m_sess.writer->Prompt(text);
+        const bool ok = m_sess->writer->Prompt(text);
         AddNoticeRow(ok ? "[prompt → core] " + text : "[prompt 发送失败] " + text,
                      ok ? kDarkMuted : kErrorDark);
     } else {
@@ -2248,20 +2427,20 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     if (rec.answered) return;
     rec.answered = true;
     // ★ 0c：已答进模型（重建时回填成"置灰"而不是"可再答一次"）
-    if (rec.timelineIdx < m_sess.timeline.size()) {
-        m_sess.timeline[rec.timelineIdx].answered = true;
+    if (rec.timelineIdx < m_sess->timeline.size()) {
+        m_sess->timeline[rec.timelineIdx].answered = true;
     }
     if (rec.allowBtn) rec.allowBtn->SetEnabled(false);
     if (rec.denyBtn) rec.denyBtn->SetEnabled(false);
-    m_sess.waitForAnswer = false;
-    if (m_sess.writer) {
+    m_sess->waitForAnswer = false;
+    if (m_sess->writer) {
         // live：真发 answer（协议 §4：需 id + choice；I3 的解除信号）
         if (!rec.askId.empty()) {
-            m_sess.writer->Answer(rec.askId, choice);
+            m_sess->writer->Answer(rec.askId, choice);
         }
     }
-    m_sess.askHist.emplace_back(choice, rec.label ? rec.label->GetText() : std::string());
-    if (m_sess.askHist.size() > 16) m_sess.askHist.pop_front();
+    m_sess->askHist.emplace_back(choice, rec.label ? rec.label->GetText() : std::string());
+    if (m_sess->askHist.size() > 16) m_sess->askHist.pop_front();
     m_hudDirty = true;
     AddNoticeRow("[answer] " + choice, kDarkMuted);
     RequestRepaint();
@@ -2288,11 +2467,11 @@ void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color)
     entry.kind = TimelineEntry::Kind::Notice;
     entry.text = text;
     entry.color = color;
-    m_sess.timeline.push_back(entry);
+    m_sess->timeline.push_back(entry);
 
     RowRec rec;
     auto panel = BuildNoticeRow(text, color, rec);
-    AddRow(std::move(panel), rec, std::string(), m_sess.timeline.size() - 1);
+    AddRow(std::move(panel), rec, std::string(), m_sess->timeline.size() - 1);
 }
 
 // ── 布局与重绘（规格 §5.3 / §6.2）──────────────────────────────
@@ -2302,7 +2481,7 @@ void HarnessApp::Relayout() {
 
     if (m_options.rowModeList) {
         // listlayout：行高固定、不测量；Arrange 由 ListLayout 完成
-        for (RowRec& r : m_sess.rows) {
+        for (RowRec& r : m_sess->rows) {
             if (r.panel->GetHeight() != kListRowHeight) {
                 r.panel->SetSize(contentW, kListRowHeight);
             }
@@ -2316,7 +2495,7 @@ void HarnessApp::Relayout() {
     // ★ 行可用宽 = 内容宽 − 左右画布留白；行本身从 kCanvasPadX 起排。
     const int innerW = std::max(120, contentW - 2 * kCanvasPadX);
     int y = 0;
-    for (RowRec& r : m_sess.rows) {
+    for (RowRec& r : m_sess->rows) {
         int rowH = 0;
         // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
         if (r.tool || r.reasoning) {
@@ -2484,7 +2663,7 @@ void HarnessApp::RefreshHud() {
         m_hud.rowChip->SetText(m_options.rowModeList ? "listlayout" : "autosize");
     }
     if (m_hud.sessChip) {
-        m_hud.sessChip->SetText(m_sess.sessionId.empty() ? "s-____" : m_sess.sessionId);
+        m_hud.sessChip->SetText(m_sess->sessionId.empty() ? "s-____" : m_sess->sessionId);
     }
     if (m_hud.backendChip) {
         // ★ 2026-10-18：`▾`(U+25BE) 两主题 face 都无字形 ⇒ `▽`(U+25BD) 空心下三角
@@ -2496,15 +2675,22 @@ void HarnessApp::RefreshHud() {
     //   `core 0.1.0 · session s-0001 · protocol 1` —— 与规格 §9 的
     //   `version/protocol` 呈现位不符，看着像没接上 hello）。
     //   ★ 只更新**会变的部分**（模式与工作区是启动即定的），标题保持建头时的值。
+    // ★ 0d：标题改成反映**活动会话**（多会话后，标题不该恒是首会话的名字）。
+    if (m_hud.convTitle) {
+        m_hud.convTitle->SetText(m_sess->label.empty() ? ConversationTitle() : m_sess->label);
+    }
     if (m_hud.convSub) {
-        std::string sub = "core " + (m_sess.coreVer.empty() ? std::string("—") : m_sess.coreVer);
-        if (!m_sess.sessionId.empty()) sub += " · " + m_sess.sessionId;
-        sub += " · protocol " + std::to_string(m_sess.protocolVer);
+        std::string sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
+        if (!m_sess->sessionId.empty()) sub += " · " + m_sess->sessionId;
+        sub += " · protocol " + std::to_string(m_sess->protocolVer);
+        // ★ 0d：会话计数——让用户看见"现在有几个会话、我在第几个"。
+        sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
+               std::to_string(m_sessions.size());
         m_hud.convSub->SetText(sub);
     }
     const std::string stateText =
-        m_sess.coreState.empty() ? std::string("idle") : m_sess.coreState;
-    const bool active = (m_sess.coreState == "running" || m_sess.coreState == "waiting");
+        m_sess->coreState.empty() ? std::string("idle") : m_sess->coreState;
+    const bool active = (m_sess->coreState == "running" || m_sess->coreState == "waiting");
     // ★ REQ-04（2026-10-13）：按 `state` 驱动发送/停止的使能（协议 §6 硬要求）。
     //   判据 A5「idle 时发送可点/停止灰；running 时相反」在此兑现。
     //   ★ 只在**回放/live 都成立**的语义下驱动：默认空 state = idle ⇒ 发送可用。
@@ -2529,7 +2715,7 @@ void HarnessApp::RefreshHud() {
                                  stopEnabled != m_stateProbeLastStop;
             if (changed) {
                 StateProbeRec rec;
-                rec.coreState = m_sess.coreState.empty() ? "idle" : m_sess.coreState;
+                rec.coreState = m_sess->coreState.empty() ? "idle" : m_sess->coreState;
                 rec.sendEnabled = sendEnabled;
                 rec.stopEnabled = stopEnabled;
                 rec.sendTitle = sendTitle;
@@ -2554,26 +2740,26 @@ void HarnessApp::RefreshHud() {
     }
 
     if (m_hud.sessSession) {
-        m_hud.sessSession->SetText(m_sess.sessionId.empty() ? "—" : m_sess.sessionId);
+        m_hud.sessSession->SetText(m_sess->sessionId.empty() ? "—" : m_sess->sessionId);
     }
     if (m_hud.sessCore) {
-        m_hud.sessCore->SetText(m_sess.coreVer.empty() ? "—" : m_sess.coreVer);
+        m_hud.sessCore->SetText(m_sess->coreVer.empty() ? "—" : m_sess->coreVer);
     }
     if (m_hud.sessProgress) {
         char buf[64];
-        if (m_sess.replay) {
-            std::snprintf(buf, sizeof(buf), "%zu / %zu 条", m_sess.replay->Consumed(),
-                          m_sess.replay->Total());
+        if (m_sess->replay) {
+            std::snprintf(buf, sizeof(buf), "%zu / %zu 条", m_sess->replay->Consumed(),
+                          m_sess->replay->Total());
         } else {
-            std::snprintf(buf, sizeof(buf), "%zu 条（live）", m_sess.liveLines);
+            std::snprintf(buf, sizeof(buf), "%zu 条（live）", m_sess->liveLines);
         }
         m_hud.sessProgress->SetText(buf);
     }
     if (m_replayBar) {
-        if (m_sess.replay) {
-            const size_t total = m_sess.replay->Total();
+        if (m_sess->replay) {
+            const size_t total = m_sess->replay->Total();
             m_replayBar->SetProgress(total > 0
-                                         ? static_cast<float>(m_sess.replay->Consumed()) /
+                                         ? static_cast<float>(m_sess->replay->Consumed()) /
                                                static_cast<float>(total)
                                          : 0.0f);
         } else {
@@ -2582,7 +2768,7 @@ void HarnessApp::RefreshHud() {
     }
 
     if (m_hud.healthSeq) {
-        const size_t gaps = m_sess.transcript.SeqGaps();
+        const size_t gaps = m_sess->transcript.SeqGaps();
         if (gaps == 0) {
             m_hud.healthSeq->SetText("seq 连续 · 0 缺口");
             m_hud.healthSeq->SetTextColor(kDarkInk);
@@ -2592,14 +2778,14 @@ void HarnessApp::RefreshHud() {
         }
     }
     if (m_hud.healthViol) {
-        m_hud.healthViol->SetText("违规 " + std::to_string(m_sess.transcript.Violations()) +
-                                  " · 未知 " + std::to_string(m_sess.transcript.UnknownTypes()));
+        m_hud.healthViol->SetText("违规 " + std::to_string(m_sess->transcript.Violations()) +
+                                  " · 未知 " + std::to_string(m_sess->transcript.UnknownTypes()));
     }
     // ★ 未知 kind 单列一行（2026-10-13）：它与「未知 t」管辖**不同的判别符**，
     //   合并会同时导致①语义误读（把「协议空白」读成「I5 已覆盖」）
     //   ②文本裁切（并进上行实测被裁，见 BuildInspector 注释）。
     if (m_hud.healthKind) {
-        const size_t uk = m_sess.transcript.UnknownKinds();
+        const size_t uk = m_sess->transcript.UnknownKinds();
         if (uk == 0) {
             m_hud.healthKind->SetText("未知 kind · 0");
             m_hud.healthKind->SetTextColor(kDarkMuted);
@@ -2632,12 +2818,12 @@ void HarnessApp::RefreshHud() {
         }
     }
     if (m_hud.usageInV) {
-        m_hud.usageInV->SetText(m_sess.usageIn < 0 ? "—"
-                                              : std::to_string(m_sess.usageIn));
+        m_hud.usageInV->SetText(m_sess->usageIn < 0 ? "—"
+                                              : std::to_string(m_sess->usageIn));
     }
     if (m_hud.usageOutV) {
-        m_hud.usageOutV->SetText(m_sess.usageOut < 0 ? "—"
-                                                : std::to_string(m_sess.usageOut));
+        m_hud.usageOutV->SetText(m_sess->usageOut < 0 ? "—"
+                                                : std::to_string(m_sess->usageOut));
     }
     // ★★ 上下文占用百分比（协议 v2 §3.1，2026-10-14）——**用户要求**。
     //   ★ 分母 = `hello.context`（**唯一来源**）；**不再**用 `max(input, output)`。
@@ -2646,7 +2832,7 @@ void HarnessApp::RefreshHud() {
     //   ★ 分子 = `usage.input`（= 本轮送进模型的上下文规模）。**不含 output**：
     //     output 是本轮新生成的，尚未回到下一轮的上下文里。
     //   ★ 三者任一未知 ⇒ 显示 `—` 且条归零（**不猜**；分母未知时百分比无定义）。
-    const bool ctxKnown = (m_sess.contextLimit > 0 && m_sess.usageIn >= 0);
+    const bool ctxKnown = (m_sess->contextLimit > 0 && m_sess->usageIn >= 0);
     if (m_hud.ctxPct) {
         if (!ctxKnown) {
             m_hud.ctxPct->SetText("—");
@@ -2654,7 +2840,7 @@ void HarnessApp::RefreshHud() {
         } else {
             // 四舍五入到整数百分比；占用可能 >100%（core 低估容量）⇒ 如实显示，不钳
             const long long pct =
-                (m_sess.usageIn * 100 + m_sess.contextLimit / 2) / m_sess.contextLimit;
+                (m_sess->usageIn * 100 + m_sess->contextLimit / 2) / m_sess->contextLimit;
             m_hud.ctxPct->SetText(std::to_string(pct) + "%");
             // 配色：<70% 常规 · 70–90% 琥珀（该收尾了）· >90% 红（快溢出）
             m_hud.ctxPct->SetTextColor(pct >= 90 ? kErrorDark
@@ -2663,15 +2849,15 @@ void HarnessApp::RefreshHud() {
     }
     if (m_ctxRing) {
         const float frac = ctxKnown
-                               ? static_cast<float>(m_sess.usageIn) /
-                                     static_cast<float>(m_sess.contextLimit)
+                               ? static_cast<float>(m_sess->usageIn) /
+                                     static_cast<float>(m_sess->contextLimit)
                                : 0.0f;
         // 环本身钳到 [0,1]（SetProgress 契约）；文本仍如实显示 >100%
         m_ctxRing->SetProgress(frac > 1.0f ? 1.0f : frac);
         // ★ 环色与右侧数字**同源**（同一组阈值），避免「环是绿的、字是红的」自相矛盾。
         //   阈值沿用既有口径：<70 常规绿 · 70–90 琥珀 · >90 红；分母未知 ⇒ 回退绿（环归零）。
         const long long pctForColor =
-            ctxKnown ? (m_sess.usageIn * 100 + m_sess.contextLimit / 2) / m_sess.contextLimit : 0;
+            ctxKnown ? (m_sess->usageIn * 100 + m_sess->contextLimit / 2) / m_sess->contextLimit : 0;
         const int level = pctForColor >= 90 ? 2 : (pctForColor >= 70 ? 1 : 0);
         // ★★ 只在**档位翻转**时 SetStyle + 补重绘——不能每 tick 都做：
         //   `RingProgressBar::SetStyle` 的头**未**声明「覆盖后 Invalidate」
@@ -2692,14 +2878,14 @@ void HarnessApp::RefreshHud() {
         // ★ 输入/输出两根条改为**以上下文容量为共同分母**（原来拿二者峰值互比，
         //   两个不同量纲相除 ⇒ 无意义）。容量未知时退化为二者峰值互比，
         //   仅作"相对大小"提示——**不**声称是占用率。
-        const long long denom = (m_sess.contextLimit > 0)
-                                    ? m_sess.contextLimit
-                                    : std::max(m_sess.usageIn, m_sess.usageOut);
-        const float inFrac = (m_sess.usageIn >= 0 && denom > 0)
-                                 ? static_cast<float>(m_sess.usageIn) / static_cast<float>(denom)
+        const long long denom = (m_sess->contextLimit > 0)
+                                    ? m_sess->contextLimit
+                                    : std::max(m_sess->usageIn, m_sess->usageOut);
+        const float inFrac = (m_sess->usageIn >= 0 && denom > 0)
+                                 ? static_cast<float>(m_sess->usageIn) / static_cast<float>(denom)
                                  : 0.0f;
-        const float outFrac = (m_sess.usageOut >= 0 && denom > 0)
-                                  ? static_cast<float>(m_sess.usageOut) / static_cast<float>(denom)
+        const float outFrac = (m_sess->usageOut >= 0 && denom > 0)
+                                  ? static_cast<float>(m_sess->usageOut) / static_cast<float>(denom)
                                   : 0.0f;
         m_usageBarIn->SetProgress(inFrac > 1.0f ? 1.0f : inFrac);
         m_usageBarOut->SetProgress(outFrac > 1.0f ? 1.0f : outFrac);
@@ -2709,12 +2895,12 @@ void HarnessApp::RefreshHud() {
     //   （`Widget.h:160-170` 明写「静默不刷新」），harness 还得自己补重绘；而「协议允许问、
     //   但本次一次都没问」本身是**有信息量的评估读数**（ask 门是 I3 的可见载体），
     //   藏掉不如显式说「暂无」。复用现有 3 行控件 ⇒ 零新增控件、零布局改动。
-    const bool noHist = m_sess.askHist.empty();
+    const bool noHist = m_sess->askHist.empty();
     for (size_t i = 0; i < 3; ++i) {
         if (m_hud.histChip[i] && m_hud.histWhat[i]) {
-            const size_t n = m_sess.askHist.size();
+            const size_t n = m_sess->askHist.size();
             if (i < n) {
-                const auto& [choice, what] = m_sess.askHist[n - 1 - i];
+                const auto& [choice, what] = m_sess->askHist[n - 1 - i];
                 m_hud.histChip[i]->SetText(choice);
                 m_hud.histChip[i]->SetTextColor(choice == "allow" ? kOkDark : kErrorDark);
                 m_hud.histWhat[i]->SetText(what);
@@ -2728,22 +2914,22 @@ void HarnessApp::RefreshHud() {
 
     if (m_hud.stState) {
         m_hud.stState->SetText(stateText + " · protocol " +
-                               std::to_string(m_sess.protocolVer));
+                               std::to_string(m_sess->protocolVer));
     }
     if (m_hud.stMsgs) {
-        if (m_sess.replay) {
-            m_hud.stMsgs->SetText(std::to_string(m_sess.replay->Consumed()) + " / " +
-                                  std::to_string(m_sess.replay->Total()) + " msg");
+        if (m_sess->replay) {
+            m_hud.stMsgs->SetText(std::to_string(m_sess->replay->Consumed()) + " / " +
+                                  std::to_string(m_sess->replay->Total()) + " msg");
         } else {
-            m_hud.stMsgs->SetText(std::to_string(m_sess.liveLines) + " msg（live）");
+            m_hud.stMsgs->SetText(std::to_string(m_sess->liveLines) + " msg（live）");
         }
     }
     if (m_hud.stTokens) {
-        if (m_sess.usageIn < 0) {
+        if (m_sess->usageIn < 0) {
             m_hud.stTokens->SetText("tokens —");
         } else {
-            m_hud.stTokens->SetText("tokens " + std::to_string(m_sess.usageIn) + " / " +
-                                    std::to_string(m_sess.usageOut));
+            m_hud.stTokens->SetText("tokens " + std::to_string(m_sess->usageIn) + " / " +
+                                    std::to_string(m_sess->usageOut));
         }
     }
     if (m_hud.stPaint) {
@@ -2771,15 +2957,28 @@ void HarnessApp::WriteSummary() {
             "\",\n";
     json += "  \"ecdiCommit\": \"" + m_options.ecdiCommit + "\",\n";
     json += "  \"backend\": \"" + m_backendName + "\",\n";
-    std::snprintf(buf, sizeof(buf), "  \"blocks\": %zu,\n", m_sess.transcript.Blocks());
+    // ★★ 0d：多会话时摘要只记**退出时刻的活动会话**——这件事必须显式写出来。
+    //   实测教训（2026-10-19）：窗口还开着的时候点了「＋ 新建会话」，活动会话切到
+    //   空会话，落盘的就是 blocks=0/deltas=0/messages=0 —— 看起来与"跑失败了"
+    //   **完全一样**（与 protocolIncompatible 那条注释同族：空摘要不得伪装成功摘要）。
+    //   ★ 只在 sessionCount > 1 时写这三个字段：单会话运行的摘要**逐字节不变**，
+    //     所有既有基线（p32 起）仍可比——这是本仓的铁律，不能为解释一个交互场景破例。
+    if (m_sessions.size() > 1) {
+        std::snprintf(buf, sizeof(buf), "  \"sessionCount\": %zu,\n", m_sessions.size());
+        json += buf;
+        std::snprintf(buf, sizeof(buf), "  \"activeSessionIndex\": %zu,\n", m_activeIndex);
+        json += buf;
+        json += "  \"activeSessionLabel\": \"" + m_sess->label + "\",\n";
+    }
+    std::snprintf(buf, sizeof(buf), "  \"blocks\": %zu,\n", m_sess->transcript.Blocks());
     json += buf;
-    std::snprintf(buf, sizeof(buf), "  \"deltas\": %zu,\n", m_sess.transcript.Deltas());
+    std::snprintf(buf, sizeof(buf), "  \"deltas\": %zu,\n", m_sess->transcript.Deltas());
     json += buf;
     // ★ 注意：这是**夹具总行数**（文件里有多少行），不是"本次消费了多少行"。
     //   被 §9 拒绝时它仍是全量（文件没变），故判读「是否真的拒绝」要看
     //   `blocks`（消费后才产生）与 `protocolIncompatible`，不能看本字段。
     std::snprintf(buf, sizeof(buf), "  \"messages\": %zu,\n",
-                  m_sess.replay ? m_sess.replay->Total() : m_sess.liveLines);
+                  m_sess->replay ? m_sess->replay->Total() : m_sess->liveLines);
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"invalidations\": %zu,\n", m_invalidations);
     json += buf;
@@ -2902,14 +3101,14 @@ void HarnessApp::WriteSummary() {
     if (m_options.reasoningProbe && !m_reasoningTitleStreaming.empty()) {
         json += "  \"reasoningStreamingTitle\": \"" + m_reasoningTitleStreaming + "\",\n";
     }
-    if (m_options.orderProbe && !m_sess.transcript.Order().empty()) {
+    if (m_options.orderProbe && !m_sess->transcript.Order().empty()) {
         // ★★ Step 0a 机读证据（2026-10-19）：块**到达顺序**原文。
         //   为什么必须是数组而不是一个「顺序对不对」的布尔：探针若自己也算一遍
         //   `sorted(...)` 再比，比对逻辑就是**被测对象自己**——错的地方会一起错。
         //   故这里只如实吐出 `Order()` 的内容，判据留给跑批脚本对着夹具独立算。
         //   读法：本数组必须与夹具里 `block_start` 的出现次序**逐元素相同**。
         json += "  \"blockOrder\": [";
-        const std::vector<std::string>& order = m_sess.transcript.Order();
+        const std::vector<std::string>& order = m_sess->transcript.Order();
         for (size_t i = 0; i < order.size(); ++i) {
             json += (i ? ", \"" : "\"");
             json += order[i];
@@ -2970,7 +3169,7 @@ void HarnessApp::WriteSummary() {
         std::snprintf(buf, sizeof(buf), "  \"rebuildNoticeCount\": %zu,\n", m_rebuildNoticeCount);
         json += buf;
         std::snprintf(buf, sizeof(buf), "  \"rebuildTimelineCount\": %zu,\n",
-                      m_sess.timeline.size());
+                      m_sess->timeline.size());
         json += buf;
         std::snprintf(buf, sizeof(buf), "  \"rebuildExpandedSamples\": %d,\n",
                       m_rebuildExpandedSamples);
@@ -2981,7 +3180,7 @@ void HarnessApp::WriteSummary() {
         std::snprintf(buf, sizeof(buf), "  \"rebuildScrollBefore\": %d,\n",
                       m_rebuildScrollBefore);
         json += buf;
-        std::snprintf(buf, sizeof(buf), "  \"rebuildRowCount\": %zu,\n", m_sess.rows.size());
+        std::snprintf(buf, sizeof(buf), "  \"rebuildRowCount\": %zu,\n", m_sess->rows.size());
         json += buf;
         // ★ 点击一次后标题是否还完整（0c 修的工具卡标题被清空那个 bug 的专属读数）
         std::snprintf(buf, sizeof(buf), "  \"rebuildTitleEmptied\": %d,\n",
@@ -2990,36 +3189,57 @@ void HarnessApp::WriteSummary() {
         json += "  \"rebuildTitleSample\": \"" + esc(m_rebuildTitleSample) + "\",\n";
         json += "  \"rebuildTitleAfter\": \"" + esc(m_rebuildTitleAfter) + "\",\n";
     }
-    std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_sess.transcript.SeqGaps());
+    if (m_options.sessionProbe && !m_sessionProbeLog.empty()) {
+        // ★★ Step 0d 机读证据（2026-10-19）：新建/切换会话的行为轨迹。
+        //   判据（跑批脚本执行）：
+        //     · new.sessionCount == baseline.sessionCount + 1（真的多了一个会话）
+        //     · new.blockRowCount == 0（**负对照**：新会话不含旧转录的块行——
+        //       若它非零，说明新会话抄了旧会话的模型，"新建"是假的）
+        //     · back.activeIndex == 0 ∧ back.rowCount == baseline.rowCount（切回无损）
+        json += "  \"sessionProbe\": [";
+        for (size_t i = 0; i < m_sessionProbeLog.size(); ++i) {
+            const SessionProbeRec& r = m_sessionProbeLog[i];
+            json += (i ? ", " : "");
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"sessionCount\": %zu, \"activeIndex\": %zu, "
+                          "\"rowCount\": %zu, \"blockRowCount\": %zu}",
+                          r.phase.c_str(), r.sessionCount, r.activeIndex,
+                          r.rowCount, r.blockRowCount);
+            json += b;
+        }
+        json += "],\n";
+    }
+    std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_sess->transcript.SeqGaps());
     json += buf;
-    std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_sess.transcript.Violations());
+    std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_sess->transcript.Violations());
     json += buf;
-    std::snprintf(buf, sizeof(buf), "  \"unknownTypes\": %zu,\n", m_sess.transcript.UnknownTypes());
+    std::snprintf(buf, sizeof(buf), "  \"unknownTypes\": %zu,\n", m_sess->transcript.UnknownTypes());
     json += buf;
     // ★ 未知 block_start.kind（2026-10-13）：与 unknownTypes **并列而非合并**——
     //   前者是信封层 `t`（I5 明文覆盖），后者是 `kind`（协议 v2 起由 I8 覆盖）。
     //   ★ v2（2026-10-14）：`reasoning` 是**已知** kind ⇒ 不再计入本项
     //     （cot 夹具的读数由 12 变 0，正是这条生效的证据）。
-    std::snprintf(buf, sizeof(buf), "  \"unknownKinds\": %zu,\n", m_sess.transcript.UnknownKinds());
+    std::snprintf(buf, sizeof(buf), "  \"unknownKinds\": %zu,\n", m_sess->transcript.UnknownKinds());
     json += buf;
     // ★ 协议 §9（v2）：如实记下 core 声明的版本与本 GUI 的上限，
     //   以及**是否因版本不兼容而拒绝连接**——否则一次被拒的运行会留下
     //   一份"看起来跑完了"的空摘要。
-    std::snprintf(buf, sizeof(buf), "  \"protocolDeclared\": %d,\n", m_sess.protocolVer);
+    std::snprintf(buf, sizeof(buf), "  \"protocolDeclared\": %d,\n", m_sess->protocolVer);
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"protocolMaxSupported\": %d,\n",
                   kProtocolMaxSupported);
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"protocolIncompatible\": %s,\n",
-                  m_sess.protocolIncompatible ? "true" : "false");
+                  m_sess->protocolIncompatible ? "true" : "false");
     json += buf;
     // ★ 协议 v2 §3.1：上下文容量的读数（0 = core 未声明 ⇒ 百分比显示 `—`）
     std::snprintf(buf, sizeof(buf), "  \"contextLimit\": %lld,\n",
-                  static_cast<long long>(m_sess.contextLimit));
+                  static_cast<long long>(m_sess->contextLimit));
     json += buf;
     // ★ 上下文占用读数（分子/分母都如实输出，便于复核百分比是否算对）
     std::snprintf(buf, sizeof(buf), "  \"usageInput\": %lld\n",
-                  static_cast<long long>(m_sess.usageIn));
+                  static_cast<long long>(m_sess->usageIn));
     json += buf;
     json += "}\n";
 

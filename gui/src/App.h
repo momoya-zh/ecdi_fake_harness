@@ -97,6 +97,10 @@ struct CliOptions {
     //     （0a 已经吃过这个教训：demo 夹具上两种顺序恰好一致，只用 demo 验不出来）。
     //   ★ 默认 false ⇒ 零行为变化；且**永远不**在测量跑批里自动重建。
     bool rebuildProbe = false;            // --rebuild-probe：照模型重建视图并比对
+    // ★★ Step 0d 会话探针（2026-10-19）：新建/切换会话的机读取证。
+    //   只在回放模式有意义（live 新建会话会真拉 core 子进程，探针不制造真进程）。
+    //   默认 false ⇒ 零行为变化。
+    bool sessionProbe = false;            // --session-probe：新建/切换会话取证
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -295,6 +299,17 @@ private:
         bool replaySettled = false;                // 夹具拉取完毕（停止制造重绘）
         std::string pendingTruncated;              // ReplaySource 的 EOF 截断提示（延后展示）
         bool liveEof = false;                      // live 模式：源已 EOF（停止空转刷 HUD）
+
+        // ── ★★ 0d：会话身份与各自的 timed 节奏 ──
+        //   为什么 `timedAnchor` 必须**逐会话**：它是"这个会话从什么时候开始按 ts 播"的
+        //   锚点。若留在窗口级，新建/切回的会话会拿**别人的**锚点算 elapsedMs ⇒
+        //   一上来就把整条夹具判成"早已到期"并瞬间抽干（读数全错，而且错得很安静）。
+        std::string label;                         // 会话显示名（侧栏 / 会话头）
+        std::chrono::steady_clock::time_point timedAnchor;
+        // ★ 暂停补偿：会话被切走时记下时刻，切回来把锚点整体后移同一段墙上时间。
+        //   没有这一步，"切走 30 秒再切回"会让 timed 会话凭空快进 30 秒。
+        bool timedPaused = false;
+        std::chrono::steady_clock::time_point timedPausedAt;
     };
 
     // timelineIdx = 本行对应的时间线条目下标（**由调用方显式给出**——
@@ -305,6 +320,23 @@ private:
     void CreateAskRow(const json::Value& msg);
     void MarkAnswered(RowRec& rec, const std::string& choice);
     void AddNoticeRow(const std::string& text, const ECDI::Color& color);
+
+    // ── ★★ 0d：多会话生命周期 ──────────────────────────────────────────
+    // `CreateSessionFromOptions()`：按当前 CLI 建一个会话并 push 进 `m_sessions`，
+    //   **返回**它（live 子进程启动失败 ⇒ 返回 nullptr 且不 push）。
+    //   ★ 只"创建"不"激活"——激活（含视图重建）由调用方经 `SwitchToSession` 做。
+    //     若创建时就改 `m_sess`，`SwitchToSession` 会因"已在该会话"早退而不重建视图。
+    Session* CreateSessionFromOptions();
+    // `NewSession()`：`＋ 新建会话` 的真实行为。live 模式拉起新 core（真新会话）；
+    //   回放模式建一个空会话并如实提示（没有 core 会说话，不伪造转录）。
+    void NewSession();
+    // `SwitchToSession(i)`：切换活动会话——拆当前视图、指向新会话、按新会话模型重建。
+    //   ★ 复用 0c 的 `RebuildTranscriptView`：这正是 0c 存在的全部理由。
+    void SwitchToSession(size_t index);
+    // 切换/新建前，把**当前**活动会话的 timed 锚点冻结（记下暂停时刻）。
+    void PauseActiveTimedClock();
+    // 切到某会话后，把它的 timed 锚点按"被冻结了多久"整体后移（补偿暂停）。
+    void ResumeSessionTimedClock(Session& s);
 
     // ── ★★ 0c：模型 → 视图（重建路径）────────────────────────────────
     // 为什么要「重建」而不是就地改：`Theme.h:19-20` 写明令牌是**引用别名**，UI 一旦建好
@@ -354,12 +386,21 @@ private:
 
     CliOptions m_options;
 
-    // ★★ 0b：`HarnessApp` 只保留**窗口级**状态；逐会话的东西全在 `m_sess` 里。
-    //   为什么现在就包一层而不是等 0c：包一层之后「当前会话」才有**唯一名字**。
-    //   0c 要做的只是把 `m_sess` 换成 `std::vector<std::unique_ptr<Session>>` +
-    //   一个指向活动会话的指针——调用点因为有了这个名字，届时**不必再改**。
-    //   ★ 位置放在 `m_options` 之后：构造顺序要求先有它，后面的成员声明不得依赖它。
-    Session m_sess;
+    // ★★ 0d（2026-10-19）：**多会话**。0b 把逐会话状态收进 `Session`，0c 让视图能从
+    //   模型重建，0d 就是把"一个应用 = 一个会话"这条断言拆掉：
+    //     · `m_sessions` = 全部会话（`unique_ptr` 持有 ⇒ Session 对象地址稳定，
+    //       满足 0b 记的不变量：`blockRows` 的裸指针不得因容器增长而失效）；
+    //     · `m_sess` = **活动会话**的裸指针。保留这个名字是有意的——186 处调用点
+    //       只从 `m_sess.` 变成 `m_sess->`，语义仍是"当前会话"，不必逐处理解。
+    //   ★ 线划在这里：**N 个会话，同时只有一个活动**。活动的那个才接 tick、才拉取；
+    //     其余是冻结的只读历史。不做并行多 core——那会把这一步长成进程管理器（P3 的活）。
+    //   ★ 新建会话：`--core` 模式**真的拉起一个新 core 子进程**（真新会话）；
+    //     回放模式是**空会话**（没有 core 会说话），如实提示而不伪造转录。
+    std::vector<std::unique_ptr<Session>> m_sessions;
+    Session* m_sess = nullptr;                     // 活动会话（非拥有；指向 m_sessions 里的元素）
+
+    // 活动会话在 m_sessions 里的下标（会话头 / 侧栏显示用；-1 = 尚无会话）
+    size_t m_activeIndex = static_cast<size_t>(-1);
 
     HarnessApplication* m_application = nullptr;   // Run() 栈上对象，非拥有
     ECDI::Window* m_window = nullptr;              // Application 所有，非拥有
@@ -513,6 +554,28 @@ private:
                                 const std::vector<std::string>& after,
                                 bool blockOnly) const;
 
+    // ★★ Step 0d 会话探针（--session-probe，2026-10-19）
+    //   断言：**新建会话真的多出一个、能切走、切回来内容不丢**。
+    //   为何必须机读：多会话最容易"看着能用其实没动"——新会话若共享了旧会话的模型，
+    //   切过去还是满屏旧转录，肉眼分不出"建了个新的"和"根本没建"。
+    //   ★ 轨迹（跨 tick 状态机，与 rebuild/hit 探针同款，避免在一个 tick 里做完）：
+    //     ① baseline —— 记下当前会话数与行数；
+    //     ② new      —— 触发 `NewSession()`，会话数必须 +1，新会话行数必须 == 0
+    //                    （**负对照点**：若新会话不是空的，说明它抄了旧会话的模型）；
+    //     ③ back     —— 切回会话 0，行数必须回到 baseline（**往返无损**）。
+    //   ★ 只在**回放**模式跑：live 模式新建会话会真拉一个 core 子进程，
+    //     探针不该在测量里制造真进程（仪器污染实验，条 57③）。
+    struct SessionProbeRec {
+        std::string phase;        // baseline / new / back
+        size_t sessionCount = 0;  // 当时的会话总数
+        size_t activeIndex = 0;   // 当时的活动会话下标
+        size_t rowCount = 0;      // 视图行数（含通知行）
+        size_t blockRowCount = 0; // 其中**块行**数 —— 负对照的关键：新会话必须为 0
+    };
+    std::vector<SessionProbeRec> m_sessionProbeLog;
+    bool m_sessionProbeDone = false;
+    void RunSessionProbe();
+
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
     size_t m_evalPaints = 0;
@@ -531,5 +594,5 @@ private:
     size_t m_evalMeasureCalls = 0;                 // MeasureProbe 读数（文本测量成本）
     uint64_t m_evalMeasureTotalUs = 0;
     uint64_t m_evalMeasureMaxUs = 0;
-    std::chrono::steady_clock::time_point m_timedAnchor;
+    // ★ 0d：`m_timedAnchor` 已下沉到 `Session::timedAnchor`（逐会话）——窗口级不再需要它。
 };

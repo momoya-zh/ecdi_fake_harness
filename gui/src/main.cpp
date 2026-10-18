@@ -86,6 +86,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.orderProbe = true;      // ★ Step 0a：回读块到达顺序（字典序陷阱取证）
         } else if (arg == L"--rebuild-probe") {
             options.rebuildProbe = true;    // ★ Step 0c：照模型重建视图并逐行比对
+        } else if (arg == L"--session-probe") {
+            options.sessionProbe = true;    // ★ Step 0d：新建/切换会话取证
         }
     }
     if (argv) LocalFree(argv);
