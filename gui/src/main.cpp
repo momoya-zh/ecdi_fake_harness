@@ -82,6 +82,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.hitProbe = true;        // ★ REQ-04 边界：命中门控受控对照（无注入）
         } else if (arg == L"--reasoning-probe") {
             options.reasoningProbe = true;  // ★ 协议 v2 §7：思维链折叠行为取证
+        } else if (arg == L"--order-probe") {
+            options.orderProbe = true;      // ★ Step 0a：回读块到达顺序（字典序陷阱取证）
         }
     }
     if (argv) LocalFree(argv);
@@ -104,6 +106,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --state-probe                    回读发送/停止按钮使能+标题（REQ-04 机读证据）\n"
                     L"  --hit-probe                      REQ-04 边界：命中门控受控对照（无注入）\n"
                     L"  --reasoning-probe                协议 v2 §7：思维链折叠行为取证\n"
+                    L"  --order-probe                    Step 0a：回读块到达顺序（字典序陷阱取证）\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;

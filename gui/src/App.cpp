@@ -2374,6 +2374,21 @@ void HarnessApp::WriteSummary() {
     if (m_options.reasoningProbe && !m_reasoningTitleStreaming.empty()) {
         json += "  \"reasoningStreamingTitle\": \"" + m_reasoningTitleStreaming + "\",\n";
     }
+    if (m_options.orderProbe && !m_transcript.Order().empty()) {
+        // ★★ Step 0a 机读证据（2026-10-19）：块**到达顺序**原文。
+        //   为什么必须是数组而不是一个「顺序对不对」的布尔：探针若自己也算一遍
+        //   `sorted(...)` 再比，比对逻辑就是**被测对象自己**——错的地方会一起错。
+        //   故这里只如实吐出 `Order()` 的内容，判据留给跑批脚本对着夹具独立算。
+        //   读法：本数组必须与夹具里 `block_start` 的出现次序**逐元素相同**。
+        json += "  \"blockOrder\": [";
+        const std::vector<std::string>& order = m_transcript.Order();
+        for (size_t i = 0; i < order.size(); ++i) {
+            json += (i ? ", \"" : "\"");
+            json += order[i];
+            json += "\"";
+        }
+        json += "],\n";
+    }
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_transcript.SeqGaps());
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_transcript.Violations());

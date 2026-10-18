@@ -71,7 +71,11 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
                 error = "[I7] tool_result 'for' does not name a tool_call: " + block.forId;
             }
         }
-        m_blocks.emplace(id, std::move(block));
+        const auto placed = m_blocks.emplace(id, std::move(block));
+        // ★ 0a：到达顺序与块表**分开记账**——map 的遍历序是 id 字典序，不是到达序。
+        //   取 emplace 实际落位的键（而不是 `id` 变量），让两边**逐字同源**：
+        //   若某天 emplace 因故没插入（当前 I1 已在上游拦住），这里也不会多记一条。
+        if (placed.second) m_order.push_back(placed.first->first);
         return true;
     }
 

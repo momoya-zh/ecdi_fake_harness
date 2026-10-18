@@ -6,6 +6,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 // 一个转录块：block_start .. block_end 之间可被 delta 追加（I6：end 后只读）
 struct Block {
@@ -41,6 +42,19 @@ public:
     const Block* FindBlock(const std::string& id) const;
     const json::Value& LastMessage() const { return m_last; }
 
+    // ★★ 到达顺序（2026-10-19，Step 0a）：`m_blocks` 是 **std::map**，
+    //   遍历顺序是 **id 字典序**，而块 id 是 `b0 b1 … b43` 这种**不补零**的编号
+    //   ⇒ 字典序 ≠ 到达序。实测（.scratch/order_fixture_scan.py，六份夹具全扫）：
+    //     · demo        8 块 —— 两者恰好一致（b1..b8 位数相同）；
+    //     · cot        44 块 —— **42** 个位置不同，首个分歧 b2(到达) vs b10(字典序)；
+    //     · realistic 220 块 —— 218 处； · scale 2000 块 —— 1998 处。
+    //   ⇒ 谁「照着块表重建视图」，就会打乱转录，而且**看不出是错的**：
+    //     每块内容都对，只是次序错（比空屏更危险）。
+    //   ★ 故单列一条顺序旁路，**不动 std::map 本身**——`FindBlock` 在 delta 每行
+    //     都被调用，改成有序容器等于拿 O(log n) 换一份本来就已经知道的顺序。
+    //   ★ 只增不减：I1（重复 block_start）在入表前就 return ⇒ 不会重复入列。
+    const std::vector<std::string>& Order() const { return m_order; }
+
     // 评估读数（规格 §6.3）
     size_t SeqGaps() const { return m_seqGaps; }          // I4 命中数
     size_t Blocks() const { return m_blocks.size(); }     // 已启动的块数
@@ -58,6 +72,9 @@ public:
 
 private:
     std::map<std::string, Block> m_blocks;
+    // ★ 到达顺序（与 m_blocks 的字典序**无关**）：重建视图只许按本序列，
+    //   按 m_blocks 遍历即等于按 id 字典序重排转录（2026-10-19 Step 0a）。
+    std::vector<std::string> m_order;
     json::Value m_last;
     size_t m_seqGaps = 0;
     size_t m_deltas = 0;

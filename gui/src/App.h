@@ -79,6 +79,13 @@ struct CliOptions {
     //   ——把**渲染行为**变成机读读数（截图只能证明像素，不能证明"点了真的翻"）。
     //   默认 false ⇒ 零行为变化。
     bool reasoningProbe = false;          // --reasoning-probe：折叠行为取证
+    // ★★ Step 0a 顺序回读探针（2026-10-19）：把 `Transcript::Order()` 原样写进摘要。
+    //   动机：0a 的**唯一**断言是「到达顺序可恢复」。而这条断言**不能靠肉眼**——
+    //   屏幕上恰好正确也可能只是 demo 夹具的巧合（b1..b8 位数相同 ⇒ 字典序 == 到达序）；
+    //   cot/realistic/scale 三份夹具则是 42/218/1998 个位置不同（实测，见
+    //   `.scratch/order_fixture_scan.py`）⇒ 必须让程序把顺序**打印出来**再与夹具对账。
+    //   ★ 默认 false ⇒ 既有摘要逐字节不变（所有回归基线仍可比）。
+    bool orderProbe = false;              // --order-probe：回读到达到顺序到摘要
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
