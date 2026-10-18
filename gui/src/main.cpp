@@ -1,4 +1,4 @@
-﻿#include <Windows.h>   // wWinMain 入口（WINAPI/HINSTANCE）
+#include <Windows.h>   // wWinMain 入口（WINAPI/HINSTANCE）
 
 #ifdef DrawText
 #undef DrawText
@@ -98,7 +98,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --ecdi-commit <hash>             记录被评估的 ECDI 提交\n"
                     L"  --auto-answer allow|deny         无人值守自动回答 ask\n"
                     L"  --backend gdi|gl                 渲染后端 A/B（默认 gdi）\n"
-                    L"  --theme dark|light               配色令牌（默认 dark）\n"
+                    L"  --theme dark|light               配色令牌（默认 light）\n"
                     L"  --auto-close <ms>                定时自动退出（跑批/冒烟）\n"
                     L"  --cull-probe                     探针套件：命令分类/执行帧时/测量成本\n"
                     L"  --state-probe                    回读发送/停止按钮使能+标题（REQ-04 机读证据）\n"

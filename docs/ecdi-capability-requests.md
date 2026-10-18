@@ -1,4 +1,4 @@
-﻿# ECDI_fake_harness · ECDI 能力需求账本
+# ECDI_fake_harness · ECDI 能力需求账本
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
@@ -497,6 +497,8 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | ★ `A-2` | **折叠态仍在全量测量**（`App.cpp:1123` 无条件 `AutoSize()`）：折叠卡里的长文本每帧照样测量 ⇒ 为看不见的内容付全部成本 | ❌ **已复核否决（2026-10-13 晚）** —— **原判收回**：那条「8.80×」是**同时长下两个不同长度**的对比，差值**全在一次性布局建立成本**上，不是逐帧浪费。实测分解 `chars = a + b·frames`：body=4000 ⇒ a=123,081 / **b=504**；body=40 ⇒ a=138 / **b=502** ⇒ **每帧成本与文本长度无关（b 之比 1.00×）**，ECDI 的 C29-10 缓存**按文档生效**。⇒ 修法（按需重测）实测**零收益**，**已完整回退**（代码骨架与 HEAD 逐行相同）。取证 `.scratch/A2-recheck-conclusion.md`（2026-10-13 受控 4 档剂量实测：body 40→4000 字符，`measureChars` 15,796→139,043，**8.80×**）⇒ 属 harness 侧，修法见 `.scratch/D-attribution-conclusion.md` §五 |
 | ★ `C-1` | **思维链评估夹具**（`fixtures/cot/`）：开源推理模型的 CoT 是「长 + 流式 + 本应折叠」的独立负载画像，既有夹具都不覆盖 | ✅ **已落地**（2026-10-13）：生成器 `gen_cot.py`（`--turns/--thinking-chars/--kind/--emit-empty`）+ 入库基线 `cot-session.jsonl`（44 块 / 934 deltas / 1044 消息 / 172,868 B · sha256 `2b8cb42f…` 可复现）+ PROTOCOL §8.4 登记。读数见 `.scratch/C-cot-eval-conclusion.md` |
 | ★ `TODO-01` | **双主题令牌化**：`Theme.h` 从「编译期常量」改成「运行期可切换」，让 `harness-hifi-variant-c.html` 的浅色形态能在**真 GUI** 上验证，而不是只停在 HTML 原型 | ✅ **已落地**（2026-10-18）：`struct Theme` 53 色 + `sansFamily`，`MakeDark()`/`MakeLight()`，`SwitchTheme()` + **引用别名**（`inline const ECDI::Color& kX = g_theme.x`）⇒ 全仓 ~200 处按名引用**零改动**；`--theme dark\|light` CLI。★ 硬约束：只能在 `BuildUi()` 之前调（颜色值在 BuildUi 时被拷进各 `PanelStyle`）。回归双主题各 5 用例全 PASS。详见 `docs/variant-c-ecdi-mapping.md` §5 |
+| ★ `TODO-04` | **自绘标题栏随主题切色**：系统 `CaptionBar` 的底色/标题/三钮颜色在 ECDI 里全部写死（`CaptionBar.cpp:31/37` · `CaptionButton.cpp:14-27`），框架无 caption 样式令牌 ⇒ 深色主题下外观正常，`--theme light` 下标题栏仍是深灰（未验证，本轮才发现） | ✅ **已落地**（2026-10-18）：应用侧派生 `gui/src/ThemedCaptionBar.h`（`ThemedCaptionBar : ECDI::CaptionBar` + `ThemedCaptionButton : ECDI::Widget`），`Theme.h` 增 8 个 caption 令牌（`captionBg/captionInk/captionGlyph/captionGlyphHot/captionHover/captionPressed/captionCloseHover/captionClosePressed`）+ 8 个 `kCaption*` 别名；`App.cpp:388` 构造点换成派生类。**ECDI 一行未改**（铁律）。深色令牌与原生逐值相同 ⇒ 回归基线不变。★ 关键约束：派生类把基类三个按钮 `RemoveChild` 释放后，**绝不能**再调 `CaptionBar::SetSize`（→`RelayoutChildren` 解引用）或 `CaptionBar::OnPaint`（→`m_maxButton->SetGlyph`）⇒ 两个 override 都限定到 `ECDI::Widget` / `ECDI::Panel` 基类实现 |
+| ★ `TODO-05` | **`--theme light` 下未实际跑通全链验证**：本轮新增 caption 令牌后需按 §4 既有回归口径复跑，避免「只编译过、没实机看过」 | ✅ **已复跑并截图**（2026-10-18 晚）：10 组（2 主题 × demo/scale/realistic × gdi/gl）全部 `rc=0` 且 `seqGaps=0 / violations=0`（demo 8/19/43 · scale 2000/4590/8906 · realistic 220/717/1213，两主题逐项一致）⇒ 「换主题只改颜色令牌」这条结论对 caption 同样成立。截图 `.scratch/caption-theme/caption-*-top.png`：caption 底色浅 `#f8f9fb` / 深 `#26282d`，标题字 `#23262e` / `#ebecf0`，close glyph `#696f7b` / `#cfcfd5` ⇒ 三处颜色全部随主题切换。回归驱动 `.scratch/caption_theme_regress.py`、截图 `.scratch/caption_theme_shots.py`、读数 `.scratch/caption-theme-regress.log` / `caption-theme-shots.log` |
 | ★ `TODO-02` | **字体工厂**：全仓 `ECDI::Font` 构造散落 18 处、`family` 只有 `Consolas` 一个值，中文正文全部落到 SimSun；且 `AddLine()` 只在传了字号时才 `SetFont` ⇒ 同一界面里两种中文字形混排 | ✅ **已落地**（2026-10-18）：`harness::SansFont(float)` / `MonoFont(float)` 单一入口；`AddLine()` 改为无条件 `SetFont`（默认 `14.0f` = `Font::size` 出厂值）。深色刻意保留 `sansFamily = ""`（SimSun）作**回归基线**，浅色才用 `Microsoft YaHei` |
 | ★ `TODO-03` | **输入框焦点视觉**：ECDI 默认 `DrawFocusRect` 点线框，本项目输入框**启动即获焦**（验收 A2）⇒ 常态就是一圈蓝色虚线，与 variant-c 的实线描边形态冲突 | ✅ **已落地**（2026-10-18）：派生 `ComposerBox` 关掉点线框（`SetShowFocusRect(false)`），改让 `borderColor` 表达焦点（失焦 `kInputBorder` / 获焦 `kDarkAccent`）。★ **不是**直接关掉焦点框——那样焦点完全不可见，是拿可访问性换观感 |
 
@@ -530,6 +532,21 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 
 ## §6 修订记录（新在前）
 
+- **v2.9（2026-10-18 晚）★ 系统标题栏随主题切色（`TODO-04` 落地 + `TODO-05` 复跑闭合）**：
+  ① **触发**：§5 落地的是 HUD 顶栏（36px），窗口最上面那条 32px `ECDI::CaptionBar` 仍用 ECDI 硬编码深色
+  （`CaptionBar.cpp:31` 底色 `#26282d` + `:37` 标题 `#ebecf0`）⇒ `--theme light` 下「上面糊了一条深色带」。
+  ② **归属判据**：`CaptionButton` 是 `final` 且无样式 API，`Theme` 的 9 个 `Get*Style()` 里没有 caption 令牌
+  ⇒ 框架侧无入口 ⇒ 按铁律只在本仓派生：新增 `gui/src/ThemedCaptionBar.h`，`Theme.h` 增 8 个 caption 令牌，`App.cpp:388` 换构造点。
+  ③ ★ **两个非显然的坑**（详见 `docs/variant-c-ecdi-mapping.md` §6.3）：
+  - **浅色 hover 必须用「黑」预混**（`(0,0,0,26)`/`(0,0,0,45)`）：照抄原生白 @26/@45 在白底上等于无变化。
+    半透明合成本身可用（`DrawRect` 走 `BlendAlphaSolid`，`GDIBackend.cpp:649`；REQ-11 只影响 `DrawText`/`DrawFocusRect`）。
+  - **释放基类按钮后绝不能调 `CaptionBar::SetSize` / `CaptionBar::OnPaint`**：前者调私有 `RelayoutChildren()`
+    解引用 `m_minButton` 等，后者调 `m_maxButton->SetGlyph()`；而 `SetSize` 每次布局 `Arrange` 都会被调 ⇒ 必然 use-after-free。
+    两个 override 分别限定到 `ECDI::Widget::SetSize` / `ECDI::Panel::OnPaint` 基类实现。
+  ④ **验证**：`TODO-05` 复跑 10 组（2 主题 × 3 夹具 × gdi/gl）全 PASS，截图取证三处颜色全部随主题切换。
+  ⑤ ★ **一条仪器教训**：旧 `regress.py` 的 `sleep + p.terminate()` 时序在本机已不成立——提前杀进程走不到
+  优雅收尾路径，`--out` 永远不落盘（首轮 10 组全 `out=False`）。改成 `p.wait(timeout=...)` 等 `--auto-close`
+  自行退出才拿到读数。★ 判据：**不要用 sleep 当同步**，要用进程自己的退出信号。
 - **v2.8（2026-10-18）★ 双主题在真 GUI 上落地，新立 `TODO-01/02/03`（均为 harness 侧，已闭合）+ 落地暴露的四个真问题**：
   ① **触发**：`harness-hifi-variant-c.html` 的浅色形态若只停在 HTML 原型，就无法回答「这套视觉在真 GUI 上成不成立」。
   ⇒ 把 `gui/src/Theme.h` 从编译期常量改成运行期双令牌（`TODO-01`），并加 `--theme dark|light`。

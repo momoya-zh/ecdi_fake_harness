@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // harness 视觉令牌 —— 唯一颜色真相源（App.cpp / PromptBar.cpp / Transcript.cpp 都从这里取色，
 // 禁止就地写 RGBA）。
 //
@@ -96,6 +96,20 @@ struct Theme {
     ECDI::Color inputBorder;
     ECDI::Color inputCaret;
 
+    // ★ 自绘标题栏（系统 CaptionBar 的替代色）────────────────────────
+    //   ECDI 的 CaptionBar 把底色 (38,40,45) / 标题 (235,236,240) 写死在
+    //   `CaptionBar.cpp:31/37`，CaptionButton 的 glyph/hover 同理（`CaptionButton.cpp:14-27`），
+    //   框架没有 caption 样式令牌 ⇒ 由本仓 `ThemedCaptionBar.h` 派生类自行覆盖。
+    //   值取「与顶栏同一层级」：深色贴近原生深色标题栏，浅色贴 kDarkTopBg。
+    ECDI::Color captionBg;
+    ECDI::Color captionInk;
+    ECDI::Color captionGlyph;
+    ECDI::Color captionGlyphHot;
+    ECDI::Color captionHover;
+    ECDI::Color captionPressed;
+    ECDI::Color captionCloseHover;
+    ECDI::Color captionClosePressed;
+
     // ★ 中文正文族名。空串 = ECDI 默认 face（实测两链都是 SimSun）。
     //   见 `docs/variant-c-ecdi-mapping.md` §3.1：浅色下换成雅黑观感更接近原型，
     //   但行高会 +17~21%，由 `LineHeight()` 动态算高度的调用点吸收。
@@ -168,6 +182,16 @@ inline Theme MakeDark() {
     t.inputBorder = ECDI::Color::FromRGBA8(46, 51, 62, 255);
     t.inputCaret  = ECDI::Color::FromRGBA8(91, 157, 255, 255);
     t.sansFamily  = "";   // 保持既有渲染（SimSun），深色是回归基线，不动字形
+    // 自绘标题栏 —— 与 ECDI 原生 caption 同值（CaptionBar.cpp:31/37 · CaptionButton.cpp:14-27），
+    // 保证深色主题下外观与接入本仓之前逐字节一致。
+    t.captionBg            = ECDI::Color::FromRGBA8(38, 40, 45, 255);
+    t.captionInk           = ECDI::Color::FromRGBA8(235, 236, 240, 255);
+    t.captionGlyph         = ECDI::Color::FromRGBA8(220, 222, 226, 255);
+    t.captionGlyphHot      = ECDI::Color::FromRGBA8(235, 236, 240, 255);
+    t.captionHover         = ECDI::Color::FromRGBA8(255, 255, 255, 26);
+    t.captionPressed       = ECDI::Color::FromRGBA8(255, 255, 255, 45);
+    t.captionCloseHover    = ECDI::Color::FromRGBA8(196, 43, 28, 255);
+    t.captionClosePressed  = ECDI::Color::FromRGBA8(160, 32, 20, 255);
     return t;
 }
 
@@ -181,7 +205,7 @@ inline Theme MakeLight() {
     // 框架面（--panel #f8f9fb / --surface #fff / --line #e7e9ee）
     t.darkTopBg  = ECDI::Color::FromRGBA8(248, 249, 251, 255);
     t.sidebarBg  = ECDI::Color::FromRGBA8(248, 249, 251, 255);
-    t.inspBg     = ECDI::Color::FromRGBA8(248, 249, 251, 255);
+    t.inspBg     = ECDI::Color::FromRGBA8(252, 252, 253, 255);
     t.contentBg  = ECDI::Color::FromRGBA8(255, 255, 255, 255);
     t.panel2     = ECDI::Color::FromRGBA8(241, 243, 247, 255);
     t.line       = ECDI::Color::FromRGBA8(231, 233, 238, 255);
@@ -255,6 +279,22 @@ inline Theme MakeLight() {
     // ★ 浅色下中文换成雅黑（原型 --font 里 "Microsoft YaHei" 就在第二顺位）。
     //   两链都能解析（`docs/variant-c-ecdi-mapping.md` §2.3）。
     t.sansFamily  = "Microsoft YaHei";
+    // 自绘标题栏 —— 浅色不能沿用深色那组「越亮越重要」的相对关系：
+    //   captionBg 与顶栏 `kDarkTopBg (248,249,251)` 同色（标题栏与顶栏是同一层级的面），
+    //   分隔由紧贴其下的顶栏自身 1px `kLine` 环承担；
+    //   glyph 取 (95,101,113)：介于 kDarkMuted (107,112,120) 与 kDarkInk (35,38,46) 之间，
+    //   白底上 4.62:1，足够当「可点击控件」又不抢标题；
+    //   hover/pressed 反过来用**黑**预混（深色用白预混）——浅色面上提亮即隐形；
+    //   close 的红两主题同值（Windows 惯例，且浅色 kErrorDark (180,66,58) 作 hover 底会与
+    //   glyph 失去反差）。
+    t.captionBg            = ECDI::Color::FromRGBA8(248, 249, 251, 255);
+    t.captionInk           = ECDI::Color::FromRGBA8(35, 38, 46, 255);
+    t.captionGlyph         = ECDI::Color::FromRGBA8(95, 101, 113, 255);
+    t.captionGlyphHot      = ECDI::Color::FromRGBA8(35, 38, 46, 255);
+    t.captionHover         = ECDI::Color::FromRGBA8(0, 0, 0, 26);
+    t.captionPressed       = ECDI::Color::FromRGBA8(0, 0, 0, 45);
+    t.captionCloseHover    = ECDI::Color::FromRGBA8(196, 43, 28, 255);
+    t.captionClosePressed  = ECDI::Color::FromRGBA8(160, 32, 20, 255);
     return t;
 }
 
@@ -330,6 +370,16 @@ inline const ECDI::Color& kInputBg     = g_theme.inputBg;
 inline const ECDI::Color& kInputBorder = g_theme.inputBorder;
 inline const ECDI::Color& kInputCaret  = g_theme.inputCaret;
 
+// ── 自绘标题栏（ThemedCaptionBar.h 消费；别名区按字段声明顺序，勿前移）──────
+inline const ECDI::Color& kCaptionBg            = g_theme.captionBg;
+inline const ECDI::Color& kCaptionInk           = g_theme.captionInk;
+inline const ECDI::Color& kCaptionGlyph         = g_theme.captionGlyph;
+inline const ECDI::Color& kCaptionGlyphHot      = g_theme.captionGlyphHot;
+inline const ECDI::Color& kCaptionHover         = g_theme.captionHover;
+inline const ECDI::Color& kCaptionPressed       = g_theme.captionPressed;
+inline const ECDI::Color& kCaptionCloseHover    = g_theme.captionCloseHover;
+inline const ECDI::Color& kCaptionClosePressed  = g_theme.captionClosePressed;
+
 // ── 圆角（与主题无关，仍是编译期常量）────────────────────────
 inline constexpr float kRadiusCard  = 12.0f;   // 消息气泡
 inline constexpr float kRadiusTool  = 10.0f;   // 工具卡 / 权限门
@@ -339,6 +389,25 @@ inline constexpr float kRadiusInput = 9.0f;    // 输入框
 inline constexpr float kRadiusPill  = 10.0f;   // chip（≈全圆）
 
 inline const char* kMonoFamily = "Consolas";   // hi-fi --app-mono（Cascadia 不保证在，退 Consolas）
+
+// ── 版式档位（原型 C 的节奏，2026-10-18）──────────────────────────
+// 原型 C 的字号阶梯：分区标签 10px/700 · 会话条目 12px · 正文 13–14px ·
+//   卡片标题 11px · 品牌字 15px。现状是「几乎全 11–13px 单字重」，
+//   没有层级（`docs/variant-c-ecdi-mapping.md` §3.3 警告 10–11px CJK 会糊）。
+// ★ 判据：**中文不进 10px**（雅黑/SimSun 在 10px 下笔画糊成一团，§3.3 实测），
+//   所以「分区标签」这一档用 **11px + kDarkMuted + 不加空格**实现
+//   （现状的 `"会 话"` 是手撒空格伪装 letter-spacing，在等宽观感下反而散）。
+inline constexpr float kFontMicro  = 11.0f;   // 分区标签 / 卡片标题 / 底栏
+inline constexpr float kFontSmall  = 12.0f;   // 会话条目 / chip / 元信息
+inline constexpr float kFontBody   = 13.0f;   // 正文（气泡 / 工具标题）
+inline constexpr float kFontTitle  = 14.0f;   // 会话头标题 / 主按钮
+inline constexpr float kFontBrand  = 15.0f;   // 品牌字（顶栏 harness）
+
+// ── 间距档位（原型 C：画布留白 22px、消息间距 23px、气泡内边距 10-12px）──
+inline constexpr int kPadFrame    = 14;   // 三栏容器内边距
+inline constexpr int kGapSection  = 18;   // 分区之间
+inline constexpr int kRowGapSide  = 6;    // 侧栏条目之间（现状 4）
+inline constexpr int kPadCard     = 10;   // 卡片内边距
 
 // ── 字体工厂（2026-10-18）──────────────────────────────────────
 // 全仓构造 `ECDI::Font` 都该走这里，理由：
@@ -357,6 +426,36 @@ inline ECDI::Font MonoFont(float size) {
     ECDI::Font f;
     f.size = size;
     f.family = kMonoFamily;
+    return f;
+}
+
+// ── 拉丁字重出口（2026-10-18，原型 C 的排版层级）──────────────────
+// 背景：原型 C 的品牌字/卡片标题/会话名选中态都是 600–700 字重，而 `ECDI::Font`
+//       只有 `size` + `family`（`ECDI/Core/Font.h:17-18`），**没有字重字段**；
+//       GDI 后端 `GetOrCreateFont` 的缓存键 `std::make_tuple(font.size, font.family,
+//       effectiveDpi)`（`D:\Project\ECDI\ECDI\src\Render\GDIBackend.cpp:1372`）里
+//       也没有字重，`lfWeight` 在 `:1384` 硬编码 `FW_NORMAL` ⇒ 结构上不可达，
+//       除非改 ECDI（`docs/ecdi-capability-requests.md` REQ-10，候选 ⓐ 给 Font 加
+//       `uint16_t weight = 400`，GDI 两处各一行即可消费，两链同解）。
+//
+// ★ 过渡手段（本仓现在就能用）：**族名写样式变体名**。`Win32FontSource` 的注册表
+//   反查强度 2 就是「`<family> ` 前缀 = 样式变体」（`Win32FontSource.cpp:244-264`），
+//   本机有 `Segoe UI Semibold (TrueType) : seguisb.ttf` ⇒ **拉丁文两链都解析到
+//   同名 face**（GDI `GetTextFaceW` 命中 + FT 强度 3 命中 `seguisb.ttf`），
+//   墨迹量 GDI 1.20× / GL 1.21×（`docs/variant-c-ecdi-mapping.md` §2.2）。
+//
+// ★★ 硬约束：**只许给纯拉丁串用**。中文加粗两链无公共解 ——
+//   `Microsoft YaHei Bold` 在 GDI 链 `GetTextFaceW` **回落宋体**（与 SimSun 同宽），
+//   FT 链却解析到 `msyhbd.ttc` ⇒ 两链落到不同 face，观感直接分裂；
+//   而 GL 链 `Win32FontSource` **无字体回退**，缺字码点直接消失。
+//   所以含 CJK 的标签一律走 `SansFont()`，靠**字号 + 颜色 + 留白**代偿字重层级
+//   （§3.1 已定论）。给混合串用 SemiFont = 中文在 GL 后端整段空白。
+inline const char* kSemiFamily = "Segoe UI Semibold";   // 拉丁 Semibold（两链同解）
+
+inline ECDI::Font SemiFont(float size) {
+    ECDI::Font f;
+    f.size = size;
+    f.family = kSemiFamily;
     return f;
 }
 

@@ -1,4 +1,4 @@
-﻿#include "PromptBar.h"
+#include "PromptBar.h"
 
 #include "ECDI/Core/Color.h"
 #include "ECDI/Theme/ButtonStyle.h"
@@ -68,7 +68,7 @@ PromptBar::PromptBar() {
     // ★ 样式（含焦点描边色）已由 ComposerBox 自管，此处不再 SetStyle。
     AddChild(std::move(input));
 
-    auto hint = std::make_unique<ECDI::Label>("Enter 发送 · Shift+Enter 换行");
+    auto hint = std::make_unique<ECDI::Label>("点击发送提交");
     m_hint = hint.get();
     m_hint->SetTextColor(harness::kDarkMuted);
     m_hint->SetFont(harness::SansFont(10.5f));
@@ -149,19 +149,20 @@ void PromptBar::SetStateDrivenEnabled(bool enabled) {
 void PromptBar::LayoutChildren() {
     if (!m_input) return;
     const int buttonW = 64;
-    const int controlH = 32;
     const int padX = 12;
-    m_input->SetSize(GetWidth() - 2 * padX - 2 * buttonW - 20, controlH);
-    m_input->SetPosition(padX, 6);
+    // Give the composer a clear writing surface and a separate action row, like variant C.
+    // Keep the editor single-line until Enter/newline behavior is implemented explicitly.
+    m_input->SetSize(GetWidth() - 2 * padX, 44);
+    m_input->SetPosition(padX, 8);
     if (m_hint) {
-        m_hint->SetPosition(padX + 2, 6 + controlH + 2);
+        m_hint->SetPosition(padX + 2, 66);
     }
     if (m_send) {
-        m_send->SetSize(buttonW, 38);
-        m_send->SetPosition(GetWidth() - padX - buttonW, 9);
+        m_send->SetSize(buttonW, 28);
+        m_send->SetPosition(GetWidth() - padX - buttonW, 58);
     }
     if (m_stop) {
-        m_stop->SetSize(buttonW, 38);
-        m_stop->SetPosition(GetWidth() - padX - 2 * buttonW - 10, 9);
+        m_stop->SetSize(buttonW, 28);
+        m_stop->SetPosition(GetWidth() - padX - 2 * buttonW - 10, 58);
     }
 }

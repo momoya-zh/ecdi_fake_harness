@@ -1,4 +1,4 @@
-﻿# variant-c 落地对照表 · 每个视觉效果的 ECDI 实现路径
+# variant-c 落地对照表 · 每个视觉效果的 ECDI 实现路径
 
 > **用途**：把 `docs/prototype/harness-hifi-variant-c.html` 里的视觉手法，逐条对到 ECDI 现有能力上，
 > 判明「能直接画 / 要换实现 / 真缺能力」三档，并把真缺的部分登记进 `docs/ecdi-capability-requests.md`。
@@ -326,5 +326,51 @@ L\* 空间只有 100；而深色画布 L\*=8.24，向上有 92 的余量。**同
   （落到 SimSun）作为**回归基线**，浅色才用雅黑。两主题字形不同是**有意为之**，
   不是 bug——若要让深色也换雅黑，行高会 +19%（`SimSun 16 → YaHei 19` @14px），
   需要连带调所有硬编码行高。
+
+---
+
+## §6 ★ 系统标题栏（CaptionBar）随主题切色（2026-10-18 补记）
+
+§5 落地的是 **HUD 顶栏**（`BuildTopBar()` 的 36px 原型 C 顶栏），**不是** Windows 系统标题栏。
+窗口还是 `ChromeMode::Borderless`，最上面那条 32px 的 `ECDI::CaptionBar` 一直沿用 ECDI 的硬编码深色
+（`CaptionBar.cpp:31` 底色 `#26282d` + `:37` 标题 `#ebecf0`）⇒ **浅色主题下它是唯一一条深色带**，
+`--theme light` 看起来「上面糊了一条」。原型 variant-c 的 `.titlebar`（`docs/prototype/harness-hifi-variant-c.html:22`，
+54px + `border-bottom: 1px solid var(--line)`）在真 GUI 里由两条共同承担：32px 系统 CaptionBar + 36px HUD 顶栏。
+
+### 6.1 为什么不能在框架侧修
+
+`CaptionBar` / `CaptionButton` 的颜色**全部硬编码**在 ECDI 源码里，且 `CaptionButton` 是
+`class CaptionButton final`、无样式 API；`Theme` 抽象基类的 9 个 `Get*Style()` 里**没有 caption 令牌**
+⇒ 按项目铁律（不改 ECDI），只能由 harness 侧派生覆盖。落地 = `gui/src/ThemedCaptionBar.h`
+（`ThemedCaptionBar : ECDI::CaptionBar` + 自绘 `ThemedCaptionButton : ECDI::Widget`），
+`gui/src/Theme.h` 增 8 个 caption 令牌，`App.cpp:388` 构造点换成派生类。账本登记 `TODO-04`。
+
+### 6.2 落地后像素读数（截图 `.scratch/caption-theme/caption-*-top.png`）
+
+| 量 | 浅色 `--theme light` | 深色（默认） |
+|---|---|---|
+| caption 底色 | `#f8f9fb`（248,249,251） | `#26282d`（38,40,45） |
+| 标题字色 | `#23262e`（抗锯齿边缘） | `#ebecf0`（235,236,240） |
+| close glyph | `#696f7b`（105,111,123） | `#cfcfd5`（207,209,213） |
+| min / max / close 墨迹量（9×9 窗口） | 1 横线 / 4 线方框 / 2 对角线 | 同左，逐格一致 |
+
+⇒ **底色、标题字、三钮 glyph 全部随主题切换**；三钮几何与原生逐格一致（ASCII 墨迹图人工核对过）。
+深色令牌与 ECDI 原生**逐值相同** ⇒ 深色回归基线不变。
+
+### 6.3 两个非显然的坑
+
+**① 浅色 hover 必须是「黑」预混，不是白。** ECDI 原生 hover/pressed 是白 @26 / 白 @45
+（`kHoverBg` / `kPressedBg`）——在深色底上是「提亮」，照搬到浅色 `#f8f9fb` 上等于**无变化**
+（白叠白）。浅色令牌改成 `(0,0,0,26)` / `(0,0,0,45)`，与深色方向相反，同 §5.3① 的
+「两套主题层次方向相反」是同一个根因。半透明合成本身可用：`Color.a<1` 时 `DrawRect` 走
+`BlendAlphaSolid`（`GDIBackend.cpp:649`），REQ-11 只影响 `DrawText`/`DrawFocusRect`。
+
+**② 派生类释放基类按钮后，绝不能调 `CaptionBar::SetSize` / `CaptionBar::OnPaint`。**
+`CaptionBar.cpp:78-84` 的 `SetSize` 会调私有的 `RelayoutChildren()`（解引用 `m_minButton` 等），
+`:116-129` 的 `OnPaint` 会调 `m_maxButton->SetGlyph(...)`。ThemedCaptionBar 在构造里把三个原生
+按钮 `RemoveChild` 掉了 ⇒ 这两个 override 必须限定到 `ECDI::Widget::SetSize` / `ECDI::Panel::OnPaint`
+基类实现，并在自己的 `OnPaint` 里按 `GetWindowState()` 同步 max glyph。否则是 use-after-free
+（不是「可能」，是必然——`SetSize` 每次布局 Arrange 都会被调）。
+
 
 

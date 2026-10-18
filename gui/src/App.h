@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // 应用组装（规格 §3）：三栏工作台（低保真原型变体 A）。
 // 顶栏 HUD · 左栏（会话/回放进度）· 中栏转录 · 右栏检查器（协议健康/评估读数/用量）
 // · Composer · 状态栏；~30Hz 定时器拉取回放行、合并 delta；退出时输出评估摘要（§6.3）。
@@ -37,9 +37,8 @@ struct CliOptions {
     std::string autoAnswer;             // --auto-answer allow|deny（无人值守跳过等待）
     int autoCloseMs = 0;                // --auto-close <ms>（跑批/冒烟自动退出；0 = 关闭）
     bool useGl = false;                 // --backend gl（Phase 26 批二：GL 后端 A/B；默认 GDI）
-    // ★ 2026-10-18 v7：--theme light —— 浅色令牌（Theme.h MakeLight）。
-    //   默认 false = 既有深色，**逐位零回归**；浅色是新增路径，用于对照 variant-c。
-    bool lightTheme = false;            // --theme light|dark
+    // 浅色是默认交互主题（对应 variant-c）；--theme dark 保留深色选项。
+    bool lightTheme = true;             // --theme light|dark
     bool cullProbe = false;               // --cull-probe：包 PaintProbe 计数每帧到达后端的命令
     int scrollSweepStep = 0;              // --scroll-sweep <px>：加载完后从顶扫到底（0 = 关）
     std::filesystem::path corePath;       // --core <exe>：拉起假 core 走真子进程（P1.5）
@@ -127,6 +126,8 @@ private:
         ECDI::Label* sessSession = nullptr;  // 左栏：活动会话 id
         ECDI::Label* sessCore = nullptr;     // 左栏：会话行 meta（core 版本）
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
+        ECDI::Label* convTitle = nullptr;    // 中栏会话头：标题（原型 C .conversation-head）
+        ECDI::Label* convSub = nullptr;      // 中栏会话头：元信息副标
         ECDI::Label* healthSeq = nullptr;    // 右栏：seq 连续性（I4）
         ECDI::Label* healthViol = nullptr;   // 右栏：违规 · 未知
         ECDI::Label* healthKind = nullptr;   // ★ 右栏：未知 kind 计数（2026-10-13，协议空白）

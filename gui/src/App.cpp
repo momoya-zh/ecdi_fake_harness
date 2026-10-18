@@ -1,4 +1,4 @@
-﻿#include "App.h"
+#include "App.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -26,9 +26,11 @@
 #include "ECDI/Layout/VerticalLayout.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Window/Window.h"
+#include "ECDI/Window/CaptionBar.h"
 
 #include "Theme.h"
 #include "UiKit.h"
+#include "ThemedCaptionBar.h"
 
 #include <algorithm>
 #include <chrono>
@@ -40,9 +42,13 @@
 namespace {
 
 constexpr int kListRowHeight = 28;   // listlayout 模式的固定行高（DIP）
-constexpr int kRowGap = 4;
+constexpr int kRowGap = 10;          // 行间距（原型 C 的消息间距 23px ⇒ 折半，紧凑窗口下够用）
 constexpr int kRowPadX = 10;
-constexpr int kHeaderH = 26;         // tool 卡片标题高
+// ★ 画布左右留白（原型 C 的 22px 画布 padding）。此前行从 x=0 起排，
+//   气泡/工具卡**贴着中栏边线**——这是"看起来挤"最直接的来源。
+//   紧凑窗口（1120）下取 16，既留出呼吸感又不白吃掉横向空间。
+constexpr int kCanvasPadX = 16;
+constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C 的 39px
 
 // 视觉令牌唯一来源 = Theme.h（2026-10-06 v6：对齐用户高保真模型）
 // ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
@@ -126,6 +132,22 @@ inline ECDI::Color Pick(bool probe, const ECDI::Color& normal, const ECDI::Color
 int ContentWidth(const ECDI::ScrollView* scroll) {
     const int w = scroll ? scroll->GetWidth() : 0;
     return w > 80 ? w - 40 : 600;   // 扣除滚动条与边距；未布局前给初值
+}
+
+// ★★ 中栏会话头的标题/副标（2026-10-18，原型 C 的 `.conversation-head`）——
+//   **单一真相源**：两处生成（建头、`RefreshHud` 里 hello/会话 id 到达后更新），
+//   各写一份必然漂移（同 `UnknownKindText` 首版两处各写一份的教训）。
+//   ★ 标题用**夹具文件名**（拉丁，可用 Semibold 出口加重）而非写死「harness 会话」——
+//     用户要的是「知道自己在聊什么」，而系统标题栏在深色密排版里不构成答案。
+//   ★ 副标三要素 = 协议版本 + 模式 + 工作区名（C 的 `在 ECDI_fake_harness · 今天 14:32`
+//     在落地时换成真实来源，不写死时间：本 GUI 的时间轴由回放 `ts` 驱动，
+//     墙上时钟与协议时间是两个量纲）。
+std::string ConversationTitle() {
+    return "harness 会话";
+}
+
+std::string ConversationSubtitle() {
+    return "协议 v2 · 回放模式";
 }
 
 // ★★ 未知 `kind` 行的正文拼法（2026-10-13）——**单一真相源**。
@@ -291,8 +313,12 @@ int HarnessApp::Run() {
     }
     ECDI::RenderingBackend* const requestedBackend = services.renderer.get();
 
-    ECDI::Window& win = application.Create("ECDI harness - " + m_options.fixtureName,
-                                           1120, 760, std::move(services));
+    const std::string windowTitle = "ECDI harness - " + m_options.fixtureName;
+    ECDI::Window& win = application.Create(windowTitle, 1120, 760, std::move(services));
+    // 使用 ECDI CaptionBar（参照 examples/ModelProbe）：逻辑命中区和实体栏高保持一致，
+    // 必须在 Show()/Application::Run() 之前配置窗口 chrome。
+    win.SetChromeMode(ECDI::ChromeMode::Borderless);
+    win.SetCaptionHeight(ECDI::CaptionBar::kDefaultHeight);
 
     if (m_options.useGl) {
         if (requestedBackend == nullptr || !requestedBackend->IsReady()) {
@@ -356,6 +382,14 @@ int HarnessApp::Run() {
 void HarnessApp::BuildUi(ECDI::Window& window) {
     ECDI::Widget& root = window.GetRootWidget();
     root.SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true));
+
+    // CaptionBar 是 root 的直接子项：保持贴边全宽，空白区可拖动，按钮由 harness 自绘
+    // （ECDI 原生 CaptionBar 把颜色写死，跟不了主题 —— 见 ThemedCaptionBar.h 头注）。
+    auto caption = std::make_unique<harness::ThemedCaptionBar>(
+        window, "ECDI harness - " + m_options.fixtureName);
+    caption->SetSize(1120, ECDI::CaptionBar::kDefaultHeight);
+    root.AddChild(std::move(caption));
+
     BuildTopBar(root);
     BuildMainArea(root);
     BuildBottom(root);
@@ -380,9 +414,12 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     m_hud.title = title.get();
     title->SetTextColor(kDarkInk);
     {
-        title->SetFont(harness::SansFont(13.0f));
+        // ★ 2026-10-18 原型 C：品牌字 15px/700。**"harness" 是纯拉丁** ⇒ 这是
+        //   `SemiFont`（`Segoe UI Semibold`）唯一合法的用处——中文串绝不能用
+        //   （GDI 回落宋体 / GL 解析 msyhbd.ttc ⇒ 两链不同 face，见 Theme.h）。
+        title->SetFont(harness::SemiFont(harness::kFontBrand));
     }
-    title->SetSize(64, 20);
+    title->SetSize(72, 20);
     bar->AddChild(std::move(title));
 
     // chip = 药丸 Panel + 内嵌 Label；accent 变体描边用 --accent、字用 #cfe1ff
@@ -447,7 +484,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     side->SetStyle(ECDI::PanelStyleOverride{
         .background = kSidebarBg,
         .borderWidth = 1.0f, .borderColor = kLine});
-    side->SetLayout(std::make_unique<ECDI::VerticalLayout>(12, false, 10));
+    side->SetLayout(std::make_unique<ECDI::VerticalLayout>(harness::kRowGapSide, false, harness::kPadFrame));
 
     auto newSess = std::make_unique<ECDI::Button>("＋ 新建会话");
     newSess->SetTextColor(kAccentInk);
@@ -456,7 +493,8 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         .border = harness::kDarkAccent,
         .borderWidth = 1.0f,
         .cornerRadius = kRadiusBtn});
-    newSess->SetSize(180, 30);
+    newSess->SetSize(172, 32);
+    newSess->SetFont(harness::SansFont(harness::kFontBody));
     newSess->SetOnClick([this] {
         AddNoticeRow("[新建会话 仅记录]", kDarkMuted);
         Relayout();
@@ -464,41 +502,57 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     });
     side->AddChild(std::move(newSess));
 
-    AddLine(*side, "会 话", kDarkMuted, true, 170, 13.0f);
+    // ★ 2026-10-18 原型 C 形态：分区标签 10px/700 letter-spacing ⇒ 落地为
+    //   **11px + muted + 不加空格**（中文不进 10px：§3.3 实测会糊；`"会 话"`
+    //   那种手撒空格是伪装 letter-spacing，等宽观感下反而散）。
+    //   ★ 分区名 `工作区`/`项目` 直接沿用 C 的措辞（C 左侧第一段就叫「工作区」）。
+    AddLine(*side, "工作区", kDarkMuted, true, 172, harness::kFontMicro);
     {
-        auto row = uikit::Row(180, 28, 8, 8);
+        // 会话行 = navitem.selected 的等价物（C 的 `.navitem.selected`）
+        auto row = uikit::Row(172, 28, 8, 8);
         row->SetStyle(ECDI::PanelStyleOverride{
-            .background = kPanel2, .cornerRadius = 6.0f});
+            .background = kPanel2, .cornerRadius = 8.0f});
         row->AddChild(uikit::Dot(7, harness::kDarkAccent));
-        auto name = uikit::Label("—", 60, 16, kDarkInk);
+        auto name = uikit::Label("—", 60, 16, kDarkInk, harness::kFontSmall);
         m_hud.sessSession = name.get();
         row->AddChild(std::move(name));
-        auto meta = uikit::Label("—", 72, 16, kDarkMuted, 10.5f);
+        // meta 显示 core 版本（C 的 session 行右侧是相对时间，但本 GUI 的
+        // 「会话」只有一条：回放夹具 ⇒ 显示 core 版本比显示假时间更诚实）
+        auto meta = uikit::Label("—", 72, 16, kDarkMuted, harness::kFontSmall);
         m_hud.sessCore = meta.get();
         row->AddChild(std::move(meta));
         side->AddChild(std::move(row));
     }
 
-    AddLine(*side, "回 放", kDarkMuted, true, 170, 13.0f);
+    // ★★ 回放进度条（I4 评估钩子）**保留**，但改成 C 那种「细线段」形态：
+    //   原型 C 没有这一块，而它是协议 v2 的评估读数 ⇒ 折中方案是**不单独占一个
+    //   分区**，改成会话条目下方的一条 3px 细轨 + 右侧计数，视觉上从「一个区块」
+    //   退化为「一行元信息」，既保住读数又不破坏 C 的节奏。
     {
+        auto row = uikit::Row(172, 16, 8);
         auto prog = std::make_unique<ECDI::Label>("0 / 0");
         m_hud.sessProgress = prog.get();
-        prog->SetTextColor(kDarkInk);
-        { prog->SetFont(harness::SansFont(12.0f)); }
-        prog->SetSize(170, 16);
-        side->AddChild(std::move(prog));
+        prog->SetTextColor(kDarkMuted);
+        prog->SetFont(harness::SansFont(harness::kFontSmall));
+        prog->SetSize(172, 16);
+        row->AddChild(std::move(prog));
+        side->AddChild(std::move(row));
         auto bar = std::make_unique<ECDI::ProgressBar>();
         m_replayBar = bar.get();
-        bar->SetSize(180, 5);
+        bar->SetSize(172, 3);
         bar->SetStyle(ECDI::ProgressBarStyleOverride{
             .trackColor = kTrackBg, .fillColor = harness::kDarkAccent,
-            .cornerRadius = 2.0f});
+            .cornerRadius = 1.5f});
         side->AddChild(std::move(bar));
     }
 
-    AddLine(*side, "工 作 区", kDarkMuted, true, 170, 13.0f);
+    // ── 项目 / 工作区文件（C 的「项目」段）──
+    AddLine(*side, "项目", kDarkMuted, true, 172, harness::kFontMicro);
     {
-        // 夹具路径链 → 伪树（dir ▾ / 文件 ·；真实数据 = replayPath 的父目录链）
+        // 夹具路径链 → 伪树（dir `▽` / 文件 `·`；真实数据 = replayPath 的父目录链）
+        // ★ 2026-10-18：`▾`(U+25BE) / `▸`(U+25B8) 在两个主题的 face 里**都没有字形**
+        //   （`.scratch/symcand.py` 两轮实测：GDI 靠字体链接偷画、GL 直接空白）
+        //   ⇒ 换成 `▽`(U+25BD) / `›`(U+203A)，两主题都真有。
         std::filesystem::path p = m_options.replayPath;
         const std::string file = p.filename().generic_string();
         p = p.parent_path();
@@ -510,11 +564,11 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         }
         int indent = 0;
         for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
-            auto lbl = std::make_unique<ECDI::Label>("▾ " + *it + "/");
+            auto lbl = std::make_unique<ECDI::Label>("▽ " + *it + "/");
             lbl->SetTextColor(kDarkInk);
             ECDI::Font f = harness::MonoFont(12.0f);
             lbl->SetFont(f);
-            lbl->SetSize(180 - indent * 12, 16);
+            lbl->SetSize(172 - indent * 12, 16);
             side->AddChild(std::move(lbl));
             ++indent;
         }
@@ -522,8 +576,26 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         fileLbl->SetTextColor(kDarkMuted);
         ECDI::Font ff = harness::MonoFont(12.0f);
         fileLbl->SetFont(ff);
-        fileLbl->SetSize(180 - indent * 12, 16);
+        fileLbl->SetSize(172 - indent * 12, 16);
         side->AddChild(std::move(fileLbl));
+    }
+
+    // ── 侧栏底部身份行（C 的 `.side-bottom`）──
+    //   `margin-top:auto` 在 ECDI 里没有等价物（布局无弹性余量分配）⇒ 用
+    //   一根 1px 分隔线 + 紧跟的身份行近似「贴在底部的一行」。
+    {
+        auto sep = std::make_unique<ECDI::Panel>();
+        sep->SetSize(172, 1);
+        sep->SetStyle(ECDI::PanelStyleOverride{
+            .background = kLine, .borderWidth = 0.0f});
+        side->AddChild(std::move(sep));
+        auto row = uikit::Row(172, 24, 8, 8);
+        row->AddChild(uikit::Dot(14, kPanel2));
+        auto who = uikit::Label("本地工作区", 100, 16, kDarkMuted, harness::kFontSmall);
+        row->AddChild(std::move(who));
+        auto dots = uikit::Label("· · ·", 40, 16, kDarkMuted, harness::kFontSmall);
+        row->AddChild(std::move(dots));
+        side->AddChild(std::move(row));
     }
 
     main->AddChild(std::move(side));
@@ -535,6 +607,83 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     m_counting->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true, 0));
     m_counting->SetStyle(ECDI::PanelStyleOverride{
         .background = m_options.probeContrast ? kProbeBg : kContentBg});
+
+    // ── 中栏会话头（原型 C 的 `.conversation-head`，62px）──────────
+    // ★ 为什么加：原型 C 中栏顶部有「标题 + 元信息 + 操作」这一带，而现状
+    //   ScrollView 直接从第一行开始，**标题只存在于系统标题栏**（用户看不到
+    //   自己在聊什么）。C 的 `.head-actions` 是 3 个 iconbtn，但 `✳ ⚙ ◉ ⋯ ⌁ ☷ ✓ ⌂ ✕ ↻ ▦ ⌕`
+    //   这一整批图标在两个主题的 face 里**都没有字形**（`.scratch/symcand.py` 实测）
+    //   ⇒ 落地为**文字按钮**（诚实降级：不画没有字形的图标）。
+    {
+        auto head = std::make_unique<ECDI::Panel>();
+        head->SetSize(600, 62);
+        head->SetStyle(ECDI::PanelStyleOverride{
+            .background = m_options.probeContrast ? kProbeBg : kContentBg,
+            .borderWidth = 1.0f,
+            .borderColor = m_options.probeContrast ? kProbeBg : kLine});
+        head->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, true, harness::kPadFrame));
+
+        // 标题（拉丁 = 夹具名，可用 Semibold 出口）+ 元信息
+        auto titles = std::make_unique<ECDI::Panel>();
+        titles->SetSize(300, 36);
+        titles->SetLayout(std::make_unique<ECDI::VerticalLayout>(2, false, 0));
+        {
+            auto h1 = std::make_unique<ECDI::Label>(ConversationTitle());
+            m_hud.convTitle = h1.get();
+            h1->SetTextColor(m_options.probeContrast ? kProbeInk : kDarkInk);
+            // ★ 加重走 `SemiFont`（`Segoe UI Semibold`）——这是**拉丁专用**出口：
+            //   `Microsoft YaHei Bold` 在 GDI 回落宋体、GL 解析到 msyhbd.ttc，
+            //   两链不同 face ⇒ 中文串绝不能用。标题目前是「harness 会话」混排串，
+            //   **故意不用 SemiFont**（见 Theme.h 里那条硬约束的注释）。
+            h1->SetFont(harness::SansFont(harness::kFontTitle));
+            h1->SetSize(300, 18);
+            titles->AddChild(std::move(h1));
+            auto sub = std::make_unique<ECDI::Label>(ConversationSubtitle());
+            m_hud.convSub = sub.get();
+            sub->SetTextColor(m_options.probeContrast ? kProbeInk : kDarkMuted);
+            sub->SetFont(harness::SansFont(harness::kFontMicro));
+            sub->SetSize(300, 14);
+            titles->AddChild(std::move(sub));
+        }
+        head->AddChild(std::move(titles));
+
+        auto grow = std::make_unique<ECDI::Panel>();
+        grow->SetStretch(1);
+        grow->SetSize(10, 10);
+        head->AddChild(std::move(grow));
+
+        // 操作钮：C 是 3 个 iconbtn（↗ ☷ ···）——`↗` 两主题都有字形，
+        // `☷` 与 `⋯`(U+22EF) 都没有 ⇒ 后两个用 ASCII 文字（诚实降级，不画缺字图标）。
+        auto mkAct = [&head](const std::string& text, const std::string& tip) {
+            auto b = std::make_unique<ECDI::Button>(text);
+            b->SetTextColor(kDarkMuted);
+            b->SetFont(harness::SansFont(harness::kFontSmall));
+            // ★ 指示符顺序必须照抄 `ButtonStyleOverride` 的成员声明顺序
+            //   （`ECDI/Theme/ButtonStyle.h:44-51`：background / border / borderWidth /
+            //   cornerRadius / pressedBackground / hoverBackground / textAlignment /
+            //   foreground）。MSVC 对乱序 designated init 报 C7560，且 GCC/Clang 的
+            //   C++20 扩展也不保证顺序 ⇒ 一律按声明序写。
+            b->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b->SetSize(28, 24);
+            b->SetOnClick([tip] {
+                // ★ 这三个钮在原型 C 里也是装饰（inspector 显隐 + 分享 + 更多），
+                //   而右栏承载评估读数、**不能藏**（README 第一目的）⇒ 点了只提示，
+                //   不改变布局。tip 仅作提示文案用。
+                (void)tip;
+            });
+            head->AddChild(std::move(b));
+        };
+        mkAct("↗", "分享");
+        mkAct("≡", "检查器");
+        mkAct("···", "更多");
+        counting->AddChild(std::move(head));
+    }
 
     auto scroll = std::make_unique<ECDI::ScrollView>();
     m_scroll = scroll.get();
@@ -550,7 +699,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     // Composer 收进中栏（hi-fi .composer 在 .mid 内）
     auto composer = std::make_unique<PromptBar>();
     m_promptBar = composer.get();
-    composer->SetSize(600, 56);
+    composer->SetSize(600, 92);
     composer->SetOnSend([this](const std::string& text) {
         SendPrompt(text);
         if (m_promptBar && m_promptBar->input()) {
@@ -577,42 +726,46 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     insp->SetStyle(ECDI::PanelStyleOverride{
         .background = kInspBg,
         .borderWidth = 1.0f, .borderColor = kLine});
-    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(14, false, 12));
+    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(14, false, harness::kPadFrame));
 
     auto makeCard = [](int h) {
         auto card = std::make_unique<ECDI::Panel>();
         card->SetSize(200, h);
         card->SetStyle(ECDI::PanelStyleOverride{
-            .background = kPanel2, .cornerRadius = kRadiusCard2,
-            .borderWidth = 1.0f, .borderColor = kLine});
+            .background = kContentBg, .cornerRadius = kRadiusCard2,
+            .borderWidth = 1.0f, .borderColor = kCardBorder});
         return card;
     };
+    auto cardTitle = [](ECDI::Panel& card, const char* title) {
+        card.AddChild(uikit::Label(title, 178, 14, kDarkMuted, harness::kFontMicro));
+    };
     auto kvRow = [](ECDI::Panel& parent, const std::string& k,
-                    ECDI::Label** vOut, int kw = 70) {
+                    ECDI::Label** vOut, int kw = 56) {
         auto row = uikit::Row(178, 16, 10);
         row->AddChild(uikit::Label(k, kw, 16, kDarkMuted));
-        auto vl = uikit::Label("—", 90, 16, kDarkInk, 11.5f, /*mono=*/true);
+        auto vl = uikit::Label("—", 110, 16, kDarkInk, 10.5f, /*mono=*/true);
         *vOut = vl.get();
         row->AddChild(std::move(vl));
         parent.AddChild(std::move(row));
     };
 
-    AddLine(*insp, "渲染探针", kDarkMuted, true, 200, 13.0f);
+    // 卡片白底和内置标题对齐原型 C 的信息层级；统计项仍保留 harness 专用读数。
     {
-        auto card = makeCard(92);
+        auto card = makeCard(108);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        cardTitle(*card, "渲染探针");
         kvRow(*card, "重绘", &m_hud.evalPaints);
         kvRow(*card, "命令/帧", &m_hud.probeCmds);
         kvRow(*card, "执行", &m_hud.probeExec);
         insp->AddChild(std::move(card));
     }
 
-    AddLine(*insp, "用量", kDarkMuted, true, 200, 13.0f);
     {
-        // ★ 高度 92 → 124（2026-10-16）：上下文行由 16px 条改为 48px 环行。
+        // 标题收进白卡，与原型 C 的卡片层级一致。上下文环仍保留为评估读数。
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
-        auto card = makeCard(124);
+        auto card = makeCard(140);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        cardTitle(*card, "用量");
         // ★★ 协议 v2（2026-10-14）上下文占用百分比——**用户要求**。
         //   ★ 为什么必须有 `hello.context`：百分比**需要分母**，而 v1 协议里
         //     **没有任何容量字段** ⇒ 此前两根条只能拿 `max(input, output)` 当分母，
@@ -680,10 +833,10 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         insp->AddChild(std::move(card));
     }
 
-    AddLine(*insp, "协议健康", kDarkMuted, true, 200, 13.0f);
     {
-        auto card = makeCard(70);
+        auto card = makeCard(100);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        cardTitle(*card, "协议健康");
         // ★ 第三行（2026-10-13）：未知 kind 单独一行。
         //   为何不并进 healthViol：实测把「未知kind N」追加到同一 label 后**被裁掉**
         //   （该 label 宽 150，`违规 N · 未知 N · 未知kind N` 放不下，截图可见「未知k」）。
@@ -702,10 +855,10 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         insp->AddChild(std::move(card));
     }
 
-    AddLine(*insp, "权限历史", kDarkMuted, true, 200, 13.0f);
     {
-        auto card = makeCard(70);
+        auto card = makeCard(92);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        cardTitle(*card, "权限历史");
         for (size_t i = 0; i < 3; ++i) {
             auto row = uikit::Row(178, 14, 8);
             auto chip = uikit::Label("", 42, 14, kDarkMuted, 10.5f, /*mono=*/true);
@@ -750,9 +903,9 @@ void HarnessApp::BuildBottom(ECDI::Widget& root) {
         lbl->SetSize(width, 16);
         return lbl;
     };
-    m_hud.stMsgs = AddLine(*status, "0 / 0 msg", kDarkMuted, false, 120, 11.0f);
-    m_hud.stTokens = AddLine(*status, "tokens —", kDarkMuted, false, 150, 11.0f);
-    m_hud.stPaint = AddLine(*status, "paints —", kDarkMuted, false, 210, 11.0f);
+    m_hud.stMsgs = AddLine(*status, "0 / 0 msg", kDarkMuted, false, 120, harness::kFontMicro);
+    m_hud.stTokens = AddLine(*status, "tokens —", kDarkMuted, false, 150, harness::kFontMicro);
+    m_hud.stPaint = AddLine(*status, "paints —", kDarkMuted, false, 210, harness::kFontMicro);
     root.AddChild(std::move(status));
 }
 
@@ -946,7 +1099,9 @@ void HarnessApp::RouteLastMessage() {
         //   ★ **箭头不变**——箭头只由展开态决定，与是否结束无关。
         //     （我一度连箭头一起换成 `▶`，被截图证明违背用户明确给出的规格，已撤回。）
         //   ★ token 副标也在此刻出现（`tokens` 是 `block_end` 才有的字段）。
-        //   ★ 展开态也要更新文案：用户看到的是「已完成」+ `▲`。
+        //   ★ 展开态也要更新文案：用户看到的是「已完成」+ `︿`。
+        //     （2026-10-18 订正：此处原文写 `▲`，但思维链标题的箭头单一真相源是
+        //      `ReasoningTitle()`，用的正是用户指定的钝角 `﹀`/`︿`，不是 `▲`。）
         if (row->second->reasoning && block) {
             row->second->ended = true;
             if (row->second->headerBtn) {
@@ -964,29 +1119,35 @@ void HarnessApp::RouteLastMessage() {
         const bool isCall = (block && block->kind == "tool_call");
         if (isResult) {
             // hi-fi：结果行标题 = 工具名（来自 forId 引用的 call 块）+ ok/失败摘要
-            std::string title = "▸ ";
+            // ★ 2026-10-18：`▸`(U+25B8) 在两个主题的 face 里**没有字形**
+            //   （`.scratch/symcand.py` 两轮实测：GDI 靠字体链接偷画、GL 直接空白）
+            //   ⇒ 换成 `›`(U+203A)，同为右向尖括号，两主题都真有。
+            std::string title = "› ";
             if (const Block* call = m_transcript.FindBlock(block->forId)) {
                 title += call->name.empty() ? "tool" : call->name;
             } else {
                 title += "tool";
             }
             if (!block->summary.empty()) {
-                title += block->ok ? " · " : " · 失败 · ";
+                title += " · ";
                 title += block->summary;
             } else if (!block->ok) {
                 title += " · 失败";
             }
             row->second->headerBtn->SetText(title);
+            if (!block->ok) row->second->headerBtn->SetTextColor(kErrorDark);
         } else if (isCall) {
             // 工具调用：标题 = 工具名（+ 可选摘要）——此前 summary 在此被丢弃
-            std::string title = "▸ " + (block->name.empty() ? "tool_call" : block->name);
+            // ★ 2026-10-18：`▸` → `›`（字形可用性实测，见上方 isResult 分支注释）
+            std::string title = "› " + (block->name.empty() ? "tool_call" : block->name);
             if (!block->summary.empty()) {
-                title += block->ok ? " · " : " · 失败 · ";
+                title += " · ";
                 title += block->summary;
             } else if (!block->ok) {
                 title += " · 失败";
             }
             row->second->headerBtn->SetText(title);
+            if (!block->ok) row->second->headerBtn->SetTextColor(kErrorDark);
         }
         return;
     }
@@ -1095,6 +1256,9 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         auto label = std::make_unique<ECDI::Label>(block.text);
         rec.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        // ★ 正文必须走主题字体工厂：此前不 SetFont ⇒ family 为空 ⇒ 落 SimSun，
+        //   而侧栏/标题走雅黑 ⇒ **同一界面两种中文字形**（浅色下尤其割裂）。
+        label->SetFont(harness::SansFont(harness::kFontBody));
         panel->AddChild(std::move(label));
         AddRow(std::move(panel), rec, block.id);
         return;
@@ -1109,6 +1273,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         auto label = std::make_unique<ECDI::Label>(block.text);
         rec.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        label->SetFont(harness::SansFont(harness::kFontBody));   // 同 user 分支：统一中文 face
         if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
         if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
         panel->AddChild(std::move(label));
@@ -1217,6 +1382,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         auto label = std::make_unique<ECDI::Label>(shown);
         rec.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kWarn, kProbeInk));
+        label->SetFont(harness::SansFont(harness::kFontBody));   // 统一中文 face
         panel->AddChild(std::move(label));
         AddRow(std::move(panel), rec, block.id);
         return;
@@ -1225,10 +1391,10 @@ void HarnessApp::CreateBlockRow(const Block& block) {
     // tool_call / tool_result：可折叠卡片（默认折叠；标题按钮 + CollapsiblePanel 展开体）
     rec.tool = true;
     panel->SetStyle(ECDI::PanelStyleOverride{
-        .background = Pick(m_options.probeContrast, kToolBg, kProbeBg),
+        .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
         .cornerRadius = kRadiusTool,
         .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
-        .borderColor = kToolBorder});
+        .borderColor = kCardBorder});
 
     std::string title;
     std::string bodyText;
@@ -1240,16 +1406,17 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         bodyText = block.text.empty() ? block.summary : block.text;
     }
 
-    auto header = std::make_unique<ECDI::Button>("▸ " + title);
+    // ★ 2026-10-18：`▸`(U+25B8) 两主题 face 都无字形 ⇒ `›`(U+203A)（同右向尖括号语义）
+    auto header = std::make_unique<ECDI::Button>("› " + title);
     rec.headerBtn = header.get();
-    header->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+    header->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
     {
-        ECDI::Font f = harness::MonoFont(12.0f);
+        ECDI::Font f = harness::SansFont(12.0f);
         header->SetFont(f);
     }
     header->SetStyle(ECDI::ButtonStyleOverride{
-        .background = Pick(m_options.probeContrast, kToolHeaderBg, kProbeBg),
-        .border = kToolHeaderBorder,
+        .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
+        .border = kCardBorder,
         .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
         .cornerRadius = kRadiusBtn,
         .pressedBackground = kToolHeaderPressed,
@@ -1595,6 +1762,7 @@ void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color)
     auto label = std::make_unique<ECDI::Label>(text);
     rec.label = label.get();
     label->SetTextColor(color);
+    label->SetFont(harness::SansFont(harness::kFontSmall));   // 统一中文 face（原先落 SimSun）
     panel->AddChild(std::move(label));
     AddRow(std::move(panel), rec, std::string());
 }
@@ -1617,12 +1785,14 @@ void HarnessApp::Relayout() {
     }
 
     // autosize：每行按内容测量（文本测量成本正是本模式要暴露的指标 ④）
+    // ★ 行可用宽 = 内容宽 − 左右画布留白；行本身从 kCanvasPadX 起排。
+    const int innerW = std::max(120, contentW - 2 * kCanvasPadX);
     int y = 0;
     for (RowRec& r : m_rows) {
         int rowH = 0;
         // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
         if (r.tool || r.reasoning) {
-            const int bodyW = contentW - 2 * kRowPadX;
+            const int bodyW = innerW - 2 * kRowPadX;
             const int wrapW = std::max(40, bodyW - 20);
             int bodyH = 0;
             if (r.label) {
@@ -1652,7 +1822,7 @@ void HarnessApp::Relayout() {
             }
             r.bodyH = bodyH;
             if (r.headerBtn) {
-                r.headerBtn->SetSize(contentW - 2 * kRowPadX, kHeaderH);
+                r.headerBtn->SetSize(innerW - 2 * kRowPadX, kHeaderH);
                 r.headerBtn->SetPosition(kRowPadX, 2);
             }
             if (r.body) {
@@ -1667,18 +1837,18 @@ void HarnessApp::Relayout() {
             }
             rowH = 2 + kHeaderH + 2 + (r.expanded ? bodyH : 0);
         } else {
-            const int maxBubbleW = std::max(120, contentW * 78 / 100);
+            const int maxBubbleW = std::max(120, innerW * 78 / 100);
             const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
             if (r.label) {
                 if (r.ask) {
                     r.label->AutoSize();   // 权限问句保持单行
                     if (r.allowBtn) {
                         r.allowBtn->SetSize(70, 28);
-                        r.allowBtn->SetPosition(contentW - 160, 5);
+                        r.allowBtn->SetPosition(innerW - 160, 5);
                     }
                     if (r.denyBtn) {
                         r.denyBtn->SetSize(70, 28);
-                        r.denyBtn->SetPosition(contentW - 82, 5);
+                        r.denyBtn->SetPosition(innerW - 82, 5);
                     }
                 } else {
                     // 聊天气泡（Phase 29 wrap）：单行放得下 → 气泡收缩；
@@ -1707,18 +1877,18 @@ void HarnessApp::Relayout() {
                         r.label->AutoSize();   // 稳定期命中 wrap 布局缓存，不逐帧重建
                     }
                 }
-                r.label->SetPosition(kRowPadX, 5);
+                r.label->SetPosition(kRowPadX, 8);
             }
-            rowH = std::max(r.label ? r.label->GetHeight() + 10 : 0, r.ask ? 38 : 0);
+            rowH = std::max(r.label ? r.label->GetHeight() + 16 : 0, r.ask ? 38 : 0);
         }
         if (r.tool || r.reasoning || r.ask) {
             // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
-            r.panel->SetSize(contentW, rowH);
-            r.panel->SetPosition(0, y);
+            r.panel->SetSize(innerW, rowH);
+            r.panel->SetPosition(kCanvasPadX, y);
         } else {
             // 聊天气泡（hi-fi .msg max-width:78%）：user 右对齐、assistant 左对齐
-            const int maxBubbleW = std::max(120, contentW * 78 / 100);
-            int bubbleW = contentW;
+            const int maxBubbleW = std::max(120, innerW * 78 / 100);
+            int bubbleW = innerW;
             if (r.label) {
                 bubbleW = r.wrapped
                               ? maxBubbleW
@@ -1726,7 +1896,9 @@ void HarnessApp::Relayout() {
                                          r.label->GetWidth() + 2 * kRowPadX + 2);
             }
             r.panel->SetSize(bubbleW, rowH);
-            r.panel->SetPosition(r.alignRight ? contentW - bubbleW : 0, y);
+            r.panel->SetPosition(r.alignRight ? kCanvasPadX + innerW - bubbleW
+                                              : kCanvasPadX,
+                                 y);
         }
         y += rowH + kRowGap;
     }
@@ -1787,7 +1959,20 @@ void HarnessApp::RefreshHud() {
         m_hud.sessChip->SetText(m_sessionId.empty() ? "s-____" : m_sessionId);
     }
     if (m_hud.backendChip) {
-        m_hud.backendChip->SetText(m_backendName + " ▾");
+        // ★ 2026-10-18：`▾`(U+25BE) 两主题 face 都无字形 ⇒ `▽`(U+25BD) 空心下三角
+        m_hud.backendChip->SetText(m_backendName + " ▽");
+    }
+    // 中栏会话头（2026-10-18，原型 C）：副标随会话 id / core 版本到达而更新。
+    // ★ 2026-10-18 订正：此前只拼 `协议 v2 · 回放模式 · <sessionId>`，漏掉
+    //   `hello.core_version` 与 `protocol`（截图上副标是
+    //   `core 0.1.0 · session s-0001 · protocol 1` —— 与规格 §9 的
+    //   `version/protocol` 呈现位不符，看着像没接上 hello）。
+    //   ★ 只更新**会变的部分**（模式与工作区是启动即定的），标题保持建头时的值。
+    if (m_hud.convSub) {
+        std::string sub = "core " + (m_coreVer.empty() ? std::string("—") : m_coreVer);
+        if (!m_sessionId.empty()) sub += " · " + m_sessionId;
+        sub += " · protocol " + std::to_string(m_protocolVer);
+        m_hud.convSub->SetText(sub);
     }
     const std::string stateText =
         m_coreState.empty() ? std::string("idle") : m_coreState;
@@ -1892,7 +2077,9 @@ void HarnessApp::RefreshHud() {
             m_hud.healthKind->SetTextColor(kDarkMuted);
         } else {
             // 协议 §3.3 没有这些值 ⇒ 用琥珀色（与 seq 缺口的红、正常的灰区分）
-            m_hud.healthKind->SetText("未知 kind · " + std::to_string(uk) + " ⚠");
+            // ★ 2026-10-18：`⚠`(U+26A0) 两主题 face 都无字形 ⇒ `△`(U+25B3) 空心三角
+            //   （本身就是警示语义，且 `▲` 同族已在用），配琥珀色。
+            m_hud.healthKind->SetText("未知 kind · " + std::to_string(uk) + " △");
             m_hud.healthKind->SetTextColor(kWarn);
         }
     }
@@ -2166,7 +2353,7 @@ void HarnessApp::WriteSummary() {
         //   判据 = default 必须 expanded=false ∧ contentVisible=false（默认不渲染正文）；
         //          after-click-1 必须 expanded=true（点开了）；
         //          after-click-2 必须回到 false（可逆，不是单向）。
-        //   箭头不单列字段——它在 `headerText` 里（`▼`/`▶`/`▲`），
+        //   箭头不单列字段——它在 `headerText` 里（`﹀` 收起 / `︿` 展开），
         //   与用户可见文本**逐字相同**，避免"读数说箭头对了、屏幕上是另一个字"。
         json += "  \"reasoningProbe\": [";
         for (size_t i = 0; i < m_reasoningProbeLog.size(); ++i) {
