@@ -1491,6 +1491,11 @@ void HarnessApp::OnReplayTick() {
             if (m_options.sidebarProbe && !m_sidebarProbeDone) {
                 RunSidebarProbe();
             }
+            // ★★ Step 3 答案探针：排在最后（同样同步跑完即 Exit）。
+            //   顺序：reasoning → rebuild → session → sidebar → answer。
+            if (m_options.answerProbe && !m_answerProbeDone) {
+                RunAnswerProbe();
+            }
             return;
         }
         m_sess->replaySettled = true;
@@ -2129,10 +2134,13 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
             // ★ 已答状态**静默回填**：只置灰、不重发 answer（否则重建 = 重放一次决策，
             //   在 live 会话里就是往 core 又答了一遍 —— 那是会改协议状态的真副作用）。
+            // ★★ Step 3：走**同一条**视觉路径（`ApplyAnsweredLook`），答案取
+            //   `entry.answer`。第一版这里只有两行 `SetEnabled(false)` ⇒ 重建出来的
+            //   权限门与"刚答完"不同形（配色不还原），而 A==B 比的是文字与位标志，
+            //   看不见配色 ⇒ 又一次"比对全等但屏幕不一样"（同 0c 的 buildTitle 缺陷）。
             if (entry.answered) {
                 stored.answered = true;
-                stored.allowBtn->SetEnabled(false);
-                stored.denyBtn->SetEnabled(false);
+                ApplyAnsweredLook(stored, entry.answer);
             }
             return;
         }
@@ -2521,9 +2529,15 @@ std::vector<std::string> HarnessApp::SnapshotRows() const {
         line += '\x1f';
         line += r.answered ? "1" : "0";
         line += '\x1f';
-        if (r.headerBtn) line += r.headerBtn->GetText();
+        line += r.headerBtn ? r.headerBtn->GetText() : std::string();
         line += '\x1f';
         if (r.label) line += r.label->GetText();
+        line += '\x1f';
+        // ★★ Step 3：`answer` 段放**最后**——既有字段的编号一位不动，
+        //   `CompareRows` 的 `kFieldName[]` 只需在尾部追加一个名字；
+        //   放在中间会让 "expanded/answered/header/label" 全部错位，
+        //   历史读数与解读脚本会静默串味。
+        line += r.answer;
         out.push_back(std::move(line));
     }
     return out;
@@ -2567,7 +2581,7 @@ HarnessApp::RebuildProbeRec HarnessApp::CompareRows(const char* phase,
     // ★ 分歧必须报到**字段**一级：负对照的首个分歧常是 `B/b1 -> B/b1`（身份相同、
     //   展开态不同），只印身份就是一条**假线索**——排查的人会以为次序没错。
     //   字段名按 `SnapshotRows` 的拼装次序编号。
-    static const char* kFieldName[] = {"kind", "id", "expanded", "answered", "header", "label"};
+    static const char* kFieldName[] = {"kind", "id", "expanded", "answered", "header", "label", "answer"};
     auto firstDiffField = [](const std::string& x, const std::string& y) {
         std::vector<std::string> fx;
         std::vector<std::string> fy;
@@ -3095,6 +3109,247 @@ void HarnessApp::RunSidebarProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ Step 3：`answer` 进模型的取证。
+//
+// 这条探针要回答的问题只有一个：**"当时允许还是拒绝"这件事，重建之后还在不在屏上？**
+//   · 改之前：模型只存 `answered`（bool）⇒ 重建后两个钮都灰，读者无从判断结论。
+//     A==B 探针也抓不到——它比的是文字与位标志，而第一版的 `MaterializeOne` 连位标志
+//     都回填了（`stored.answered = true`），于是"丢结论"在读数上是**空的**。
+//     这是 0c `buildTitle` 缺陷的同族：**比对全等，屏幕不一样**。
+//
+// 判据设计（为什么每条都不可省）：
+//   ① 模型侧 `answer` 逐字等于点击的 choice —— 结论真的进了模型；
+//   ② 屏幕侧 `answerOnScreen` 从**两个钮的文字色**反推 —— 结论真的到了用户眼前，
+//      且这条读数**不查模型**（否则与 ① 同义反复，同 SnapshotRows 的纪律）；
+//   ③ forward：重建前后行快照 A==B（含新增的 answer 段）；
+//   ④ negative：把模型里的答案改成另一个值再重建，快照比对必须**不**相等，
+//      且 firstDivergence 必须指向 `answer` 字段 —— 证明 ③ 的相等不是"两边都没读"；
+//   ⑤ 复原：把答案改回去，必须重新相等 —— 证明差异来自那一个自变量（单变量纪律）；
+//   ⑥ 未答的权限门：answer 为空、两钮**都还能点** —— 负对照，证明"置灰"只发生在答过之后。
+void HarnessApp::RunAnswerProbe() {
+    if (!m_sess) { m_answerProbeDone = true; return; }
+    // ★ 只在回放模式：live 下点击「允许」会真的 `writer->Answer()` 发给 core，
+    //   探针不该在测量里制造真副作用（仪器污染实验）。
+    if (!m_sess->replay) { m_answerProbeDone = true; return; }
+
+    // 找第一个权限门：**记 timelineIdx 而不是 RowRec***，因为重建会清空 rows，
+    // 拿着的引用会立刻悬垂。timelineIdx 是模型侧坐标，重建不动它。
+    size_t askTimeline = static_cast<size_t>(-1);
+    for (const RowRec& r : m_sess->rows) {
+        if (r.ask) { askTimeline = r.timelineIdx; break; }
+    }
+    if (askTimeline == static_cast<size_t>(-1) || askTimeline >= m_sess->timeline.size()) {
+        // 夹具里没有 ask ⇒ 诚实记一条"没有可测的权限门"，别静默跳过
+        AnswerProbeRec rec;
+        rec.phase = "no-ask";
+        rec.firstDivergence = "(fixture has no ask row)";
+        rec.matched = false;
+        m_answerProbeLog.push_back(std::move(rec));
+        m_answerProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+
+    ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+
+    // ★★ 视口陷阱（第一版只有 demo 通过，就栽在这里）：夹具里的 ask 可以有很多个
+    //   （demo 1 / cot 2 / realistic 11 / scale 62），而转录重放完默认停在**底部**
+    //   ⇒ 第一个 ask 行通常在视口**之上**。
+    //   而 `Widget::HitTest` 对 ScrollView 这一类做了 `ClipsChildren() && !ContainsRect`
+    //   ⇒ 落在裁剪区外的坐标在**子树里**找不到目标，于是一路回落到兄弟节点
+    //   （滚动区下方的 composer / 空白）。合成点击**不报错、也没有任何变化**，
+    //   读数看上去就是"回调没接上"——一个纯粹由探针位置造成的假缺陷。
+    //   demo 的 1 个 ask 恰好落在视口内，所以首轮只有它通过：**单夹具通过不等于判据成立**。
+    auto bringIntoView = [&]() {
+        if (!m_scroll) return;
+        for (RowRec& r : m_sess->rows) {
+            if (!r.ask || r.timelineIdx != askTimeline || !r.panel) continue;
+            const int y = r.panel->GetY();
+            const int h = r.panel->GetHeight();
+            const int viewH = m_scroll->GetHeight();
+            const int cur = m_scroll->GetScrollOffsetY();
+            if (y < cur + 8) {
+                m_scroll->SetContentOffset(0, std::max(0, y - 8));
+            } else if (y + h > cur + viewH - 8) {
+                m_scroll->SetContentOffset(0, std::max(0, y + h - viewH + 8));
+            }
+            return;
+        }
+    };
+    bringIntoView();
+
+    auto askRow = [&]() -> RowRec* {
+        for (RowRec& r : m_sess->rows) {
+            if (r.ask && r.timelineIdx == askTimeline) return &r;
+        }
+        return nullptr;
+    };
+    auto askRowCount = [&]() {
+        size_t n = 0;
+        for (const RowRec& r : m_sess->rows) if (r.ask) ++n;
+        return n;
+    };
+    auto answeredCount = [&]() {
+        size_t n = 0;
+        for (const RowRec& r : m_sess->rows) if (r.ask && r.answered) ++n;
+        return n;
+    };
+    auto modelAnswers = [&]() {
+        size_t n = 0;
+        for (const auto& e : m_sess->timeline) if (!e.answer.empty()) ++n;
+        return n;
+    };
+    auto modelAnswer = [&]() { return m_sess->timeline[askTimeline].answer; };
+    // ★ 屏幕侧独立读数：从文字色反推（ECDI 无 style getter，这是唯一出口）
+    auto screenAnswer = [&]() -> std::string {
+        const RowRec* r = askRow();
+        if (!r || !r->allowBtn || !r->denyBtn) return "unknown";
+        const ECDI::Color a = r->allowBtn->GetTextColor();
+        const ECDI::Color d = r->denyBtn->GetTextColor();
+        const bool allowNormal = (a == kWarnInk);
+        const bool denyNormal = (d == kDenyInk);
+        const bool allowGray = (a == harness::kBtnDisabledInk);
+        const bool denyGray = (d == harness::kBtnDisabledInk);
+        if (allowNormal && denyGray) return "allow";
+        if (denyNormal && allowGray) return "deny";
+        if (allowNormal && denyNormal) return "";       // 未答：两钮都常态
+        return "unknown";                               // 两个都灰 = 答了但不认识的 choice
+    };
+    auto buttonsDisabled = [&]() {
+        const RowRec* r = askRow();
+        if (!r || !r->allowBtn || !r->denyBtn) return false;
+        return !r->allowBtn->IsEnabled() && !r->denyBtn->IsEnabled();
+    };
+
+    auto snap = [&](const char* phase) {
+        AnswerProbeRec rec;
+        rec.phase = phase;
+        rec.askRows = askRowCount();
+        rec.answeredRows = answeredCount();
+        rec.modelAnswers = modelAnswers();
+        rec.answerModel = modelAnswer();
+        rec.answerOnScreen = screenAnswer();
+        rec.buttonsDisabled = buttonsDisabled();
+        m_answerProbeLog.push_back(std::move(rec));
+    };
+    auto expect = [&](const char* phase, std::vector<std::pair<bool, const char*>> conds) {
+        snap(phase);
+        AnswerProbeRec& rec = m_answerProbeLog.back();
+        std::string bad;
+        for (const auto& c : conds) {
+            if (c.first) continue;
+            if (!bad.empty()) bad += "; ";
+            bad += c.second;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    };
+    auto clickCentreOf = [&](ECDI::Widget* w) {
+        if (!w) return false;
+        const ECDI::Point abs = w->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + w->GetWidth() / 2,
+                          static_cast<int>(abs.y) + w->GetHeight() / 2);
+        return true;
+    };
+
+    // ① 未答态（负对照⑥）：答案为空、两钮都还能点。
+    snap("baseline");
+    {
+        AnswerProbeRec& rec = m_answerProbeLog.back();
+        const RowRec* r = askRow();
+        const bool bothEnabled = r && r->allowBtn && r->denyBtn &&
+                                 r->allowBtn->IsEnabled() && r->denyBtn->IsEnabled();
+        rec.matched = (rec.askRows >= 1) && (rec.answerModel.empty()) &&
+                      (rec.answerOnScreen.empty()) && bothEnabled;
+        if (!rec.matched) {
+            rec.firstDivergence = "baseline should be unanswered with both buttons enabled";
+        }
+    }
+
+    // ② 点「允许」（真实派发链）⇒ 结论进模型 + 上屏 + 两钮置灰
+    {
+        clickCentreOf(askRow() ? askRow()->allowBtn : nullptr);
+        expect("answered", {{askRow() != nullptr, "ask row vanished"},
+                            {modelAnswer() == "allow", "model answer != allow"},
+                            {screenAnswer() == "allow", "screen does not show allow"},
+                            {buttonsDisabled(), "buttons still enabled after answering"}});
+    }
+
+    // ③ 再点一次同一个钮 ⇒ 必须**零变化**（禁用控件已退出命中；不得重复记账）
+    {
+        const size_t rowsBefore = m_sess->rows.size();
+        const size_t noticesBefore = m_sess->timeline.size();
+        clickCentreOf(askRow() ? askRow()->allowBtn : nullptr);
+        expect("reclick", {{modelAnswer() == "allow", "answer changed on second click"},
+                           {screenAnswer() == "allow", "screen changed on second click"},
+                           {m_sess->rows.size() == rowsBefore, "second click added a row"},
+                           {m_sess->timeline.size() == noticesBefore, "second click added an entry"}});
+    }
+
+    // ④ forward：重建 ⇒ 行快照 A==B，且结论仍在（这条是本步的核心判据）
+    std::vector<std::string> answeredRows;
+    {
+        answeredRows = SnapshotRows();
+        RebuildTranscriptView();
+        const RebuildProbeRec cmp = CompareRows("forward", answeredRows, SnapshotRows(), false);
+        const bool conditionsOk = (cmp.mismatches == 0) && modelAnswer() == "allow" &&
+                                  screenAnswer() == "allow" && buttonsDisabled();
+        expect("forward", {{conditionsOk, "forward rebuild lost the answer or changed rows"}});
+        // ★ 差异文本只在失败时写：无条件覆盖会把 `expect` 记下的"哪一条没满足"
+        //   换成一句与条件无关的比对摘要，排查的人反而看不到断言的失败原因。
+        if (!conditionsOk && m_answerProbeLog.back().firstDivergence.empty()) {
+            m_answerProbeLog.back().firstDivergence = cmp.firstDivergence;
+        }
+    }
+
+    // ⑤ negative：把模型里的答案改成 `deny` 再重建 ⇒ 比对必须**不**相等，
+    //    且首个分歧必须指向 `answer` 字段（否则 ④ 的相等可能只是"两边都没读这段"）。
+    //   ★ 负对照的"通过"= 看见了差异，故这里 `matched` 记**false**是正确的读数，
+    //     不能把它当失败——说明文字写进 `firstDivergence` 前缀。
+    {
+        m_sess->timeline[askTimeline].answer = "deny";
+        RebuildTranscriptView();
+        const RebuildProbeRec cmp = CompareRows("negative", answeredRows, SnapshotRows(), false);
+        snap("negative");   // ★ 先 push 再取引用：push_back 可能重分配，先取引用会悬垂
+        AnswerProbeRec& rec = m_answerProbeLog.back();
+        const bool sawDifference = (cmp.mismatches != 0);
+        // ★ 用 `find("answer [")` 而不是 `rfind("answer", 0)`：后者只在**位置 0** 匹配，
+        //   而差异文本形如 `idx=7 A/q1 -> A/q1 @answer [allow] -> [deny]`，
+        //   字段名永远不在开头 ⇒ 会把"差异正确指向 answer"误判成"没指向"。
+        //   （第一版就是这个 bug：四个夹具的 negative 相全部报
+        //    `divergence not in the answer field: ... @answer [...]`——差异明明就在 answer 上。）
+        const bool pointedAtAnswer = cmp.firstDivergence.find("answer [") != std::string::npos;
+        const bool screenFollowed = (screenAnswer() == "deny");
+        rec.matched = false;   // 负对照的期望就是"不匹配"
+        if (sawDifference && pointedAtAnswer && screenFollowed) {
+            rec.firstDivergence = "ok(expected divergence): " + cmp.firstDivergence;
+        } else if (!sawDifference) {
+            rec.firstDivergence = "negative control saw no difference -- snapshot ignores answer";
+        } else if (!pointedAtAnswer) {
+            rec.firstDivergence = "divergence not in the answer field: " + cmp.firstDivergence;
+        } else {
+            rec.firstDivergence += "screen did not follow the mutated answer";
+        }
+    }
+
+    // ⑥ 复原：答案改回 `allow` ⇒ 必须重新与 forward 快照相等（单变量纪律）
+    {
+        m_sess->timeline[askTimeline].answer = "allow";
+        RebuildTranscriptView();
+        const RebuildProbeRec cmp = CompareRows("restored", answeredRows, SnapshotRows(), false);
+        const bool conditionsOk = (cmp.mismatches == 0) && modelAnswer() == "allow" &&
+                                  screenAnswer() == "allow" && buttonsDisabled();
+        expect("restored", {{conditionsOk, "restore did not return to the forward state"}});
+        if (!conditionsOk && m_answerProbeLog.back().firstDivergence.empty()) {
+            m_answerProbeLog.back().firstDivergence = cmp.firstDivergence;
+        }
+    }
+
+    if (m_window) m_window->SetFocusedWidget(focusBefore);
+    m_answerProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -3119,11 +3374,17 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     if (rec.answered) return;
     rec.answered = true;
     // ★ 0c：已答进模型（重建时回填成"置灰"而不是"可再答一次"）
+    // ★★ Step 3：**答的是什么**也进模型。0c 只存了 `answered`（bool），于是任何
+    //   重建之后"当时允许还是拒绝"就丢了——两个钮都置灰，读者无从判断。
+    //   权限门是**授权决定**，不是一个"已处理"标记：丢掉结论等于把历史抹成空白。
     if (rec.timelineIdx < m_sess->timeline.size()) {
         m_sess->timeline[rec.timelineIdx].answered = true;
+        m_sess->timeline[rec.timelineIdx].answer = choice;
     }
-    if (rec.allowBtn) rec.allowBtn->SetEnabled(false);
-    if (rec.denyBtn) rec.denyBtn->SetEnabled(false);
+    rec.answer = choice;
+    // ★ 视觉走**同一条**路径（见 `ApplyAnsweredLook` 的注释：首答与重建必须同形，
+    //   否则"刚答完"和"重建后"长得不同，而 A==B 看不见配色差异）。
+    ApplyAnsweredLook(rec, choice);
     m_sess->waitForAnswer = false;
     if (m_sess->writer) {
         // live：真发 answer（协议 §4：需 id + choice；I3 的解除信号）
@@ -3136,6 +3397,56 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     m_hudDirty = true;
     AddNoticeRow("[answer] " + choice, kDarkMuted);
     RequestRepaint();
+}
+
+// ★★ Step 3：已答权限门的视觉。**首答与重建共用**（这是本函数存在的唯一理由）。
+//
+// 判据设计（为什么是"选中者留色、另一个灰化"而不是加一行回显文字）：
+//   · ECDI 的 Button **不画 disabled 态**（契约：灰化是调用方责任，先例
+//     `PromptBar::ApplySendStyle`）⇒ 若不自己处置，两个钮置灰后**像素完全不变**，
+//     屏幕上根本看不出"答过了"，更看不出"答的是什么"。
+//   · 加回显 Label 要动 `Relayout` 的 ask 分支（多一个子控件、多一处定位），
+//     而本步的契约是"只补模型、不改布局"——那会把一次数据修复变成一次布局改动。
+//   · 因此复用**已有**的两个钮：结论落在"哪个钮还是常态色"上。
+//     信息量相同（allow/deny/未答 三态可分），零新增控件，零布局改动。
+//
+// 可读回：ECDI 无 style getter，`GetTextColor()` 是唯一能问出"这个钮是什么色"的接口
+//   ⇒ 探针据此独立于模型判断"屏幕上是哪个答案"（同侧栏选中态的判据手法）。
+void HarnessApp::ApplyAnsweredLook(RowRec& rec, const std::string& choice) {
+    // 两个钮都**不可再点**（`SetEnabled(false)` 同时退出命中——`Widget::HitTest`
+    // 对禁用控件早退，故这里不需要额外的点击守卫）。
+    if (rec.allowBtn) rec.allowBtn->SetEnabled(false);
+    if (rec.denyBtn) rec.denyBtn->SetEnabled(false);
+
+    const bool allowPicked = (choice == "allow");
+    const bool denyPicked = (choice == "deny");
+    // 选中的那个留常态色；另一个进"已弃"外观。未知 choice（协议外的值）⇒ 两个都灰，
+    // 如实呈现"答了但答案不认识"，不编造一个看起来正常的状态。
+    auto paint = [](ECDI::Button* b, bool keepNormal, bool isAllow) {
+        if (!b) return;
+        const ECDI::Color fg = keepNormal ? (isAllow ? kWarnInk : kDenyInk) : harness::kBtnDisabledInk;
+        const ECDI::Color bg = keepNormal ? (isAllow ? kWarn : kBtnDenyBg) : harness::kBtnDisabledBg;
+        const ECDI::Color bd = keepNormal ? kAskBorder : harness::kBtnDisabledLine;
+        b->SetTextColor(fg);
+        // ⚠ 事实核对（2026-10-19，读 Button.cpp:243+ 后确认）：`Button::OnPaint` 的填充
+        //   **只**来自 `m_displayedBackground`，它**从不**用 ButtonStyle.border 画自身边框
+        //   ——border/borderWidth 唯一的消费者是焦点框（`HasFocus() && ShowFocusRect()` 时
+        //   传给 DrawFocusRect）。故这里设的 bd 既不画边、也不改底色，只是给"刚被点过的
+        //   那个钮"的焦点环定色（答完之后这个钮仍持焦点，直到焦点被别处拿走）。
+        //   留着它是因为删掉会让焦点环落到主题缺省色、与权限门的配色脱节；但**别指望
+        //   靠它加一圈边框**——要边框得外层包一个 Panel（ScrollView 那条 D13 同理）。
+        b->SetStyle(ECDI::ButtonStyleOverride{
+            .background = bg,
+            .border = bd,
+            .borderWidth = 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = bg,
+            .hoverBackground = bg});   // 禁用后不会再 hover，但钉死可防"状态回退时闪色"
+    };
+    paint(rec.allowBtn, allowPicked, true);
+    paint(rec.denyBtn, denyPicked, false);
+    // 记下视图侧结论（`SnapshotRows` 只读 RowRec，不回查模型——见字段注释）
+    rec.answer = choice;
 }
 
 // 通知行：**纯构造**（重建可重放）。
@@ -3971,6 +4282,60 @@ void HarnessApp::WriteSummary() {
                           r.sidebarVisible ? "true" : "false", r.midWidth,
                           r.matched ? "true" : "false",
                           esc(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ Step 3 机读证据（2026-10-19）：ask 的**答案内容**是否进模型、是否上屏。
+    //   判据（跑批脚本执行）：
+    //     · baseline.matched == true（未答：answer 空、两钮都可点 —— 负对照⑥）
+    //     · answered.answerModel 与 answered.answerOnScreen 都为 "allow"
+    //       （模型与屏幕**各自独立**读出同一个结论，不是同义反复）
+    //     · answered.buttonsDisabled == true
+    //     · reclick.matched == true（再点同一个钮零变化）
+    //     · forward.matched == true 且 forward.answerOnScreen == "allow"
+    //       （重建后结论仍在屏上 —— 这就是本步要修的缺陷的直检）
+    //     · negative.matched == **false**（负对照：改答案后重建必须报出差异）
+    //     · restored.matched == true（改回去必须重新相等 —— 单变量纪律）
+    if (m_options.answerProbe && !m_answerProbeLog.empty()) {
+        json += "  \"answerProbe\": [";
+        // ★ 自带一份转义（作用域同 sidebarProbe 段：不能复用别段的局部 lambda）
+        auto escA = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_answerProbeLog.size(); ++i) {
+            const AnswerProbeRec& r = m_answerProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"askRows\": %zu, \"answeredRows\": %zu, "
+                          "\"modelAnswers\": %zu, \"answerModel\": \"%s\", "
+                          "\"answerOnScreen\": \"%s\", \"buttonsDisabled\": %s, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.askRows, r.answeredRows, r.modelAnswers,
+                          escA(r.answerModel).c_str(), escA(r.answerOnScreen).c_str(),
+                          r.buttonsDisabled ? "true" : "false",
+                          r.matched ? "true" : "false",
+                          escA(r.firstDivergence).c_str());
             json += b;
         }
         json += "],\n";

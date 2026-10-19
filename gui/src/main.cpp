@@ -90,6 +90,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.sessionProbe = true;    // ★ Step 0d：新建/切换会话取证
         } else if (arg == L"--sidebar-probe") {
             options.sidebarProbe = true;    // ★ Step 1：侧栏列表 A==B + 删除取证
+        } else if (arg == L"--answer-probe") {
+            options.answerProbe = true;     // ★ Step 3：ask 的答案内容进模型取证
         }
     }
     if (argv) LocalFree(argv);
@@ -115,6 +117,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --order-probe                    Step 0a：回读块到达顺序（字典序陷阱取证）\n"
                     L"  --rebuild-probe                  Step 0c：照模型重建视图并逐行比对（含负对照）\n"
                     L"  --sidebar-probe                  Step 1：侧栏会话列表 A==B + 删除判据\n"
+                    L"  --answer-probe                   Step 3：ask 的答案内容进模型/上屏判据\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;

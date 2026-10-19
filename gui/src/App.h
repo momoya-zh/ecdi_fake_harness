@@ -115,6 +115,20 @@ struct CliOptions {
     //        否则"删了"和"删错了"分不清）
     //   ★ 默认 false ⇒ 零行为变化。
     bool sidebarProbe = false;            // --sidebar-probe：侧栏列表 A==B 取证
+    // ★★ Step 3 权限答案探针（2026-10-19）：ask 的**答案内容**进模型的取证。
+    //   ★ 为什么必须单独一条：`answered`（bool）已经能被 0c 的 rebuildProbe 覆盖，
+    //     但它只说"答过了"。本轮补的是 `answer`（"allow"/"deny"）——**旧读数对它
+    //     完全无感**：模型里没有这一位时，重建出来的权限门同样是"两个钮置灰"，
+    //     A==B 照样全等。同 0c 的 buildTitle 缺陷：状态缺失不改变"改变前后一致"。
+    //   ★ 判据（run 脚本执行）：
+    //     · answered.answer == "allow"/"deny"（点哪个就是哪个）
+    //     · forward.matched == true（重建后行快照全等，含新增的 answer 段）
+    //     · **负对照**：把模型里的 answer 改写成另一个值再重建 ⇒
+    //       matched 必须变 false，且 firstDivergence 指向 `answer` 字段
+    //       （否则比对函数没读这一段，上面那条全等不作数）
+    //     · 未答的 ask：answer 为空 ∧ 两个钮可用（负对照：补 answer 不得顺手置灰）
+    //   ★ 默认 false ⇒ 零行为变化。
+    bool answerProbe = false;             // --answer-probe：ask 答案内容进模型取证
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -236,6 +250,18 @@ private:
         ECDI::Color color;             // Notice ⇒ 文本色（其余不用）
         bool expanded = false;         // Block(tool/reasoning) ⇒ 用户展开态
         bool answered = false;         // Ask ⇒ 已答（重建时**只回填状态，不重发 answer**）
+        // ★★ Step 3（2026-10-19）：ask 的**答案内容**（"allow" / "deny"）。
+        //   ★ 为什么 `answered` 不够：它只说"答过了"，不说"答的是什么"。于是任何重建
+        //     （切会话 / 换主题 / 展开别的卡）都会把权限门画成"两个钮都置灰、看不出
+        //     当时允许还是拒绝"——**历史会话里的授权决定会凭空变成"未知"**。
+        //     这正是"打开历史会话"（下一步）的前置：不补这一位，重建出来的历史是残的。
+        //   ★ 为何是本地字段、不进协议：协议里 `answer {id, choice}` 是**发出去**的
+        //     回执，GUI 是它的**作者**；这里记的是作者自己的决定，属 GUI 侧状态。
+        //     补协议字段会让"GUI 不产生转录块"（PROTOCOL.md:244）这条边界含糊化。
+        //   ★ 空串 = 未答（与 `answered` 同义），故 `answered` 保留而不被这个字段取代：
+        //     两者一起才构成合法状态（answered=true 而 answer 为空 = 模型不一致，
+        //     由 `MarkAnswered` 的单一写入点保证不会出现）。
+        std::string answer;
     };
 
     // 行记录：m_rows 用 deque（push_back 不失效指针——回调捕获依赖这一点）
@@ -246,6 +272,11 @@ private:
         ECDI::CollapsiblePanel* body = nullptr;   // tool 卡片展开体，非拥有
         ECDI::Button* allowBtn = nullptr;         // ask 行按钮，非拥有
         ECDI::Button* denyBtn = nullptr;
+        // ★★ Step 3：已答的**结论**（"allow" / "deny"），视图侧的回填。
+        //   ★ 为何在视图侧也留一份：`SnapshotRows` 的纪律是"只读 RowRec 上已有的东西"。
+        //     若两侧都回查模型，比对就恒等（同义反复）；存在这里，重建时若模型里的
+        //     answer 没被搬上控件，B 侧就是空串 ⇒ 差异可见。这正是本步的判据来源。
+        std::string answer;
         bool tool = false;
         bool expanded = false;
         bool wrapped = false;                     // Phase 29：气泡文本是否已开断行（防 SetWordWrap 抖动）
@@ -355,6 +386,17 @@ private:
     void CreateAskRow(const json::Value& msg);
     void MarkAnswered(RowRec& rec, const std::string& choice);
     void AddNoticeRow(const std::string& text, const ECDI::Color& color);
+    // ★★ Step 3：把"已答"连同**答的是什么**一起画出来。
+    //   ★ 为什么必须抽成函数：首答（`MarkAnswered`）与重建（`MaterializeOne`）必须
+    //     走**同一条**视觉路径。若重建分支只写 `SetEnabled(false)`，同一条目在
+    //     "刚答完"与"重建后"就长得不一样，而 A==B 只比文字与 expand/answered 位，
+    //     看不见配色差异 ⇒ 又是一次"比对全等但屏幕不一样"（同 0c 的 buildTitle）。
+    //   ★ 做法：**选中的那个钮保持常态色，另一个灰化**（ECDI 不做 disabled 绘制，
+    //     灰化是调用方责任 —— 先例 `PromptBar::ApplySendStyle`）。于是"当时允许还是
+    //     拒绝"变成**像素**，不用新增控件、不动布局，且能被探针经 `GetTextColor()`
+    //     读回（ECDI 无 style getter，文字色是唯一可读回的标记 —— 同侧栏选中态）。
+    //   ★ 幂等：重建期对已答条目再跑一次无副作用。
+    void ApplyAnsweredLook(RowRec& rec, const std::string& choice);
 
     // ── ★★ 0d：多会话生命周期 ──────────────────────────────────────────
     // `CreateSessionFromOptions()`：按当前 CLI 建一个会话并 push 进 `m_sessions`，
@@ -728,6 +770,26 @@ private:
     std::vector<SidebarProbeRec> m_sidebarProbeLog;
     bool m_sidebarProbeDone = false;
     void RunSidebarProbe();
+
+    // ★★ Step 3（2026-10-19）：ask 答案内容（`answer`）进模型的取证。
+    //   形状同 `RunSessionProbe`：同步跑完即 Exit，不需要跨 tick（无动画参与）。
+    struct AnswerProbeRec {
+        std::string phase;          // baseline / answered / reclick / forward / negative / restored
+        size_t askRows = 0;         // 屏幕上的权限门行数
+        size_t answeredRows = 0;    // 其中已答的（RowRec::answered）
+        size_t modelAnswers = 0;    // 模型里 `answer` 非空的条目数
+        std::string answerModel;    // 模型侧此刻的答案（"allow"/"deny"/空）
+        // ★ 控件侧独立读数：**从两个钮的文字色反推**答案（不查模型）。
+        //   这是本探针非循环的关键——模型说 allow、屏幕也说 allow，才叫"答的结论
+        //   真的到了用户眼前"。ECDI 无 style getter，`GetTextColor()` 是唯一出口。
+        std::string answerOnScreen; // allow / deny / unknown / (空 = 两钮都在常态)
+        bool buttonsDisabled = false;  // 已答行的两个钮是否都置灰（不可再点）
+        bool matched = true;           // 行快照 A==B（仅 forward/negative/restored 有意义）
+        std::string firstDivergence;
+    };
+    std::vector<AnswerProbeRec> m_answerProbeLog;
+    bool m_answerProbeDone = false;
+    void RunAnswerProbe();
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
