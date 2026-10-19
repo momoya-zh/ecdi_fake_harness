@@ -56,6 +56,11 @@ error.txt
 Thumbs.db
 Desktop.ini
 
+# ===== GUI 侧状态（Step 5：打开历史会话的 sidecar）=====
+# <fixture>.jsonl.ui.json 存的是该回话的权限决定与展开态，属于用户本地状态
+# ——不是评估资产，不应入库（对比的是 jsonl 本体，不是它的附件）。
+*.jsonl.ui.json
+
 # ===== 注意 =====
 # protocol/fixtures/**/*.jsonl 是入库资产（含 2000 块的规模基线），
 # 绝不要添加忽略 *.jsonl 的规则——评估数据的可比性依赖它们被版本控制。

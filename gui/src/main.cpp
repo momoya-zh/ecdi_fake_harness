@@ -94,6 +94,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.answerProbe = true;     // ★ Step 3：ask 的答案内容进模型取证
         } else if (arg == L"--theme-probe") {
             options.themeProbe = true;      // ★ Step 4：整树重建 + 运行期主题切换取证
+        } else if (arg == L"--history-probe") {
+            options.historyProbe = true;    // ★ Step 5：打开历史会话（回放 + 跳到末尾 + sidecar）
         }
     }
     if (argv) LocalFree(argv);
@@ -121,6 +123,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --sidebar-probe                  Step 1：侧栏会话列表 A==B + 删除判据\n"
                     L"  --answer-probe                   Step 3：ask 的答案内容进模型/上屏判据\n"
                     L"  --theme-probe                    Step 4：整树重建 + 运行期主题切换判据\n"
+                    L"  --history-probe                  Step 5：打开历史会话（列表/跳到末尾/sidecar）判据\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;

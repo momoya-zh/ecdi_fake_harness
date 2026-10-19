@@ -150,6 +150,27 @@ struct CliOptions {
     //     · restored.matched == true（改回去必须重新相等 —— 单变量纪律）
     //   ★ 默认 false ⇒ 零行为变化；摘要里连 `theme`/`uiRebuilds` 两个键都不出现。
     bool themeProbe = false;              // --theme-probe：整树重建 + 主题切换取证
+    // ★★ Step 5（2026-10-19）：**打开历史会话**的取证。
+    //   ★ 这一步与前四步的关系：前四步都在"活动会话"内部折腾（列表/收起/答案/重建），
+    //     而这一步第一次让**磁盘上的文件**变成会话 ⇒ 引入了三种新的错误形态：
+    //     ① 打开一个文件却读出了别的内容（路径错位 / 串了会话）
+    //     ② 打开了但**没跳到末尾**（用户点开历史，看到的是一段慢慢播的回放）
+    //     ③ 历史里的授权决定被抹平成"未回答"（Step 3 修好的病换个位置复发）
+    //   ★ 判据（run 脚本执行）：
+    //     · `list`：侧栏历史行数 == 磁盘上 `*.jsonl` 的个数（自己数一遍，不只信 UI 计数）
+    //     · `open`：点一行 ⇒ 活动会话的 `originKind == "replay-history"`、
+    //       `label` == 该文件名、`blocks > 0`（不是空会话）
+    //     · `content`：**同一条 A==B**——历史打开的 blocks/deltas/messages 必须与
+    //       `--replay` 直接加载同一文件**逐项相等**（这是"作者仍是 core"的机读证据：
+    //       两条独立路径喂同一个文件，模型读数必须一致）
+    //     · `at-end`：打开后 `replay->Empty()` 为真（真的跳到末尾了，不是刚起步）
+    //     · `sidecar-missing`：状态文件不存在 ⇒ 所有 ask 的 answer 为空、两钮可用
+    //       （负对照：若这里读出答案，说明读的是别人的状态或被写死成"已答"）
+    //     · `sidecar-roundtrip`：写一份状态文件 ⇒ 重新打开 ⇒ 该 ask 的 answer 恢复、
+    //       两钮置灰（正对照：证明 sidecar 真被读了，而不只是"没报错"）。
+    //       ★ 探针收尾会把这份状态文件删掉，夹具目录保持零改动。
+    //   ★ 默认 false ⇒ 零行为变化；摘要里连 `history` 键都不出现。
+    bool historyProbe = false;
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -237,6 +258,14 @@ private:
         //   （走 `Button::RaiseClick` → 回调 → `RebuildUi`）。
         //   ★ 句柄进 Hud 的理由同 `sidebarToggle`：重建后要能被探针摸到并合成点击。
         ECDI::Button* themeToggle = nullptr;    // 顶栏：深色/浅色切换
+        // ★★ Step 5（2026-10-19）：侧栏「历史会话」区。
+        //   ★ 这里是**磁盘上的文件**变成会话的入口：点一行 = 新建一个 replay 会话
+        //     并直接跳到末尾。历史行与 `sessList` 里的会话行是两种东西：
+        //     前者是"可打开的文件"，后者是"已打开的会话"，前者点完会多出一行后者。
+        //   ★ `historyList` 是 ScrollView 而不是直接往 side 里塞：历史文件数无上限，
+        //     而侧栏是定宽定高的列（同 `sessList` 的理由）。
+        ECDI::ScrollView* historyList = nullptr;  // 左栏：历史会话列表滚动容器
+        ECDI::Label* historyCount = nullptr;      // 左栏：历史计数 `3 个历史文件`
         // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
         //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
         //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，
@@ -397,6 +426,23 @@ private:
         //   锚点。若留在窗口级，新建/切回的会话会拿**别人的**锚点算 elapsedMs ⇒
         //   一上来就把整条夹具判成"早已到期"并瞬间抽干（读数全错，而且错得很安静）。
         std::string label;                         // 会话显示名（侧栏 / 会话头）
+        // ★★ Step 5（2026-10-19）：**这个会话是从哪来的**。
+        //   ★ 为什么必须记：在此之前"来源"是**隐式**的——`m_options.corePath` 空不空
+        //     就决定了整个进程是 live 还是 replay，而所有会话共享同一份 options。
+        //     一旦"打开历史会话"出现，同一个进程里可以同时有
+        //     live / 启动时的 replay / 从磁盘点开的历史 replay 三种会话，
+        //     而它们的 `source` 长得一样（都是 Source 指针）⇒ 无法区分。
+        //   ★ `originKind` 取值：`"live"` / `"replay"`（启动时 `--replay`）/
+        //     `"replay-history"`（Step 5 点开的历史）/ `"new"`（回放模式下新建的空会话）。
+        //     空串 = 未分类（理论上不该出现；探针会把它当失败报出来）。
+        //   ★ `originPath` 是**磁盘路径**，只有 replay 类有值：它同时是
+        //     sidecar 状态文件的定位依据（见 `UiStatePath()`）。
+        //   ★ 为什么不用 `replay != nullptr` 判来源：空的新建会话
+        //     `replay == nullptr` 且 `source == nullptr`，但历史会话两者都非空——
+        //     这确实分得开，可分不出"启动时 --replay"与"点开的历史"，
+        //     而这两者的 sidecar 行为不同（前者是用户显式指定的夹具，后者才需要读状态）。
+        std::string originKind;
+        std::filesystem::path originPath;
         std::chrono::steady_clock::time_point timedAnchor;
         // ★ 暂停补偿：会话被切走时记下时刻，切回来把锚点整体后移同一段墙上时间。
         //   没有这一步，"切走 30 秒再切回"会让 timed 会话凭空快进 30 秒。
@@ -554,6 +600,43 @@ private:
     //     指针是稳定的（`unique_ptr` 持有、从不搬动），点击时现查下标才是对的。
     bool SwitchToSessionByPtr(const Session* target);
 
+    // ── ★★ Step 5（2026-10-19）：打开历史会话 ────────────────────────────
+    // 历史 = 磁盘上的 `protocol/fixtures/**/*.jsonl`。点开 = **新建一个 replay 会话**
+    //   并立刻抽干到末尾（用户点开历史想看的是"那次对话长什么样"，不是从头再播一遍）。
+    // ★ 为什么是"回放 + 跳到末尾"，而不是"一次读到底、GUI 自己造 Block 塞 timeline"：
+    //   后者会让 GUI 变成**第二个转录作者**，与 `PROTOCOL.md:244`「GUI 不产生转录块，
+    //   唯一作者是 core」直接冲突；而且会顺手吞掉坏文件的读数（`seqGaps`/`unknownKinds`/
+    //   `protocolIncompatible` 全都在**消费路径**上产生，绕开消费就没有读数）。
+    //   跳到末尾只是**速度**参数，协议契约一个字没动。
+    // ★ 为什么要点：`protocol/fixtures/` 下每个文件都有 sha256 基线 ⇒ 历史区**只列不删**。
+    //   一旦 UI 能删它们，所有回归基线就都开口子了。
+    std::filesystem::path HistoryRoot() const;
+    // 递归扫 `HistoryRoot()` 下的 `*.jsonl`（跳过 `__pycache__`），按相对路径排序。
+    std::vector<std::filesystem::path> FindHistoryFiles() const;
+    // 建一行历史条目（纯函数）。行根同样是 Button（Panel 点不到）。
+    //   ★ 回调**只置脏**（`m_historyOpenPending` + `m_historyDirty`），不在这里打开：
+    //     ① 打开会 `RemoveChild` 掉侧栏会话列表与转录区，而本按钮正在被派发链持有；
+    //     ② 抽干 2000 行夹具是**重活**，不能让消息循环在鼠标抬起里卡住。
+    std::unique_ptr<ECDI::Widget> BuildHistoryRow(const std::filesystem::path& file);
+    void RebuildHistoryList();
+    // 打开一个历史文件：建会话 → 切过去 → 抽干 → 读 sidecar → 重建视图。
+    //   ★ 失败必须如实说（回放源加载失败就 AddNoticeRow），不建半好会话。
+    bool OpenHistorySession(const std::filesystem::path& file);
+    // sidecar：`<fixture>.jsonl.ui.json`，与夹具同目录。
+    //   ★ 为什么不写进 jsonl 本身：那会改掉夹具字节，sha256 基线与 `validate.py` 全部失效；
+    //     协议也没有"GUI 往会话文件里写"的方向。
+    //   ★ 为什么不用 `evals/` 里那种 `<x>.jsonl.json`：那是**评估摘要**（旧产物），
+    //     与本状态文件语义完全不同，同名会让两者互相覆盖。
+    std::filesystem::path UiStatePath(const Session& s) const;
+    // 读/写 GUI 侧状态（answers / expanded）。**协议一行不动**：这些是视图决定，
+    //   不是转录内容。缺失 ⇒ 返回 false，调用方必须如实提示"此会话没有决策记录"。
+    bool LoadUiState(Session& s);
+    void SaveUiState(const Session& s);
+    // 把 sidecar 写进模型之后，还要把同一批状态写进**当前视图行**——
+    //   `RebuildTranscriptView` 的第一步是 `SyncRowViewState`（视图→模型），
+    //   若视图行还全是 false，它会立刻把刚读进来的展开态/已答态覆盖掉。
+    void ApplyUiStateToView(Session& s);
+
     void Relayout();
     void FollowTailIfPinned();
     void RequestRepaint();
@@ -659,6 +742,17 @@ private:
     //   ★ 放在 `m_sidebarDirty` 处理**之后**、`if (!m_sess->source) return;` **之前**：
     //     主题切换不该被"活动会话没有 source"挡住（空会话也要能换主题）。
     bool m_uiRebuildPending = false;
+    // ★★ Step 5（2026-10-19）：历史区待重建 / 待打开。
+    //   与上面两个标志同族、同一理由：历史行的点击回调跑在派发栈上，而"打开"要
+    //   新建会话 + 切会话（`SwitchToSession` → `RebuildTranscriptView` 会拆掉转录区
+    //   全部行，侧栏列表也要重画）⇒ 回调里同步做就是析构正在执行的对象。
+    //   ★ 与 `m_sidebarDirty` 分成两个标志，而不是一个：重建列表是**纯渲染**，
+    //     打开文件是**真副作用**（读盘 + 抽干上千行）。混成一个标志就没法表达
+    //     "只刷新列表、别打开任何东西"这个必要状态（探针的 list 相正是它）。
+    bool m_historyDirty = false;
+    std::filesystem::path m_historyOpenPending;    // 非空 ⇒ 下一 tick 打开它
+    bool m_historyScanned = false;                 // 文件清单缓存过一次（避免每 tick 扫盘）
+    std::vector<std::filesystem::path> m_historyFiles;
     int m_relayoutPulse = 0;                       // 折叠动画期间的补重排 tick 数（~33ms each）
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
@@ -917,6 +1011,53 @@ private:
     //   摘要逐字节不变，这是本仓铁律）。计数放在成员而不是 `ThemeProbeRec` 里，
     //   因为 `rebuild` 相要读"重建前后两次"的值。
     size_t m_uiRebuilds = 0;
+
+    // ★★ Step 5（2026-10-19）：打开历史会话的取证（--history-probe）。
+    //   形状同 `RunThemeProbe`（跨 tick）：`open` 相要点真实的历史行按钮，
+    //   而打开被延迟到下一个 tick（派发栈 UAF），故不能在一步里做完。
+    struct HistoryProbeRec {
+        std::string phase;          // list / open / content / at-end /
+                                    // sidecar-missing / sidecar-write / sidecar-roundtrip
+        size_t filesOnDisk = 0;     // 磁盘上真实文件数（探针自己扫一遍，不只信 UI）
+        size_t rowsOnScreen = 0;    // 历史区行数（控件侧）
+        std::string openedLabel;    // 打开后的 `Session::label`
+        std::string originKind;     // 打开后的 `Session::originKind`
+        size_t blocks = 0;          // 打开后活动会话的块数
+        size_t deltas = 0;
+        size_t messages = 0;
+        bool atEnd = false;         // `replay->Empty()`（真的跳到末尾了）
+        size_t askRows = 0;         // 屏幕上的权限门行数
+        size_t answeredRows = 0;    // 其中已答的
+        size_t modelAnswers = 0;    // 模型里 answer 非空的条目数
+        // ── sidecar 三态（缺失 / 写入 / 读回）──
+        bool sidecarExisted = false;   // 探针开始前磁盘上是否已有该 sidecar
+        bool sidecarWritten = false;   // 写侧真的落盘了吗
+        bool sidecarRemoved = false;   // 收尾是否把探针造的文件删掉（不留脏工作区）
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<HistoryProbeRec> m_historyProbeLog;
+    bool m_historyProbeDone = false;
+    void RunHistoryProbe();
+    // 探针专用：直接回放某个文件到末尾并返回读数（**不**动活动会话）。
+    //   ★ 用临时 `ReplaySource` + `Transcript`，与 GUI 的消费路径同源——
+    //     这是 `content` 相"两条独立路径喂同一文件、读数必须一致"的一半。
+    //   ★ 另一半是打开后的活动会话读数：两者都用 `Transcript::OnLine` 消费，
+    //     若"打开"这条路径偷偷漏行/重放行，此处立刻不等。
+    struct ReplayDigest {
+        bool loaded = false;
+        size_t blocks = 0;
+        size_t deltas = 0;
+        size_t messages = 0;
+    };
+    ReplayDigest DigestReplayFile(const std::filesystem::path& file) const;
+    // 跨 tick 状态机的步号与下次允许时刻（同 `RunThemeProbe` 的形状）。
+    int m_historyProbeStep = 0;
+    std::chrono::steady_clock::time_point m_historyProbeNextAt;
+    // 探针点的那一行（记住**文件路径**而不是控件指针：打开后整棵侧栏会被重建）。
+    std::filesystem::path m_historyProbeFile;
+    // 探针自己算出的真值（`content` 相的双路比对用）：
+    ReplayDigest m_historyProbeDigest;
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）

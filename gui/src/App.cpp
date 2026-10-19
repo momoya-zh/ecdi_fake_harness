@@ -303,6 +303,10 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         s.source = std::move(child);
         s.writer = std::make_unique<ProtocolWriter>(*s.source);
         s.label = m_options.corePath.filename().generic_string() + " (live)";
+        // ★ Step 5：来源必须是**显式字段**，不能再靠"corePath 空不空"推断——
+        //   同一个进程里此后可以同时有 live / 启动 replay / 历史 replay。
+        s.originKind = "live";
+        s.originPath = m_options.corePath;
         if (m_sessions.empty()) {
             // 首个 live 会话：把 fixtureName 也定下来（窗口标题 / 摘要用）
             m_options.fixtureName = s.label;
@@ -318,6 +322,11 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         s.replay = replay.get();
         s.source = std::move(replay);
         s.label = m_options.fixtureName;
+        // ★ Step 5：`--replay` 启动的会话与"点开的历史"是两种来源。
+        //   区分它们有实际后果：只有后者会在打开时读 sidecar（前者是用户
+        //   显式指定的夹具，跑批基线必须可复现，不能被历史状态污染）。
+        s.originKind = "replay";
+        s.originPath = m_options.replayPath;
     }
 
     // 会话名：首个用 fixtureName；后续在 NewSession 里改成"会话 N"。
@@ -352,6 +361,8 @@ void HarnessApp::NewSession() {
         // 回放模式：建一个空会话（无 source ⇒ 不拉取；OnReplayTick 见空 source 直接返回）
         auto session = std::make_unique<Session>();
         session->label = "会话 " + std::to_string(m_sessions.size() + 1);
+        // ★ Step 5：空会话是**第四类来源**。它没有 originPath ⇒ 没有 sidecar。
+        session->originKind = "new";
         m_sessions.push_back(std::move(session));
     }
 
@@ -565,6 +576,319 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
     // 列表高度是**变**的（会话越多越高，到 4 行封顶）⇒ 侧栏那条 VerticalLayout
     // 必须重排一次，否则下面的「项目」段还停在旧位置。
     if (ECDI::Widget* parent = m_hud.sessList->GetParent()) parent->Arrange();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★ Step 5（2026-10-19）：历史会话 —— 把**磁盘上的文件**变成会话
+// ───────────────────────────────────────────────────────────────────────────
+// 这一节与上面 Step 1 的会话列表是**两种东西**，别混：
+//   · `m_sessions`  = 已经打开的会话（内存里的模型）；
+//   · 这里的历史区  = 磁盘上**可打开的文件**（`protocol/fixtures/**/*.jsonl`）。
+//   点一行历史 ⇒ 多出一个已打开会话（列表里多一行），两者数量不必相等。
+//
+// ★ 为什么"打开"必须是**真回放**而不是"读到底、GUI 自己造 Block"：
+//   后者会让 GUI 变成第二个转录作者，与 `PROTOCOL.md:244`「GUI 不产生转录块，
+//   唯一作者是 core」直接冲突；并且坏文件的读数（`seqGaps` / `unknownKinds` /
+//   `protocolIncompatible`）全都在**消费路径**上产生，绕开消费就没有读数了
+//   ——历史区恰恰是最该照见坏文件的地方。跳到末尾只是**速度**参数。
+//
+// ★ 为什么历史区**只列不删**：`protocol/fixtures/` 下每个文件都有 sha256 基线，
+//   删除 UI 一旦能碰它们，所有回归基线就都开口子了。
+// ═══════════════════════════════════════════════════════════════════════════
+
+std::filesystem::path HarnessApp::HistoryRoot() const {
+    namespace fs = std::filesystem;
+    // ① 从当前夹具路径往上找：`<ancestor>/protocol/fixtures` 存在就用它。
+    //    为什么从夹具路径找而不是从 cwd 找：跑批脚本常常在仓库根跑，cwd 恰好对；
+    //    但用户也可能从别处启动、只给一个绝对 `--replay`，此时 cwd 是错的，
+    //    而夹具自己的位置永远是对的（它必然在仓库里）。
+    std::error_code ec;
+    if (!m_options.replayPath.empty()) {
+        fs::path p = fs::absolute(m_options.replayPath, ec);
+        if (ec) { p = m_options.replayPath; ec.clear(); }
+        for (fs::path dir = p.parent_path(); !dir.empty(); dir = dir.parent_path()) {
+            const fs::path probe = dir / "protocol" / "fixtures";
+            if (fs::is_directory(probe, ec) && !ec) return probe;
+            ec.clear();
+            if (dir == dir.root_path()) break;
+        }
+    }
+    // ② 退到 cwd 相对路径（开发时最常见的形态）。
+    const fs::path cwdProbe = fs::path("protocol") / "fixtures";
+    if (fs::is_directory(cwdProbe, ec) && !ec) return fs::absolute(cwdProbe, ec);
+    return std::filesystem::path();
+}
+
+std::vector<std::filesystem::path> HarnessApp::FindHistoryFiles() const {
+    namespace fs = std::filesystem;
+    std::vector<fs::path> out;
+    const fs::path root = HistoryRoot();
+    if (root.empty()) return out;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec),
+         end; it != end; it.increment(ec)) {
+        if (ec) { ec.clear(); continue; }
+        const fs::path& p = it->path();
+        // ★ 跳过 `__pycache__`：`cot/` 下真实存在（生成器跑过就会有），
+        //   它不是夹具、也不该出现在历史里。
+        if (p.filename() == "__pycache__") { it.disable_recursion_pending(); continue; }
+        if (!it->is_regular_file(ec) || ec) { ec.clear(); continue; }
+        if (p.extension() != ".jsonl") continue;
+        out.push_back(p);
+    }
+    std::sort(out.begin(), out.end(), [&root](const fs::path& a, const fs::path& b) {
+        return a.lexically_relative(root).generic_string()
+             < b.lexically_relative(root).generic_string();
+    });
+    return out;
+}
+
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildHistoryRow(const std::filesystem::path& file) {
+    // ★ 行根同样是 Button：`Panel::ContainsPoint` 恒 false（`Panel.cpp:34-40`），
+    //   可点的行根只能是 Button（同 `BuildSessionRow` 的理由）。
+    auto row = std::make_unique<ECDI::Button>();
+    row->SetSize(kSidebarRowW, kSidebarRowH);
+    row->SetStyle(ECDI::ButtonStyleOverride{
+        .background = kPanel2,
+        .border = kLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = 8.0f,
+        .textAlignment = ECDI::TextAlignment::Left,
+        .foreground = kDarkInk});
+    // 显示**相对仓库夹具根的路径**（`realistic/realistic-session.jsonl`），
+    // 而不是裸文件名：六份夹具里 `cot-session.jsonl` 与 `demo-session.jsonl`
+    // 不重名，但真实使用中同名文件很常见，裸名会让人点错。
+    std::string shown = file.filename().generic_string();
+    const std::filesystem::path root = HistoryRoot();
+    if (!root.empty()) {
+        const std::filesystem::path rel = file.lexically_relative(root);
+        if (!rel.empty()) shown = rel.generic_string();
+    }
+    auto label = uikit::Label(shown, kSidebarRowW - 16, 16, kDarkInk, harness::kFontSmall);
+    label->SetPosition(8, (kSidebarRowH - 16) / 2);
+    // 禁用 ⇒ 不参与命中（点行中心一定命中行根），且 `IsEnabled` 无绘制消费者 ⇒ 视觉零变化。
+    label->SetEnabled(false);
+    row->AddChild(std::move(label));
+    // ★ 回调**只置脏**，真打开留到 tick：本按钮此刻正被派发链持有，
+    //   而"打开"会 `RemoveChild` 掉整棵侧栏/转录区（同 `m_sidebarDirty` 的 UAF 理由）。
+    row->SetOnClick([this, file] {
+        m_historyOpenPending = file;
+        m_historyDirty = false;   // 打开会连列表一起重建，不必再单独刷一次
+    });
+    return row;
+}
+
+void HarnessApp::RebuildHistoryList() {
+    if (!m_hud.historyList) return;
+    if (!m_historyScanned) {
+        m_historyFiles = FindHistoryFiles();
+        m_historyScanned = true;
+    }
+    ECDI::Widget& content = m_hud.historyList->GetContentView();
+    while (content.GetChildCount() > 0) {
+        content.RemoveChild(content.GetChildAt(0));
+    }
+    const size_t n = m_historyFiles.size();
+    const size_t rowStride = static_cast<size_t>(kSidebarRowH + kSidebarRowGap);
+    int y = 0;
+    for (size_t i = 0; i < n; ++i) {
+        auto row = BuildHistoryRow(m_historyFiles[i]);
+        row->SetPosition(0, y);
+        content.AddChild(std::move(row));
+        y += static_cast<int>(rowStride);
+    }
+    const int totalH = n > 0 ? static_cast<int>(n * rowStride) - kSidebarRowGap : 0;
+    const int visibleH = std::min(totalH, kSidebarMaxRows * static_cast<int>(rowStride)
+                                              - kSidebarRowGap);
+    m_hud.historyList->SetSize(kSidebarListW, std::max(visibleH, kSidebarRowH));
+    m_hud.historyList->SetContentExtent(kSidebarRowW, std::max(totalH, kSidebarRowH));
+    m_hud.historyList->SetContentOffset(0, m_hud.historyList->GetScrollOffsetY());
+    if (m_hud.historyCount) {
+        m_hud.historyCount->SetText(std::to_string(n) + " 个历史文件");
+    }
+    if (ECDI::Widget* parent = m_hud.historyList->GetParent()) parent->Arrange();
+}
+
+std::filesystem::path HarnessApp::UiStatePath(const Session& s) const {
+    // ★ 与夹具**同目录**、名字加 `.ui.json` 后缀：`demo-session.jsonl` →
+    //   `demo-session.jsonl.ui.json`。同目录是为了"夹具搬走，状态跟着走"；
+    //   加后缀而不是另建目录，是为了让 `rm *.jsonl` 这种清理动作**不会**顺手删掉状态。
+    // ★ 不用 `evals/` 里那种 `<x>.jsonl.json`：那是**评估摘要**（旧产物，来自 `f243579`），
+    //   与本状态文件语义完全不同，同名会让两者互相覆盖。
+    if (s.originPath.empty()) return std::filesystem::path();
+    std::filesystem::path p = s.originPath;
+    p += ".ui.json";
+    return p;
+}
+
+bool HarnessApp::LoadUiState(Session& s) {
+    const std::filesystem::path path = UiStatePath(s);
+    if (path.empty()) return false;
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) return false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return false;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    json::Value root;
+    std::string error;
+    if (!json::Parse(text, root, error)) {
+        // 坏状态文件不该让会话打不开：如实记一条日志，按"没有决策记录"继续。
+        ECDI::Logger::Log(ECDI::LogLevel::Warning,
+                          ECDI::UTF8ToWide("ui-state: " + error + " (" +
+                                           path.generic_string() + ")"));
+        return false;
+    }
+    // answers: { "<ask id>": "allow" | "deny" }
+    if (const json::Value* answers = root.Find("answers");
+        answers && answers->IsObject()) {
+        for (const auto& kv : answers->object) {
+            if (!kv.second.IsString()) continue;
+            for (TimelineEntry& entry : s.timeline) {
+                if (entry.kind != TimelineEntry::Kind::Ask) continue;
+                if (entry.id != kv.first) continue;
+                entry.answered = true;
+                entry.answer = kv.second.text;
+            }
+        }
+    }
+    // expanded: ["b1", ...]（只记展开的，收起是默认态）
+    if (const json::Value* expanded = root.Find("expanded");
+        expanded && expanded->IsArray()) {
+        for (const json::Value& id : expanded->array) {
+            if (!id.IsString()) continue;
+            for (TimelineEntry& entry : s.timeline) {
+                if (entry.kind != TimelineEntry::Kind::Block) continue;
+                if (entry.id == id.text) entry.expanded = true;
+            }
+        }
+    }
+    return true;
+}
+
+void HarnessApp::SaveUiState(const Session& s) {
+    const std::filesystem::path path = UiStatePath(s);
+    if (path.empty()) return;
+    json::Value root;
+    root.type = json::Value::Type::Object;
+    root.object["version"] = json::Value();       // 先占位，下面逐步覆盖
+    root.object["version"].type = json::Value::Type::Number;
+    root.object["version"].number = 1.0;
+    root.object["answers"].type = json::Value::Type::Object;
+    root.object["expanded"].type = json::Value::Type::Array;
+    for (const TimelineEntry& entry : s.timeline) {
+        if (entry.kind == TimelineEntry::Kind::Ask && !entry.answer.empty()) {
+            json::Value v;
+            v.type = json::Value::Type::String;
+            v.text = entry.answer;
+            root.object["answers"].object[entry.id] = v;
+        } else if (entry.kind == TimelineEntry::Kind::Block && entry.expanded) {
+            json::Value v;
+            v.type = json::Value::Type::String;
+            v.text = entry.id;
+            root.object["expanded"].array.push_back(v);
+        }
+    }
+    std::error_code ec;
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+    }
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        ECDI::Logger::Log(ECDI::LogLevel::Warning,
+                          ECDI::UTF8ToWide("ui-state: 写入失败 " + path.generic_string()));
+        return;
+    }
+    out << root.Pretty(2) << "\n";
+}
+
+void HarnessApp::ApplyUiStateToView(Session& s) {
+    // ★ 为什么需要这一步（顺序陷阱）：`RebuildTranscriptView` 的第一行是
+    //   `SyncRowViewState()`（视图 → 模型）。刚抽干出来的行全是 `expanded=false` /
+    //   `answered=false` ⇒ 若只把 sidecar 写进模型就重建，同步会**立刻把刚读进来的
+    //   状态覆盖掉**（模型被更旧的视图抹平）。故先把同一批状态也写进视图行。
+    for (RowRec& r : s.rows) {
+        if (r.timelineIdx >= s.timeline.size()) continue;
+        const TimelineEntry& entry = s.timeline[r.timelineIdx];
+        if (r.ask && entry.answered) {
+            r.answered = true;
+            ApplyAnsweredLook(r, entry.answer);   // 同一条视觉路径（Step 3）
+        }
+        if (r.body && entry.expanded) {
+            r.expanded = true;
+            r.body->SetExpanded(true);
+        }
+    }
+}
+
+bool HarnessApp::OpenHistorySession(const std::filesystem::path& file) {
+    std::string error;
+    auto replay = std::make_unique<ReplaySource>();
+    if (!replay->Load(file, error)) {
+        // ★ 如实报错，不建半好会话（半好会话会让"打不开"看起来像"打开了一个空会话"）。
+        AddNoticeRow("[打开失败] " + file.filename().generic_string() + " — " + error,
+                     kErrorDark);
+        Relayout();
+        RequestRepaint();
+        return false;
+    }
+
+    PauseActiveTimedClock();
+
+    auto session = std::make_unique<Session>();
+    Session& s = *session;
+    s.pendingTruncated = replay->TruncatedError();
+    s.replay = replay.get();
+    s.source = std::move(replay);
+    s.label = file.filename().generic_string();
+    // ★★ 来源必须记下来：这是本步新增的第三类会话（live / 启动时 --replay / 历史）。
+    //   没有它，后续两个 tick 里就分不清"这个会话该不该读 sidecar"。
+    s.originKind = "replay-history";
+    s.originPath = file;
+    m_sessions.push_back(std::move(session));
+    const size_t idx = m_sessions.size() - 1;
+    SwitchToSession(idx);   // 内部会 RebuildTranscriptView（此刻还是空的，无妨）
+
+    // ── 跳到末尾：把源抽干（复用 `DrainInstant` 的消费语义）──
+    //   ★ 为什么必须走 `HandleLine`（而不是直接读行数）：坏文件的读数
+    //     （seqGaps/unknownKinds/protocolIncompatible）全在消费路径上产生。
+    std::string line;
+    while (m_sess->source->Next(line)) {
+        HandleLine(line);
+        if (m_sess->protocolIncompatible) break;
+    }
+    m_sess->instantDone = true;   // 已抽干 ⇒ 别让 DrainInstant 再跑一遍
+    if (!m_sess->pendingTruncated.empty()) {
+        AddNoticeRow(m_sess->pendingTruncated, kErrorDark);
+        m_sess->pendingTruncated.clear();
+    }
+
+    // ── GUI 侧状态（sidecar）──
+    const bool hadState = LoadUiState(*m_sess);
+    if (hadState) {
+        ApplyUiStateToView(*m_sess);
+    } else {
+        // ★ 缺失时必须**说出来**，不能静默当作"未回答"：Step 3 修的正是
+        //   "历史把授权决定抹平成未回答"这条病，换个位置不能复发。
+        bool anyAsk = false;
+        for (const TimelineEntry& entry : m_sess->timeline) {
+            if (entry.kind == TimelineEntry::Kind::Ask) { anyAsk = true; break; }
+        }
+        if (anyAsk) {
+            AddNoticeRow("[此会话没有决策记录：磁盘上没有 " +
+                         UiStatePath(*m_sess).filename().generic_string() +
+                         "，权限门一律按未回答显示]", kDarkMuted);
+        }
+    }
+
+    // 抽干后再重建一次：此刻 timeline 才有内容，且 sidecar 已写进模型与视图。
+    RebuildTranscriptView();
+    Relayout();
+    FollowTailIfPinned();
+    m_sidebarDirty = true;    // 会话列表要多出一行
+    m_hudDirty = true;
+    RefreshHud();
+    RequestRepaint();
+    return true;
 }
 
 std::vector<std::string> HarnessApp::SnapshotSessionList() const {
@@ -935,6 +1259,8 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     //   ★ 这里**直接**调而不是置 `m_sidebarDirty`：此刻还没有窗口定时器，
     //     置脏要等第一个 tick 才生效 ⇒ 首帧会是空列表（用户会看到一闪而过的空栏）。
     RebuildSessionList();
+    // ★ Step 5：历史区同样要首帧填上（同一理由：此刻还没有定时器，置脏要等一 tick）。
+    RebuildHistoryList();
     root.Arrange();
 }
 
@@ -1291,6 +1617,27 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         side->AddChild(std::move(fileLbl));
     }
 
+    // ── ★★ Step 5：历史会话（磁盘上的夹具 = 可打开的文件）──
+    //   ★ 这一段与上面「工作区」里的会话列表是**两种东西**：上面是已打开的会话，
+    //     这里是**还没打开的文件**。点一行会多出一个已打开会话。
+    //   ★ 只列不删：`protocol/fixtures/` 下每个文件都有 sha256 基线，
+    //     删除 UI 一旦能碰它们，所有回归基线就都开口子了。
+    AddLine(*side, "历史", kDarkMuted, true, 172, harness::kFontMicro);
+    {
+        auto list = std::make_unique<ECDI::ScrollView>();
+        m_hud.historyList = list.get();
+        list->SetSize(kSidebarListW, kSidebarRowH);
+        list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
+        list->SetScrollBarVisible(true);
+        side->AddChild(std::move(list));
+    }
+    {
+        auto cnt = uikit::Label("0 个历史文件", kSidebarListW, 14, kDarkMuted,
+                                harness::kFontMicro);
+        m_hud.historyCount = cnt.get();
+        side->AddChild(std::move(cnt));
+    }
+
     // ── 侧栏底部身份行（C 的 `.side-bottom`）──
     //   `margin-top:auto` 在 ECDI 里没有等价物（布局无弹性余量分配）⇒ 用
     //   一根 1px 分隔线 + 紧跟的身份行近似「贴在底部的一行」。
@@ -1644,6 +1991,18 @@ void HarnessApp::OnReplayTick() {
         RebuildUi();
         RequestRepaint();
     }
+    // ★★ Step 5：历史区在 tick 里重建（行数是扫盘来的，回调里不能扫也不能拆树）。
+    if (m_historyDirty) {
+        m_historyDirty = false;
+        RebuildHistoryList();
+        RequestRepaint();
+    }
+    // ★★ Step 5：打开历史会话（延迟到此：派发栈已退，拆树/抽干都安全）。
+    if (!m_historyOpenPending.empty()) {
+        const std::filesystem::path file = m_historyOpenPending;
+        m_historyOpenPending.clear();
+        OpenHistorySession(file);   // 内部会置 m_sidebarDirty + RequestRepaint
+    }
     if (!m_sess->source) return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
     if (m_sess->source->IsLive()) {
         // ── live（子进程）：本 tick 内带超时批量拉取，把时间还给消息循环 ──
@@ -1715,6 +2074,13 @@ void HarnessApp::OnReplayTick() {
             //     故六条互斥使用（同一进程只开一个 `--*-probe`）。
             if (m_options.themeProbe && !m_themeProbeDone) {
                 RunThemeProbe();
+            }
+            // ★★ Step 5 历史会话探针：排在最后，同为**跨 tick**（点历史行后，
+            //   打开被延迟到下一个 tick——派发栈 UAF）。
+            //   顺序：reasoning → rebuild → session → sidebar → answer → theme → history。
+            //   七条互斥使用。
+            if (m_options.historyProbe && !m_historyProbeDone) {
+                RunHistoryProbe();
             }
             return;
         }
@@ -2269,6 +2635,8 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
         }
     }
     m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
+    // ★★ Step 5：展开态也进 sidecar（同样是"只对历史会话"，理由同 MarkAnswered）。
+    if (m_sess && m_sess->originKind == "replay-history") SaveUiState(*m_sess);
     Relayout();             // 立即重排一次（settle 后定时器路径不再经过 Relayout）
     RequestRepaint();
 }
@@ -3848,6 +4216,353 @@ void HarnessApp::RunThemeProbe() {
     }
 }
 
+// ★★ Step 5：打开历史会话的取证。
+//
+// 这条探针要回答三个问题，每个都必须能被反驳：
+//   ① **列表是真的从磁盘扫出来的吗？** —— 磁盘文件数 == 屏幕行数（探针自己扫一遍，
+//      不只信 UI）。负对照：两者不等就必须报出来。
+//   ② **"打开"是真的走回放消费吗？** —— 打开后的 blocks/deltas/messages 必须与
+//      **独立**再喂一遍同一文件（`DigestReplayFile`）完全相等，且 `replay->Empty()`
+//      为真（真的跳到末尾了）。若实现改成"一次读到底、GUI 自己造 Block"，
+//      坏文件那几份（hostile/）的读数会立刻不等，且 seqGaps 变成 0。
+//   ③ **GUI 侧状态能存能读回来吗？** —— 答一次 ⇒ sidecar 落盘；重新打开同一文件 ⇒
+//      模型里 answer 非空、屏幕上那个钮仍是常态色。**缺失时**则必须如实提示
+//      「此会话没有决策记录」，而不是静默当成"从未回答过"（Step 3 修的就是这条病）。
+void HarnessApp::RunHistoryProbe() {
+    if (!m_sess) { m_historyProbeDone = true; return; }
+    if (!m_sess->replay) { m_historyProbeDone = true; return; }
+    if (!m_hud.historyList) { m_historyProbeDone = true; return; }
+    if (m_historyProbeStep > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < m_historyProbeNextAt) return;
+    }
+    const auto settle = std::chrono::milliseconds(300);
+
+    auto rowsOnScreen = [&]() -> size_t {
+        return m_hud.historyList->GetContentView().GetChildCount();
+    };
+    auto snap = [&](const char* phase) {
+        HistoryProbeRec rec;
+        rec.phase = phase;
+        rec.filesOnDisk = FindHistoryFiles().size();
+        rec.rowsOnScreen = rowsOnScreen();
+        if (m_sess) {
+            rec.openedLabel = m_sess->label;
+            rec.originKind = m_sess->originKind;
+            rec.blocks = m_sess->transcript.Blocks();
+            rec.deltas = m_sess->transcript.Deltas();
+            rec.messages = m_sess->replay ? m_sess->replay->Total() : 0;
+            rec.atEnd = m_sess->replay ? m_sess->replay->Empty() : false;
+            for (const RowRec& r : m_sess->rows) {
+                if (!r.ask) continue;
+                ++rec.askRows;
+                if (r.answered) ++rec.answeredRows;
+            }
+            for (const TimelineEntry& e : m_sess->timeline) {
+                if (e.kind == TimelineEntry::Kind::Ask && !e.answer.empty()) ++rec.modelAnswers;
+            }
+        }
+        m_historyProbeLog.push_back(std::move(rec));
+    };
+    auto finish = [&](const char* phase, std::vector<std::pair<bool, const char*>> conds) {
+        snap(phase);
+        HistoryProbeRec& rec = m_historyProbeLog.back();
+        std::string bad;
+        for (const auto& [ok, what] : conds) {
+            if (ok) continue;
+            if (!bad.empty()) bad += "; ";
+            bad += what;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    };
+
+    switch (m_historyProbeStep) {
+    case 0: {
+        // ── ① list：磁盘 == 屏幕，且至少有一个可点的目标 ──
+        RebuildHistoryList();   // 直接重建，保证计数是最新的
+        const size_t onDisk = FindHistoryFiles().size();
+        // 目标文件：**优先当前 --replay 的那个文件**——这样每个夹具测的都是自己，
+        //   且 `list` 相与 `cleanup` 相的活动会话读数可以直接当对照
+        //   （cot 打开 cot、scale 打开 scale，判别力比"永远打开 demo"强得多）。
+        //   ★ 若当前会话不是文件来源（live / 空会话），退到 demo（它有权限门，
+        //     sidecar 三态才有意义），再退到第一个。
+        m_historyProbeFile.clear();
+        const std::filesystem::path currentFile =
+            (m_sess->originPath.empty() || !m_sess->originPath.has_extension())
+                ? std::filesystem::path()
+                : m_sess->originPath;
+        if (!currentFile.empty()) {
+            // ★ 必须规范化再比：`--replay` 给的是相对路径（`protocol/fixtures/...`），
+            //   而 `FindHistoryFiles` 返回的是绝对路径。字典序比较会永远不等。
+            std::error_code ec;
+            const std::filesystem::path want = std::filesystem::weakly_canonical(currentFile, ec);
+            for (const std::filesystem::path& f : m_historyFiles) {
+                std::error_code ec2;
+                if (std::filesystem::weakly_canonical(f, ec2) == want) {
+                    m_historyProbeFile = f;
+                    break;
+                }
+            }
+        }
+        if (m_historyProbeFile.empty()) {
+            for (const std::filesystem::path& f : m_historyFiles) {
+                if (f.filename() == "demo-session.jsonl") { m_historyProbeFile = f; break; }
+            }
+        }
+        if (m_historyProbeFile.empty() && !m_historyFiles.empty()) {
+            m_historyProbeFile = m_historyFiles.front();
+        }
+        m_historyProbeDigest = DigestReplayFile(m_historyProbeFile);
+        const bool existed = !m_historyProbeFile.empty() &&
+            std::filesystem::is_regular_file(m_historyProbeFile.generic_string() + ".ui.json");
+        finish("list", {{onDisk > 0, "no fixture found on disk"},
+                        {rowsOnScreen() == onDisk, "row count != file count on disk"},
+                        {!m_historyProbeFile.empty(), "no target file chosen"},
+                        {m_historyProbeDigest.loaded && m_historyProbeDigest.blocks > 0,
+                         "digest of target file is empty"}});
+        m_historyProbeLog.back().sidecarExisted = existed;
+        m_historyProbeStep = 1;
+        m_historyProbeNextAt = std::chrono::steady_clock::now();   // 立刻进下一步
+        return;
+    }
+    case 1: {
+        // ── ② 点真实的历史行（走真实派发链，不是直接调 OpenHistorySession）──
+        size_t targetRow = 0;
+        for (size_t i = 0; i < m_historyFiles.size(); ++i) {
+            if (m_historyFiles[i] == m_historyProbeFile) { targetRow = i; break; }
+        }
+        ECDI::Widget* row = m_hud.historyList->GetContentView().GetChildAt(targetRow);
+        if (!row) {
+            finish("open", {{false, "history row widget missing"}});
+            m_historyProbeStep = 9;
+            m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+            return;
+        }
+        // ★★ 视口陷阱（Step 3 的同族，这里换了个容器）：历史区最多显示 4 行，
+        //   第 5、6 个文件（realistic / scale）在裁剪区外。`Widget::HitTest` 对
+        //   `ClipsChildren()` 的子树有 `!ContainsRect` 早退 ⇒ 落在裁剪区外的坐标
+        //   在子树里找不到目标、**静默回落到别处**：点击不报错、也没有任何变化，
+        //   读数伪装成"打开逻辑坏了"。故先把目标行滚进视口。
+        {
+            const int y = row->GetY();
+            const int h = row->GetHeight();
+            const int viewH = m_hud.historyList->GetHeight();
+            const int cur = m_hud.historyList->GetScrollOffsetY();
+            if (y < cur || y + h > cur + viewH) {
+                m_hud.historyList->SetContentOffset(0, std::max(0, y));
+            }
+        }
+        const ECDI::Point abs = row->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + row->GetWidth() / 2,
+                          static_cast<int>(abs.y) + row->GetHeight() / 2);
+        m_historyProbeStep = 2;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 2: {
+        // ── ③ open：确实是"历史"来源、真的跳到末尾、内容与独立回放一致 ──
+        const ReplayDigest& d = m_historyProbeDigest;
+        finish("open", {
+            {m_sess->originKind == "replay-history", "originKind is not replay-history"},
+            {m_sess->label == m_historyProbeFile.filename().generic_string(),
+             "opened session label != file name"},
+            {m_sess->replay && m_sess->replay->Empty(), "replay not drained to the end"},
+            {m_sess->transcript.Blocks() == d.blocks, "blocks != independent digest"},
+            {m_sess->transcript.Deltas() == d.deltas, "deltas != independent digest"},
+            {(m_sess->replay ? m_sess->replay->Total() : 0) == d.messages,
+             "messages != independent digest"},
+        });
+        m_historyProbeStep = 3;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 3: {
+        // ── ④ sidecar-missing：新夹具没有状态文件 ⇒ 权限门必须**未答**，
+        //      且必须有一条如实的提示（不能假装"从未问过"）。
+        const bool noAnswersYet = [&] {
+            for (const TimelineEntry& e : m_sess->timeline) {
+                if (e.kind == TimelineEntry::Kind::Ask && !e.answer.empty()) return false;
+            }
+            return true;
+        }();
+        const bool noticeSaid = [&] {
+            for (const TimelineEntry& e : m_sess->timeline) {
+                if (e.kind != TimelineEntry::Kind::Notice) continue;
+                if (e.text.find("没有决策记录") != std::string::npos) return true;
+            }
+            return false;
+        }();
+        bool anyAsk = false;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Ask) { anyAsk = true; break; }
+        }
+        std::vector<std::pair<bool, const char*>> conds;
+        conds.push_back({noAnswersYet, "model already has answers before any click"});
+        if (anyAsk) {
+            conds.push_back({noticeSaid, "missing sidecar was not announced"});
+        }
+        finish("sidecar-missing", conds);
+        m_historyProbeLog.back().sidecarExisted = false;
+        m_historyProbeStep = 4;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 4: {
+        // ── ⑤ sidecar-write：答一次 ⇒ 状态必须落盘，且内容里真有这个 ask id ──
+        ECDI::Button* allow = nullptr;
+        for (RowRec& r : m_sess->rows) {
+            if (r.ask && r.allowBtn) { allow = r.allowBtn; break; }
+        }
+        if (!allow) {
+            // 目标夹具没有权限门 ⇒ 这一相与下一相无意义，如实记下而不是静默跳过。
+            finish("sidecar-write", {{false, "(target fixture has no ask row)"}});
+            m_historyProbeStep = 7;
+            m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+            return;
+        }
+        // ★★ 同一个视口陷阱的第三次出场：历史会话是**直接拉到末尾**打开的，
+        //   第一个权限门通常远在视口之上（cot 2 个 ask、realistic 11 个、
+        //   scale 62 个；只有 demo 的 1 个恰好在屏幕附近）。点击落在 ScrollView
+        //   裁剪区外时 `HitTest` 早退、**零变化零报错**，读数会显示
+        //   "sidecar 没写"——但真正没发生的是"点击"。先把它滚进来。
+        for (RowRec& r : m_sess->rows) {
+            if (!r.ask || !r.panel) continue;
+            const int y = r.panel->GetY();
+            const int h = r.panel->GetHeight();
+            const int viewH = m_scroll ? m_scroll->GetHeight() : 0;
+            const int cur = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
+            if (m_scroll && (y < cur || y + h > cur + viewH)) {
+                m_scroll->SetContentOffset(0, std::max(0, y - 8));
+            }
+            break;
+        }
+        const ECDI::Point abs = allow->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + allow->GetWidth() / 2,
+                          static_cast<int>(abs.y) + allow->GetHeight() / 2);
+        m_historyProbeStep = 5;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 5: {
+        const std::filesystem::path statePath = UiStatePath(*m_sess);
+        const bool written = !statePath.empty() &&
+                             std::filesystem::is_regular_file(statePath);
+        bool hasAnswer = false;
+        if (written) {
+            std::ifstream in(statePath, std::ios::binary);
+            std::string text((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+            hasAnswer = text.find("\"allow\"") != std::string::npos;
+        }
+        finish("sidecar-write", {{written, "sidecar file was not written"},
+                                 {hasAnswer, "sidecar does not contain the answer"},
+                                 {m_sess->originKind == "replay-history",
+                                  "write happened for a non-history session"}});
+        m_historyProbeLog.back().sidecarWritten = written;
+        m_historyProbeStep = 6;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 6: {
+        // ── ⑥ sidecar-roundtrip：重新打开同一文件 ⇒ 结论必须回来 ──
+        //   ★ 直接调 `OpenHistorySession`（此刻不在派发栈上，安全），
+        //     而不是再点一次行：点行这一相已在 ② 验过，这里测的是**读回**。
+        OpenHistorySession(m_historyProbeFile);
+        m_historyProbeStep = 7;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 7: {
+        size_t modelAnswers = 0;
+        size_t screenAnswered = 0;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Ask && !e.answer.empty()) ++modelAnswers;
+        }
+        for (const RowRec& r : m_sess->rows) {
+            if (r.ask && r.answered) ++screenAnswered;
+        }
+        std::vector<std::pair<bool, const char*>> conds;
+        // 若目标夹具根本没有 ask 行（⑤ 已记过），此相不作断言（如实写进差异里）。
+        bool anyAsk = false;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Ask) { anyAsk = true; break; }
+        }
+        if (!anyAsk) {
+            conds.push_back({false, "(target fixture has no ask row)"});
+        } else {
+            conds.push_back({modelAnswers >= 1, "answer was not restored into the model"});
+            conds.push_back({screenAnswered >= 1, "answer was not restored onto the screen"});
+        }
+        finish("sidecar-roundtrip", conds);
+        // ── 收尾：把探针造出来的副作用清干净（工件目录不留脏文件/脏会话）──
+        //   ★ 路径必须**直接从被打开的文件**算：此刻 `m_sess` 还是历史会话，
+        //     但下面会把它删掉，删完 `m_sess` 就指回原会话（originPath 是
+        //     `--replay` 那个文件）⇒ 用 `UiStatePath(*m_sess)` 会算错路径、
+        //     把用户的 sidecar 留下来、还删不掉自己的。
+        const std::filesystem::path statePath =
+            m_historyProbeFile.empty()
+                ? std::filesystem::path()
+                : std::filesystem::path(m_historyProbeFile.generic_string() + ".ui.json");
+        const bool created = !m_historyProbeLog.front().sidecarExisted;
+        if (created && !statePath.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(statePath, ec);
+            m_historyProbeLog.back().sidecarRemoved = !ec;
+        }
+        // 删掉探针新建的会话（从尾部删，`DeleteSessionAt` 会先切邻居再 erase）
+        while (m_sessions.size() > 1) {
+            DeleteSessionAt(m_sessions.size() - 1);
+        }
+        m_sidebarDirty = true;
+        m_historyProbeStep = 8;
+        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 8: {
+        // ── ⑦ 收尾读数：工作区真的干净了（会话数回到 1、sidecar 不再存在）──
+        const bool cleanSessions = m_sessions.size() == 1;
+        bool cleanSidecar = true;
+        if (!m_historyProbeFile.empty()) {
+            cleanSidecar = !std::filesystem::is_regular_file(
+                m_historyProbeFile.generic_string() + ".ui.json");
+        }
+        const bool created = !m_historyProbeLog.front().sidecarExisted;
+        finish("cleanup", {{cleanSessions, "sessions left behind by the probe"},
+                           {cleanSidecar || !created, "sidecar left behind by the probe"}});
+        m_historyProbeStep = 9;
+        m_historyProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+    default:
+        m_historyProbeDone = true;
+        return;
+    }
+}
+
+// 直接回放某个文件到末尾，返回读数（**不**动活动会话、不建行、不碰 UI）。
+HarnessApp::ReplayDigest HarnessApp::DigestReplayFile(
+    const std::filesystem::path& file) const {
+    ReplayDigest d;
+    if (file.empty()) return d;
+    ReplaySource source;
+    std::string error;
+    if (!source.Load(file, error)) return d;
+    d.loaded = true;
+    d.messages = source.Total();   // 与摘要里 `messages` 同口径：夹具总行数
+    Transcript transcript;
+    std::string line;
+    std::string lineError;
+    while (source.Next(line)) {
+        transcript.OnLine(line, lineError);
+        lineError.clear();
+    }
+    d.blocks = transcript.Blocks();
+    d.deltas = transcript.Deltas();
+    return d;
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -3892,6 +4607,9 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     }
     m_sess->askHist.emplace_back(choice, rec.label ? rec.label->GetText() : std::string());
     if (m_sess->askHist.size() > 16) m_sess->askHist.pop_front();
+    // ★★ Step 5：把结论落到 sidecar（**只有历史打开的会话**才写——启动时 `--replay`
+    //   的会话是跑批基线，写它等于让"再跑一次"与"第一次跑"不同）。
+    if (m_sess->originKind == "replay-history") SaveUiState(*m_sess);
     m_hudDirty = true;
     AddNoticeRow("[answer] " + choice, kDarkMuted);
     RequestRepaint();
@@ -4897,6 +5615,58 @@ void HarnessApp::WriteSummary() {
                           escT(r.inputText).c_str(), r.sidebarVisible ? "true" : "false",
                           r.activeIndex, r.sessionCount,
                           r.matched ? "true" : "false", escT(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+
+    // ★★ Step 5：历史会话探针。同样**只在开启时写**（默认摘要逐字节不变）。
+    if (m_options.historyProbe && !m_historyProbeLog.empty()) {
+        json += "  \"historyProbe\": [";
+        // 第四份转义 lambda（前三份都在各自 if 块作用域内）
+        auto escH = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_historyProbeLog.size(); ++i) {
+            const HistoryProbeRec& r = m_historyProbeLog[i];
+            json += (i ? ", " : "");
+            char b[1024];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"filesOnDisk\": %zu, \"rowsOnScreen\": %zu, "
+                          "\"openedLabel\": \"%s\", \"originKind\": \"%s\", "
+                          "\"blocks\": %zu, \"deltas\": %zu, \"messages\": %zu, "
+                          "\"atEnd\": %s, \"askRows\": %zu, \"answeredRows\": %zu, "
+                          "\"modelAnswers\": %zu, \"sidecarExisted\": %s, "
+                          "\"sidecarWritten\": %s, \"sidecarRemoved\": %s, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.filesOnDisk, r.rowsOnScreen,
+                          escH(r.openedLabel).c_str(), escH(r.originKind).c_str(),
+                          r.blocks, r.deltas, r.messages,
+                          r.atEnd ? "true" : "false", r.askRows, r.answeredRows,
+                          r.modelAnswers,
+                          r.sidecarExisted ? "true" : "false",
+                          r.sidecarWritten ? "true" : "false",
+                          r.sidecarRemoved ? "true" : "false",
+                          r.matched ? "true" : "false", escH(r.firstDivergence).c_str());
             json += b;
         }
         json += "],\n";
