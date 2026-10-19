@@ -191,6 +191,12 @@ private:
         //     只有列表**内容**（ScrollContent 的子控件）被拆掉重来。
         ECDI::ScrollView* sessList = nullptr;   // 左栏：会话列表滚动容器
         ECDI::Label* sessCount = nullptr;       // 左栏：会话计数 `2 个会话`
+        // ★★ Step 2（2026-10-19）：侧栏本体与顶栏 `≡` 切换钮。
+        //   ★ 侧栏句柄必须在这里而不是只在 `BuildMainArea` 的局部变量里：
+        //     `SetSidebarVisible` 要在任意时刻把 `SetVisible` 打到侧栏上，
+        //     而那次调用可能来自顶栏按钮回调（局部变量早没了）。
+        ECDI::Panel* sidebar = nullptr;         // 左栏容器（收起 = SetVisible(false)）
+        ECDI::Button* sidebarToggle = nullptr;  // 顶栏 `≡`：侧栏显隐（Step 2 前是死的 Label）
         // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
         //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
         //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，
@@ -463,6 +469,18 @@ private:
     //     `ChildSource::~ChildSource()` 会 `Stop()` 收尸（`ChildSource.cpp:26`）。
     //     **不在这里**手工 Stop——那会变成第二份收尸逻辑。
     bool DeleteSessionAt(size_t index);
+    // `SetSidebarVisible()`：侧栏显隐（**唯一入口**，顶栏按钮与探针共用）。
+    //   ★ 三条纪律：
+    //     ① 瞬时切换：只用 `SetVisible(false)` + 父容器 `Arrange()`，
+    //        **不要**套 `CollapsiblePanel` 的 200ms 动画——中间帧会让
+    //        paints/frameCount 多出与被测功能无关的抖动（仪器污染实验，条 57③）。
+    //        `Widget::SetVisible` 自身只在**值变化**时 Invalidate（Widget.cpp:427-446，
+    //        同值守卫是防 TextBox 每帧自激励重绘的正确性要求），故一次切换 = 一次重绘。
+    //     ② 必须重排**父容器**：布局跳过隐藏子（C-VIS-1）并把它们停泊到负区，
+    //        但"跳过"只在 Arrange 时发生 ⇒ 不 Arrange 的话中栏不会吃到那 200px。
+    //     ③ 必须接着 `Relayout()`：中栏变宽 ⇒ 转录行宽变 ⇒ 自动换行要重算。
+    //        否则文字按旧宽度折行、留在更宽的气泡里（看着像内容变短了）。
+    void SetSidebarVisible(bool visible);
     // `SwitchToSessionByPtr()`：按**会话身份**切换（侧栏点击用）。
     //   ★ 为什么不能直接传下标进来：行是建列表那一刻生成的，下标会因删除而失效。
     //     指针是稳定的（`unique_ptr` 持有、从不搬动），点击时现查下标才是对的。
@@ -535,6 +553,12 @@ private:
     //   ⇒ 规矩：回调**只改模型 + 置脏**，重建留到 `OnReplayTick`（timer 回调不在派发栈上）。
     //   ★ 这条规矩在结构上不给"同步重建"留位置，比"记得用 RequestRemove"更抗腐化。
     bool m_sidebarDirty = false;
+    // ★ Step 2：侧栏显隐的**模型侧**状态。
+    //   ★ 为什么必须是一个成员而不是"读控件"：`RebuildSessionList`/重建类操作会
+    //     重排控件树，若显隐只存在于控件上（`IsVisible()`），任何一次重建都可能
+    //     把用户的收起状态丢掉——这正是 0c 踩过的坑（视图状态只存在控件里，
+    //     重建即丢失）。模型侧留一份，重建后按它恢复。
+    bool m_sidebarVisible = true;
     int m_relayoutPulse = 0;                       // 折叠动画期间的补重排 tick 数（~33ms each）
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
@@ -691,6 +715,13 @@ private:
         size_t selectedRows = 0;    // 行里选中态为真的个数（invariant：0 或 1）
         size_t selectedIndex = 0;   // 选中的那一行的下标（无选中 = (size_t)-1）
         size_t transcriptRows = 0;  // 活动会话的转录行数（删除判据的负对照）
+        // ★ Step 2：收起/展开臂的两个读数。
+        //   midWidth 是**中栏**宽度：侧栏 200px 固定，收起后中栏必须宽出正好 200。
+        //   它是"收起真的发生了"在布局层的唯一机读证据——只看 IsVisible() 会被
+        //   "隐藏了但没重新 Arrange、中栏没吃到那 200px"骗过（那就是 0c 的
+        //   "重建了但没重排"同族缺陷）。
+        int midWidth = 0;           // 中栏（CountingPanel）宽度
+        bool sidebarVisible = true; // 侧栏可见性
         bool matched = true;        // 与对照快照逐行一致（仅 rebuild 类 phase 有意义）
         std::string firstDivergence; // 第一处差异的行摘要（匹配时为空）
     };

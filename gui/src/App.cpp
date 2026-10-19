@@ -683,6 +683,31 @@ bool HarnessApp::DeleteSessionAt(size_t index) {
     return true;
 }
 
+// ★★ Step 2（2026-10-19）：侧栏显隐。
+//   用户口径（m00001 第 2 步）：「最便宜的一个。但不要用 CollapsiblePanel 的 200ms
+//   动画——中间帧会污染 frameCount/paints。用 SetVisible(false) + 父 Arrange() 瞬时切换」。
+void HarnessApp::SetSidebarVisible(bool visible) {
+    if (!m_hud.sidebar) return;
+    if (m_sidebarVisible == visible && m_hud.sidebar->IsVisible() == visible) return;
+
+    m_sidebarVisible = visible;          // ① 模型侧先落（重建后按它恢复）
+    m_hud.sidebar->SetVisible(visible);  // ② 值变化时才 Invalidate（Widget.cpp:427-446）
+
+    // ③ 重排父容器：布局**只在 Arrange 时**跳过隐藏子（C-VIS-1）把它们停泊到负区、
+    //    并且不占主轴槽位与间隙 ⇒ 不 Arrange，中栏就吃不到那 200px。
+    //    `HorizontalLayout` 里中栏 stretch=1 吃满余宽，故侧栏一藏，中栏立刻变宽 200。
+    //    ★ Arrange 本身**不 Invalidate**（Widget.cpp 头注释）——重绘由 ② 的
+    //      SetVisible 负责，这里不额外 RequestRepaint，避免虚增 invalidations。
+    if (ECDI::Widget* parent = m_hud.sidebar->GetParent()) parent->Arrange();
+
+    // ④ 中栏变宽 ⇒ 转录行宽变 ⇒ 自动换行必须重算，否则文字仍按旧宽度折行，
+    //    留在更宽的气泡里（看上去像"内容变短了"，一类只在视觉上暴露的缺陷）。
+    Relayout();
+    m_hudDirty = true;
+    RefreshHud();
+    RequestRepaint();
+}
+
 // 冻结活动会话的 timed 锚点：记下暂停时刻（幂等——已暂停则不动）。
 void HarnessApp::PauseActiveTimedClock() {
     if (!m_sess || !m_options.timed) return;
@@ -840,9 +865,47 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
         .borderWidth = 1.0f, .borderColor = kLine});
     bar->SetLayout(std::make_unique<ECDI::HorizontalLayout>(10, true, 8));
 
-    auto menu = std::make_unique<ECDI::Label>("≡");
+    // ★★ Step 2（2026-10-19）：`≡` 原本是 `Label`——**点不到**（Label 没有
+    //   OnMouseButtonUp，基类 `Widget` 的所有鼠标回调都是空实现，
+    //   `Widget.cpp:405-421`）。改成 Button 才有回调。
+    //   ★ 视觉必须与原来的 Label 一致：22×20、kDarkMuted、SansFont(14)。
+    //     `Label` 基线是"水平左对齐+垂直居中"（`TextWidget::CalculateTextPosition`
+    //     的默认），而 Button 的水平位置由 `ButtonStyle.textAlignment` 驱动、主题
+    //     缺省是 **Center**（ButtonStyle.h:36 的 C30-3）——所以这里显式写 Left，
+    //     否则字形会从 22px 宽的左边缘挪到中间，与改前的截图对不上。
+    auto menu = std::make_unique<ECDI::Button>("≡");
     menu->SetTextColor(kDarkMuted);
+    // ★ 不调 SetFont：原 `Label("≡")` 用的是**主题默认字体**（TextWidget 的
+    //   TextStyle 缺省），Button 的 `ApplyTheme` 同样先走 `TextWidget::ApplyTheme`
+    //   ⇒ 不覆盖就与改前同源。这里曾经多写了一行 `SansFont(14.0f)`，截图逐像素
+    //   比对时发现字形整体下移 2px、笔画变短（y=14/17/20 → 16/19/22）——
+    //   `SansFont` 注入的是 `g_theme.sansFamily`，与主题缺省 family 不是同一个字体。
+    menu->SetStyle(ECDI::ButtonStyleOverride{
+        .background = harness::kDarkTopBg,   // 与顶栏同色 ⇒ 看起来仍是裸字形
+        .border = harness::kDarkTopBg,
+        .borderWidth = 0.0f,
+        .cornerRadius = 0.0f,
+        // ★ hover/pressed 必须显式钉成与 background 同色：不写就落回主题缺省，
+        //   鼠标掠过左上角会闪一块与顶栏不同的色，还会触发 200ms 背景动画
+        //   （`Button::AnimateBackgroundTo` 只在目标 != 当前时启动 ⇒ 同色即零动画、
+        //   零额外重绘；这条直接决定 paints/invalidations 读数是否被污染）。
+        .pressedBackground = harness::kDarkTopBg,
+        .hoverBackground = harness::kDarkTopBg,
+        .textAlignment = ECDI::TextAlignment::Left});
     menu->SetSize(22, 20);
+    m_hud.sidebarToggle = menu.get();
+    // ★ 点完把焦点还给输入框：`Button::CanFocus() == true` ⇒ 派发链里
+    //   `Application::OnMouseButtonDown` 已经 `SetFocusedWidget(target)`，
+    //   于是输入框失焦 ⇒ **caret 停闪、边框从聚焦色变回常态色**。
+    //   截图逐像素比对抓到的正是这条（展开态 vs 再展开态差 1480 px，全部落在
+    //   输入框上下边框那一行 `#e86d59` → `#e9e3e0`）。
+    //   `≡` 是**窗体级开关**，不接收文本输入，没有理由拿走键盘焦点。
+    menu->SetOnClick([this] {
+        SetSidebarVisible(!m_sidebarVisible);
+        if (m_window && m_promptBar) {
+            m_window->SetFocusedWidget(m_promptBar->input());
+        }
+    });
     bar->AddChild(std::move(menu));
 
     auto title = std::make_unique<ECDI::Label>("harness");
@@ -915,6 +978,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     // ── 左栏（hi-fi .side）──
     auto side = std::make_unique<ECDI::Panel>();
+    m_hud.sidebar = side.get();   // Step 2：显隐入口要能摸到侧栏本体
     side->SetSize(200, 100);
     side->SetStyle(ECDI::PanelStyleOverride{
         .background = kSidebarBg,
@@ -2774,6 +2838,10 @@ void HarnessApp::RunSidebarProbe() {
                 break;   // 只看行内第一个 Label（名称），圆点是 Panel、`×` 是 Button
             }
         }
+        // ★ Step 2：布局层读数。只看 `IsVisible()` 会被"隐藏了但没重排、
+        //   中栏没吃到那 200px"骗过（0c 的"重建了但没重排"同族缺陷）。
+        rec.sidebarVisible = m_hud.sidebar ? m_hud.sidebar->IsVisible() : false;
+        rec.midWidth = m_counting ? m_counting->GetWidth() : 0;
         m_sidebarProbeLog.push_back(std::move(rec));
     };
 
@@ -2978,6 +3046,44 @@ void HarnessApp::RunSidebarProbe() {
         expect("single-session", {{noButton, "row still offers a delete button"},
                                   {m_sessions.size() == 1, "sessionCount != 1"},
                                   {m_sess != nullptr, "active session became null"}});
+    }
+
+    // ⑩ ★★ Step 2：侧栏收起/展开臂。
+    //   ★ 这一臂必须**点顶栏 `≡`** 而不是直接调 `SetSidebarVisible`：Step 2 之前
+    //     `≡` 是个 `Label`（点不到），改成 Button 之后"回调接上了没有"才第一次
+    //     成为可检验的命题——直接调函数会把这条判据整个绕过去。
+    //   ★ 判据四条同时成立，缺一条就会被某种错误实现骗过：
+    //     · sidebarVisible 翻转 —— 显隐真的改了；
+    //     · **中栏宽度 +200/-200** —— 布局真的重排了（只改可见性不 Arrange 会在这里露馅，
+    //       而 IsVisible() 仍然是对的 ⇒ 光看可见性不够）；
+    //     · 侧栏宽 200 —— 常量没被折叠过程改掉（它不是 CollapsiblePanel，不该有中间尺寸）；
+    //     · 列表行数不变 —— 收起/展开**不能**动会话模型（这条是负对照：
+    //       若实现走成"收起 = 清空列表"，行数会掉到 0，而其余三条依然可能成立）。
+    if (m_hud.sidebar && m_hud.sidebarToggle && m_counting) {
+        const int expandedMid = m_counting->GetWidth();
+        const int sideWidth = m_hud.sidebar->GetWidth();
+        const size_t rowsBefore = m_hud.sessList->GetContentView().GetChildCount();
+
+        // 收起：点顶栏 `≡`
+        const bool clickedCollapse = clickCentreOf(m_hud.sidebarToggle);
+        expect("collapse", {{clickedCollapse, "toggle click did not dispatch"},
+                            {!m_sidebarVisible, "model still says visible"},
+                            {!m_hud.sidebar->IsVisible(), "sidebar still visible"},
+                            {m_counting->GetWidth() == expandedMid + sideWidth,
+                             "mid column did not reclaim the sidebar width"},
+                            {m_hud.sidebar->GetWidth() == sideWidth, "sidebar width changed"},
+                            {m_hud.sessList->GetContentView().GetChildCount() == rowsBefore,
+                             "collapse disturbed the session list"}});
+
+        // 展开：再点一次，必须**回到原宽度**（不是"变宽了"就行——那可能是重复加宽）
+        const bool clickedExpand = clickCentreOf(m_hud.sidebarToggle);
+        expect("expand", {{clickedExpand, "toggle click did not dispatch"},
+                          {m_sidebarVisible, "model still says hidden"},
+                          {m_hud.sidebar->IsVisible(), "sidebar still hidden"},
+                          {m_counting->GetWidth() == expandedMid,
+                           "mid column did not return to its original width"},
+                          {m_hud.sessList->GetContentView().GetChildCount() == rowsBefore,
+                           "expand disturbed the session list"}});
     }
 
     // ★ 焦点复原：合成点击把焦点交给了被点的 Button，留下的焦点框与 caret 闪烁
@@ -3858,9 +3964,11 @@ void HarnessApp::WriteSummary() {
                           "{\"phase\": \"%s\", \"rowCount\": %zu, \"sessionCount\": %zu, "
                           "\"activeIndex\": %zu, \"selectedRows\": %zu, "
                           "\"selectedIndex\": %zu, \"transcriptRows\": %zu, "
+                          "\"sidebarVisible\": %s, \"midWidth\": %d, "
                           "\"matched\": %s, \"firstDivergence\": \"%s\"}",
                           r.phase.c_str(), r.rowCount, r.sessionCount, r.activeIndex,
                           r.selectedRows, r.selectedIndex, r.transcriptRows,
+                          r.sidebarVisible ? "true" : "false", r.midWidth,
                           r.matched ? "true" : "false",
                           esc(r.firstDivergence).c_str());
             json += b;
