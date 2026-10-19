@@ -50,6 +50,19 @@ constexpr int kRowPadX = 10;
 constexpr int kCanvasPadX = 16;
 constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C 的 39px
 
+// ★★ Step 1（2026-10-19）：侧栏会话列表的几何。
+//   ★ 为什么行宽是 158 而不是容器的 172：`ScrollView` 的垂直条一旦出现，
+//     viewport 会缩到 `172 - (12 + 2) = 158`（`ScrollView.cpp` 的 `BarFootprint`）。
+//     行宽若写成 172，出条的那一刻行会被裁掉 14px（还会多出一条水平条）——
+//     于是"会话多到要滚动"这件事本身会改变行的排版。
+//   ★ 行高 28 与原型 C 的 navitem 同高；行间距 4（比正文的 10 紧，列表才有"一列"的感觉）。
+constexpr int kSidebarListW = 172;
+constexpr int kSidebarRowW = 158;
+constexpr int kSidebarRowH = 28;
+constexpr int kSidebarRowGap = 4;
+constexpr int kSidebarNameW = 106;   // 22(dot 右缘) → 128，给右侧 18px 删除钮留 6px 间隙
+constexpr int kSidebarMaxRows = 4;   // 可视高度上限；更多的靠滚动
+
 // 视觉令牌唯一来源 = Theme.h（2026-10-06 v6：对齐用户高保真模型）
 // ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
 //   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 `RouteLastMessage`）。
@@ -357,6 +370,9 @@ void HarnessApp::NewSession() {
         Relayout();
         RequestRepaint();
     }
+    // ★ Step 1：会话数变了 ⇒ 列表必须重建（新行 + 每行的 `×` 可用性都可能变）。
+    //   只置脏：本函数可能由「＋ 新建会话」按钮的点击回调进来（派发栈上，不能拆树）。
+    m_sidebarDirty = true;
 }
 
 // 切换活动会话（0d）：拆当前视图 → 指向目标会话 → 按目标会话模型重建。
@@ -389,9 +405,282 @@ void HarnessApp::SwitchToSession(size_t index) {
     ResumeSessionTimedClock(*m_sess);
 
     // ⑤ HUD / 进度 / 使能全部跟着新会话刷新
+    // ★ Step 1：活动项变了 ⇒ 侧栏的选中态也变了。同样只置脏、不在这里重建
+    //   （本函数可能从行点击的回调里进来，那时拆列表 = 拆掉正在执行回调的那个 Button）。
+    m_sidebarDirty = true;
     m_hudDirty = true;
     RefreshHud();
     RequestRepaint();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★ Step 1（2026-10-19）：侧栏会话列表 = 第二条「模型 → 视图」通道
+//
+// 为什么整段可以抽成纯函数：一行会话的全部输入只有 `(label, active, canDelete)`
+//   —— 它不读 `m_sess`、不读转录、不读协议状态。所以「建一行」与「列表整体重建」
+//   可以分开：前者是纯的（探针能反复调用而不改变任何状态），后者只负责拆+装。
+//
+// ★ 行根为什么必须是 `Button` 而不是 Panel（这是本项目最贵的一条教训）：
+//   `Panel::ContainsPoint` 恒 false（`Panel.cpp:34-40`），而 `Widget::HitTest` 的返回
+//   契约是「目标自身必须 ContainsPoint」⇒ **Panel 行永远点不到**。要"整行可点"，
+//   行根只能是 Button（或自建 Widget 子类，但那要重写一遍焦点/按下/悬停视觉）。
+//
+// ★★ 为什么行内「×」不会连带触发整行的切换（这条依赖框架契约，不是巧合）：
+//   ECDI Phase 35 起 `Button::OnMouseButtonDown` 与 `OnMouseButtonUp` 都会
+//   `event.SetHandled()`（`Button.cpp:126-181`），而 `Application` 的冒泡循环每次派发后
+//   都查 `IsHandled()` 再决定是否继续上溯（`Application.cpp:324/361/390`）。⇒ 点「×」时
+//   事件在子按钮处就被消费掉，父行按钮的 `OnMouseButtonUp` 根本不会被调用。
+//   `EventConsumptionTests.cpp:817-841` 有这条语义的回归用例（嵌套点击/消费/移除）。
+//
+// ★★★ 为什么回调里**不能**同步重建列表（UAF，本步唯一的真陷阱）：
+//   重建 = `content.RemoveChild(...)` 拆掉全部行，而正在执行 `OnMouseButtonUp` 的那个
+//   Button **就在被拆的子树里** ⇒ 回调返回后回到 `RaiseClick()` 的栈帧，`this` 已析构。
+//   框架的官方出口是 `Widget::RequestRemove()`（派发中只摘树、延迟析构，`Widget.cpp:231-289`），
+//   但它只保护**你调它的那一个节点**，保护不了"我顺手把整棵列表重建了"。
+//   ⇒ 本实现的规矩：**点击回调只改模型 + 置 `m_sidebarDirty`，重建留到 tick 里做**
+//     （timer 回调不在事件派发栈上，此时拆树是安全的）。这条规矩比"记得用 RequestRemove"
+//     更不容易被后人破坏，因为它在结构上就不给同步重建留位置。
+// ═══════════════════════════════════════════════════════════════════════════
+
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool active) {
+    // ★ 纯函数：只读 m_sessions[index] 与传入的 active，不写任何成员。
+    auto row = std::make_unique<ECDI::Button>();
+    const Session* session = m_sessions[index].get();
+    const bool canDelete = m_sessions.size() > 1;
+
+    // 选中态 = 三种视觉同时变（底色/圆点/文字色），但**只有文字色可读回**：
+    //   ECDI 的 Button/Panel 都没有 style getter（`Button::SetStyle` 只写不读），
+    //   所以探针要靠 `Label::GetTextColor()` 判"这一行是不是选中项"。
+    //   ⇒ 文字色不是纯装饰，它同时承担**读数**职责，改配色时别把它改没了。
+    row->SetSize(kSidebarRowW, kSidebarRowH);
+    row->SetStyle(ECDI::ButtonStyleOverride{
+        .background = active ? kUserBg : kPanel2,
+        .border = active ? harness::kDarkAccent : kLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = 8.0f,
+        .textAlignment = ECDI::TextAlignment::Left,   // 行根不带文字，显式给值防依赖零值
+        .foreground = active ? kAccentInk : kDarkInk});
+
+    auto dot = uikit::Dot(7, active ? harness::kDarkAccent : kLine);
+    dot->SetPosition(8, (kSidebarRowH - 7) / 2);
+    row->AddChild(std::move(dot));
+
+    // 名称 = `Session::label`（「会话 N」/ 夹具名 /「xxx (live)」）。
+    // ★ 不做截断：文本原样进控件，探针才能拿它跟模型逐字比对（A==B 判据）；
+    //   装不下的部分由渲染层的控件矩形裁剪（视觉上是截断，数据上没有）。
+    // ★ 宽度随「有没有 ×」变：`×` 占 18 + 右边距 6 ⇒ 有删除钮时名称只能到 104，
+    //   没有时（只剩一个会话）可以一直铺到行右边距。写死 104 会让单会话下的
+    //   `demo-session.jsonl` 尾部被裁掉一个字符——**探针读文字读不到这件事**
+    //   （`GetText()` 返回完整文本，裁剪发生在绘制层），只能靠截图发现。
+    const int nameW = canDelete ? 104 : (kSidebarRowW - 22 - 2);
+    auto name = uikit::Label(session->label.empty() ? "会话" : session->label,
+                             nameW, 16, active ? kAccentInk : kDarkInk,
+                             harness::kFontSmall);
+    name->SetPosition(22, (kSidebarRowH - 16) / 2);
+    // ★ 名称标签禁用 ⇒ 它**不参与命中**（`Widget::HitTest` 的 `!IsEnabled()` 早退，
+    //   `Widget.cpp:321`），鼠标落点直接归行根 Button。两个后果都是想要的：
+    //   ① 行根的 hover/press 视觉真的会亮（若 Label 抢了命中，`UpdateHoverState`
+    //      只通知 Label，祖先收不到 `OnMouseEnter` ⇒ 整行点上去毫无反馈）；
+    //   ② 探针/自动化点"行中心"时命中的一定是行根，读数不依赖文本是否恰好被点中。
+    //   ★ `IsEnabled` 全库只 gate 命中 / 焦点收集 / 键派发，**无任何绘制消费者**
+    //     （`Widget.h:197`）⇒ 禁用不会让文字变灰，视觉零变化。
+    name->SetEnabled(false);
+    row->AddChild(std::move(name));
+
+    if (canDelete) {
+        // ★ `×`(U+00D7) 是 symcand 实测两主题都有字形的少数符号之一
+        //   （`✕`(U+2715)/`✖` 在浅色 YaHei 缺字形 ⇒ 会画成空白）。
+        auto del = std::make_unique<ECDI::Button>("×");
+        del->SetSize(18, 18);
+        del->SetPosition(kSidebarRowW - 24, (kSidebarRowH - 18) / 2);
+        del->SetFont(harness::SansFont(harness::kFontSmall));
+        del->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .borderWidth = 0.0f,
+            .cornerRadius = 4.0f,
+            .pressedBackground = kLine,
+            .hoverBackground = kLine,
+            .textAlignment = ECDI::TextAlignment::Center,
+            .foreground = kDarkMuted});
+        // ★ 捕获的是**会话身份**（Session*），不是 index：删除会让下标整体前移，
+        //   捕获下标的行会"点了第 2 行却删掉第 3 个会话"。指针由 unique_ptr 持有、
+        //   从不搬动 ⇒ 点击时现查下标才是对的（查不到就什么都不做，见下）。
+        del->SetOnClick([this, session] {
+            for (size_t i = 0; i < m_sessions.size(); ++i) {
+                if (m_sessions[i].get() == session) {
+                    DeleteSessionAt(i);
+                    break;
+                }
+            }
+        });
+        row->AddChild(std::move(del));
+    }
+
+    // 整行点击 = 切到该会话。同样按身份解析下标。
+    row->SetOnClick([this, session] { SwitchToSessionByPtr(session); });
+    return row;
+}
+
+void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
+    if (!m_hud.sessList) return;
+    ECDI::Widget& content = m_hud.sessList->GetContentView();
+
+    // ★ 与 RebuildTranscriptView 同一条纪律：拆干净再装，不做增量比对。
+    //   `RemoveChild` 会先 `ForgetSubtree` 注销焦点/捕获/hover 再交回所有权
+    //   （`Widget.cpp` RemoveChild），故这里不需要手工清理状态。
+    while (content.GetChildCount() > 0) {
+        content.RemoveChild(content.GetChildAt(0));
+    }
+
+    const size_t n = m_sessions.size();
+    const size_t rowStride = static_cast<size_t>(kSidebarRowH + kSidebarRowGap);
+    int y = 0;
+    for (size_t i = 0; i < n; ++i) {
+        // ★ `orderOverride` 只给负对照用：按给定次序建行。
+        //   ★ 选中态仍按**真实活动会话**判定（`idx == m_activeIndex`），不强制 false——
+        //     负对照必须只改**一个**自变量（次序）。若同时把选中态造没了，
+        //     比对报出的差异就混着两种原因，分不清探针抓到的是哪个（单变量纪律，
+        //     同 REQ-01/03/04 被反转的教训）。
+        size_t idx = i;
+        if (orderOverride) {
+            if (orderOverride->size() != n) break;   // 形状不对就不画（探针会给同长度）
+            idx = (*orderOverride)[i];
+            if (idx >= n) break;
+        }
+        const bool active = (idx == m_activeIndex);
+        auto row = BuildSessionRow(idx, active);
+        row->SetPosition(0, y);
+        content.AddChild(std::move(row));
+        y += static_cast<int>(rowStride);
+    }
+    const int totalH = n > 0 ? static_cast<int>(n * rowStride) - kSidebarRowGap : 0;
+    const int visibleH = std::min(totalH, kSidebarMaxRows * static_cast<int>(rowStride)
+                                              - kSidebarRowGap);
+    // ★ 先 SetSize（决定 viewport）再 SetContentExtent（决定要不要出条）：
+    //   反过来的话第一帧会按旧 viewport 判一次"不需要滚动条"，出条后行宽被挤。
+    m_hud.sessList->SetSize(kSidebarListW, std::max(visibleH, kSidebarRowH));
+    m_hud.sessList->SetContentExtent(kSidebarRowW, std::max(totalH, kSidebarRowH));
+    m_hud.sessList->SetContentOffset(0, m_hud.sessList->GetScrollOffsetY());
+
+    // 列表高度是**变**的（会话越多越高，到 4 行封顶）⇒ 侧栏那条 VerticalLayout
+    // 必须重排一次，否则下面的「项目」段还停在旧位置。
+    if (ECDI::Widget* parent = m_hud.sessList->GetParent()) parent->Arrange();
+}
+
+std::vector<std::string> HarnessApp::SnapshotSessionList() const {
+    std::vector<std::string> out;
+    if (!m_hud.sessList) return out;
+    const ECDI::Widget& content = m_hud.sessList->GetContentView();
+    for (size_t i = 0; i < content.GetChildCount(); ++i) {
+        const ECDI::Widget* row = content.GetChildAt(i);
+        if (row == nullptr) continue;
+        std::string name;
+        std::string selected = "0";
+        size_t buttons = 0;
+        for (size_t c = 0; c < row->GetChildCount(); ++c) {
+            const ECDI::Widget* child = row->GetChildAt(c);
+            if (dynamic_cast<const ECDI::Button*>(child)) ++buttons;
+            if (const auto* lbl = dynamic_cast<const ECDI::Label*>(child)) {
+                // 第一个 Label 就是名称（圆点是 Panel、`×` 是 Button，都不满足本分支）
+                if (name.empty()) {
+                    name = lbl->GetText();
+                    selected = (lbl->GetTextColor() == kAccentInk) ? "1" : "0";
+                }
+            }
+        }
+        // 字段序：名称 · 选中 · 行内按钮数（×）· 行矩形（几何也算视图的一部分：
+        // 「画了几行」和「画在哪」都能被抓出来）。
+        char geo[64];
+        std::snprintf(geo, sizeof(geo), "%d,%d,%d,%d", row->GetX(), row->GetY(),
+                      row->GetWidth(), row->GetHeight());
+        out.push_back(name + '\x1f' + selected + '\x1f' + std::to_string(buttons) + '\x1f'
+                      + geo);
+    }
+    return out;
+}
+
+HarnessApp::SidebarCompare HarnessApp::CompareSessionList(
+    const std::vector<std::string>& before, const std::vector<std::string>& after) const {
+    static const char* kFieldName[] = {"name", "selected", "buttons", "geometry"};
+    SidebarCompare cmp;
+    if (before.size() != after.size()) {
+        cmp.matched = false;
+        cmp.firstDivergence = "rowCount " + std::to_string(before.size()) + " -> "
+                              + std::to_string(after.size());
+        return cmp;
+    }
+    for (size_t i = 0; i < before.size(); ++i) {
+        if (before[i] == after[i]) continue;
+        cmp.matched = false;
+        // 逐字段定位第一处差异（与转录区 CompareRows 同款可读性：别只报"不一样"）
+        auto split = [](const std::string& s) {
+            std::vector<std::string> parts;
+            std::string cur;
+            for (char ch : s) {
+                if (ch == '\x1f') { parts.push_back(cur); cur.clear(); }
+                else cur.push_back(ch);
+            }
+            parts.push_back(cur);
+            return parts;
+        };
+        const std::vector<std::string> a = split(before[i]);
+        const std::vector<std::string> b = split(after[i]);
+        std::string detail = "row " + std::to_string(i);
+        for (size_t f = 0; f < a.size() && f < b.size() && f < 4; ++f) {
+            if (a[f] == b[f]) continue;
+            detail += std::string(" ") + kFieldName[f] + " [" + a[f] + "] -> [" + b[f] + "]";
+            break;
+        }
+        cmp.firstDivergence = detail;
+        return cmp;
+    }
+    return cmp;
+}
+
+bool HarnessApp::SwitchToSessionByPtr(const Session* target) {
+    if (target == nullptr) return false;
+    for (size_t i = 0; i < m_sessions.size(); ++i) {
+        // ★ 只比地址、不解引用：这一行可能在会话刚被删掉、列表还没重建的那一帧里
+        //   被点到（时序见 RebuildSessionList 头注的 UAF 段），此时 target 已悬垂，
+        //   任何解引用都是 UB；比地址是安全的，查不到就什么都不做。
+        if (m_sessions[i].get() == target) {
+            SwitchToSession(i);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HarnessApp::DeleteSessionAt(size_t index) {
+    if (index >= m_sessions.size()) return false;
+    // ★ 禁止删到零会话：`m_sess` 变空指针会让全仓 200+ 处 `m_sess->` 解引用崩溃。
+    //   "支持零会话"是一个独立的架构决定（每个调用点加判空），不该被一个删除按钮带进来。
+    if (m_sessions.size() <= 1) return false;
+
+    const bool deletingActive = (index == m_activeIndex);
+    if (deletingActive) {
+        // ★★ 顺序不能换：先把活动指针挪到邻居（SwitchToSession 内部会
+        //    SyncRowViewState → 重建转录区 → 完成切换），**之后**才 erase。
+        //    反过来的话，`SwitchToSession` 会在旧 Session 已被销毁的情况下
+        //    去读它的 rows/timeline（那里存的是裸指针）⇒ UAF。
+        const size_t neighbor = (index + 1 < m_sessions.size()) ? index + 1 : index - 1;
+        SwitchToSession(neighbor);
+    }
+
+    m_sessions.erase(m_sessions.begin() + static_cast<std::ptrdiff_t>(index));
+
+    // erase 把后面的元素整体前移 ⇒ 活动下标可能要跟着减一。
+    // 注意 `m_sess` 本身仍指向**同一个 Session 对象**（unique_ptr 换的是所有权位置，
+    // 不是对象地址），故这里只需修正下标；用下标重取一遍指针是防御性写法。
+    if (m_activeIndex > index) --m_activeIndex;
+    if (m_activeIndex >= m_sessions.size()) m_activeIndex = m_sessions.size() - 1;
+    m_sess = m_sessions[m_activeIndex].get();
+
+    // ★ 不在事件派发栈上拆树（见本段头注的 UAF 段）：只置脏，重建交给下一个 tick。
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+    RequestRepaint();
+    return true;
 }
 
 // 冻结活动会话的 timed 锚点：记下暂停时刻（幂等——已暂停则不动）。
@@ -534,6 +823,11 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     BuildTopBar(root);
     BuildMainArea(root);
     BuildBottom(root);
+    // ★ Step 1：列表的**首帧**填充。放在 `root.Arrange()` 之前是安全的——
+    //   `RebuildSessionList` 自己会把侧栏重排一遍（列表高度会变，下方分区要跟着让位）。
+    //   ★ 这里**直接**调而不是置 `m_sidebarDirty`：此刻还没有窗口定时器，
+    //     置脏要等第一个 tick 才生效 ⇒ 首帧会是空列表（用户会看到一闪而过的空栏）。
+    RebuildSessionList();
     root.Arrange();
 }
 
@@ -648,21 +942,31 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     //   那种手撒空格是伪装 letter-spacing，等宽观感下反而散）。
     //   ★ 分区名 `工作区`/`项目` 直接沿用 C 的措辞（C 左侧第一段就叫「工作区」）。
     AddLine(*side, "工作区", kDarkMuted, true, 172, harness::kFontMicro);
+
+    // ★★ Step 1（2026-10-19）：会话列表替换掉此前**单行硬编码**的会话条目。
+    //   改动前的形态是一行 `uikit::Row` + 两个 Label（id / core 版本），只能显示
+    //   活动会话——`m_sessions` 里有 N 个会话时，界面上永远只看得见 1 个。
+    //   ⇒ 现在是 `m_sessions → 控件树` 的**纯函数渲染**（`RebuildSessionList`），
+    //     点一行切会话、行尾 `×` 删会话、选中态由组件自身可见性表达。
+    //   ★ 为什么用 `ScrollView` 而不是直接往 `side` 里塞行：会话数无上限，
+    //     而侧栏是定宽定高的列。列表自身滚动比"整个侧栏滚动"正确得多
+    //     （后者的「工作区/项目」分区会跟着一起滚走）。
     {
-        // 会话行 = navitem.selected 的等价物（C 的 `.navitem.selected`）
-        auto row = uikit::Row(172, 28, 8, 8);
-        row->SetStyle(ECDI::PanelStyleOverride{
-            .background = kPanel2, .cornerRadius = 8.0f});
-        row->AddChild(uikit::Dot(7, harness::kDarkAccent));
-        auto name = uikit::Label("—", 60, 16, kDarkInk, harness::kFontSmall);
-        m_hud.sessSession = name.get();
-        row->AddChild(std::move(name));
-        // meta 显示 core 版本（C 的 session 行右侧是相对时间，但本 GUI 的
-        // 「会话」只有一条：回放夹具 ⇒ 显示 core 版本比显示假时间更诚实）
-        auto meta = uikit::Label("—", 72, 16, kDarkMuted, harness::kFontSmall);
-        m_hud.sessCore = meta.get();
-        row->AddChild(std::move(meta));
-        side->AddChild(std::move(row));
+        auto list = std::make_unique<ECDI::ScrollView>();
+        m_hud.sessList = list.get();
+        list->SetSize(kSidebarListW, kSidebarRowH);
+        list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
+        list->SetScrollBarVisible(true);
+        side->AddChild(std::move(list));
+    }
+    {
+        // 计数行：`2 个会话`。这一行是"侧栏到底画了几个"的**文字读数**——
+        // 它和列表同源于 m_sessions，任意一侧错位都会立刻显形（探针也读它）。
+        // ★ 直接挂在 side 下（不经 Row 包一层）：它是单标签，多一层容器只会
+        //   在 VerticalLayout 里多占一个槽位、多一点间距。
+        auto cnt = uikit::Label("1 个会话", kSidebarListW, 14, kDarkMuted, harness::kFontMicro);
+        m_hud.sessCount = cnt.get();
+        side->AddChild(std::move(cnt));
     }
 
     // ★★ 回放进度条（I4 评估钩子）**保留**，但改成 C 那种「细线段」形态：
@@ -1053,6 +1357,17 @@ void HarnessApp::BuildBottom(ECDI::Widget& root) {
 // ── 回放拉取（~30Hz 单定时器驱动，规格 §6.1）───────────────────
 
 void HarnessApp::OnReplayTick() {
+    // ★★ Step 1：侧栏列表的**唯一重建点**。
+    //   为什么必须在 `if (!m_sess->source) return;` **之前**：回放模式新建的空会话
+    //   `source == nullptr`，本函数会在下一行直接 return —— 把重建放在后面就意味着
+    //   "新建会话后侧栏永远不刷新"（列表说 1 个、模型已经 2 个）。
+    //   为什么放在 tick 里而不是回调里：见 `m_sidebarDirty` 的声明注释（派发栈 UAF）。
+    //   ★ timer 回调不在事件派发栈上 ⇒ 此刻 `RemoveChild` 拆树是安全的。
+    if (m_sidebarDirty) {
+        m_sidebarDirty = false;
+        RebuildSessionList();
+        RequestRepaint();
+    }
     if (!m_sess->source) return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
     if (m_sess->source->IsLive()) {
         // ── live（子进程）：本 tick 内带超时批量拉取，把时间还给消息循环 ──
@@ -1106,6 +1421,11 @@ void HarnessApp::OnReplayTick() {
             // ★★ Step 0d 会话探针：同样放在 settle 分支（回放模式下夹具拉完才跑）。
             if (m_options.sessionProbe && !m_sessionProbeDone) {
                 RunSessionProbe();
+            }
+            // ★★ Step 1 侧栏探针：同上（同步跑完即 Exit，故必须排在其他探针之后，
+            //   否则它先 Exit 会让别人一步都跑不了。顺序：reasoning → rebuild → session → sidebar）。
+            if (m_options.sidebarProbe && !m_sidebarProbeDone) {
+                RunSidebarProbe();
             }
             return;
         }
@@ -2403,6 +2723,272 @@ void HarnessApp::RunSessionProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ★★ Step 1：侧栏列表的 A==B 探针（--sidebar-probe）
+//
+// 为什么侧栏需要**自己**一套判据：0c 的 `SnapshotRows` 只看 `m_sess->rows`
+//   —— 那是转录区。侧栏错了它一个字都读不到。而侧栏恰恰是"视图与模型的对应
+//   关系"最容易分叉的地方：列表说 2 个会话、点下去切到第 1 个，转录区完全正常。
+//
+// 六条读数，每条都配了**能被推翻的形态**：
+//   ① baseline      起点快照（模型会话数 / 列表行数 / 选中项）
+//   ② rebuild       原地重建一次 ⇒ 必须与 baseline 逐行相同（matched=true）
+//   ③ rebuild-again 再重建一次 ⇒ 幂等（防"重建时顺手改了状态"）
+//   ④ negative      **负对照**：喂逆序下标重建 ⇒ 必须报**不匹配**。
+//                   这一条是整个探针的"灵敏度证明"——若它也 matched，
+//                   说明比对函数根本没在看次序，②③ 的 matched 就一文不值。
+//                   （同 0a 的字典序教训：没有负对照的正对照是自证）
+//   ⑤ new           新建一个会话并重建 ⇒ 列表行数 +1、会话数 +1
+//   ⑥ deleted       删掉那个新会话 ⇒ 列表行数回到 baseline、
+//                   **活动会话的转录行数一位都不变**（负对照：删别人不能动我）
+// ═══════════════════════════════════════════════════════════════════════════
+void HarnessApp::RunSidebarProbe() {
+    if (!m_sess) { m_sidebarProbeDone = true; return; }
+    // ★ 只在回放模式：live 下 NewSession 会真拉 core 子进程，探针不该制造真进程。
+    if (!m_sess->replay) { m_sidebarProbeDone = true; return; }
+    if (!m_hud.sessList) { m_sidebarProbeDone = true; return; }
+
+    auto snap = [&](const char* phase) {
+        SidebarProbeRec rec;
+        rec.phase = phase;
+        rec.sessionCount = m_sessions.size();
+        rec.activeIndex = m_activeIndex;
+        rec.transcriptRows = m_sess->rows.size();
+        // 控件侧：列表内容视图里的直接子节点数（= 画出来的行数）
+        const ECDI::Widget& content = m_hud.sessList->GetContentView();
+        rec.rowCount = content.GetChildCount();
+        // 选中项：行内第一个 Label 的文字色 == kAccentInk 即视为选中
+        //   （ECDI 的 Button/Panel 都没有 style getter，文字色是**唯一**可读回的
+        //     选中标记 —— 见 `BuildSessionRow` 里那段注释，别把它当纯装饰改掉）
+        rec.selectedRows = 0;
+        rec.selectedIndex = static_cast<size_t>(-1);
+        for (size_t i = 0; i < content.GetChildCount(); ++i) {
+            const ECDI::Widget* row = content.GetChildAt(i);
+            for (size_t c = 0; c < row->GetChildCount(); ++c) {
+                const auto* lbl = dynamic_cast<const ECDI::Label*>(row->GetChildAt(c));
+                if (lbl == nullptr) continue;
+                if (lbl->GetTextColor() == kAccentInk) {
+                    ++rec.selectedRows;
+                    rec.selectedIndex = i;
+                }
+                break;   // 只看行内第一个 Label（名称），圆点是 Panel、`×` 是 Button
+            }
+        }
+        m_sidebarProbeLog.push_back(std::move(rec));
+    };
+
+    // ★ 焦点守卫：合成点击会把焦点交给被点的 Button（`Application::OnMouseButtonDown`
+    //   第一件事就是 `SetFocusedWidget`），焦点框与 caret 闪烁都会多画几帧 ⇒
+    //   paints/frames 读数被这份探针污染。收尾必须还回去（同 `RunHitProbe`）。
+    ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+
+    // ★★ 点击臂：**走真实派发链**点列表行/`×`，而不是直接调 SwitchToSession/DeleteSessionAt。
+    //   理由（这是 Step 1 之前完全空缺的那一类判据）：前面几相只证明"重建画得对"，
+    //   却没有任何一条读数证明**点上去真的会切、会删**——画对了但回调没接上，
+    //   在读数上与前几相完全同形。0c 在转录区正是栽在这里（buildTitle 重建完
+    //   标题空了，而当时没有任何判据看得见）。
+    auto rowAt = [&](size_t i) -> ECDI::Widget* {
+        ECDI::Widget& content = m_hud.sessList->GetContentView();
+        return i < content.GetChildCount() ? content.GetChildAt(i) : nullptr;
+    };
+    auto clickCentreOf = [&](ECDI::Widget* w) {
+        if (!w) return false;
+        const ECDI::Point abs = w->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + w->GetWidth() / 2,
+                          static_cast<int>(abs.y) + w->GetHeight() / 2);
+        // 派发返回 ⇒ 已离开事件栈 ⇒ 此时拆树安全（回调里只置了 `m_sidebarDirty`）
+        if (m_sidebarDirty) { m_sidebarDirty = false; RebuildSessionList(); }
+        return true;
+    };
+    auto deleteButtonOf = [&](size_t i) -> ECDI::Button* {
+        ECDI::Widget* row = rowAt(i);
+        if (!row) return nullptr;
+        for (size_t c = 0; c < row->GetChildCount(); ++c) {
+            if (auto* b = dynamic_cast<ECDI::Button*>(row->GetChildAt(c))) return b;
+        }
+        return nullptr;
+    };
+    // 把"这一相该看到什么"写成显式期望，失败时给出**哪一条没满足**（别只报 false）
+    auto expect = [&](const char* phase,
+                      std::vector<std::pair<bool, const char*>> conds) {
+        snap(phase);
+        SidebarProbeRec& rec = m_sidebarProbeLog.back();
+        std::string bad;
+        for (const auto& c : conds) {
+            if (c.first) continue;
+            if (!bad.empty()) bad += "; ";
+            bad += c.second;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    };
+
+    // ① 起点
+    RebuildSessionList();
+    m_sidebarDirty = false;
+    snap("baseline");
+    const std::vector<std::string> baseList = SnapshotSessionList();
+    const size_t baseRows = m_sess->rows.size();
+
+    // ② 原地重建 ⇒ A==B
+    RebuildSessionList();
+    {
+        const SidebarCompare cmp = CompareSessionList(baseList, SnapshotSessionList());
+        snap("rebuild");
+        m_sidebarProbeLog.back().matched = cmp.matched;
+        m_sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
+    }
+
+    // ③ 再重建一次 ⇒ 幂等（与 ② 的快照比，而不是与 ① 比：
+    //   若 ② 已经把状态改坏了，③ 与 ① 比会同时报两处，定位反而更难）
+    {
+        const std::vector<std::string> afterRebuild = SnapshotSessionList();
+        RebuildSessionList();
+        const SidebarCompare cmp = CompareSessionList(afterRebuild, SnapshotSessionList());
+        snap("rebuild-again");
+        m_sidebarProbeLog.back().matched = cmp.matched;
+        m_sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
+    }
+
+    // ④ 新建会话 ⇒ 列表行数 +1、会话数 +1。
+    //   ★ 顺序说明：负对照（⑤）需要**两个以上**会话才有自由度，所以新建排在它前面。
+    //     demo 夹具默认只有 1 个会话，若把负对照放在新建之前，它就永远是
+    //     "逆序 == 正序"的退化情形——那条读数会写着 matched=true，读者会误以为
+    //     负对照通过了，而实际上它根本没被检验过。
+    NewSession();
+    RebuildSessionList();   // 探针不在事件派发栈上，直接建是安全的
+    snap("new");
+    const size_t emptyRows = m_sess->rows.size();   // 空会话的转录行数（= 1，那条 notice）
+
+    // ⑥ ★★ 点击臂：Step 1 之前这一类判据**完全空缺**——前面几相只证明"重建画得对"，
+    //   没有任何一条读数证明"点上去真的会切"。而"画对了但回调没接上"在读数上
+    //   与前几相完全同形（0c 在转录区正是这样骗过了当时的判据）。
+    //   判据三件必须同时成立：活动下标变了 ∧ 选中行跟着变 ∧ **转录行数跟着换**。
+    //   只查下标会被"切了但转录没重建"骗过；只查转录会被"两会话行数恰好相同"骗过。
+    auto selectedIndex = [&]() -> long long {
+        ECDI::Widget& content = m_hud.sessList->GetContentView();
+        for (size_t i = 0; i < content.GetChildCount(); ++i) {
+            const ECDI::Widget* row = content.GetChildAt(i);
+            for (size_t c = 0; c < row->GetChildCount(); ++c) {
+                const auto* lbl = dynamic_cast<const ECDI::Label*>(row->GetChildAt(c));
+                if (lbl == nullptr) continue;
+                if (lbl->GetTextColor() == kAccentInk) return static_cast<long long>(i);
+                break;
+            }
+        }
+        return -1;
+    };
+
+    // ⑤ 点第 2 行（空会话）→ 点第 1 行（原会话）：两次都必须真的换过去
+    const bool clickedAway = clickCentreOf(rowAt(1));
+    expect("click-empty", {{clickedAway, "click did not dispatch"},
+                           {m_activeIndex == 1, "activeIndex!=1"},
+                           {selectedIndex() == 1, "selected row != 1"},
+                           {m_sess->rows.size() == emptyRows, "transcript did not follow"}});
+    const bool clickedBack = clickCentreOf(rowAt(0));
+    expect("click-back", {{clickedBack, "click did not dispatch"},
+                          {m_activeIndex == 0, "activeIndex!=0"},
+                          {selectedIndex() == 0, "selected row != 0"},
+                          {m_sess->rows.size() == baseRows, "transcript did not follow back"}});
+    // ★ 负对照（点击臂专用）：点**行内 `×` 之外**的空白处必须切行，而点 `×` 必须**不**切行。
+    //   后者的读法见 ⑦（删除臂）——若 `×` 的点击漏到父行，`SwitchToSessionByPtr` 会因为
+    //   目标已被 erase 而静默 no-op（地址比对兜住了），故此处不重复断言，靠 ⑦ 的形状判。
+
+    // ⑥ ★ 负对照：逆序重建。判据是 **matched == false**（探针必须能看见次序错）。
+    //   ★ 只改**次序**这一个自变量：选中态仍按真实活动会话判定（`orderOverride`
+    //     不再强制 false），否则差异里混进了"选中态被造没了"，就分不清探针抓到的
+    //     是次序错还是选中错——单变量纪律（同 REQ-01/03/04 的教训）。
+    if (m_sessions.size() >= 2) {
+        // ★ 快照必须在**紧邻**逆序重建之前抓：点击臂刚把活动会话从 1 号切回 0 号，
+        //   若沿用 `new` 相那份快照，选中态会天然差一格，比对报出的差异就与"次序"
+        //   无关了（第一版正是这么写错的，读数里出现
+        //   `restore-after-negative failed: row 0 selected [0] -> [1]` —— 错的是快照时机，
+        //   不是实现）。
+        const std::vector<std::string> twoList = SnapshotSessionList();
+        std::vector<size_t> rev;
+        for (size_t i = m_sessions.size(); i > 0; --i) rev.push_back(i - 1);
+        RebuildSessionList(&rev);
+        const SidebarCompare cmp = CompareSessionList(twoList, SnapshotSessionList());
+        snap("negative");
+        m_sidebarProbeLog.back().matched = cmp.matched;
+        m_sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
+        // 复原：负对照只借用一次列表，别把逆序留在屏上（⑦ 的读数会受它影响）
+        RebuildSessionList();
+        const SidebarCompare restored = CompareSessionList(twoList, SnapshotSessionList());
+        if (!restored.matched) {
+            // 复原失败 = 重建不是纯函数（第一次的差异被留在了状态里）⇒ 必须显式暴露
+            m_sidebarProbeLog.back().firstDivergence =
+                "restore-after-negative failed: " + restored.firstDivergence;
+            m_sidebarProbeLog.back().matched = true;   // 仍记负对照通过，但差异里写明复原失败
+        }
+    } else {
+        // 理论上到不了这里（④ 之后至少 2 个会话）；留一条诚实读数而不是静默跳过。
+        snap("negative");
+        m_sidebarProbeLog.back().matched = true;
+        m_sidebarProbeLog.back().firstDivergence =
+            "(no degrees of freedom: fewer than 2 sessions)";
+    }
+
+    // ⑦ ★★ 删除臂 A：点**非活动**会话的 `×`。
+    //   用户口径（ECDI 实施方案第 ④ 条）：「删非活动时保留当前转录与活动会话不变，
+    //   只调整列表和活动下标」。⇒ 判据是**四条同时成立**，其中 transcriptRows
+    //   不变是真正的负对照：删错了会话（把活动那个删了）会让转录行数变。
+    //   且这一臂同时验证了「嵌套 `×` 的点击不会漏到父行」：若漏了，父行会先
+    //   `SwitchToSession` 切到被删的会话，随后 erase 让它变成空转录 ⇒ transcriptRows 会掉。
+    {
+        // 当前状态：0=原会话（活动，有转录）1=新建空会话。删 1 号（非活动）。
+        ECDI::Button* delBtn = deleteButtonOf(1);
+        const bool clicked = delBtn && clickCentreOf(delBtn);
+        expect("delete-inactive", {{clicked, "no delete button on row 1"},
+                                   {m_sessions.size() == 1, "sessionCount != 1"},
+                                   {m_hud.sessList->GetContentView().GetChildCount() == 1,
+                                    "rowCount != 1"},
+                                   {m_activeIndex == 0, "activeIndex != 0"},
+                                   {m_sess->rows.size() == baseRows,
+                                    "active transcript changed by deleting inactive"}});
+    }
+
+    // ⑧ ★★ 删除臂 B：点**活动**会话的 `×` ⇒ 必须先切邻居再删，且列表/活动下标都收敛。
+    //   这条是顺序错误的唯一直检：若实现先 erase 再 SwitchToSession，
+    //   切换时读的是已析构的 Session（UAF，`rows` 里全是裸指针）。
+    NewSession();
+    RebuildSessionList();
+    {
+        const bool activeIsNew = (m_activeIndex == 1 && m_sessions.size() == 2);
+        ECDI::Button* delBtn = deleteButtonOf(1);
+        const bool clicked = delBtn && clickCentreOf(delBtn);
+        expect("delete-active", {{activeIsNew, "setup: new session not active"},
+                                 {clicked, "no delete button on row 1"},
+                                 {m_sessions.size() == 1, "sessionCount != 1"},
+                                 {m_hud.sessList->GetContentView().GetChildCount() == 1,
+                                  "rowCount != 1"},
+                                 {m_activeIndex == 0, "did not fall back to neighbour"},
+                                 {m_sess->rows.size() == baseRows,
+                                  "transcript did not come back to survivor"}});
+    }
+
+    // ⑨ ★ 最后一条：只有一个会话时**不允许删**（`DeleteSessionAt` 返回 false）。
+    //   「删到零会话」会让 `m_sess == nullptr`，而全仓 200+ 处调用点假定非空。
+    //   判据 = 点了也不掉行（不是"按钮不存在"——这里造的是"按钮在但删不动"，
+    //   因为 canDelete 是按 size>1 判的，1 个会话时 `×` 根本不会被建出来。
+    //   ⇒ 诚实的读法是：1 个会话时行内没有按钮，故 buttons == 0 且点不到。
+    {
+        ECDI::Widget* row = rowAt(0);
+        const bool noButton = (row != nullptr && row->GetChildCount() == 2);
+        expect("single-session", {{noButton, "row still offers a delete button"},
+                                  {m_sessions.size() == 1, "sessionCount != 1"},
+                                  {m_sess != nullptr, "active session became null"}});
+    }
+
+    // ★ 焦点复原：合成点击把焦点交给了被点的 Button，留下的焦点框与 caret 闪烁
+    //   会多画几帧 ⇒ paints/frames 读数被污染（同 RunHitProbe 的收尾）。
+    if (m_window) m_window->SetFocusedWidget(focusBefore);
+    m_sidebarDirty = false;
+
+    m_sidebarProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -2739,19 +3325,36 @@ void HarnessApp::RefreshHud() {
             .background = active ? kOkDark : kDarkMuted, .cornerRadius = 3.5f});
     }
 
+    // ★★ Step 1：侧栏会话的"活动会话"读数**搬到了列表行里**（每行自带 id/label/选中态）。
+    //   `sessSession` / `sessCore` 两个槽位因此**不再赋值**——它们原本服务于
+    //   "全局只有一行会话条目"的形态。字段仍留在 `Hud` 里（删字段是独立清理，
+    //   见 App.h 里的注释），故这里的两处 `if` 永远不成立（死代码但无害）。
     if (m_hud.sessSession) {
         m_hud.sessSession->SetText(m_sess->sessionId.empty() ? "—" : m_sess->sessionId);
     }
     if (m_hud.sessCore) {
         m_hud.sessCore->SetText(m_sess->coreVer.empty() ? "—" : m_sess->coreVer);
     }
+    if (m_hud.sessCount) {
+        // 计数与列表同源：都从 m_sessions.size() 出发 ⇒ 这一行是列表的**文字对照**。
+        // 两者不一致（列表少画/多画了一行）时，人和探针都读得出来。
+        char buf[48];
+        std::snprintf(buf, sizeof(buf), "%zu 个会话", m_sessions.size());
+        m_hud.sessCount->SetText(buf);
+    }
     if (m_hud.sessProgress) {
         char buf[64];
         if (m_sess->replay) {
             std::snprintf(buf, sizeof(buf), "%zu / %zu 条", m_sess->replay->Consumed(),
                           m_sess->replay->Total());
-        } else {
+        } else if (m_sess->source) {
             std::snprintf(buf, sizeof(buf), "%zu 条（live）", m_sess->liveLines);
+        } else {
+            // ★ 无 source 且无 replay = 回放模式下新建的空会话（0d 起就有这种会话）。
+            //   上一版把它归进 else 支，于是侧栏写着「0 条（live）」——**谎报来源**。
+            //   这个错在 0d 就存在，但那时侧栏只画活动会话、用户几乎见不到空会话；
+            //   Step 1 把 N 个会话都摆到屏上之后，它变成每点一次「新建」就出现一次。
+            std::snprintf(buf, sizeof(buf), "%s", "空会话 · 无 core");
         }
         m_hud.sessProgress->SetText(buf);
     }
@@ -3206,6 +3809,60 @@ void HarnessApp::WriteSummary() {
                           "\"rowCount\": %zu, \"blockRowCount\": %zu}",
                           r.phase.c_str(), r.sessionCount, r.activeIndex,
                           r.rowCount, r.blockRowCount);
+            json += b;
+        }
+        json += "],\n";
+    }
+    if (m_options.sidebarProbe && !m_sidebarProbeLog.empty()) {
+        // ★★ Step 1 机读证据（2026-10-19）：侧栏列表的 A==B 轨迹。
+        //   判据（跑批脚本执行）：
+        //     · rebuild.matched == true ∧ rebuild-again.matched == true
+        //       （原地重建两次都无损 ⇒ 列表是模型的纯函数）
+        //     · negative.matched == **false**（负对照：逆序必须被抓出来。
+        //       若它为 true，说明比对函数没在看次序，上面两条 matched 不作数）
+        //     · new.rowCount == baseline.rowCount + 1 ∧ new.sessionCount == +1
+        //     · deleted.rowCount == baseline.rowCount ∧ deleted.transcriptRows == baseline.transcriptRows
+        //       （删掉会话后列表回到原状，且**活动会话的转录一位没变**）
+        json += "  \"sidebarProbe\": [";
+        // ★ 自带一份转义（与 rebuildProbe 段那个 `esc` 同款，但**不能复用**：
+        //   它是那段 `if` 块内的局部 lambda，作用域到 `],\n` 就结束了）。
+        //   会话 label 含夹具文件名，可能是任意 UTF-8；`firstDivergence` 里还会拼
+        //   行文本 ⇒ 不转义就会让整份摘要不再是合法 JSON（跑批脚本读它会整份失败）。
+        auto esc = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_sidebarProbeLog.size(); ++i) {
+            const SidebarProbeRec& r = m_sidebarProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"rowCount\": %zu, \"sessionCount\": %zu, "
+                          "\"activeIndex\": %zu, \"selectedRows\": %zu, "
+                          "\"selectedIndex\": %zu, \"transcriptRows\": %zu, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.rowCount, r.sessionCount, r.activeIndex,
+                          r.selectedRows, r.selectedIndex, r.transcriptRows,
+                          r.matched ? "true" : "false",
+                          esc(r.firstDivergence).c_str());
             json += b;
         }
         json += "],\n";

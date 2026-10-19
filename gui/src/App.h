@@ -101,6 +101,20 @@ struct CliOptions {
     //   只在回放模式有意义（live 新建会话会真拉 core 子进程，探针不制造真进程）。
     //   默认 false ⇒ 零行为变化。
     bool sessionProbe = false;            // --session-probe：新建/切换会话取证
+    // ★★ Step 1 侧栏探针（2026-10-19）：侧栏会话列表的 A==B 判据。
+    //   ★ 为什么必须单独一条：0c 的 A==B（rebuildProbe）**只覆盖转录区**——
+    //     `SnapshotRows` 遍历的是 `m_sess->rows`，侧栏控件树根本不在它的视野里。
+    //     于是"侧栏点错了 / 列表少画一行 / 选中态没跟上"这类缺陷，现有仪器**一个都看不见**。
+    //   ★ 四条判据（跑批脚本执行）：
+    //     · rebuild.matched == true（拆掉列表重建，逐行逐字段一致）
+    //     · negative.matched == false（**负对照**：按逆序重建必须报出次序错——
+    //       否则这条判据是瞎的，与 0a 的字典序陷阱同型）
+    //     · new.rowCount == baseline.rowCount + 1 ∧ new.sessionCount == baseline.sessionCount + 1
+    //     · deleted.rowCount == baseline.rowCount ∧ deleted.transcriptRows == baseline.transcriptRows
+    //       （**负对照**：删掉一个会话后活动会话的转录行数必须**一位都不变**——
+    //        否则"删了"和"删错了"分不清）
+    //   ★ 默认 false ⇒ 零行为变化。
+    bool sidebarProbe = false;            // --sidebar-probe：侧栏列表 A==B 取证
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -169,6 +183,21 @@ private:
         ECDI::Label* stMsgs = nullptr;       // 状态栏：N msg
         ECDI::Label* stTokens = nullptr;     // 状态栏：tokens
         ECDI::Label* stPaint = nullptr;      // 状态栏：paints · 上次帧时
+        // ★★ Step 1（2026-10-19）：侧栏会话列表的三个句柄。
+        //   ★ 为什么必须进 Hud：`RefreshHud` 的入口判据是 `if (!m_hud.title) return;`
+        //     ——窗口级控件句柄只有挂在这里，才在"UI 还没建完"时被正确跳过。
+        //   ★ 列表内容视图被整段重建时，这三个指针**不需要**重新指向——
+        //     `sessList`（ScrollView）与 `sessCount`（Label）在重建中**存活**，
+        //     只有列表**内容**（ScrollContent 的子控件）被拆掉重来。
+        ECDI::ScrollView* sessList = nullptr;   // 左栏：会话列表滚动容器
+        ECDI::Label* sessCount = nullptr;       // 左栏：会话计数 `2 个会话`
+        // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
+        //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
+        //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，
+        //   属**独立的清理**，混进这一步会把"侧栏列表"的 diff 撑大；
+        //   第二，将来"活动会话的详细信息"若要在别处显示，这两个槽位是现成的。
+        //   现状 = **声明仍在、恒不赋值、RefreshHud 里两处 `if` 永远不成立**（死代码但无害）。
+        //   ⇒ 待办：下一步清理时连同这两条注释一起删。
     };
 
     void BuildUi(ECDI::Window& window);
@@ -377,6 +406,68 @@ private:
     std::unique_ptr<ECDI::Widget> BuildNoticeRow(const std::string& text,
                                                  const ECDI::Color& color, RowRec& rec);
 
+    // ── ★★ Step 1（2026-10-19）：侧栏会话列表 —— 第二条「模型 → 视图」通道 ────
+    // 为什么侧栏也要能被重建：0c 只让**转录区**可重建，理由写在 `RebuildTranscriptView`
+    //   的注释里（令牌是别名，事后换不了色）。而侧栏的会话条目是**从 m_sessions 派生的**
+    //   ——会话增删/切换后它必然要跟着变。若它只能"就地改一改"，就会出现"列表说 2 个
+    //   会话、点下去却切到第 1 个"这种**视图与模型分叉**，而现有仪器（`SnapshotRows`
+    //   只走 `m_sess->rows`）完全看不见。故这里把同一条纪律搬到侧栏：
+    //   列表是**纯函数** `m_sessions → 控件树`，任何变化都靠重建收敛。
+    //
+    // `BuildSessionRow()`：建**一行**会话条目（纯函数，不改任何状态）。
+    //   ★ 行根是 `Button`（不是 Panel）：`Panel::ContainsPoint` 恒 false
+    //     （`Panel.cpp:34-40`），而"可点"要求节点自身命中。用 Button 还有一个
+    //     非预期的收益——ECDI Phase 35 起 Button 在 Down/Up 两个阶段都 `SetHandled()`
+    //     （`Button.cpp:126-181`），所以行内那个"×"子按钮点下去**不会**再触发行本身的
+    //     切换回调（父按钮收不到 Up）。这条依赖是**框架契约**，不是巧合：
+    //     `EventConsumptionTests.cpp` 里有嵌套点击的回归用例。
+    //   ★ `index` 只是**建行时**的下标，回调里**不捕获它**——删除会让下标整体前移，
+    //     捕获下标就会"点了第 2 行却切到第 3 个会话"。回调捕获的是 `Session*`（稳定，
+    //     `unique_ptr` 持有），点击时再线性查一次它的当前下标（见 `SwitchToSessionByPtr`）。
+    std::unique_ptr<ECDI::Widget> BuildSessionRow(size_t index, bool active);
+    // `RebuildSessionList()`：拆掉列表内容视图的全部子控件，按 `m_sessions` 重建。
+    //   ★ 只碰列表那一个 Panel，**不碰**侧栏其余部分、更不碰转录区/检查器
+    //     ⇒ CountingPanel 与 HUD 指针全部存活，评估读数不中断。
+    //   ★ `orderOverride` **只供负对照**：给一组下标就按那组次序建（探针喂逆序进来，
+    //     看它能不能被抓出来）。**只改次序这一个自变量**——选中态仍按真实活动会话
+    //     判定。若这里顺手把选中态也造没了，负对照报出的差异就混着两种原因，
+    //     分不清探针抓到的是次序错还是选中错（单变量纪律；REQ-01/03/04 曾因
+    //     违反它被误判后反转为 harness 侧）。
+    void RebuildSessionList(const std::vector<size_t>* orderOverride = nullptr);
+    // `SnapshotSessionList()` / `CompareSessionList()`：侧栏的 A==B 判据。
+    //   ★ 与转录区的 `SnapshotRows` 同款形状（字段用 '\x1f' 分隔、逐字段报第一处差异），
+    //     但**独立一套**：两者比对的对象不同、失败语义也不同（转录错 = 重建丢状态；
+    //     侧栏错 = 视图与模型的**对应关系**错了）。混用一套会把两类缺陷压成一个数字。
+    std::vector<std::string> SnapshotSessionList() const;
+    // ★ 比对结果单独成结构（而不是像转录区那样直接写日志）：
+    //   负对照这条**要求"不匹配"**，若比对函数自己往日志里塞 matched，调用点就分不清
+    //   "这次不匹配是失败还是预期"。返回结构 + 由调用点决定怎么记账，判据才可读。
+    struct SidebarCompare {
+        bool matched = true;
+        std::string firstDivergence;   // 第一处差异（匹配时为空）
+    };
+    SidebarCompare CompareSessionList(const std::vector<std::string>& before,
+                                      const std::vector<std::string>& after) const;
+    // `DeleteSessionAt()`：删一个会话（**唯一入口**，点击与探针共用）。
+    //   ★ 三条不可换序的规矩：
+    //     ① **先**把要删的会话从"活动指针"上摘下来（若删的就是活动的），再动容器；
+    //        否则 `m_sess` 会在 `erase` 之后短暂悬垂。
+    //     ② 删活动会话 ⇒ 先切到邻居（`SwitchToSession` 内部会重建转录区），
+    //        切换**完成之后**才允许容器 `erase`——旧 Session 在切换期间必须活着。
+    //     ③ 删完若 `m_activeIndex` 变了，必须修正（erase 会把后面的元素整体前移）。
+    //   ★ **禁止删最后一个会话**：会话数是 1 时直接返回 false。理由不是"实现麻烦"——
+    //     而是空会话列表会让 `m_sess == nullptr`，而全仓 200+ 处调用点都假定它非空
+    //     （`OnReplayTick` 首行就解引用它）。要支持"零会话"是一个**独立的**架构决定
+    //     （所有 `m_sess->` 都要加判空），不该被"加个删除按钮"顺手带进来。
+    //   ★ 回放模式下被删会话的 `ReplaySource` 随 `unique_ptr` 析构；live 模式下
+    //     `ChildSource::~ChildSource()` 会 `Stop()` 收尸（`ChildSource.cpp:26`）。
+    //     **不在这里**手工 Stop——那会变成第二份收尸逻辑。
+    bool DeleteSessionAt(size_t index);
+    // `SwitchToSessionByPtr()`：按**会话身份**切换（侧栏点击用）。
+    //   ★ 为什么不能直接传下标进来：行是建列表那一刻生成的，下标会因删除而失效。
+    //     指针是稳定的（`unique_ptr` 持有、从不搬动），点击时现查下标才是对的。
+    bool SwitchToSessionByPtr(const Session* target);
+
     void Relayout();
     void FollowTailIfPinned();
     void RequestRepaint();
@@ -434,6 +525,16 @@ private:
     bool m_sweepStarted = false;                   // --scroll-sweep 已启动（仅一次）
     bool m_sweepDone = false;                      // --scroll-sweep 扫到底（退出）
     bool m_hudDirty = true;                        // HUD 有新数据待刷新
+    // ★★ Step 1（2026-10-19）：侧栏列表待重建。
+    //   为什么需要这个**延迟标志**（而不是点完立刻重建）：删除/切换的回调是在
+    //   `Application` 的**事件派发栈**上执行的，而重建会 `RemoveChild` 拆掉整棵列表
+    //   —— 其中就包含**正在执行回调的那个 Button**（点「×」时它是行的子节点，
+    //   点行本身时它是行根）。回调返回后 `RaiseClick()` 还要读 `this`（`m_onClick` 刚
+    //   执行完，栈帧仍持有成员）⇒ 在回调里同步拆树 = UAF。
+    //   框架的 `RequestRemove()` 只保护你调它的那一个节点，护不住"我顺手重建了整个列表"。
+    //   ⇒ 规矩：回调**只改模型 + 置脏**，重建留到 `OnReplayTick`（timer 回调不在派发栈上）。
+    //   ★ 这条规矩在结构上不给"同步重建"留位置，比"记得用 RequestRemove"更抗腐化。
+    bool m_sidebarDirty = false;
     int m_relayoutPulse = 0;                       // 折叠动画期间的补重排 tick 数（~33ms each）
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
@@ -575,6 +676,27 @@ private:
     std::vector<SessionProbeRec> m_sessionProbeLog;
     bool m_sessionProbeDone = false;
     void RunSessionProbe();
+
+    // ★★ Step 1（2026-10-19）：侧栏列表的 A==B 探针。
+    //   形状照抄 `RunSessionProbe`（同步跑完即 Exit，不跨 tick）——因为侧栏重建
+    //   不涉及动画、不涉及折叠，没有"要等 400ms settle"的东西。
+    //   ★ 唯一需要等待的是 `NewSession()`：回放模式下它会 `AddNoticeRow` + `Relayout`，
+    //     但这些全是同步的，故整条探针可以一轮跑完。
+    struct SidebarProbeRec {
+        std::string phase;          // baseline / rebuild / rebuild-again / negative /
+                                    // new / deleted
+        size_t rowCount = 0;        // 列表里的行数（控件侧）
+        size_t sessionCount = 0;    // 模型侧会话数
+        size_t activeIndex = 0;     // 模型侧活动下标
+        size_t selectedRows = 0;    // 行里选中态为真的个数（invariant：0 或 1）
+        size_t selectedIndex = 0;   // 选中的那一行的下标（无选中 = (size_t)-1）
+        size_t transcriptRows = 0;  // 活动会话的转录行数（删除判据的负对照）
+        bool matched = true;        // 与对照快照逐行一致（仅 rebuild 类 phase 有意义）
+        std::string firstDivergence; // 第一处差异的行摘要（匹配时为空）
+    };
+    std::vector<SidebarProbeRec> m_sidebarProbeLog;
+    bool m_sidebarProbeDone = false;
+    void RunSidebarProbe();
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
