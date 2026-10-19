@@ -129,6 +129,27 @@ struct CliOptions {
     //     · 未答的 ask：answer 为空 ∧ 两个钮可用（负对照：补 answer 不得顺手置灰）
     //   ★ 默认 false ⇒ 零行为变化。
     bool answerProbe = false;             // --answer-probe：ask 答案内容进模型取证
+    // ★★ Step 4 / 0e（2026-10-19）：**整树重建 + 运行期主题切换**的取证。
+    //   ★ 为什么这是四步里唯一动仪器的：`Theme.h:19` 的令牌是**引用别名**
+    //     （`inline const Color& kSidebarBg = g_theme.sidebarBg;`），建 UI 时颜色值
+    //     已被拷进每个控件的 PanelStyle/ButtonStyle ⇒ 建完再切主题不会重绘。
+    //     唯一可行的实现就是"整棵树拆了按新主题重新长出来"。
+    //   ★ 而树的根子节点之一就是 `CountingPanel`（paints/frameCount 的**唯一**来源）
+    //     ⇒ 一次重建会让评估读数从 61 掉回 3。不续接计数器，这一步就是拿仪器换功能。
+    //   ★ 判据（run 脚本执行）：
+    //     · rebuild-flip / rebuild-back 的 `paints` **恰好等于** baseline 的 `paints`
+    //       （不是"更大"：重建期间不重绘，唯一正确的读数就是"一位没变"。
+    //        若为 0，说明计数器被清零了；若更大，说明有东西在测量里偷偷重绘了）
+    //     · rebuild-*.matched == true（侧栏可见性 / 会话行 / 转录行 / 输入框文本全等）
+    //     · uiRebuilds 每次 +1（重建真的发生了，而不是走了个空分支）
+    //     · toggle 相：点顶栏「主题」按钮 ⇒ 主题真的翻了、且 uiRebuilds +1
+    //       （走真实派发链，不是直接调 RebuildUi）
+    //     · **负对照** negative：把 `m_sidebarVisible` 单独改掉再重建 ⇒
+    //       matched 必须变 false 且 firstDivergence 指向 `sidebarVisible`
+    //       （否则比对函数没读这一位，前两条 matched 不作数）
+    //     · restored.matched == true（改回去必须重新相等 —— 单变量纪律）
+    //   ★ 默认 false ⇒ 零行为变化；摘要里连 `theme`/`uiRebuilds` 两个键都不出现。
+    bool themeProbe = false;              // --theme-probe：整树重建 + 主题切换取证
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -211,6 +232,11 @@ private:
         //     而那次调用可能来自顶栏按钮回调（局部变量早没了）。
         ECDI::Panel* sidebar = nullptr;         // 左栏容器（收起 = SetVisible(false)）
         ECDI::Button* sidebarToggle = nullptr;  // 顶栏 `≡`：侧栏显隐（Step 2 前是死的 Label）
+        // ★★ Step 4（2026-10-19）：主题切换钮。**必须是 Button**——这是本步唯一
+        //   让用户能触发"整树重建"的入口，而重建的唯一正确触发方式就是一次真实点击
+        //   （走 `Button::RaiseClick` → 回调 → `RebuildUi`）。
+        //   ★ 句柄进 Hud 的理由同 `sidebarToggle`：重建后要能被探针摸到并合成点击。
+        ECDI::Button* themeToggle = nullptr;    // 顶栏：深色/浅色切换
         // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
         //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
         //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，
@@ -535,6 +561,30 @@ private:
     void RefreshHud();
     void WriteSummary();
 
+    // ★★ Step 4 / 0e（2026-10-19）：**整树重建**——运行期切主题的唯一可行路径。
+    //   ★ 为什么必须整树：`Theme.h:19-20` 的令牌是引用别名，颜色值在 `BuildUi`
+    //     时就拷进了每个控件的 `PanelStyle`/`ButtonStyle`（ECDI 的 StyleField 是
+    //     值语义、没有"重新 ApplyTheme"的公开入口）⇒ 改 `g_theme` 不会让任何
+    //     已存在的控件换色。**唯一能换色的办法是让树按新令牌重新长一遍。**
+    //   ★ 六件事一件都不能少（顺序即下面函数体的顺序）：
+    //     ① `SyncRowViewState()` —— 视图侧的展开/已答先写回模型，否则重建即回退
+    //        （0c 踩过的坑；`RebuildTranscriptView` 内部也调，但这里动的是整棵树，
+    //         连 `m_scroll` 都要换，必须在外层再保一次）；
+    //     ② 快照评估计数器（`CountingPanel::PaintCount/FrameDurationsUs`）——
+    //        重建会析构旧面板、新面板从 0 数。不续接 ⇒ 一次主题切换让 paints 归零，
+    //        "仪器被实验打坏"；
+    //     ③ 记住输入框文本与焦点对象（重建后按文本恢复；焦点只能重新指向新控件）；
+    //     ④ 拆 root 的全部子节点（`RemoveChild` 会经 `Window::ForgetSubtree` 清掉
+    //        焦点/捕获/hover —— 这正是必须重设焦点的原因）；
+    //     ⑤ `SwitchTheme` + `BuildUi`（`BuildUi` 内部会重设 layout、重建 CaptionBar
+    //        与三段、填首帧会话列表、`Arrange`）；
+    //     ⑥ 把计数器写回新面板、恢复输入框文本、把焦点交给新输入框，
+    //        `m_uiRebuilds` 自增，`m_hudDirty = true`，`RequestRepaint()`。
+    //   ★ **不做**的例外：不保留旧 `CountingPanel`（那会让判据退化成"除了那棵树都行"）。
+    void RebuildUi();
+    // Step 4 探针入口（`--theme-probe`）。
+    void RunThemeProbe();
+
     CliOptions m_options;
 
     // ★★ 0d（2026-10-19）：**多会话**。0b 把逐会话状态收进 `Session`，0c 让视图能从
@@ -601,6 +651,14 @@ private:
     //     把用户的收起状态丢掉——这正是 0c 踩过的坑（视图状态只存在控件里，
     //     重建即丢失）。模型侧留一份，重建后按它恢复。
     bool m_sidebarVisible = true;
+    // ★★ Step 4（2026-10-19）：整树重建待执行。
+    //   与 `m_sidebarDirty` 完全同族、同一个理由：顶栏「主题」钮的回调跑在
+    //   `Button::RaiseClick` 的栈上，而重建要 `root.RemoveChild` 掉**这个按钮自己**
+    //   ⇒ 回调里同步重建 = 析构正在执行的对象。故回调只翻 `g_themeLight` + 置这个标志，
+    //   真正的重建留到 `OnReplayTick` 首段（timer 回调不在派发栈上）。
+    //   ★ 放在 `m_sidebarDirty` 处理**之后**、`if (!m_sess->source) return;` **之前**：
+    //     主题切换不该被"活动会话没有 source"挡住（空会话也要能换主题）。
+    bool m_uiRebuildPending = false;
     int m_relayoutPulse = 0;                       // 折叠动画期间的补重排 tick 数（~33ms each）
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
@@ -790,6 +848,75 @@ private:
     std::vector<AnswerProbeRec> m_answerProbeLog;
     bool m_answerProbeDone = false;
     void RunAnswerProbe();
+
+    // ★★ Step 4 / 0e（2026-10-19）：整树重建 + 运行期主题切换的取证（--theme-probe）。
+    //   ★ 本探针与前面五个**形状不同**：那些探针测的是"局部重建"，
+    //     而这里要测的是"整棵树被拆掉再长出来之后，**所有**用户可见状态还在不在"。
+    //     故它的比对面不是行快照，而是**四路并联**：
+    //       ① 侧栏列表（`SnapshotSessionList` —— 行数/标签/选中态/几何）；
+    //       ② 转录区（`SnapshotRows` —— 行数/展开态/已答/答案/标题/文本）；
+    //       ③ 输入框文本（`m_promptBar->input()->GetText()`）；
+    //       ④ 状态标记（活动会话下标 / 会话数 / 侧栏可见性 / 主题是否浅色）。
+    //     ★ 少任何一路，"重建后状态没丢"这句话就只覆盖了一部分树。
+    //   ★ **评估读数不进比对面，它是独立断言**：`paints` 必须**恰好等于**重建前的值。
+    //     相等才是对的——重建期间不该有任何重绘（拆树不画、建树不画、只有末尾
+    //     `RequestRepaint` 那一帧才画）。若变小 ⇒ 计数器被清零（`SeedCounters` 没接）；
+    //     若变大 ⇒ 有东西在测量窗口里偷偷重绘了（比如折叠动画、或 HUD 每 tick 刷）。
+    struct ThemeProbeRec {
+        std::string phase;       // baseline / rebuild / rebuild-again / toggle /
+                                 // toggle-back / negative / restored
+        bool light = false;      // 当前主题是否浅色（重建必须真的换色才算"换过"）
+        size_t uiRebuilds = 0;   // 累计整树重建次数（每次 +1，是"重建真的发生了"的读数）
+        // 评估计数器（重建前后必须**逐位相等**）
+        size_t paints = 0;
+        size_t frames = 0;
+        size_t frameUsTotal = 0; // frameDurationsUs 的长度——续接口是否真的把历史搬回来了
+        // 四路比对的合并结果（仅 rebuild 类 phase 有意义）
+        bool matched = true;
+        std::string firstDivergence;
+        // 分路读数，方便失败时定位是哪一路断的（不为 0 表示该路比对失败）
+        int sidebarRows = 0;
+        int transcriptRows = 0;
+        std::string inputText;
+        bool sidebarVisible = true;
+        size_t activeIndex = 0;
+        size_t sessionCount = 0;
+    };
+    std::vector<ThemeProbeRec> m_themeProbeLog;
+    bool m_themeProbeDone = false;
+
+    // ★ 整树重建的比对面：一次 snapshot 抓齐四路。结构独立于 `ThemeProbeRec`，
+    //   因为 baseline 与每次重建后都要抓，且**同一个量具**两侧共用。
+    struct UiSnapshot {
+        std::vector<std::string> sidebar;   // SnapshotSessionList()
+        std::vector<std::string> transcript;// SnapshotRows()
+        std::string inputText;              // 输入框文本
+        bool sidebarVisible = true;
+        bool light = false;
+        size_t activeIndex = 0;
+        size_t sessionCount = 0;
+        size_t paints = 0;
+        size_t frames = 0;
+        size_t frameUsTotal = 0;
+    };
+    UiSnapshot SnapshotUi() const;
+    // 返回四路比对的合并结果；`firstDivergence` 带**路名前缀**
+    //（`sidebar:` / `transcript:` / `input:` / `state:`），失败时一眼看出断在哪。
+    SidebarCompare CompareUi(const UiSnapshot& before, const UiSnapshot& after) const;
+
+    // ★ 跨 tick 状态机（与 `m_rebuildProbeStep` 同款）：`toggle` 相必须走真实点击，
+    //   而点击回调只置 `m_uiRebuildPending`，真正的重建发生在**下一个 tick 的开头**
+    //   ⇒ 探针不能在一步里做完，必须等重建真的落地再读数。
+    int m_themeProbeStep = 0;
+    std::chrono::steady_clock::time_point m_themeProbeNextAt;
+    UiSnapshot m_themeUiBefore;        // baseline 的四路快照（所有 rebuild 相的比对面）
+    size_t m_themePaintsBefore = 0;    // 同一 tick 内 `RebuildUi` 前后的 paints（必须相等）
+    size_t m_themeFramesBefore = 0;
+
+    // ★ 整树重建的累计计数。**只在 `--theme-probe` 打开时进摘要**（默认 false ⇒
+    //   摘要逐字节不变，这是本仓铁律）。计数放在成员而不是 `ThemeProbeRec` 里，
+    //   因为 `rebuild` 相要读"重建前后两次"的值。
+    size_t m_uiRebuilds = 0;
 
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）

@@ -637,6 +637,88 @@ HarnessApp::SidebarCompare HarnessApp::CompareSessionList(
     return cmp;
 }
 
+// ★★ Step 4 / 0e（2026-10-19）：整树重建的比对面。
+//   与侧栏/转录两套快照的关系是**聚合**而非替代：这里不重写字段格式，直接复用
+//   两个既有量具（`SnapshotSessionList` / `SnapshotRows`），只额外抓三样它们看不见的
+//   东西——输入框草稿、侧栏可见性、以及"现在是什么主题"。
+//   ★ 为什么必须四路并联：整树重建的风险不是"某一处画错了"，而是"某处状态没被搬过去"。
+//     只查侧栏会漏掉转录的展开态；只查转录会漏掉输入框里的草稿；只查控件会漏掉
+//     `m_sidebarVisible` 这种只存在于模型里的状态（它没有对应的"控件属性"可读）。
+HarnessApp::UiSnapshot HarnessApp::SnapshotUi() const {
+    UiSnapshot snap;
+    snap.sidebar = SnapshotSessionList();
+    snap.transcript = SnapshotRows();
+    snap.inputText = (m_promptBar && m_promptBar->input())
+                         ? m_promptBar->input()->GetText() : std::string();
+    snap.sidebarVisible = (m_hud.sidebar != nullptr) && m_hud.sidebar->IsVisible();
+    snap.light = harness::g_themeLight;
+    snap.activeIndex = m_activeIndex;
+    snap.sessionCount = m_sessions.size();
+    // 仪器读数也进快照：便于在失败时看出"是不是重建把计数器搞坏了"。
+    snap.paints = m_counting ? m_counting->PaintCount() : 0;
+    snap.frames = m_counting ? m_counting->FrameDurationsUs().size() : 0;
+    uint64_t total = 0;
+    if (m_counting) {
+        for (uint64_t us : m_counting->FrameDurationsUs()) total += us;
+    }
+    snap.frameUsTotal = static_cast<size_t>(total);
+    return snap;
+}
+
+HarnessApp::SidebarCompare HarnessApp::CompareUi(const UiSnapshot& before,
+                                                 const UiSnapshot& after) const {
+    // 侧栏：直接复用 `CompareSessionList`（它会逐字段报 name/selected/buttons/geometry）。
+    SidebarCompare side = CompareSessionList(before.sidebar, after.sidebar);
+    if (!side.matched) {
+        side.firstDivergence = "sidebar: " + side.firstDivergence;
+        return side;
+    }
+
+    // 转录区：直接复用 `CompareRows`（`mismatches` 才是它的判据，`firstDivergence`
+    // 由它自己的字段表产出）。★ 不用 blockOnly：整树重建要保住**全部**行。
+    const RebuildProbeRec rows = CompareRows("ui", before.transcript, after.transcript, false);
+    if (rows.mismatches != 0) {
+        SidebarCompare cmp;
+        cmp.matched = false;
+        cmp.firstDivergence = "transcript: " + rows.firstDivergence;
+        return cmp;
+    }
+
+    // 输入框草稿。★ 这条最容易漏：`PromptBar` 的 TextBox 是**用户输入**，
+    //   它不在 `timeline` 里、也不在任何 Snapshot 里，重建时若不显式搬运就会静默丢失。
+    if (before.inputText != after.inputText) {
+        SidebarCompare cmp;
+        cmp.matched = false;
+        cmp.firstDivergence = "input: [" + before.inputText + "] -> [" + after.inputText + "]";
+        return cmp;
+    }
+
+    // 状态标记：全部是**只存在于模型/句柄层**的事实，没有任何一个是"画出来的"。
+    if (before.sidebarVisible != after.sidebarVisible) {
+        SidebarCompare cmp;
+        cmp.matched = false;
+        cmp.firstDivergence = std::string("state: sidebarVisible [")
+                              + (before.sidebarVisible ? "1" : "0") + "] -> ["
+                              + (after.sidebarVisible ? "1" : "0") + "]";
+        return cmp;
+    }
+    if (before.activeIndex != after.activeIndex) {
+        SidebarCompare cmp;
+        cmp.matched = false;
+        cmp.firstDivergence = "state: activeIndex " + std::to_string(before.activeIndex)
+                              + " -> " + std::to_string(after.activeIndex);
+        return cmp;
+    }
+    if (before.sessionCount != after.sessionCount) {
+        SidebarCompare cmp;
+        cmp.matched = false;
+        cmp.firstDivergence = "state: sessionCount " + std::to_string(before.sessionCount)
+                              + " -> " + std::to_string(after.sessionCount);
+        return cmp;
+    }
+    return SidebarCompare{};
+}
+
 bool HarnessApp::SwitchToSessionByPtr(const Session* target) {
     if (target == nullptr) return false;
     for (size_t i = 0; i < m_sessions.size(); ++i) {
@@ -856,6 +938,93 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     root.Arrange();
 }
 
+// ★★ Step 4 / 0e（2026-10-19）：整树重建——运行期切主题的唯一可行路径。
+//   【为什么非拆不可】`Theme.h` 的令牌是引用别名（`inline const Color& kSidebarBg =
+//   g_theme.sidebarBg;`），而 ECDI 的 `PanelStyle`/`ButtonStyle` 是**值语义**：
+//   `BuildUi` 那一刻把颜色拷进每个控件的 style，之后改 `g_theme` 不会让任何已存在
+//   的控件换色（`Theme.h:19-20` 记的正是这条，`Run()` 里那句"必须在 BuildUi 之前"
+//   是它的直接后果）。⇒ 要让树换色，只能让树按新令牌重新长一遍。
+//   【为什么这是四步里唯一动仪器的】树的子节点之一就是 `CountingPanel`——`paints`
+//   与 `frameCount` 的**唯一**来源。拆树会析构它，新面板从 0 开始数 ⇒ 不续接
+//   计数器，一次主题切换就把"重绘 22 次"变成"重绘 3 次"，评估基线当场失效。
+//   `CountingPanel::SeedCounters` 就是为此存在（它不做例外式的"永不重建"——
+//   那会让判据退化成"除了那棵树都行"）。
+void HarnessApp::RebuildUi() {
+    if (!m_window) return;
+
+    // ① 视图侧的用户状态先写回模型。`RebuildTranscriptView` 内部也会调一次，
+    //    但这里动的是**整棵树**（连 `m_scroll` 都要换），必须在拆之前再保一次，
+    //    否则行的展开/已答会跟着旧控件一起消失（0c 的 `buildTitle` 就是这类回退）。
+    SyncRowViewState();
+
+    // ② 评估计数器快照。**必须在拆树之前**读——旧面板一析构就读不到了。
+    const size_t paints = m_counting ? m_counting->PaintCount() : 0;
+    std::vector<uint64_t> frameUs;
+    if (m_counting) frameUs = m_counting->FrameDurationsUs();
+
+    // ③ 用户输入与焦点。输入文本是**唯一无法从模型重建**的界面状态
+    //    （`TimelineEntry` 只描述已发生的转录，不描述还没发出去的草稿）。
+    //    ★ 光标位置无公开写入点（`TextBox` 只有 `MoveCaret`/`MoveCaretToEnd`，
+    //      没有 `SetCaret(size_t)`）⇒ 只能恢复到"末尾"，这是本步的**已知损失**。
+    const std::string draft = (m_promptBar && m_promptBar->input())
+                                  ? m_promptBar->input()->GetText()
+                                  : std::string();
+
+    // ④ 拆掉 root 的全部子节点。`RemoveChild` 走 `Window::ForgetSubtree`
+    //    （焦点/捕获/hover 一并注销）⇒ 拆完窗口处于"无焦点"状态，这正是
+    //    `Application::OnTimer` 会在下一个 tick 直接 return 的原因
+    //    （定时器只派给焦点控件，`Application.cpp:303-339`）——**所以后面必须重设焦点**，
+    //    否则回放 tick 停摆、探针再也跑不动。这是本步的头号结构性风险。
+    ECDI::Widget& root = m_window->GetRootWidget();
+    while (root.GetChildCount() > 0) {
+        root.RemoveChild(root.GetChildAt(0));
+    }
+
+    // ⑤ 让 `g_theme` 与 `g_themeLight` 重新对齐（`SwitchTheme` 只是重新赋值，
+    //    幂等），然后按新令牌把整棵树建出来。
+    harness::SwitchTheme(harness::g_themeLight);
+    m_window->SetBackgroundColor(m_options.probeContrast ? kProbeCanvas : harness::kContentBg);
+    BuildUi(*m_window);
+
+    // ⑥ 续接计数器。`BuildUi` 刚建出的新面板计数为 0；把 ①② 的快照写回去，
+    //    于是"重建"在评估读数上是**透明的**（paints 一位不变）。
+    if (m_counting) {
+        m_counting->SeedCounters(paints, std::move(frameUs));
+    }
+
+    // ⑦ 转录区从模型重建。`BuildUi` 只建了空容器（启动时转录本来就是空的），
+    //    运行期重建必须自己把 `timeline` 铺回去——`RebuildTranscriptView` 做的就是
+    //    这件事（它同时把滚动位置保持在原处）。
+    RebuildTranscriptView();
+
+    // ⑧ 恢复草稿。`SetText` 不触发 `RaiseTextChanged`（`TextBox.cpp:121-141`），
+    //    故不会误触发任何发送逻辑；`MoveCaretToEnd` 是唯一可用的光标落点。
+    if (m_promptBar && m_promptBar->input()) {
+        if (!draft.empty()) {
+            m_promptBar->input()->SetText(draft);
+            m_promptBar->input()->MoveCaretToEnd();
+        }
+        // ⑨ 焦点交还输入框：既恢复 caret 闪烁（证明焦点真的回来了），
+        //    也让 `Application::OnTimer` 重新有派发目标（否则 tick 停摆）。
+        m_window->SetFocusedWidget(m_promptBar->input());
+    }
+
+    // ⑩ 侧栏显隐是**模型侧状态**（`m_sidebarVisible`），新树默认全可见 ⇒ 按它恢复。
+    if (!m_sidebarVisible && m_hud.sidebar) {
+        m_hud.sidebar->SetVisible(false);
+        if (ECDI::Widget* parent = m_hud.sidebar->GetParent()) parent->Arrange();
+    }
+
+    // ⑪ 收尾：环进度条的颜色级别缓存要作废（新控件 + 新令牌），HUD 全量刷一次。
+    m_ctxRingLevel = -1;
+    ++m_uiRebuilds;
+    Relayout();
+    FollowTailIfPinned();
+    m_hudDirty = true;
+    RefreshHud();
+    RequestRepaint();
+}
+
 // 顶栏 HUD（hi-fi .titlebar）：≡ | harness | 会话 chip | 后端 chip | … | 行模式 chip | 圆点+状态
 void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     auto bar = std::make_unique<ECDI::Panel>();
@@ -966,6 +1135,39 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     }
     state->SetSize(60, 20);
     bar->AddChild(std::move(state));
+
+    // ★★ Step 4 / 0e（2026-10-19）：运行期主题切换控件。
+    //   【为什么必须放在顶栏】它是**全局**状态的中枢，不是某个面板的属性；
+    //   侧栏是会话的容器、检查器是读数的容器，都不该承载"整个程序长什么样"。
+    //   【为什么是 Button】切换的唯一正确路径是"点一下 → 回调 → `RebuildUi`"。
+    //   若做成 Label 加别处的热键，就没法用合成点击验证它——`RunThemeProbe` 的
+    //   `toggle` 相走的正是 `SynthesizeClickAt` → 真实派发链 → `RaiseClick`。
+    //   【为什么这里可以调 SetFont 而 `≡` 不行】`≡` 的 bug 是"用了与主题缺省不同
+    //   的 family 导致字形漂移"；本钮显式指定 `SansFont`，两侧（深/浅）都按同一
+    //   规则现算，不存在"和谁不一样"的问题。
+    auto themeBtn = std::make_unique<ECDI::Button>("主题");
+    m_hud.themeToggle = themeBtn.get();
+    themeBtn->SetTextColor(kDarkInk);
+    themeBtn->SetStyle(ECDI::ButtonStyleOverride{
+        .background = kPanel2,
+        .border = kLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = kRadiusBtn,
+        .pressedBackground = kToolHeaderPressed,
+        .hoverBackground = kToolHeaderHover});
+    themeBtn->SetSize(48, 20);
+    themeBtn->SetFont(harness::SansFont(harness::kFontSmall));
+    themeBtn->SetOnClick([this] {
+        // 真翻转在回调里做（只改 `g_theme` 与 `g_themeLight`，不碰任何控件）。
+        harness::SwitchTheme(!harness::g_themeLight);
+        // ★ **绝不在回调里重建**：这个 lambda 正在 `Button::RaiseClick` 的栈上执行，
+        //   而重建会 `root.RemoveChild` 掉**当前这个按钮**——那就是拿正在执行的
+        //   对象去析构它自己（与 Step 1 的 `m_sidebarDirty` 完全同族，见其头注）。
+        //   ECDI Phase 35 的 `RequestRemove` 延迟析构只保护走它那条路径的调用；
+        //   `RemoveChild` 是同步析构，必须由我们保证不在派发栈上调用。
+        m_uiRebuildPending = true;
+    });
+    bar->AddChild(std::move(themeBtn));
 
     root.AddChild(std::move(bar));
 }
@@ -1432,6 +1634,16 @@ void HarnessApp::OnReplayTick() {
         RebuildSessionList();
         RequestRepaint();
     }
+    // ★★ Step 4：整树重建的**唯一执行点**（同族的派发栈 UAF 理由见
+    //   `m_uiRebuildPending` 的声明注释）。放在 `if (!m_sess->source) return;`
+    //   **之前**：空会话（回放模式新建的）也要能换主题。
+    //   ★ 顺序上先于侧栏重建之后无所谓——两者不会同时置脏（同一 tick 内至多一个来源），
+    //     但若真同时发生，整树重建会把旧列表一起丢掉，故它必须在后。
+    if (m_uiRebuildPending) {
+        m_uiRebuildPending = false;
+        RebuildUi();
+        RequestRepaint();
+    }
     if (!m_sess->source) return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
     if (m_sess->source->IsLive()) {
         // ── live（子进程）：本 tick 内带超时批量拉取，把时间还给消息循环 ──
@@ -1495,6 +1707,14 @@ void HarnessApp::OnReplayTick() {
             //   顺序：reasoning → rebuild → session → sidebar → answer。
             if (m_options.answerProbe && !m_answerProbeDone) {
                 RunAnswerProbe();
+            }
+            // ★★ Step 4 主题/整树重建探针：排在最后。
+            //   ★ 与前五个不同，它是**跨 tick** 的（toggle 相要点真实按钮，
+            //     而重建被延迟到下一个 tick）⇒ 它**不能**和上面的同步探针同 tick 共存：
+            //     上面任何一个一旦 Exit，本探针就再也拿不到下一个 tick。
+            //     故六条互斥使用（同一进程只开一个 `--*-probe`）。
+            if (m_options.themeProbe && !m_themeProbeDone) {
+                RunThemeProbe();
             }
             return;
         }
@@ -3350,6 +3570,284 @@ void HarnessApp::RunAnswerProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ Step 4 / 0e（2026-10-19）：整树重建 + 运行期主题切换的取证。
+//   【与前面五个探针的形状差异】那些是"一步做完"的（同一个 tick 里造前置、重建、比对），
+//   因为局部重建是同步的。本探针不行：
+//     ① 主题切换的正确入口是**点顶栏那个 Button**，而回调只置 `m_uiRebuildPending`
+//        （派发栈上不能拆树）⇒ 重建要等到**下一个 tick 的开头**才发生；
+//     ② 要证明"重建真的发生了"，必须读 `m_uiRebuilds` **在重建之后**的值。
+//   ⇒ 故写成跨 tick 状态机（`settle` 与 `RunRebuildProbe` 同款 400ms：足够让
+//     重建落地 + 一帧画完 + HUD 刷完）。
+//   【判据的骨架】所有 rebuild 类相都比 `m_themeUiBefore`（baseline 四路快照）：
+//     · `matched == true`  —— 侧栏/转录/输入框/状态标记四路一处不差；
+//     · `paints` **恰好等于** baseline —— 这是"仪器没被实验打坏"的唯一读数；
+//     · `frames`/`frameUsTotal` 恰好相等 —— `SeedCounters` 真的把历史搬回来了。
+//   【负对照】`negative` 相把 `m_sidebarVisible` 单独改掉再重建：四路比对应**报出**
+//     `state: sidebarVisible [1] -> [0]`。它证明 ①②③ 的相等不是"量具瞎了"。
+void HarnessApp::RunThemeProbe() {
+    if (!m_sess) { m_themeProbeDone = true; return; }
+    // ★ 只在回放模式：live 下重建会... 其实也安全（child 是 Session 的，不受控件树影响），
+    //   但 live 的转录在持续增长 ⇒ 两次快照之间必然不同，`matched` 会假失败。
+    //   探针测的是"重建保状态"，不是"重建和流式数据赛跑"，故限定回放。
+    if (!m_sess->replay) { m_themeProbeDone = true; return; }
+    if (!m_hud.themeToggle) { m_themeProbeDone = true; return; }
+
+    if (m_themeProbeStep > 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < m_themeProbeNextAt) return;
+    }
+    const auto settle = std::chrono::milliseconds(400);
+
+    auto snap = [&](const char* phase) {
+        ThemeProbeRec rec;
+        rec.phase = phase;
+        rec.light = harness::g_themeLight;
+        rec.uiRebuilds = m_uiRebuilds;
+        rec.paints = m_counting ? m_counting->PaintCount() : 0;
+        rec.frames = m_counting ? m_counting->FrameDurationsUs().size() : 0;
+        rec.sidebarRows = m_hud.sessList
+                              ? static_cast<int>(m_hud.sessList->GetContentView().GetChildCount())
+                              : 0;
+        rec.transcriptRows = static_cast<int>(m_sess->rows.size());
+        rec.inputText = (m_promptBar && m_promptBar->input())
+                            ? m_promptBar->input()->GetText() : std::string();
+        rec.sidebarVisible = (m_hud.sidebar != nullptr) && m_hud.sidebar->IsVisible();
+        rec.activeIndex = m_activeIndex;
+        rec.sessionCount = m_sessions.size();
+        m_themeProbeLog.push_back(std::move(rec));
+    };
+    // 记一条并把四路比对结果写进去（`paints` 等三项仪器读数单独判）
+    auto snapCompare = [&](const char* phase, size_t paintsBefore, size_t framesBefore,
+                           size_t frameUsBefore) {
+        const UiSnapshot after = SnapshotUi();
+        const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+        snap(phase);
+        ThemeProbeRec& rec = m_themeProbeLog.back();
+        std::string bad = cmp.matched ? std::string() : cmp.firstDivergence;
+        // ★ 仪器读数：重建期间不该有任何重绘 ⇒ 必须**恰好**相等。
+        //   变大/变小都是缺陷，故不用 ">=" 之类的宽容判据。
+        if (after.paints != paintsBefore) {
+            if (!bad.empty()) bad += "; ";
+            bad += "paints " + std::to_string(paintsBefore) + " -> "
+                   + std::to_string(after.paints);
+        }
+        if (after.frames != framesBefore) {
+            if (!bad.empty()) bad += "; ";
+            bad += "frameCount " + std::to_string(framesBefore) + " -> "
+                   + std::to_string(after.frames);
+        }
+        if (after.frameUsTotal != frameUsBefore) {
+            if (!bad.empty()) bad += "; ";
+            bad += "frameUsTotal " + std::to_string(frameUsBefore) + " -> "
+                   + std::to_string(after.frameUsTotal);
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        rec.paints = after.paints;
+        rec.frames = after.frames;
+        rec.frameUsTotal = after.frameUsTotal;
+    };
+
+    switch (m_themeProbeStep) {
+    case 0: {
+        // ── ① baseline：抓四路快照 + 仪器读数，然后**同步**做一次重建 ──
+        //   ★ 这里可以同步重建：本函数跑在 `OnReplayTick` 里（timer 回调，不在派发栈上）。
+        //     而 `toggle` 相不行——那一相必须走真实点击，故分了两条路径。
+        m_themeUiBefore = SnapshotUi();
+        m_themePaintsBefore = m_themeUiBefore.paints;
+        m_themeFramesBefore = m_themeUiBefore.frames;
+        snap("baseline");
+        {
+            ThemeProbeRec& rec = m_themeProbeLog.back();
+            // baseline 的判据是"前置条件成立"：必须有 ≥1 个会话行、≥1 个转录行，
+            // 否则"重建后都一样"只说明两边都是空的（探针是瞎的）。
+            rec.matched = (rec.sidebarRows >= 1) && (rec.transcriptRows >= 1);
+            if (!rec.matched) {
+                rec.firstDivergence = "baseline has nothing to preserve (sidebar/transcript empty)";
+            }
+        }
+        // 造判别力：给输入框塞一段草稿（这是唯一无法从模型重建的状态，
+        // 若探针不主动造它，"草稿被搬过去了"永远是空真）。
+        if (m_promptBar && m_promptBar->input()) {
+            m_promptBar->input()->SetText("draft-not-sent");
+            m_promptBar->input()->MoveCaretToEnd();
+            // ★ 塞完草稿要重抓快照：`m_themeUiBefore` 必须包含这段草稿，
+            //   否则重建后"草稿还在"这条就成了拿空串对比空串。
+            m_themeUiBefore = SnapshotUi();
+            m_themePaintsBefore = m_themeUiBefore.paints;
+            m_themeFramesBefore = m_themeUiBefore.frames;
+        }
+        RebuildUi();
+        // ★ 重建后立刻比对（同一 tick，未经过任何重绘）
+        snapCompare("rebuild", m_themePaintsBefore, m_themeFramesBefore,
+                    m_themeUiBefore.frameUsTotal);
+        // ★ 额外：`uiRebuilds` 必须真的 +1（这是"重建发生了"的机读证据；
+        //   若忘了 ++，后面的 toggle 相还会通过，但"重建"其实一次都没跑）。
+        if (m_themeProbeLog.back().uiRebuilds != 1) {
+            m_themeProbeLog.back().matched = false;
+            m_themeProbeLog.back().firstDivergence +=
+                "; uiRebuilds expected 1, got " + std::to_string(m_themeProbeLog.back().uiRebuilds);
+        }
+        m_themeProbeStep = 1;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 1: {
+        // ── ② rebuild-again：再同步重建一次 ⇒ 幂等（第二次也得全等） ──
+        const size_t p = m_counting ? m_counting->PaintCount() : 0;
+        const size_t f = m_counting ? m_counting->FrameDurationsUs().size() : 0;
+        uint64_t t = 0;
+        if (m_counting) for (uint64_t us : m_counting->FrameDurationsUs()) t += us;
+        RebuildUi();
+        snapCompare("rebuild-again", p, f, static_cast<size_t>(t));
+        m_themeProbeStep = 2;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 2: {
+        // ── ③ toggle：**真实点击**顶栏「主题」钮 ⇒ 下一个 tick 才会重建 ──
+        //   ★ 这一相是本步的命题本身：运行期换主题。
+        //   ★ 用 `SynthesizeClickAt` 走真实派发链（`Application::OnEvent`），
+        //     不是直接调 `RebuildUi`——否则"按钮接上了没有"这件事没被验证
+        //     （0c 的 `buildTitle` 正是这样骗过判据的：画对了，回调没接）。
+        const ECDI::Point abs = m_hud.themeToggle->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.themeToggle->GetWidth() / 2,
+                          static_cast<int>(abs.y) + m_hud.themeToggle->GetHeight() / 2);
+        m_themeProbeStep = 3;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 3: {
+        // ── ④ 读数：重建必须真的发生（uiRebuilds 2→3）且真的换色 ──
+        snap("toggle");
+        {
+            ThemeProbeRec& rec = m_themeProbeLog.back();
+            std::string bad;
+            // 注意：`m_themeUiBefore.light` 是深色时的值；翻转后应相反
+            if (rec.light == m_themeUiBefore.light) bad += "theme did not flip";
+            if (rec.uiRebuilds != 3) {
+                if (!bad.empty()) bad += "; ";
+                bad += "uiRebuilds expected 3, got " + std::to_string(rec.uiRebuilds);
+            }
+            // ★ 主题真的换了 ⇒ 侧栏/转录的四路快照**结构**仍必须相同
+            //   （换的是颜色，不是内容。`SnapshotSessionList`/`SnapshotRows` 都只记
+            //   文字与几何、不记颜色，故此处相等是正确判据；颜色由 `light` 字段证明）。
+            const UiSnapshot after = SnapshotUi();
+            const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+            if (!cmp.matched) {
+                if (!bad.empty()) bad += "; ";
+                bad += cmp.firstDivergence;
+            }
+            rec.matched = bad.empty();
+            rec.firstDivergence = bad;
+            rec.sidebarRows = static_cast<int>(after.sidebar.size());
+            rec.transcriptRows = static_cast<int>(after.transcript.size());
+            rec.inputText = after.inputText;
+        }
+        m_themeProbeStep = 4;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 4: {
+        // ── ⑤ toggle-back：再点一次 ⇒ 回到深色，且状态一致 ──
+        const ECDI::Point abs = m_hud.themeToggle->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.themeToggle->GetWidth() / 2,
+                          static_cast<int>(abs.y) + m_hud.themeToggle->GetHeight() / 2);
+        m_themeProbeStep = 5;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 5: {
+        snap("toggle-back");
+        {
+            ThemeProbeRec& rec = m_themeProbeLog.back();
+            std::string bad;
+            if (rec.light != m_themeUiBefore.light) bad += "theme did not flip back";
+            if (rec.uiRebuilds != 4) {
+                if (!bad.empty()) bad += "; ";
+                bad += "uiRebuilds expected 4, got " + std::to_string(rec.uiRebuilds);
+            }
+            const UiSnapshot after = SnapshotUi();
+            const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+            if (!cmp.matched) {
+                if (!bad.empty()) bad += "; ";
+                bad += cmp.firstDivergence;
+            }
+            rec.matched = bad.empty();
+            rec.firstDivergence = bad;
+        }
+        m_themeProbeStep = 6;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 6: {
+        // ── ⑥ negative：单独改 `m_sidebarVisible`（不改任何控件）再重建 ──
+        //   ★ 这是"比对面能看见模型侧状态"的唯一证据：若 `CompareUi` 只看控件，
+        //     这条差异会被漏掉（新树默认全可见，重建后侧栏又是可见的 ⇒ 控件本身
+        //     看不出"模型里说要收起"）。故断言**必须**报出 `state: sidebarVisible`。
+        const bool savedSidebar = m_sidebarVisible;
+        m_sidebarVisible = false;
+        // 不清脏标志重建：`RebuildUi` 的 ⑩ 会用 `m_sidebarVisible` 恢复成隐藏
+        const size_t p = m_counting ? m_counting->PaintCount() : 0;
+        const size_t f = m_counting ? m_counting->FrameDurationsUs().size() : 0;
+        uint64_t t = 0;
+        if (m_counting) for (uint64_t us : m_counting->FrameDurationsUs()) t += us;
+        RebuildUi();
+        // ★ 现在侧栏是**隐藏**的 ⇒ 与 baseline（可见）比对必须不等，
+        //   且分歧必须指向 sidebarVisible。
+        const UiSnapshot after = SnapshotUi();
+        const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+        snap("negative");
+        ThemeProbeRec& rec = m_themeProbeLog.back();
+        rec.paints = p;   // 仪器读数对本相无意义（此处只测模型状态是否进比对）
+        rec.frames = f;
+        rec.frameUsTotal = static_cast<size_t>(t);
+        const bool sawDifference = !cmp.matched;
+        const bool pointedAtSidebar =
+            cmp.firstDivergence.find("sidebarVisible") != std::string::npos;
+        // ★ 负对照的"通过"= 看见了差异 ⇒ `matched` 记 false 是**正确读数**。
+        rec.matched = false;
+        if (sawDifference && pointedAtSidebar) {
+            rec.firstDivergence = "ok(expected divergence): " + cmp.firstDivergence;
+        } else if (!sawDifference) {
+            rec.firstDivergence = "negative control saw no difference -- snapshot ignores state";
+        } else {
+            rec.firstDivergence = "divergence not in sidebarVisible: " + cmp.firstDivergence;
+        }
+        // 复原为原状态（单变量纪律：negative 之后必须能回到 baseline）
+        m_sidebarVisible = savedSidebar;
+        if (m_hud.sidebar) m_hud.sidebar->SetVisible(savedSidebar);
+        if (m_hud.sidebar) {
+            if (ECDI::Widget* parent = m_hud.sidebar->GetParent()) parent->Arrange();
+        }
+        m_themeProbeStep = 7;
+        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        return;
+    }
+    case 7: {
+        // ── ⑦ restored：确认回到 baseline（含侧栏可见性、主题、仪器读数） ──
+        const UiSnapshot after = SnapshotUi();
+        const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+        snap("restored");
+        ThemeProbeRec& rec = m_themeProbeLog.back();
+        std::string bad = cmp.matched ? std::string() : cmp.firstDivergence;
+        if (after.light != m_themeUiBefore.light) {
+            if (!bad.empty()) bad += "; ";
+            bad += "theme not restored";
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        m_themeProbeStep = 8;
+        m_themeProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+    default:
+        m_themeProbeDone = true;
+        return;
+    }
+}
+
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
@@ -4340,6 +4838,70 @@ void HarnessApp::WriteSummary() {
         }
         json += "],\n";
     }
+    // ★★ Step 4 机读证据（2026-10-19）：整树重建 + 运行期主题切换。
+    //   判据（跑批脚本执行）：
+    //     · baseline.matched == true（前置成立：侧栏/转录都非空，否则"全等"是空真）
+    //     · rebuild.matched == true 且 rebuild.paints == baseline.paints
+    //       （**恰好相等**：重建期间不该有任何重绘；变小=计数器被清零、变大=偷重绘）
+    //     · rebuild-again.matched == true（幂等）
+    //     · toggle.matched == true 且 toggle.light != baseline.light
+    //       （主题真的翻了，且四路内容一处不差 —— 换的是颜色不是内容）
+    //     · toggle-back.matched == true
+    //     · negative.matched == **false** 且 firstDivergence 含 "sidebarVisible"
+    //       （负对照：模型侧状态确实进了比对面）
+    //     · restored.matched == true（单变量纪律）
+    //     · uiRebuilds 单调 1→2→3→4→5
+    if (m_options.themeProbe && !m_themeProbeLog.empty()) {
+        // ★ 顶层两个标量：这一次进程最终停在什么主题、整树重建过几次。
+        //   只在探针开启时写 ⇒ 默认摘要**逐字节不变**（本仓铁律）。
+        json += std::string("  \"theme\": \"") + (harness::g_themeLight ? "light" : "dark")
+                + "\",\n";
+        json += "  \"uiRebuilds\": " + std::to_string(m_uiRebuilds) + ",\n";
+        json += "  \"themeProbe\": [";
+        // ★ 第三份转义 lambda（前两份都在各自 if 块作用域内，不能复用）
+        auto escT = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_themeProbeLog.size(); ++i) {
+            const ThemeProbeRec& r = m_themeProbeLog[i];
+            json += (i ? ", " : "");
+            char b[768];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"light\": %s, \"uiRebuilds\": %zu, "
+                          "\"paints\": %zu, \"frames\": %zu, \"frameUsTotal\": %zu, "
+                          "\"sidebarRows\": %d, \"transcriptRows\": %d, "
+                          "\"inputText\": \"%s\", \"sidebarVisible\": %s, "
+                          "\"activeIndex\": %zu, \"sessionCount\": %zu, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.light ? "true" : "false", r.uiRebuilds,
+                          r.paints, r.frames, r.frameUsTotal, r.sidebarRows, r.transcriptRows,
+                          escT(r.inputText).c_str(), r.sidebarVisible ? "true" : "false",
+                          r.activeIndex, r.sessionCount,
+                          r.matched ? "true" : "false", escT(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_sess->transcript.SeqGaps());
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_sess->transcript.Violations());
