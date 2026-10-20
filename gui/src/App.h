@@ -394,6 +394,31 @@ private:
     //   ★ 不变量（0c 依赖）：`blockRows` 里是指向 `rows` 元素的裸指针，`rows` 用 deque
     //     保证 push_back 不失效 ⇒ Session 一旦建立就**不得被搬动/拷贝**。0c 用
     //     unique_ptr 持有正是为了这条；这里先按值放一个，只为把结构立起来。
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ★★ 2026-10-20：**工作区是实体，不是会话上的一根字符串**。
+    //
+    //   改动前的模型：`Session::workspacePath` 一个字符串，每次成功 ack 就地覆盖。
+    //   它能回答「**现在**在哪个目录」，但回答不了「这个会话**属于**哪个工作区」——
+    //   因为覆盖之后，它过去待过哪儿一点痕迹都没留下。而「按工作区分会话」这个
+    //   需求恰恰问的是归属，不是当前值。
+    //
+    //   ⇒ 工作是独立一等公民：有稳定 ID、有创建序、有自己的一条路径。
+    //     会话只持有 `workspaceId` 这个**外键**。三条随之而来的性质：
+    //     ① 归属与「当前路径」解耦：会话在 A 里，A 之后改了路径，归属不变；
+    //     ② 会话显式切换工作区 = 改外键（真的搬家），而不是悄悄改写 A 自己；
+    //     ③ 两个会话若在同一个目录，**共享**同一个工作区实体（按路径去重），
+    //        而不是各自持有一份同值的字符串副本。
+    //
+    //   ★ 排序口径（用户 2026-10-20 裁决）：**创建序固定**，后建的显示在上。
+    //     不因切换会话/新建会话而重排。故 `m_workspaces` 只追加（按创建序存），
+    //     显示顺序在渲染时取逆序——**索引即创建序**，这是判据能比对的前提。
+    struct Workspace {
+        std::string id;           // 稳定 ID：`w1` / `w2` …（不是下标，删不掉、不随重排变）
+        std::string path;         // core 回显并确认过的实际路径（未确认时为空）
+        std::string requestedPath;// 最近一次请求的路径（含未确认/失败的那次，诊断用）
+    };
+
     struct Session {
         // ── 消息源 / 反向通道 ──
         std::unique_ptr<MessageSource> source;    // 多态持有（Next/Send/IsLive）
@@ -430,6 +455,21 @@ private:
         size_t nextClientId = 1;
         size_t nextWorkspaceRequestId = 1;
         std::string workspacePath;          // 最后一次成功 ack 的 core 实际路径
+        // ★★ 2026-10-20：归属外键。空 = 这个会话不属于任何工作区
+        //   （replay / replay-history / new 三类没有 core，也就永远不会有工作区）。
+        //   ★ 为什么与 `workspacePath` 并存：后者是「当前已确认的路径」（会被覆盖），
+        //     前者是「属于哪一个实体」。两者在 live 会话上通常一致，但语义不同：
+        //     `workspaceId` 为空而 `workspacePath` 非空是不可能的（路径只能由某个
+        //     工作区确认得来），反之 `workspaceId` 非空而 `workspacePath` 为空则是
+        //     “工作区存在但尚未确认”。
+        std::string workspaceId;
+        // ★ 继承口径（用户 2026-10-20 裁决）：新建 live 会话**继承活动会话的工作区**，
+        //   而不是从 GUI 进程 cwd 重新开始。理由是 cwd 是进程属性、不是用户的意图；
+        //   用户在 A 里选了 D:/Project 之后点「＋新建」，他的心智模型是“在同一处再开一个”，
+        //   而不是“回到我刚启动图形界面的那个目录”。
+        //   ⇒ 这两个字段只在“拿到 hello、还没发 workspace 请求”之间被读一次：
+        //     `workspaceInheritedPath` = 要继承的路径（空 = 不继承，回落到 cwd）。
+        std::string workspaceInheritedPath;
         std::string workspaceStatus = "等待 core 确认";
         std::string pendingWorkspaceId;
         bool pendingWorkspaceInitialSync = false;
@@ -497,6 +537,30 @@ private:
     bool RequestWorkspace(const std::string& path, bool initialSync = false);
     void ChooseWorkspaceFolder();
     void MaybeStartWorkspaceSync();
+
+    // ── ★★ 2026-10-20：工作区注册表（模型侧）────────────────────────────
+    // `WorkspaceById()`：空 id 或查不到 ⇒ nullptr。
+    //   ★ 查不到不抛也不修：调用方必须能区分“不属于任何工作区”与“属于一个
+    //     已经不存在的 id”这两种情况；后者目前不可能（不提供删工作区），
+    //     但一旦把 nullptr 当成“就在第一个工作区”，缺陷会安静地变成“归错桶”。
+    Workspace* WorkspaceById(const std::string& id);
+    const Workspace* WorkspaceById(const std::string& id) const;
+    // `WorkspaceByPath()`：按路径查（用于去重）。匹配是**字符串完全相等**，
+    //   因为入参已经是 core 回显的规范化路径（§3.9：绝对、`/` 分隔、无尾随 `/`）。
+    //   不做 `equivalent()` 判等：那会把 `D:/a` 与 `d:/A` 当成同一处，而 core
+    //   说的路径是它自己的规范化结果——GUI 没有资格替它改写大小写。
+    Workspace* WorkspaceByPath(const std::string& path);
+    // `AcquireWorkspace()`：按路径拿一个工作区，没有就**新建**（追加到表尾
+    //   ⇒ 创建序即下标序）。返回非拥有指针，永不为空（path 为空时返回 nullptr）。
+    //   ★ 这是唯一的创建入口：只有“core 真的确认了某条路径”时才调用它。
+    Workspace* AcquireWorkspace(const std::string& path);
+    // 把会话挂到指定工作区（外键赋值；不改路径、不发协议）。
+    void AssignSessionWorkspace(Session& session, Workspace* workspace);
+    // 新会话应当继承的路径（活动会话所属工作区的**已确认**路径；无可继承 ⇒ 空）。
+    //   ★ 只读活动会话的 `workspaceId`，不读 `workspacePath`：后者可能属于
+    //     一个尚未确认的请求（“等待 core 确认…”），继承一个未确认路径等于
+    //     把不确定性复制给新会话。
+    std::string InheritedWorkspacePath() const;
     void MaybeSendAutoPrompt();
     bool HasUnconfirmedPrompt() const;
     void FailPrompt(const std::string& clientId, const std::string& reason);
@@ -589,6 +653,21 @@ private:
     //     捕获下标就会"点了第 2 行却切到第 3 个会话"。回调捕获的是 `Session*`（稳定，
     //     `unique_ptr` 持有），点击时再线性查一次它的当前下标（见 `SwitchToSessionByPtr`）。
     std::unique_ptr<ECDI::Widget> BuildSessionRow(size_t index, bool active);
+    // `BuildSessionGroupRow()`：建**一个工作区分组标题行**（纯函数，不改状态）。
+    //   ★ 行根是 `Panel` 而不是 `Button`——这正是“标题行点不动”的**结构性**保证：
+    //     `Panel::ContainsPoint` 恒 false（`Panel.cpp:34-40`），故它从不参与命中。
+    //     若改用 `Button` + `SetEnabled(false)`，“不可点”就会变成一个可以被后人
+    //     取消的开关，而 Disabled 同时会 gate 焦点收集，语义比这里需要的更多。
+    //   ★ 它**不承载**任何会话模型：标题行不是会话，探针按行的 `kind` 区分两类
+    //     （见 `SnapshotSessionList` 的第 5 段），否则“分组标题”会被当成“会话行”
+    //     参与 selected 判定，读数全是假的。
+    std::unique_ptr<ECDI::Widget> BuildSessionGroupRow(const std::string& title);
+    // `GroupTitlesForDisplay()`：算出分组标题的**显示序**（返回 `m_workspaces` 的下标）。
+    //   ★ 用户裁决（m08553）：工作区列表序固定为**创建序**，且后创建的排在上面
+    //     （A 先建 ⇒ A 在 B 下面），不因切换会话或新建会话而改变。
+    //     `m_workspaces` 只追加 ⇒ 下标即创建序 ⇒ 显示时取逆序。这里不排序、不按
+    //     “最近使用”重排：任何动态排序都会让同一个工作区在两次刷新之间换位置。
+    std::vector<size_t> GroupTitlesForDisplay() const;
     // `RebuildSessionList()`：拆掉列表内容视图的全部子控件，按 `m_sessions` 重建。
     //   ★ 只碰列表那一个 Panel，**不碰**侧栏其余部分、更不碰转录区/检查器
     //     ⇒ CountingPanel 与 HUD 指针全部存活，评估读数不中断。
@@ -727,6 +806,17 @@ private:
     //     回放模式是**空会话**（没有 core 会说话），如实提示而不伪造转录。
     std::vector<std::unique_ptr<Session>> m_sessions;
     Session* m_sess = nullptr;                     // 活动会话（非拥有；指向 m_sessions 里的元素）
+
+    // ★★ 2026-10-20：工作区注册表。`m_workspaces` 只追加 ⇒ **下标即创建序**
+    //   （用户裁决：显示顺序固定为创建序，后建在上；不因切会话/新建而变）。
+    //   ★ 为什么不放 `Session` 里：同一目录下的两个会话应当**共享**一个工作区，
+    //     否则侧栏会画出两个同路径的标题行。去重口径 = 路径完全相等（规范化后）。
+    //   ★ 与 `m_sessions` 同一条不变量：`unique_ptr` 持有 ⇒ 地址稳定；
+    //     `Session::workspaceId` 存的是**字符串 ID**而不是裸指针，因为工作区
+    //     永远不会被删（不提供删除 UI），但也正因为不会搬动，字符串 ID 就够用且
+    //     不怕悬垂——这是比裸指针更弱的耦合，换来的是“模型可以单独 dump 出来比对”。
+    std::vector<std::unique_ptr<Workspace>> m_workspaces;
+    size_t m_nextWorkspaceId = 1;                  // `w1` / `w2` …（单调递增，不复用）
 
     // 活动会话在 m_sessions 里的下标（会话头 / 侧栏显示用；-1 = 尚无会话）
     size_t m_activeIndex = static_cast<size_t>(-1);

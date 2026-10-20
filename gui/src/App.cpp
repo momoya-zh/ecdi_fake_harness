@@ -14,6 +14,9 @@
 #include "ECDI/Core/Color.h"
 #include "ECDI/Core/Logger.h"
 #include "ECDI/Core/String.h"
+// ★ 侧栏分组标题的中间省略靠码点换算（`ByteOffsetToCodepointIndex`）：
+//   `Label` 自己只做**尾部**裁剪，而路径的区分信息在尾部——详见 `ElideMiddleByCodepoints`。
+#include "ECDI/Core/UTF8.h"
 #include "ECDI/Platform/PlatformWindow.h"
 #include "ECDI/Render/BackendFactory.h"
 // ★ --hit-probe（REQ-04 边界）：合成鼠标事件走**真实派发链**
@@ -71,6 +74,36 @@ std::string PathToUtf8(const std::filesystem::path& value) {
     return Utf8FromWidePath(value.native());
 }
 
+// ★★ 2026-10-20：路径的**中间**省略（保留头与尾）。
+//   为什么必须保留尾部：`ECDI::Label` 对超宽文本是**尾部丢弃**（单行 DrawText 裁剪），
+//     而两个工作区的区别几乎总在叶子段（`.../proj` vs `.../other`）——尾部一丢，
+//     两个分组标题在屏幕上就是同一行，“按工作区区分”退化成“按前缀区分”。
+//   为什么这里**不**测量：本函数在 `RebuildSessionList` 的建树路径上，任何
+//     `MeasureText` 都会进 `m_evalMeasureCalls`（评估仪器）⇒ 每次侧栏重建都会
+//     污染 measure/paints 读数（既有基线里就有 measureCalls/measureChars）。
+//     这里改用**码点预算**（分组标题恒为等宽字体，ASCII 每码点同宽），
+//     再由 `--sidebar-probe` 侧的实测（`MeasureText` 后比对可用宽）证明真的放得下；
+//     探针跑批不产基线，故那次测量不污染任何既有读数。
+constexpr size_t kSidebarGroupTitleCp = 22;   // 22 码点 ≈ 11px Consolas 下 150px 宽
+
+std::string ElideMiddleByCodepoints(const std::string& text, size_t maxCp) {
+    if (text.empty()) return text;
+    const size_t total = ECDI::ByteOffsetToCodepointIndex(text, text.size());
+    if (total <= maxCp) return text;   // 放得下就**原样**返回（零改动即零回归）
+    if (maxCp < 4) {
+        // 退化：连 `X…Y` 都放不下，只能留尾部（尾部是唯一有信息量的一端）
+        return text.substr(ECDI::CodepointIndexToByteOffset(text, total - maxCp));
+    }
+    // 头 1/4、尾 3/4：尾部信息更密（末级目录 + 叶子段）。
+    const size_t headCp = maxCp / 4;
+    const size_t tailCp = maxCp - headCp - 1;   // 减 1 = 省略号本身占一个码点
+    const std::string head =
+        text.substr(0, ECDI::CodepointIndexToByteOffset(text, headCp));
+    const std::string tail =
+        text.substr(ECDI::CodepointIndexToByteOffset(text, total - tailCp));
+    return head + "\xe2\x80\xa6" + tail;   // U+2026 HORIZONTAL ELLIPSIS
+}
+
 constexpr int kListRowHeight = 28;   // listlayout 模式的固定行高（DIP）
 constexpr int kRowGap = 10;          // 行间距（原型 C 的消息间距 23px ⇒ 折半，紧凑窗口下够用）
 constexpr int kRowPadX = 10;
@@ -91,7 +124,11 @@ constexpr int kSidebarRowW = 158;
 constexpr int kSidebarRowH = 28;
 constexpr int kSidebarRowGap = 4;
 constexpr int kSidebarNameW = 106;   // 22(dot 右缘) → 128，给右侧 18px 删除钮留 6px 间隙
-constexpr int kSidebarMaxRows = 4;   // 可视高度上限；更多的靠滚动
+constexpr int kSidebarMaxRows = 4;
+// ★★ 2026-10-20：工作区分组标题行的高度。
+//   比会话行（28）矮得多：它是**分隔**，不是条目。若与行同高，列表中“工作区”与
+//   “会话”就会长得一样高，用户无法从尺寸上区分两层结构。
+constexpr int kSidebarGroupH = 18;   // 标题行高（分隔的高度，不带"条目"语义）
 
 // 视觉令牌唯一来源 = Theme.h（2026-10-06 v6：对齐用户高保真模型）
 // ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
@@ -387,6 +424,12 @@ void HarnessApp::NewSession() {
             return;
         }
         created->label = "会话 " + std::to_string(m_sessions.size());
+        // ★★ 2026-10-20（用户裁决 m08553）：继承**活动会话**的工作区。
+        //   ★ 必须在 `SwitchToSession(idx)` 之前抓：那之后 `m_sess` 已经指向新会话，
+        //     `InheritedWorkspacePath()` 会去读新建会话自己的（空）外键，永远继承不到东西。
+        //   ★ 也必须在此刻抓（而不是等 hello 回来时现查）：hello 是异步到达的，
+        //     到那时活动会话可能已被用户又切走了——继承口径必须钉在"点新建的那一刻"。
+        created->workspaceInheritedPath = InheritedWorkspacePath();
     } else {
         // 回放模式：建一个空会话（无 source ⇒ 不拉取；OnReplayTick 见空 source 直接返回）
         auto session = std::make_unique<Session>();
@@ -562,6 +605,48 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     return row;
 }
 
+// ★★ 2026-10-20：工作区分组标题行。
+//   两种行长得不一样，但**只差在尺寸与颜色**，不需新控件类型：
+//   `SnapshotSessionList` 靠“行根是不是 Button”区分两类行（第 5 段 `kind`）。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string& title) {
+    auto row = std::make_unique<ECDI::Panel>();
+    row->SetSize(kSidebarRowW, kSidebarGroupH);
+    // 透明底 + 无边框：标题是分隔，不是按钮。透明度用 alpha=0（与 `×` 子钮同一手法）。
+    row->SetStyle(ECDI::PanelStyleOverride{.background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+                                           .cornerRadius = 0.0f,
+                                           .borderWidth = 0.0f});
+
+    // 标题文字 = 工作区路径（= core 回显的规范化结果，不是 GUI 自己拼的）。
+    //   ★ 用 Mono 字体：路径里的 `l/1/I`、`O/0` 必须一眼可分，否则两个相似路径的
+    //     工作区分组在屏幕上就等于同一行（这正是“按工作区区分”要解决的那个问题）。
+    //   ★★ 必须**自己**做中间省略（`ElideMiddleByCodepoints`）：`ECDI::Label` 对超宽
+    //     文本是**尾部丢弃**——截图实测 `D:/Project/ECDI_fake_harness` 被画成
+    //     `D:/Project/ECDI_fake_harn`（少了 3 个字），而两个工作区的差异几乎总在叶子段。
+    //     尾部一丢，“按工作区区分”就退化成“按前缀区分”：两个都在 `D:/Project/` 下的
+    //     工作区在屏幕上会是同一行。把省略放在中间，尾部至少保留叶子段。
+    const std::string shown = ElideMiddleByCodepoints(title, kSidebarGroupTitleCp);
+    auto label = uikit::Label(shown, kSidebarRowW - 8, kSidebarGroupH - 4, kDarkMuted,
+                              harness::kFontMicro, true);
+    label->SetPosition(8, 2);
+    // 禁用：标题不参与命中（`Panel::ContainsPoint` 已经恒 false，这里只是让
+    //   “文字不是交互对象”也成立；无绘制消费者 ⇒ 不变灰）。
+    label->SetEnabled(false);
+    row->AddChild(std::move(label));
+    return row;
+}
+
+std::vector<size_t> HarnessApp::GroupTitlesForDisplay() const {
+    std::vector<size_t> order;
+    order.reserve(m_workspaces.size());
+    // 创建序 = `m_workspaces` 下标序（只追加、不删、不重排）；显示序 = 它的逆序。
+    //   `rbegin/rend` 而不是 `std::sort`：排序需要一个键，而这里根本没有键——
+    //   唯一的规则就是“后建在上”，那就是逆序本身。
+    for (auto it = m_workspaces.rbegin(); it != m_workspaces.rend(); ++it) {
+        order.push_back(static_cast<size_t>(m_workspaces.rend() - it - 1));
+    }
+    return order;
+}
+
 void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
     if (!m_hud.sessList) return;
     ECDI::Widget& content = m_hud.sessList->GetContentView();
@@ -574,28 +659,69 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
     }
 
     const size_t n = m_sessions.size();
-    const size_t rowStride = static_cast<size_t>(kSidebarRowH + kSidebarRowGap);
+    // ★★ 2026-10-20：行高不再统一（分组标题 `kSidebarGroupH`=18、会话行 `kSidebarRowH`=28）
+    //   ⇒ 位置只能逐行累加。再用「下标 × 步进」会把标题按会话行高排，越往下偏得越多。
     int y = 0;
-    for (size_t i = 0; i < n; ++i) {
-        // ★ `orderOverride` 只给负对照用：按给定次序建行。
-        //   ★ 选中态仍按**真实活动会话**判定（`idx == m_activeIndex`），不强制 false——
-        //     负对照必须只改**一个**自变量（次序）。若同时把选中态造没了，
-        //     比对报出的差异就混着两种原因，分不清探针抓到的是哪个（单变量纪律，
-        //     同 REQ-01/03/04 被反转的教训）。
-        size_t idx = i;
-        if (orderOverride) {
-            if (orderOverride->size() != n) break;   // 形状不对就不画（探针会给同长度）
-            idx = (*orderOverride)[i];
-            if (idx >= n) break;
-        }
-        const bool active = (idx == m_activeIndex);
-        auto row = BuildSessionRow(idx, active);
+    int lastGap = 0;
+    auto place = [&](std::unique_ptr<ECDI::Widget> row, int h) {
         row->SetPosition(0, y);
         content.AddChild(std::move(row));
-        y += static_cast<int>(rowStride);
+        y += h + kSidebarRowGap;
+        lastGap = kSidebarRowGap;
+    };
+
+    if (m_workspaces.empty()) {
+        // ★ 一个工作区都没有 ⇒ **平铺**，与分组功能出现之前逐字节同形。
+        //   为什么不画一个“未归属工作区”标题凑数：没有工作区实体时那行标题只是
+        //   在给“什么都没有”起名字，纯装饰；何况回放会话**永远不会**有工作区
+        //   （`MaybeStartWorkspaceSync` 首行 `!writer` 就 return），给它们编一个
+        //   “未归属”分组等于在界面上宣告一个不存在的关系。
+        for (size_t i = 0; i < n; ++i) {
+            size_t idx = i;
+            if (orderOverride) {
+                if (orderOverride->size() != n) break;   // 形状不对就不画（探针会给同长度）
+                idx = (*orderOverride)[i];
+                if (idx >= n) break;
+            }
+            const bool active = (idx == m_activeIndex);
+            place(BuildSessionRow(idx, active), kSidebarRowH);
+        }
+    } else {
+        // ★ 分组：标题按**创建序逆序**（后建在上，用户裁决 m08553），组内会话按
+        //   `m_sessions` 序（创建序正序）。两个方向都是固定的，不按“最近使用”重排——
+        //   任何动态排序都会让同一个工作区在两次刷新之间换位置，用户会以为它是两个。
+        //   ★ 分组模式下 `orderOverride` **不生效**：它表达的是“会话次序”，
+        //     而分组结构下会话次序由“属于哪个组”决定。分组模式的负对照改用
+        //     “换工作区路径”（见 `RunSidebarProbe` ⑬），只改一个自变量。
+        std::vector<bool> shown(n, false);
+        for (size_t wi : GroupTitlesForDisplay()) {
+            const Workspace& ws = *m_workspaces[wi];
+            place(BuildSessionGroupRow(ws.path), kSidebarGroupH);
+            for (size_t i = 0; i < n; ++i) {
+                if (m_sessions[i]->workspaceId != ws.id) continue;
+                place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
+                shown[i] = true;
+            }
+        }
+        bool anyOrphan = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (!shown[i]) { anyOrphan = true; break; }
+        }
+        if (anyOrphan) {
+            // ★ 外键指向一个不存在的工作区也落在这里（`WorkspaceById` 返回 nullptr 时
+            //   就是这么处理的，两处口径一致）：宁可显示“未归属”，也不能把它悄悄
+            //   塞进第一个工作区——那会把归错桶伪装成正常。
+            place(BuildSessionGroupRow("未归属工作区"), kSidebarGroupH);
+            for (size_t i = 0; i < n; ++i) {
+                if (shown[i]) continue;
+                place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
+            }
+        }
     }
-    const int totalH = n > 0 ? static_cast<int>(n * rowStride) - kSidebarRowGap : 0;
-    const int visibleH = std::min(totalH, kSidebarMaxRows * static_cast<int>(rowStride)
+    const int totalH = y > 0 ? y - lastGap : 0;
+    // 高度上限仍按“4 个会话行”折算成像素：分组标题不算一行（它是分隔，不是条目），
+    //   否则两个工作区就会把可见区吃掉一半。
+    const int visibleH = std::min(totalH, kSidebarMaxRows * (kSidebarRowH + kSidebarRowGap)
                                               - kSidebarRowGap);
     // ★ 先 SetSize（决定 viewport）再 SetContentExtent（决定要不要出条）：
     //   反过来的话第一帧会按旧 viewport 判一次"不需要滚动条"，出条后行宽被挤。
@@ -942,20 +1068,26 @@ std::vector<std::string> HarnessApp::SnapshotSessionList() const {
                 }
             }
         }
-        // 字段序：名称 · 选中 · 行内按钮数（×）· 行矩形（几何也算视图的一部分：
-        // 「画了几行」和「画在哪」都能被抓出来）。
+        // 字段序：名称 · 选中 · 行内按钮数（×）· 行矩形 · ★行类（kind）。
+        // 行矩形也算视图的一部分：「画了几行」和「画在哪」都能被抓出来。
+        // ★★ 2026-10-20：`kind` **只能追加在尾部**。若插在中间，所有历史读数会在
+        //   字段位上静默串味（旧日志把 geometry 当 kind 读，不报错但全错）。
+        //   判据来源 = 行根类型：会话行是 Button（`Panel::ContainsPoint` 恒 false，
+        //   可点行的根只能是 Button），分组标题行是 Panel。这就是两类行在视图层的
+        //   唯一区别，不靠尺寸（尺寸会随主题变）。
         char geo[64];
         std::snprintf(geo, sizeof(geo), "%d,%d,%d,%d", row->GetX(), row->GetY(),
                       row->GetWidth(), row->GetHeight());
+        const char* kind = dynamic_cast<const ECDI::Button*>(row) ? "session" : "group";
         out.push_back(name + '\x1f' + selected + '\x1f' + std::to_string(buttons) + '\x1f'
-                      + geo);
+                      + geo + '\x1f' + kind);
     }
     return out;
 }
 
 HarnessApp::SidebarCompare HarnessApp::CompareSessionList(
     const std::vector<std::string>& before, const std::vector<std::string>& after) const {
-    static const char* kFieldName[] = {"name", "selected", "buttons", "geometry"};
+    static const char* kFieldName[] = {"name", "selected", "buttons", "geometry", "kind"};
     SidebarCompare cmp;
     if (before.size() != after.size()) {
         cmp.matched = false;
@@ -980,7 +1112,10 @@ HarnessApp::SidebarCompare HarnessApp::CompareSessionList(
         const std::vector<std::string> a = split(before[i]);
         const std::vector<std::string> b = split(after[i]);
         std::string detail = "row " + std::to_string(i);
-        for (size_t f = 0; f < a.size() && f < b.size() && f < 4; ++f) {
+        // 段落数必须与 `kFieldName` 同长：写死 4 会让新增的 `kind` 永远不参与比对，
+        //   跟“没加”一样（而且不报错）。
+        constexpr size_t kFieldCount = sizeof(kFieldName) / sizeof(kFieldName[0]);
+        for (size_t f = 0; f < a.size() && f < b.size() && f < kFieldCount; ++f) {
             if (a[f] == b[f]) continue;
             detail += std::string(" ") + kFieldName[f] + " [" + a[f] + "] -> [" + b[f] + "]";
             break;
@@ -2500,6 +2635,22 @@ void HarnessApp::RouteLastMessage() {
                 m_sess->workspacePath = path->text;
                 m_sess->workspaceSyncComplete = true;
                 m_sess->workspaceStatus = "已由 core 确认";
+                // ★★ 2026-10-20：确认成功 = 「这个会话现在属于这条路径那个工作区」。
+                //   ★ 注册只发生在这里（不在请求时）：工作区的路径定义是 **core 回显的
+                //     规范化结果**，不是 GUI 自己发出去的那个字符串。在请求时注册就会
+                //     把一个未经确认的路径写进注册表，而“注册表里的路径”正是侧栏
+                //     告诉用户「这个会话在哪」的唯一依据——那等于自己给自己发证据。
+                //   ★ `AcquireWorkspace` 按路径去重：两个会话被确认到同一目录时共享
+                //     同一个工作区实体（侧栏不会出现两个同路径的标题行）。
+                //   ★ 归属变了 ⇒ 侧栏的**分组结构**也变了，必须重画（不是只刷 HUD 的
+                //     两行文字）。`m_sidebarDirty` 只在 tick 顶部被消费（OnReplayTick），
+                //     而本分支正好就在 tick 里（HandleLine ← OnReplayTick），不在派发栈上，
+                //     置脏是安全的。
+                //     漏了这一行的实测症状：新会话的 ack 到达后侧栏**从不重建**，
+                //     于是一个已经确认到路径的会话永远挂在“未归属工作区”下面，
+                //     而顶部的工作区块却正确地显示着同一个路径——自相矛盾的界面。
+                AssignSessionWorkspace(*m_sess, AcquireWorkspace(path->text));
+                m_sidebarDirty = true;
             }
         } else {
             m_sess->workspaceStatus = "切换失败：" + msg.GetString("message", "core 拒绝请求");
@@ -3899,6 +4050,138 @@ void HarnessApp::RunSidebarProbe() {
                                     "showing the inspector disturbed the transcript"}});
     }
 
+    // ⑫ ★★ 2026-10-20：工作区分组臂。
+    //   ★ 为何必须在**回放**里造工作区：回放会话 `writer == nullptr` ⇒
+    //     `MaybeStartWorkspaceSync` 首行就 return ⇒ 回放会话永远拿不到真实 ack。
+    //     但分组渲染本身与 core 无关——它读的是模型侧的外键。所以这里用**真实入口**
+    //     （`AcquireWorkspace` + `AssignSessionWorkspace`，与 workspace ack 里那两行
+    //     是同一对函数）把模型推到「两个工作区各挂一个会话」，再验视图。
+    //     造模型用真函数而不是手写 id 字符串：否则测的是探针自己的常量。
+    //   ★ 第一条判据先验**前一个状态**（没工作区时平铺）：否则后面的分组断言
+    //     证明不了“平铺是回退项”，只能证明“分组能用”。
+    //   ★ 标题序（后建在上）是用户裁决 m08553 的唯一可机检形式：它不是“最近
+    //     使用”也不是“字母序”，只能与**创建序逆序**逐字相等。
+    {
+        const size_t flatRows = m_hud.sessList->GetContentView().GetChildCount();
+        const size_t flatSessions = m_sessions.size();
+
+        NewSession();                 // 回放空会话：不拉子进程
+        RebuildSessionList();
+        // ★★ 探针用的两个路径**故意很长，且只在叶子段不同**——
+        //   这正是截图抓到的缺陷形态：两个工作区只差最后一段，而 `Label` 是**尾弃**，
+        //   尾部一丢屏幕上一模一样。用短路径（如 `D:/probe/workspace-b`）就根本
+        //   触发不到裁剪 ⇒ 这条判据会变成永真的空转。
+        Workspace* wsA = AcquireWorkspace("D:/probe/very-long-parent-directory/workspace-alpha");
+        Workspace* wsB = AcquireWorkspace("D:/probe/very-long-parent-directory/workspace-beta");
+        AssignSessionWorkspace(*m_sessions[0], wsA);
+        AssignSessionWorkspace(*m_sessions[1], wsB);
+        RebuildSessionList();
+
+        auto firstLabel = [&](size_t i) -> const ECDI::Label* {
+            ECDI::Widget* row = rowAt(i);
+            if (!row) return nullptr;
+            for (size_t c = 0; c < row->GetChildCount(); ++c) {
+                const auto* lbl = dynamic_cast<const ECDI::Label*>(row->GetChildAt(c));
+                if (lbl != nullptr) return lbl;
+            }
+            return nullptr;
+        };
+        auto rowTitle = [&](size_t i) -> std::string {
+            const ECDI::Label* lbl = firstLabel(i);
+            return lbl ? lbl->GetText() : std::string();
+        };
+        auto endsWith = [](const std::string& s, const std::string& suffix) {
+            return s.size() >= suffix.size() &&
+                   s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+        };
+        // 行类判据 = 行根类型（会话行必须是 Button：`Panel::ContainsPoint` 恒 false）
+        auto rowIsSession = [&](size_t i) {
+            return dynamic_cast<const ECDI::Button*>(rowAt(i)) != nullptr;
+        };
+
+        const bool twoWorkspaces = (m_workspaces.size() == 2 && wsA && wsB);
+        expect("grouping", {{flatRows == flatSessions,
+                             "flat fallback was not drawn before any workspace existed"},
+                            {twoWorkspaces, "setup: workspaces were not created"},
+                            {m_hud.sessList->GetContentView().GetChildCount() == 4,
+                             "rowCount != 4 (2 titles + 2 sessions)"},
+                            {!rowIsSession(0) && rowIsSession(1) && !rowIsSession(2) &&
+                                 rowIsSession(3),
+                             "row kinds are not title/session/title/session"},
+                            // ★ 判据从“整串相等”改成“尾部相等”：标题现在带中间省略，
+                            //   整串比会随预算常量变脆；尾叶子段才是用户靠它区分的东西。
+                            {endsWith(rowTitle(0), "workspace-beta"),
+                             "later-created workspace is not on top (or its tail was clipped)"},
+                            {endsWith(rowTitle(2), "workspace-alpha"),
+                             "earlier-created workspace is not below (or its tail was clipped)"},
+                            {rowTitle(0) != rowTitle(2),
+                             "the two groups render as the same text"},
+                            {rowAt(0) && rowAt(1) && rowAt(0)->GetHeight() == kSidebarGroupH &&
+                                 rowAt(1)->GetHeight() == kSidebarRowH,
+                             "title and session rows are not visually distinguishable"},
+                            {selectedIndex() == 1, "grouping lost the active-session marker"},
+                            {deleteButtonOf(0) == nullptr, "a group title offered a delete button"}});
+
+        // ⑭ ★★ 2026-10-20（截图抓到的那一类）：分组标题必须真的**放得下**。
+        //   为何必须量宽而不是只比字符串：裁剪发生在**绘制层**（`Label` → 单行 DrawText），
+        //   `GetText()` 读回来的仍是完整串 ⇒ 一条只读模型的判据会全绿而屏幕是错的。
+        //   这是 0c `buildTitle` 缺陷的同族：**比对全等，屏幕不一样**。
+        //   判据三条缺一条都不成立：
+        //     ① 实测宽 ≤ 可用宽（否则右侧会被无声切掉）；
+        //     ② 尾部真的保留了（否则“区别”正好被切掉，分组退化成按前缀区分）；
+        //     ③ 负对照：**未省略的原串**实测必须超宽——否则说明这些路径根本不需要省略，
+        //        ① 就是恒真的空转（“没裁剪”不是因为我们做对了，而是因为没触发）。
+        {
+            const ECDI::Label* title0 = firstLabel(0);
+            // 非 const：`MeasureText` 是虚函数且非 const（测量器可能内部缓存）。
+            ECDI::TextMeasurer& measurer = m_window->GetTextMeasurer();
+            const ECDI::Font font = harness::MonoFont(harness::kFontMicro);
+            const std::string shown = rowTitle(0);
+            const float shownW =
+                shown.empty() ? 0.0f : measurer.MeasureText(font, shown).width;
+            const float availW = title0 ? static_cast<float>(title0->GetWidth()) : 0.0f;
+            const float rawW = wsB ? measurer.MeasureText(font, wsB->path).width : 0.0f;
+            expect("group-title-fit",
+                   {{title0 != nullptr, "row 0 has no title label"},
+                    {shownW <= availW,
+                     "group title is wider than its label (paint layer would clip the tail)"},
+                    {endsWith(shown, "workspace-beta"),
+                     "the distinguishing tail did not survive elision"},
+                    {shown.size() < (wsB ? wsB->path.size() : 0u),
+                     "title was not actually elided"},
+                    {rawW > availW,
+                     "negative control: the raw path fits, so this phase proves nothing"}});
+        }
+
+        // ⑬ ★ 分组臂的负对照：只改**一个自变量**（wsB 的路径），
+        //   快照必须在 `row 0 name` 上失配，且只在那里。
+        //   若分组标题不读 `Workspace::path`（比如读了会话标签），这条会静默变成
+        //   “改了什么都没变”——而所有其它相依然全绿。
+        const std::vector<std::string> beforeRename = SnapshotSessionList();
+        const std::string savedPath = wsB ? wsB->path : std::string();
+        if (wsB) wsB->path = "D:/probe/workspace-b-renamed";   // probe-only corruption
+        RebuildSessionList();
+        {
+            const SidebarCompare cmp =
+                CompareSessionList(beforeRename, SnapshotSessionList());
+            snap("group-negative");
+            m_sidebarProbeLog.back().matched =
+                !cmp.matched && cmp.firstDivergence.rfind("row 0 name", 0) == 0;
+            m_sidebarProbeLog.back().firstDivergence =
+                cmp.matched ? "(group negative control saw no difference)"
+                            : cmp.firstDivergence;
+        }
+        // 复原（同 ⑥ 的纪律：负对照不能把状态留在屏上），并验复原真的回到原样
+        if (wsB) wsB->path = savedPath;
+        RebuildSessionList();
+        const SidebarCompare restoredGroup =
+            CompareSessionList(beforeRename, SnapshotSessionList());
+        if (!restoredGroup.matched) {
+            m_sidebarProbeLog.back().firstDivergence =
+                "restore-after-group-negative failed: " + restoredGroup.firstDivergence;
+        }
+    }
+
     // ★ 焦点复原：合成点击把焦点交给了被点的 Button，留下的焦点框与 caret 闪烁
     //   会多画几帧 ⇒ paints/frames 读数被污染（同 RunHitProbe 的收尾）。
     if (m_window) m_window->SetFocusedWidget(focusBefore);
@@ -4889,6 +5172,71 @@ bool HarnessApp::RequestWorkspace(const std::string& path, bool initialSync) {
     return true;
 }
 
+// ── ★★ 2026-10-20：工作区注册表（模型侧实现）────────────────────────────
+// 三条不变量都在这里维护（设计注见 `App.h` 的 `struct Workspace`）：
+//   ① **只追加**：`m_workspaces` 的下标即创建序，永不删除、永不重排 ⇒
+//      「创建序固定」这条用户裁决不需要额外排序字段，下标本身就是证据；
+//   ② **按路径去重**：同一目录的第二个会话复用同一个实体（否则侧栏会画出
+//      两个同路径的标题行，而用户看到的会是"我的会话莫名其妙分成两组"）；
+//   ③ **只由 core 确认过的路径创建**：`AcquireWorkspace` 的唯一调用点在 workspace
+//      ack 的 `ok:true` 分支 ⇒ 注册表里不存在"GUI 自己猜的路径"。
+HarnessApp::Workspace* HarnessApp::WorkspaceById(const std::string& id) {
+    if (id.empty()) return nullptr;
+    for (const auto& ws : m_workspaces) {
+        if (ws && ws->id == id) return ws.get();
+    }
+    return nullptr;
+}
+
+const HarnessApp::Workspace* HarnessApp::WorkspaceById(const std::string& id) const {
+    if (id.empty()) return nullptr;
+    for (const auto& ws : m_workspaces) {
+        if (ws && ws->id == id) return ws.get();
+    }
+    return nullptr;
+}
+
+HarnessApp::Workspace* HarnessApp::WorkspaceByPath(const std::string& path) {
+    if (path.empty()) return nullptr;
+    // ★ 字符串完全相等，不用 `std::filesystem::equivalent()`：入参已经是 core 回显的
+    //   规范化路径（§3.9：绝对、`/` 分隔、无尾随 `/`、无 `.`/`..`）。用 equivalent
+    //   会把 `D:/a` 与 `d:/A` 判成同一处——那是替 core 改写它自己的规范化结果。
+    for (const auto& ws : m_workspaces) {
+        if (ws && ws->path == path) return ws.get();
+    }
+    return nullptr;
+}
+
+HarnessApp::Workspace* HarnessApp::AcquireWorkspace(const std::string& path) {
+    if (path.empty()) return nullptr;
+    if (Workspace* existing = WorkspaceByPath(path)) return existing;
+    auto ws = std::make_unique<Workspace>();
+    // ★ ID 形如 `w1`/`w2`…，与协议侧的 `request_id`（`w1`/`w2`…）**同名但不同域**：
+    //   前者是 GUI 模型里的工作区实体，后者是单次请求的关联键。两者都由自增计数器
+    //   产生、都从 1 开始，所以一个会话的 `pendingWorkspaceId` 常与它即将获得的
+    //   `workspaceId` 字形相似——这不是缺陷（探针读的是 `Workspace::path`），
+    //   但**别在代码里把两者互相当作判据**。
+    ws->id = "w" + std::to_string(m_nextWorkspaceId++);
+    ws->path = path;
+    ws->requestedPath = path;
+    m_workspaces.push_back(std::move(ws));
+    return m_workspaces.back().get();
+}
+
+void HarnessApp::AssignSessionWorkspace(Session& session, Workspace* workspace) {
+    session.workspaceId = workspace ? workspace->id : std::string();
+}
+
+std::string HarnessApp::InheritedWorkspacePath() const {
+    if (!m_sess) return {};
+    const Workspace* ws = WorkspaceById(m_sess->workspaceId);
+    if (!ws) return {};
+    // ★ 只读 `Workspace::path`（已确认路径），不读 `Session::workspacePath`：
+    //   后者在"已发请求、等 ack"的窗口里可能还留着旧值，而在"确认失败"之后
+    //   会保留失败前的值——两种情况都不是"这个会话现在在哪"的可靠答案。
+    return ws->path;
+}
+
 void HarnessApp::MaybeStartWorkspaceSync() {
     if (!m_sess || !m_sess->writer || m_sess->protocolVer != 3 ||
         !m_sess->workspaceCap || m_sess->workspaceSyncStarted ||
@@ -4896,14 +5244,29 @@ void HarnessApp::MaybeStartWorkspaceSync() {
         return;
     }
     std::error_code ec;
-    const std::filesystem::path cwd = std::filesystem::current_path(ec);
-    if (ec) {
-        m_sess->workspaceSyncStarted = true;
-        m_sess->workspaceStatus = "无法读取启动工作目录：" + ec.message();
-        RefreshHud();
-        return;
+    // ★★ 2026-10-20（用户裁决 m08553）：新会话**继承活动会话的工作区**。
+    //   改动前这里恒用 `std::filesystem::current_path()`，即 GUI 进程的 cwd；
+    //   而 `ChildSource::Start` 的 `CreateProcessW` 又不传 `lpCurrentDirectory`
+    //   （子进程也继承 GUI cwd）⇒ 用户在会话 A 里把工作区切到 `D:/Project` 之后
+    //   点「＋ 新建会话」，会话 B 会**静默**回到启动 GUI 的那个目录。屏幕上看不出
+    //   这件事（两行会话长得一样、工作区段显示的是活动会话的值），只有对照
+    //   core 的 stderr 才能发现——所以这条不是"体验优化"，是**纠错**。
+    std::string initialPath = m_sess->workspaceInheritedPath;
+    if (initialPath.empty()) {
+        const std::filesystem::path cwd = std::filesystem::current_path(ec);
+        if (ec) {
+            m_sess->workspaceSyncStarted = true;
+            m_sess->workspaceStatus = "无法读取启动工作目录：" + ec.message();
+            RefreshHud();
+            return;
+        }
+        initialPath = PathToUtf8(cwd);
     }
-    if (!RequestWorkspace(PathToUtf8(cwd), true)) {
+    // ★ 继承路径只消费一次：若这次请求被 core 拒绝，**不**自动改用 cwd 重试。
+    //   被拒不等于"路径不存在"（core 可能因自己的原因拒），而擅自换一个目录重问
+    //   会让屏幕上的路径与用户以为的那个不同——那正是 §3.9 要避免的"GUI 猜"。
+    m_sess->workspaceInheritedPath.clear();
+    if (!RequestWorkspace(initialPath, true)) {
         if (!m_sess->disconnected) {
             m_sess->workspaceSyncStarted = true;
             m_sess->workspaceStatus = "启动工作区请求未能发送";
