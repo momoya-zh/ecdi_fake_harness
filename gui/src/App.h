@@ -278,8 +278,7 @@ private:
         // ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容。
         //   数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
         //   回放会话没有工作区 ⇒ 此段显示「无工作区」。
-        ECDI::ScrollView* projectList = nullptr;  // 左栏：项目目录滚动容器
-        ECDI::Label* projectCount = nullptr;      // 左栏：项目计数
+        ECDI::ScrollView* projectList = nullptr;  // 左栏：工作区目录滚动容器（收进「工作区」段）
         // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
         //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
         //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，

@@ -1767,6 +1767,15 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         pick->SetSize(172, 26);
         pick->SetOnClick([this] { ChooseWorkspaceFolder(); });
         side->AddChild(std::move(pick));
+
+        // ★★ 2026-10-20（m09704）：目录列表收进「工作区」段（原「项目」段）。
+        //   路径只出现一次，目录内容紧跟其后，语义 = 「这个工作区在哪 + 里面有什么」。
+        auto list = std::make_unique<ECDI::ScrollView>();
+        m_hud.projectList = list.get();
+        list->SetSize(kSidebarListW, kSidebarRowH);
+        list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
+        list->SetScrollBarVisible(true);
+        side->AddChild(std::move(list));
     }
 
     // ★★ Step 1（2026-10-19）：会话列表替换掉此前**单行硬编码**的会话条目。
@@ -1817,25 +1826,6 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         side->AddChild(std::move(bar));
     }
 
-    // ── 项目 / 工作区文件（C 的「项目」段）──
-    // ★★ 2026-10-20（m09443）：数据源从 `m_options.replayPath` 反推的伪树
-    //   改为**当前工作区的真实目录内容**（活动会话的 `workspacePath`）。
-    //   回放会话没有工作区 ⇒ 显示「无工作区」。
-    AddLine(*side, "项目", kDarkMuted, true, 172, harness::kFontMicro);
-    {
-        auto list = std::make_unique<ECDI::ScrollView>();
-        m_hud.projectList = list.get();
-        list->SetSize(kSidebarListW, kSidebarRowH);
-        list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
-        list->SetScrollBarVisible(true);
-        side->AddChild(std::move(list));
-    }
-    {
-        auto cnt = uikit::Label("无工作区", kSidebarListW, 14, kDarkMuted,
-                                harness::kFontMicro);
-        m_hud.projectCount = cnt.get();
-        side->AddChild(std::move(cnt));
-    }
 
     // ── ★★ Step 5：历史会话（磁盘上的夹具 = 可打开的文件）──
     //   ★ 这一段与上面「工作区」里的会话列表是**两种东西**：上面是已打开的会话，
@@ -5411,11 +5401,6 @@ void HarnessApp::RebuildProjectList() {
     m_hud.projectList->SetContentExtent(kSidebarListW, std::max(totalH, rowH));
     m_hud.projectList->SetContentOffset(0, m_hud.projectList->GetScrollOffsetY());
 
-    if (m_hud.projectCount) {
-        std::string wsShort = wsPath.empty() ? std::string("无工作区")
-            : ElideMiddleByCodepoints(wsPath, kSidebarGroupTitleCp);
-        m_hud.projectCount->SetText(wsShort);
-    }
 
     if (ECDI::Widget* parent = m_hud.projectList->GetParent()) parent->Arrange();
 }
@@ -6299,6 +6284,7 @@ void HarnessApp::RefreshHud() {
     };
     applyWorkspaceVis(m_hud.workspacePath);
     applyWorkspaceVis(m_hud.workspacePick);
+    applyWorkspaceVis(m_hud.projectList);
     if (workspaceVisChanged) {
         // VerticalLayout 只在 Arrange 时给隐藏子不占槽（C-VIS-1）⇒ 不重排就会留个空洞。
         if (ECDI::Widget* p = m_hud.workspaceStatus ? m_hud.workspaceStatus->GetParent()
