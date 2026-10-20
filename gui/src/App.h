@@ -483,6 +483,12 @@ private:
         //     用它当转正条件最精确；而"有没有消息"会被 notice 行污染（新建会话时
         //     可能先收到 hello 通知）。
         bool temporary = false;
+        // ★★ 2026-10-20：归档标志（m00001 第 6 步残留）。
+        //   归档 = 「不活动但可打开且不占资源」。会话仍留在 m_sessions 里（模型完整），
+        //   只是从侧栏主列表隐藏，移到「归档」区。点「↩」恢复 = 取消归档 + 切到它。
+        //   ★ 为什么不用独立列表：m_sessions 的下标是会话身份的一部分（探针按
+        //     下标断言），搬出去会让所有下标漂移；留在原位只改一个 bool 最安全。
+        bool archived = false;
         std::string workspaceStatus = "等待 core 确认";
         std::string pendingWorkspaceId;
         bool pendingWorkspaceInitialSync = false;
@@ -738,6 +744,15 @@ private:
     //     `ChildSource::~ChildSource()` 会 `Stop()` 收尸（`ChildSource.cpp:26`）。
     //     **不在这里**手工 Stop——那会变成第二份收尸逻辑。
     bool DeleteSessionAt(size_t index);
+    // `ArchiveSessionAt()` / `RestoreSessionAt()`：归档 / 恢复（**唯一入口**，点击与探针共用）。
+    //   ★ 归档 = 置 `Session::archived = true`，会话留在 m_sessions 原位（下标不动），
+    //     只是从侧栏主列表隐藏、移到「归档」区。
+    //   ★ 归档活动会话 ⇒ 先切到邻居（同 DeleteSessionAt 的纪律），否则活动指针
+    //     指向一个不在主列表里的会话，HUD 会显示一个用户看不到的会话。
+    //   ★ 恢复 = 置 archived=false + SwitchToSession（用户点「↩」的心智模型是
+    //     「打开它」，不是「取消归档但留在原地」）。
+    bool ArchiveSessionAt(size_t index);
+    bool RestoreSessionAt(size_t index);
     // `SetSidebarVisible()`：侧栏显隐（**唯一入口**，顶栏按钮与探针共用）。
     //   ★ 三条纪律：
     //     ① 瞬时切换：只用 `SetVisible(false)` + 父容器 `Arrange()`，

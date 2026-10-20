@@ -535,7 +535,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     // ★ 纯函数：只读 m_sessions[index] 与传入的 active，不写任何成员。
     auto row = std::make_unique<ECDI::Button>();
     const Session* session = m_sessions[index].get();
+    // ★★ 2026-10-20：归档。非归档行有「↓」(归档) + 「×」(删除)；
+    //   归档行有「↩」(恢复) + 「×」(删除，若 canDelete)。
     const bool canDelete = m_sessions.size() > 1;
+    const bool isArchived = session->archived;
 
     // 选中态 = 三种视觉同时变（底色/圆点/文字色），但**只有文字色可读回**：
     //   ECDI 的 Button/Panel 都没有 style getter（`Button::SetStyle` 只写不读），
@@ -561,7 +564,11 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     //   没有时（只剩一个会话）可以一直铺到行右边距。写死 104 会让单会话下的
     //   `demo-session.jsonl` 尾部被裁掉一个字符——**探针读文字读不到这件事**
     //   （`GetText()` 返回完整文本，裁剪发生在绘制层），只能靠截图发现。
-    const int nameW = canDelete ? 104 : (kSidebarRowW - 22 - 2);
+    // ★ 宽度随「有没有按钮」变：两个按钮占 20+18+6=44 ⇒ 名称到 90；
+    //   一个按钮占 18+6=24 ⇒ 名称到 110；无按钮 ⇒ 铺到行右边距。
+    const int nameW = (canDelete || isArchived)
+        ? ((canDelete && !isArchived) || (isArchived && canDelete) ? 90 : 110)
+        : (kSidebarRowW - 22 - 2);
     auto name = uikit::Label(session->label.empty() ? "会话" : session->label,
                              nameW, 16, active ? kAccentInk : kDarkInk,
                              harness::kFontSmall);
@@ -575,6 +582,57 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     //     （`Widget.h:197`）⇒ 禁用不会让文字变灰，视觉零变化。
     name->SetEnabled(false);
     row->AddChild(std::move(name));
+
+    // ★★ 2026-10-20：归档行的按钮布局。
+    //   非归档 + canDelete：「↓」(归档) 在 x=114，「×」(删除) 在 x=134。
+    //   归档 + canDelete：「↩」(恢复) 在 x=114，「×」(删除) 在 x=134。
+    //   归档 + !canDelete：「↩」(恢复) 在 x=134（唯一按钮）。
+    if (isArchived) {
+        auto restore = std::make_unique<ECDI::Button>("↩");
+        restore->SetSize(18, 18);
+        const int restoreX = canDelete ? (kSidebarRowW - 44) : (kSidebarRowW - 24);
+        restore->SetPosition(restoreX, (kSidebarRowH - 18) / 2);
+        restore->SetFont(harness::SansFont(harness::kFontSmall));
+        restore->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .borderWidth = 0.0f,
+            .cornerRadius = 4.0f,
+            .pressedBackground = kLine,
+            .hoverBackground = kLine,
+            .textAlignment = ECDI::TextAlignment::Center,
+            .foreground = kDarkMuted});
+        restore->SetOnClick([this, session] {
+            for (size_t i = 0; i < m_sessions.size(); ++i) {
+                if (m_sessions[i].get() == session) {
+                    RestoreSessionAt(i);
+                    break;
+                }
+            }
+        });
+        row->AddChild(std::move(restore));
+    } else if (canDelete) {
+        auto archive = std::make_unique<ECDI::Button>("↓");
+        archive->SetSize(18, 18);
+        archive->SetPosition(kSidebarRowW - 44, (kSidebarRowH - 18) / 2);
+        archive->SetFont(harness::SansFont(harness::kFontSmall));
+        archive->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .borderWidth = 0.0f,
+            .cornerRadius = 4.0f,
+            .pressedBackground = kLine,
+            .hoverBackground = kLine,
+            .textAlignment = ECDI::TextAlignment::Center,
+            .foreground = kDarkMuted});
+        archive->SetOnClick([this, session] {
+            for (size_t i = 0; i < m_sessions.size(); ++i) {
+                if (m_sessions[i].get() == session) {
+                    ArchiveSessionAt(i);
+                    break;
+                }
+            }
+        });
+        row->AddChild(std::move(archive));
+    }
 
     if (canDelete) {
         // ★ `×`(U+00D7) 是 symcand 实测两主题都有字形的少数符号之一
@@ -605,8 +663,19 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
         row->AddChild(std::move(del));
     }
 
-    // 整行点击 = 切到该会话。同样按身份解析下标。
-    row->SetOnClick([this, session] { SwitchToSessionByPtr(session); });
+    // 整行点击 = 切到该会话（非归档）或恢复（归档）。同样按身份解析下标。
+    row->SetOnClick([this, session] {
+        if (session->archived) {
+            for (size_t i = 0; i < m_sessions.size(); ++i) {
+                if (m_sessions[i].get() == session) {
+                    RestoreSessionAt(i);
+                    break;
+                }
+            }
+        } else {
+            SwitchToSessionByPtr(session);
+        }
+    });
     return row;
 }
 
@@ -717,6 +786,7 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
                 idx = (*orderOverride)[i];
                 if (idx >= n) break;
             }
+            if (m_sessions[idx]->archived) continue;  // ★★ 归档会话不进主列表
             const bool active = (idx == m_activeIndex);
             place(BuildSessionRow(idx, active), kSidebarRowH);
         }
@@ -733,13 +803,14 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
             place(BuildSessionGroupRow(ws.path, ws.id), kSidebarGroupH);
             for (size_t i = 0; i < n; ++i) {
                 if (m_sessions[i]->workspaceId != ws.id) continue;
+                if (m_sessions[i]->archived) { shown[i] = true; continue; }  // ★★ 归档会话不进主列表
                 place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
                 shown[i] = true;
             }
         }
         bool anyOrphan = false;
         for (size_t i = 0; i < n; ++i) {
-            if (!shown[i]) { anyOrphan = true; break; }
+            if (!shown[i] && !m_sessions[i]->archived) { anyOrphan = true; break; }
         }
         if (anyOrphan) {
             // ★ 外键指向一个不存在的工作区也落在这里（`WorkspaceById` 返回 nullptr 时
@@ -747,8 +818,25 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
             //   塞进第一个工作区——那会把归错桶伪装成正常。
             place(BuildSessionGroupRow("未归属工作区", std::string()), kSidebarGroupH);
             for (size_t i = 0; i < n; ++i) {
-                if (shown[i]) continue;
+                if (shown[i] || m_sessions[i]->archived) continue;
                 place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
+            }
+        }
+    }
+
+    // ★★ 2026-10-20：「归档」区。有归档会话时才画标题 + 行。
+    //   归档会话留在 m_sessions 原位（下标不动），只是从主列表隐藏、移到这里。
+    //   行用 BuildSessionRow（archived=true 分支画「↩」+「×」）。
+    {
+        bool anyArchived = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (m_sessions[i]->archived) { anyArchived = true; break; }
+        }
+        if (anyArchived) {
+            place(BuildSessionGroupRow("归档", std::string()), kSidebarGroupH);
+            for (size_t i = 0; i < n; ++i) {
+                if (!m_sessions[i]->archived) continue;
+                place(BuildSessionRow(i, false), kSidebarRowH);
             }
         }
     }
@@ -1282,6 +1370,60 @@ bool HarnessApp::DeleteSessionAt(size_t index) {
     m_sess = m_sessions[m_activeIndex].get();
 
     // ★ 不在事件派发栈上拆树（见本段头注的 UAF 段）：只置脏，重建交给下一个 tick。
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+    RequestRepaint();
+    return true;
+}
+
+// ★★ 2026-10-20：归档 / 恢复（m00001 第 6 步残留）。
+//   归档 = 「不活动但可打开且不占资源」。会话留在 m_sessions 原位（下标不动），
+//   只是从侧栏主列表隐藏、移到「归档」区。
+bool HarnessApp::ArchiveSessionAt(size_t index) {
+    if (index >= m_sessions.size()) return false;
+    Session* target = m_sessions[index].get();
+    if (target->archived) return false;  // 已归档，不重复操作
+
+    const bool archivingActive = (index == m_activeIndex);
+    if (archivingActive) {
+        // ★ 归档活动会话 ⇒ 先切到邻居（同 DeleteSessionAt 的纪律）。
+        //   邻居必须是**非归档**的：切到一个归档会话会让活动指针指向
+        //   一个不在主列表里的会话，HUD 会显示用户看不到的东西。
+        size_t neighbor = static_cast<size_t>(-1);
+        for (size_t i = index + 1; i < m_sessions.size(); ++i) {
+            if (!m_sessions[i]->archived) { neighbor = i; break; }
+        }
+        if (neighbor == static_cast<size_t>(-1)) {
+            for (size_t i = 0; i < index; ++i) {
+                if (!m_sessions[i]->archived) { neighbor = i; break; }
+            }
+        }
+        if (neighbor == static_cast<size_t>(-1)) {
+            // ★ 所有其他会话都已归档 ⇒ 不能归档最后一个可见会话。
+            //   理由同「禁删到零会话」：活动指针必须指向一个用户能看见的会话。
+            return false;
+        }
+        // ★ 若被归档的是临时会话，先取消临时标志：否则 SwitchToSession 里的
+        //   MaybeDeleteTemporarySession 会把它**删掉**而不是归档。
+        target->temporary = false;
+        SwitchToSession(neighbor);
+    }
+
+    target->archived = true;
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+    RequestRepaint();
+    return true;
+}
+
+bool HarnessApp::RestoreSessionAt(size_t index) {
+    if (index >= m_sessions.size()) return false;
+    Session* target = m_sessions[index].get();
+    if (!target->archived) return false;  // 未归档，不重复操作
+
+    target->archived = false;
+    // ★ 恢复 = 取消归档 + 切到它（用户点「↩」的心智模型是「打开它」）。
+    SwitchToSession(index);
     m_sidebarDirty = true;
     m_hudDirty = true;
     RequestRepaint();
@@ -3819,8 +3961,12 @@ void HarnessApp::RunSidebarProbe() {
     auto deleteButtonOf = [&](size_t i) -> ECDI::Button* {
         ECDI::Widget* row = rowAt(i);
         if (!row) return nullptr;
+        // ★★ 2026-10-20：非归档行现在有两个按钮（「↓」归档 + 「×」删除）。
+        //   必须按文字找「×」，不能取第一个 Button（那会拿到「↓」）。
         for (size_t c = 0; c < row->GetChildCount(); ++c) {
-            if (auto* b = dynamic_cast<ECDI::Button*>(row->GetChildAt(c))) return b;
+            if (auto* b = dynamic_cast<ECDI::Button*>(row->GetChildAt(c))) {
+                if (b->GetText() == "×") return b;
+            }
         }
         return nullptr;
     };
@@ -4199,6 +4345,73 @@ void HarnessApp::RunSidebarProbe() {
         if (!restoredGroup.matched) {
             m_sidebarProbeLog.back().firstDivergence =
                 "restore-after-group-negative failed: " + restoredGroup.firstDivergence;
+        }
+
+        // ⑮ ★★ 2026-10-20：归档臂。
+        //   此时状态：2 个会话（0=wsA, 1=wsB），活动 = 1。
+        //   归档 = 会话留在 m_sessions 原位（下标不动），只是从主列表隐藏、移到「归档」区。
+        {
+            // 先确认当前状态：2 个会话都可见，活动 = 1。
+            const size_t rowsBeforeArchive = m_hud.sessList->GetContentView().GetChildCount();
+            const size_t activeBefore = m_activeIndex;
+            const size_t baseTxRows = m_sess->rows.size();
+
+            // ⑮a 归档**非活动**会话（会话 0）。
+            //   判据：主列表行数 -1（会话 0 消失）∧ 总行数 +2（「归档」标题 + 归档行）
+            //   ∧ 活动会话不变 ∧ 转录行数不变。
+            const bool archivedOk = ArchiveSessionAt(0);
+            RebuildSessionList();
+            const size_t rowsAfterArchive = m_hud.sessList->GetContentView().GetChildCount();
+            expect("archive-inactive",
+                   {{archivedOk, "ArchiveSessionAt(0) returned false"},
+                    {m_sessions[0]->archived, "model flag not set"},
+                    {rowsAfterArchive == rowsBeforeArchive - 1 + 2,
+                     "main list should lose 1 row and gain 2 (归档 title + archived row)"},
+                    {m_activeIndex == activeBefore,
+                     "archiving a non-active session must not change the active session"},
+                    {m_sess->rows.size() == baseTxRows,
+                     "archiving disturbed the active session's transcript"}});
+
+            // ⑮b 归档**活动**会话（会话 1）。
+            //   判据：活动指针先切到邻居（会话 0 已归档 ⇒ 没有非归档邻居）⇒
+            //   应该**拒绝**（返回 false），因为不能归档最后一个可见会话。
+            //   ★ 这是「禁删到零会话」的同族纪律：活动指针必须指向用户能看见的会话。
+            const bool archiveActiveRejected = !ArchiveSessionAt(1);
+            RebuildSessionList();
+            expect("archive-active-rejected",
+                   {{archiveActiveRejected,
+                     "archiving the last visible session must be rejected"},
+                    {!m_sessions[1]->archived,
+                     "the last visible session was archived anyway"}});
+
+            // ⑮c 恢复：点「归档」区的会话 0 行 ⇒ 取消归档 + 切到它。
+            //   判据：archived=false ∧ 活动 = 0 ∧ 主列表行数回到归档前。
+            const bool restoredOk = RestoreSessionAt(0);
+            RebuildSessionList();
+            const size_t rowsAfterRestore = m_hud.sessList->GetContentView().GetChildCount();
+            expect("restore",
+                   {{restoredOk, "RestoreSessionAt(0) returned false"},
+                    {!m_sessions[0]->archived, "model flag not cleared"},
+                    {m_activeIndex == 0,
+                     "restore must switch to the restored session"},
+                    {rowsAfterRestore == rowsBeforeArchive,
+                     "main list row count did not return to pre-archive state"}});
+
+            // ⑮d 归档负对照：手动翻一个 archived 标志，快照必须失配。
+            const std::vector<std::string> beforeCorrupt = SnapshotSessionList();
+            m_sessions[0]->archived = true;   // probe-only corruption
+            RebuildSessionList();
+            {
+                const SidebarCompare cmp =
+                    CompareSessionList(beforeCorrupt, SnapshotSessionList());
+                snap("archive-negative");
+                m_sidebarProbeLog.back().matched = !cmp.matched;
+                m_sidebarProbeLog.back().firstDivergence =
+                    cmp.matched ? "(archive negative control saw no difference)"
+                                : cmp.firstDivergence;
+            }
+            m_sessions[0]->archived = false;  // restore
+            RebuildSessionList();
         }
     }
 
