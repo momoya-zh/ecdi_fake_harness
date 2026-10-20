@@ -1,8 +1,10 @@
-﻿# ECDI_fake_harness 协议 v2
+﻿# ECDI_fake_harness 协议 v3
 
 > **这个文件的定位**：`core`（Go）与 `gui`（C++ / ECDI）之间**唯一的契约**。
 > 它先于两侧任何一行实现存在——因为 GUI 可以只看它就能跑起来。
-> 状态：**v2**（2026-10-14；v1 起草于 2026-10-03）。改这份文件 = 改协议版本号。
+> 状态：**v3**（2026-10-20；v2 于 2026-10-14；v1 起草于 2026-10-03）。改这份文件 = 改协议版本号。
+>
+> ★ **v2 → v3**：新增 `workspace` 切换/确认；GUI 提交 prompt 时立即显示带 `client_id` 的本地用户气泡，core 回显同 id 作为确认（不重复创建）；夹具仍是 core→gui 的规范转录流。
 >
 > ★ **v1 → v2 改了什么**（2026-10-14）：
 > ① §3.3 新增 `kind:"reasoning"`（思维链取得**一等公民**位置，不再是「未知 kind」）；
@@ -33,11 +35,26 @@
 
 ### 1.1 仓库编码约定
 
-| 文件类型 | 编码 | 行尾 | 理由 |
-|---|---|---|---|
-| 文本（`.md` / `.cpp` / `.h` / `.go` / `.py`） | UTF-8 **带 BOM** | CRLF | 中文被 MSVC 按 CP936 读会 C4819 + 乱码（ECDI 条 70 的教训）；**一条规则 + 一个例外**比记一堆特例便宜 |
-| **`*.jsonl`** | UTF-8 **不带 BOM** | **LF** | BOM 会破坏流式 JSON 解析；LF 是 JSONL 工具链的预期 |
-| **配置文件**（`.gitignore` / `CMakeLists.txt` / `go.mod` / `*.json`） | UTF-8 **不带 BOM** | 随该工具的预期 | 与 ECDI 同源的例外：清单 / listfile 类文件以**解析兼容性优先**，BOM 会惹麻烦 |
+★ **这条曾经写错过**（v3 订正）：早先的表格把行尾与 BOM 混成「文本一律 BOM + CRLF」，
+而仓库里行尾从来是 LF、BOM 从来按文件不同。代价是有人**照着这张表**把 `PROTOCOL.md`
+与 `validate.py` 改成了 CRLF 并剥掉 BOM —— 一次「照文档办事」制造了两份坏文件。
+
+**轴一：行尾。** `.gitattributes` 声明 `* text=auto eol=lf`，`git ls-files --eol` 对每个
+文本文件都回 `i/lf`。**仓库里存的就是 LF，没有例外。** 工作区里的 CRLF 副本是本地工具留下的
+漂移，提交时归一化、`checkout` 后消失 —— **不要拿工作区字节当约定**。
+唯一有协议依据的硬要求落在 `*.jsonl`：分帧靠 `\n`（§1.2），所以 CRLF 与 BOM 都是错的，
+由 `validate.py` 的 `read_fixture` 每次运行时实测（报 `ENC`）。**这是本仓库唯一可强制的编码规则。**
+
+**轴二：BOM。** 实测 139 个文本文件中 37 个带 BOM、102 个不带，与扩展名无关
+（`README.md`、`status.txt`、`core/*.go`、`protocol/*.md|py`、`gui/src/` 的 19 个文件带；
+`.gitignore`、`LICENSE`、`gui/src/App.cpp·App.h·main.cpp·Theme.h` 等 6 个、
+全部 `*.jsonl`、全部 `evals/*.json` 不带）。复现命令见 README「编码约定」。
+
+★ **BOM 不是编译正确性问题**：`gui/CMakeLists.txt:20` 给 `harness_gui` 传了 `/utf-8`
+（自初始提交 `f243579` 起），MSVC 不看 BOM 也知道源文件是 UTF-8——`gui/src/App.cpp` 带
+31692 个非 ASCII 字符、无 BOM，编译干净。（`C4819` 属于**没有** `/utf-8` 的构建，
+比如 ECDI 自己的工程。）保留按文件的 BOM，理由只有一条：**逐字节回归基线的可比性**。
+⇒ 规则是「**别动它**」，不是「统一它」。
 
 ### 1.2 分帧
 
@@ -73,7 +90,7 @@
 握手的**第一条**消息，`seq` 必须为 0。
 
 ```json
-{"t":"hello","seq":0,"ts":"...","protocol":2,"core":"0.1.0","session":"s-0001","caps":["tools","ask"],"context":128000}
+{"t":"hello","seq":0,"ts":"...","protocol":3,"core":"0.1.0","session":"s-0001","caps":["tools","ask","workspace"],"context":128000}
 ```
 
 | 字段 | 说明 |
@@ -81,7 +98,7 @@
 | `protocol` | 协议**主版本**。GUI 的版本较低时必须拒绝并显示错误（§9） |
 | `core` | 核心版本，仅用于显示 |
 | `session` | 会话 id；`--resume` 时回放同一 id |
-| `caps` | 能力声明，GUI 据此决定是否显示对应交互 |
+| `caps` | 能力声明，GUI 据此决定是否显示对应交互。★ **v3**：支持工作区切换的 core **必须**声明 `"workspace"`；未声明的 core，GUI **不得**显示工作区选择器 |
 | `context` | ★ **v2 新增（可选）**：上下文窗口容量（**token 数**）。= 「上下文占用百分比」的**分母** |
 
 ★ **`context` 为什么必须存在（2026-10-14）**：用户要求显示「上下文已占用的百分比」。
@@ -101,7 +118,7 @@
 
 | `value` | 含义 |
 |---|---|
-| `idle` | 空闲，可接受 `prompt` |
+| `idle` | 空闲，可接受 `prompt` / `workspace` |
 | `running` | 正在处理 |
 | `waiting` | **阻塞在一个未回答的 `ask` 上**（I3） |
 | `cancelled` | 因 `cancel` 而停止 |
@@ -113,13 +130,13 @@
 
 ```json
 {"t":"block_start","seq":2,"ts":"...","id":"b2","kind":"assistant"}
-{"t":"block_start","seq":3,"ts":"...","id":"b1","kind":"user","text":"帮我看看 README"}
+{"t":"block_start","seq":3,"ts":"...","id":"b1","kind":"user","client_id":"p1","text":"帮我看看 README"}
 {"t":"block_start","seq":4,"ts":"...","id":"b3","kind":"tool_call","name":"read_file","args":{"path":"docs/README.md"}}
 ```
 
 | `kind` | 用途 | 附带字段 |
 |---|---|---|
-| `user` | 用户输入（**由 core 回显**，见 §8.3） | `text` |
+| `user` | 用户输入；core 规范回显须带 `client_id`，GUI 按 id 确认临时气泡（§4） | `text`、`client_id`
 | `assistant` | 模型输出（通常流式） | — |
 | `reasoning` | ★ **思维链**（开源推理模型在回答前流式吐出的推理过程） | `text`（流式走 `delta`） |
 | `tool_call` | 一次工具调用 | `name`、`args`（原样 JSON 对象） |
@@ -205,9 +222,50 @@
 
 ```json
 {"t":"error","seq":41,"ts":"...","fatal":false,"message":"工具超时"}
+{"t":"error","seq":42,"ts":"...","fatal":false,"message":"忙：正在处理上一轮","client_id":"p2"}
 ```
 
-### 3.9 `bye`
+| 字段 | 说明 |
+|---|---|
+| `fatal` | `true` ⇒ 随后进程退出；`false` ⇒ 会话继续 |
+| `message` | 可直接显示的短句 |
+| `client_id` | ★ **v3 新增（可选）**：被**拒绝**的那条 `prompt` 的 id |
+
+★ **为什么 `error` 要带 `client_id`（v3 补严）**：§4 规定「core 拒绝时 GUI 把临时气泡标为失败」，
+但原草案**没有说 GUI 怎么知道是哪一条被拒**。靠 `state` 回 `idle` 只能说明「没在跑」，不能定位气泡；
+靠超时更糟（超时不是协议事实）。⇒ v3 要求：core **拒绝一条 `prompt`** 时，必须回一条
+`fatal:false` 的 `error` 且带**该 `prompt` 的 `client_id`**。GUI 收到即把对应临时气泡标失败并**不**并入规范转录。
+- 不带 `client_id` 的 `error` 是全局错误（照旧显示），**不得**被任何临时气泡认领。
+
+### 3.9 `workspace`（core → gui）
+
+工作区切换结果。`request_id` 必须对应 GUI 发起的请求；成功时回显规范化后的实际路径，失败时提供可显示原因。GUI **仅在成功响应后**更新当前工作区；失败保留原工作区。
+
+**受理规则（v3 补严）**：core **仅在 `idle` 接受 `workspace` 请求**；一次只允许**一个未决工作区请求**（请求发出到收到响应之间，GUI 不得发起第二个 `workspace`；core 对第二个请求直接拒绝并回 `ok:false` + `message`）。**竞争规则**：工作区请求未决时，GUI 必须**禁用发送**（不得同时发起 `prompt`）；core 在未决期间收到 `prompt` 或第二个 `workspace` 属于**交错操作，必须拒绝**——`prompt` 忽略并警告，第二个 `workspace` 回 `ok:false` 且 `message` 说明原因。切换成功后，GUI 更新当前工作区，后续工具调用以新目录为基准。
+
+```json
+{"t":"workspace","seq":1,"ts":"...","request_id":"w1","ok":true,"path":"D:/work/project"}
+{"t":"workspace","seq":2,"ts":"...","request_id":"w2","ok":false,"path":"D:/bad","message":"目录不存在"}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `request_id` | ✅ | 对应 GUI 请求的 id，一份流内互不相同（I10） |
+| `ok` | ✅ | 布尔。**必须**是 `true` / `false`，不得用 `1` / `"yes"` |
+| `path` | ✅ | 成功 = **core 实际采用的规范化绝对路径**；失败 = 被**拒绝的请求路径原文** |
+| `message` | `ok:false` 时必填 | 可直接显示的原因 |
+
+★ **`path` 的规范化规则（v3 补严，供字符串比对）**：绝对路径；分隔符统一为 `/`；无尾随 `/`（根目录除外）；
+不含 `.` / `..` 段。★ 这条不是洁癖——「工作区显示与 core 实际目录一致」是 v3 的完成标准之一，
+而 GUI 只能拿**字符串**跟自己的显示比对；没有规则就只能比出「看起来差不多」。
+
+★ **`workspace` 不改变 `state`**：它是控制面操作，不是一轮对话。core 处理期间**不得**发 `running`/`idle`
+——否则 §6 的按钮使能门控会把一次目录检查当成一轮生成。
+
+★ **未决请求在断开时算失败**：GUI 发出 `workspace` 后，若先收到 `bye` / EOF / `fatal:true` 的 `error`
+而未收到对应响应，则按**失败**处置——保留原工作区，不得假定成功。这与 §4 的临时气泡失败规则同源。
+
+### 3.10 `bye`
 
 core 退出前的**最后一条**。
 
@@ -228,20 +286,32 @@ core 退出前的**最后一条**。
 | `t` | 载荷 | 何时发 |
 |---|---|---|
 | `hello` | `protocol`、`gui` | 收到 core 的 `hello` 之后，`seq` 0 |
-| `prompt` | `text` | 用户提交输入（仅 `idle` 时合法） |
+| `prompt` | `client_id`、`text` | 用户提交输入（仅 `idle` 时合法）；GUI 立即显示临时气泡，core 接受后用同 id 回显 |
 | `cancel` | — | 用户点停止（`running` 时合法；`waiting` 时应改发 `answer`） |
 | `answer` | `id`、`choice` | 回答一个未决 `ask` |
+| `workspace` | `request_id`、`path` | 请求切换工作区（仅 `idle` 时合法） |
 | `bye` | — | GUI 即将关闭，请 core 退出 |
 
 ```json
-{"t":"hello","seq":0,"protocol":1,"gui":"0.0.1"}
-{"t":"prompt","seq":1,"text":"帮我看看 README"}
-{"t":"answer","seq":2,"id":"q1","choice":"allow"}
-{"t":"cancel","seq":3}
-{"t":"bye","seq":4}
+{"t":"hello","seq":0,"protocol":3,"gui":"0.0.1"}
+{"t":"workspace","seq":1,"request_id":"w1","path":"D:/work/project"}
+{"t":"prompt","seq":2,"client_id":"p1","text":"帮我看看 README"}
+{"t":"answer","seq":3,"id":"q1","choice":"allow"}
+{"t":"cancel","seq":4}
+{"t":"bye","seq":5}
 ```
 
-**GUI 不产生转录块。** 用户输入由 core 回显为 `kind:"user"` 块——转录的**唯一作者是 core**（§8.3）。
+**GUI 可以先显示本地待确认用户气泡，但不拥有规范转录块。** `prompt` 必须带唯一 `client_id`；GUI 提交后立即显示临时 `kind:"user"` 气泡。core 接受后必须以同一 `client_id` 回显唯一的 `kind:"user"` `block_start`（及对应 `block_end`）；GUI 将临时气泡按 id 原位确认，不得再插入第二块。规范转录仍由 core 输出。
+
+**三种失败路径必须分别可判**（v3 补严——原草案只写了「标为失败」，没说靠什么判定）：
+
+| 触发 | core 的行为 | GUI 的行为 |
+|---|---|---|
+| core **主动拒绝**该 `prompt` | 回 `fatal:false` 的 `error` 且带该 `client_id`（§3.8） | 该气泡标失败；其余气泡不受影响 |
+| core **断开**（`bye` / EOF / `fatal:true`）且尚未回显 | 无需额外消息 | 所有未确认气泡标失败 |
+| core **静默不回**（既不回显也不报错） | ——违反本契约 | 不得自动重发（重发会产生第二个 `client_id`，等于放开重复提交）；保持待确认并显式提示 |
+
+**竞争规则**：`workspace` 切换请求未决时，GUI 必须**禁用发送**（不得同时发起 `prompt`）；core 在未决期间收到 `prompt` 或第二个 `workspace` 属于**交错操作，必须拒绝**（规则与响应形态见 §3.9）。
 
 ---
 
@@ -257,6 +327,11 @@ core 退出前的**最后一条**。
 | **I6** | `block_end` 之后该块**只读** | 重放与实时两条路径行为不一致 |
 | **I7** | `tool_result` 必须带 `for`，指向一个已存在的 `tool_call` id | 结果卡片挂不上调用卡片 |
 | **I8** | 未知 `kind`（含**缺失** `kind`）必须**中性渲染 + 显式提示**：① 不得伪装成有语义的形态（工具卡 / 权限门）；② 正文**不得丢弃**；③ 必须计入读数。★ `reasoning` **不在**本条管辖内——它是 §3.3 的已知值，有专门的渲染形态（§7） | 思维链被当成「正在等的工具结果」，或未知内容被静默吞掉 |
+| **I9** | ★ **v3**：`kind:"user"` 的 `block_start` 必须带**非空 `client_id`**，且一份流内所有 `client_id` **互不相同**（GUI 临时气泡按它原位确认；重复 ⇒ 气泡归属歧义） | 气泡重复插入 / 确认错位 |
+| **I10** | ★ **v3**：`workspace` 响应必须带 **`request_id`**、布尔 `ok`、`path`；`ok:false` 时必须带 **`message`**；一份流内 `request_id` 必须**互不相同**（一次一个未决，§3.9） | 失败切换被误当成成功 / 响应与请求错位 |
+
+> ★ **I9 / I10 的适用范围**：只约束 `hello.protocol >= 3` 的流。v1/v2 夹具**早于** `client_id` / `workspace`
+> 存在，对它们施加这两条就是把历史记录判成违规。`validate.py` 按 `hello.protocol` 分流，不是按文件名。
 
 > **I4 是本项目的核心评估钩子**：`Application::PostToUi` 的乱序/丢失只有靠它才看得见。
 
@@ -281,7 +356,7 @@ core 退出前的**最后一条**。
    任意状态 ──fatal error──▶ error ──▶ 进程退出
 ```
 
-GUI 侧对 `prompt` / `cancel` 的按钮使能**只由 `state` 驱动**（不要自己推测）。
+GUI 侧对 `prompt` / `cancel` / `workspace` 的按钮使能**只由 `state` 驱动**（不要自己推测）。
 
 ★ **「使能」有两个断言，必须分别兑现**（2026-10-14 补）：
 ① **位**——按钮的 enabled 状态按上表翻转（`idle` ⇒ 发送可用 / `running`·`waiting` ⇒ 发送不可用）；
@@ -299,9 +374,9 @@ GUI 侧对 `prompt` / `cancel` 的按钮使能**只由 `state` 驱动**（不要
 
 ---
 
-## 7. 渲染映射（v1）
+## 7. 渲染映射（v3）
 
-| `kind` | v1 渲染 | 用到的 ECDI 能力 |
+| `kind` | v3 渲染 | 用到的 ECDI 能力 |
 |---|---|---|
 | `user` | 右对齐、次要底色的一行文本 | `Label` / `Panel` |
 | `assistant` | 纯文本，保留换行 | `Label` |
@@ -310,6 +385,12 @@ GUI 侧对 `prompt` / `cancel` 的按钮使能**只由 `state` 驱动**（不要
 | `tool_result` | 可折叠卡片，标题 = `ok ? 成功 : 失败` + `summary` | `CollapsiblePanel` |
 | `system` / `error` | 弱化色、居中 | `Label` |
 | ★ **未知 `kind`**（含**缺失** `kind`） | **中性气泡**：琥珀描边 + 显式前缀 `[未知 kind: xxx]`，正文原样保留 | `Label` / `Panel` |
+| ★ **待确认 `user` 气泡**（v3） | 与已确认 `user` 气泡**同位置同形状**，只多一个弱化后缀 `· 发送中`；**不是**第二个转录块 | `Label` / `Panel` |
+| ★ **失败 `user` 气泡**（v3） | 同上，后缀改 `· 未确认`，描边转为错误色；**不进入**规范转录，重放时不存在 | `Label` / `Panel` |
+
+★ **两个 v3 渲染态为什么必须规定**：它们是「后端已存在但视图看不见」的反面——`client_id` 的价值
+全在「这一条到底是发出去了还是没发出去」这个可见差别上。不规定形态 ⇒ 各实现各自发明，
+而用户看到的将是「有个气泡，不知道发没发」。
 
 #### `reasoning` 的渲染形态（v2 新增，2026-10-14 用户定调）
 
@@ -393,7 +474,7 @@ face ⇒ 字重与基线与旁边文字对不上，**比原样更难看**。⇒ 
 
 ### 8.1 夹具是什么
 
-**一份夹具 = 一段 core→gui 的消息流**（只有 core 侧，因为 GUI 侧的消息是对它的反应）。
+**一份夹具 = 一段 core→gui 的规范消息流**。GUI→core 请求不写入夹具；core 对已接受 prompt 的用户块是规范记录，必须包含 `client_id`。GUI 即时临时气泡不是第二条转录记录；重放只显示 core 确认后的块。
 
 ### 8.2 两种回放模式
 
@@ -423,12 +504,22 @@ face ⇒ 字重与基线与旁边文字对不上，**比原样更难看**。⇒ 
 | `fixtures/demo-session.jsonl` | **正常路径**：完整一场会话（流式 / 工具成功 / 工具失败 / 权限门 / usage / 收尾），43 条消息，`seq` 连续无缺口 |
 | `fixtures/hostile/seq-gap.jsonl` | **I4 的负向用例**：`seq` 缺口（3→5）+ 一个未知 `t`（`telemetry`）+ 一个指向不存在块的 `block_end` + 一条落在 `block_end` 之后的 `delta` |
 | `fixtures/hostile/truncated-final-line.jsonl` | **§1.2 的负向用例**：最后一行被截断（半个 JSON） |
-| `fixtures/scale/scale-transcript-2000.jsonl` | **规模基线**：2000 块 / 250 工具对 / 8906 条消息 / 916 KB，全部不变量成立。用于评估指标 ②（长转录滚动延迟与内存）；**建议 `instant` 回放**（`timed` 约 1.6 分钟） |
+| `fixtures/hostile/missing-client-id.jsonl` | ★ **v3 / I9 的负向用例**：`kind:"user"` 块没有 `client_id`，GUI 的临时气泡无处确认（要么永久停在「发送中」，要么被重复插入） |
+| `fixtures/hostile/duplicate-client-id.jsonl` | ★ **v3 / I9 的负向用例**：两个用户块共用 `client_id`，确认会落到其中任意一个 —— 这类错位在 UI 上表现为「气泡跳位」，而每一块单独看都合法 |
+| `fixtures/hostile/workspace-bad-ack.jsonl` | ★ **v3 / I10 的负向用例**：`ok:false` 缺 `message` + `request_id` 重复 + `ok` 是字符串 `"yes"`。最后一条最阴：真值字符串在弱类型解析下会被当成成功，于是失败切换被当成成功、GUI 更新到一个 **core 并未采用**的目录 |
+| `fixtures/realistic/realistic-session.jsonl` | **真实形态基线**：Markdown / 长日志 / 失败工具 / 11 个权限门 / 220 块 / 1213 条消息，`seq` 无缺口。用于「像真会话一样长什么样」的读数 |
+| `fixtures/realistic/gen_realistic.py` | **确定性生成器**：`--blocks N --seed S --pace F`，同参 ⇒ 逐字节相同 |
+| `fixtures/scale/scale-transcript-2000.jsonl` | **规模基线**：2000 块 / 250 工具对 / 8906 条消息 / **921 KB**（`wc -c` = 920960；v3 给每个 user 块补 `client_id` 前是 916134，即表中旧值 916 KB —— 逐字节长大的夹具必须同步数字，否则「916 KB」会永远停在 v2），全部不变量成立。用于评估指标 ②（长转录滚动延迟与内存）；**建议 `instant` 回放**（`timed` 约 1.6 分钟） |
 | `fixtures/scale/gen_scale.py` | **确定性生成器**：`--blocks N --seed S`，同参数必得**逐字节相同**输出 ⇒ 2000 / 5000 / 20000 是**旋钮**，不是砖 |
 | `fixtures/cot/cot-session.jsonl` | **思维链基线**（开源推理模型）：12 轮，每轮一段**长、流式、本应折叠**的思维链 + 短回答。44 块 / 934 deltas / 1044 消息。★ 用 `kind:"reasoning"`（v2 一等公民）；`hello` 带 `context:128000`（百分比分母）；每个思维链 `block_end` 带 `tokens`（标题副标） |
 | `fixtures/cot/gen_cot.py` | **确定性生成器**：`--turns N --thinking-chars C --kind reasoning\|unknown\|assistant --context N --tokens N`。用途：① `--thinking-chars` 做**长度剂量**（`measureChars/measureCalls` 随长度单调上升）② `--kind` 做**渲染形态对照**（收起 vs 可见）③ `--context 0` 做**分母缺失**降级路径（GUI 必须显示 `—`）④ `--tokens 0` 做**副标缺失**路径（不得用字符数冒充） |
 
 **否定型断言必须配正对照**：先用 `demo-session.jsonl` 证明路径通，再用 hostile 目录证明失败被**显式**暴露。
+
+★ **九份夹具全部声明 `protocol:3`**（四份正向 + 五份 hostile）。这不是凑数：I9 / I10 只约束
+`hello.protocol >= 3` 的流，若 hostile 停在 2，负向用例会被版本门整个豁免 —— 它会**永远通过**，
+而永远通过的负向用例与不存在无法区分（§8.5 末尾那条的同族错误）。
+`validate.py` 按 `hello.protocol` 分流，不按文件名或目录名。
 
 ### 8.5 可执行规格
 
@@ -450,7 +541,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 ## 9. 版本与兼容
 
-**当前版本 = `2`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 2**。
+**当前版本 = `3`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 3**。
 
 - `protocol` 是**主版本**。core 的 `protocol` > GUI 支持的上限 ⇒ **GUI 拒绝连接并显示原因**，不做降级猜测。
   ★ **`hello` 不携带 `protocol` 字段时按 v1 处理**（v1 时代该字段是必填，但宽容比拒连更安全——
@@ -460,6 +551,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
+| **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |
 | **2** | 2026-10-14 | §3.3 加 `reasoning` · §5 加 **I8** · §7 加 `reasoning` 渲染形态 · §3.1 加 `hello.context` · §3.5 加 `block_end.tokens` | **v1 GUI 不崩、不丢内容**——`reasoning` 落进「未知 `kind`」的中性渲染路径（可见气泡 + 显式提示），只是**不折叠**；`context`/`tokens` 是未知字段，按 I5 忽略（百分比显示 `—`）。这正是 I5/I8 的用途 |
 | 1 | 2026-10-03 | 初版 | — |
 

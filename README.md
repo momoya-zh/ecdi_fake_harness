@@ -30,8 +30,8 @@
 
 | 目录 | 职责 |
 |---|---|
-| `protocol/` | **唯一契约**。`PROTOCOL.md`（**v2**）+ `fixtures/`（6 份夹具）+ `validate.py`（**可执行规格**） |
-| `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。24 个源文件 / ~4.5k 行 |
+| `protocol/` | **唯一契约**。`PROTOCOL.md`（**v3**）+ `fixtures/`（**9 份夹具**）+ `validate.py`（**可执行规格**） |
+| `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。25 个源文件 / ~9.7k 行（`App.cpp` 一直是大头） |
 | `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / ~0.6k 行 |
 | `evals/` | 机器可读评估读数（JSON）——评估产出的落点 |
 | `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · GUI 原型（单文件 HTML） |
@@ -40,11 +40,19 @@
 
 - **分帧**：一行一个 JSON，`\n` 结尾；EOF 截断的最后一行**必须报错**，不得静默丢弃。
 - **信封**：`{t, seq, ts}`；`seq` 每方向独立、从 0 起、严格递增。
-- **不变量 I1–I8**。★ **I4（`seq` 缺口必须显式提示「消息丢失」）是本项目的核心评估钩子**——
+- **不变量 I1–I10**。★ **I4（`seq` 缺口必须显式提示「消息丢失」）是本项目的核心评估钩子**——
   它对应 `Application::PostToUi` 的乱序/丢失语义，是「靠它才看得见」的那一类失败。
   ★ **I8**（v2 新增）：未知 `kind` 必须**中性渲染 + 显式提示**，不得伪装成有语义的形态。
-- **`kind` 七个值**（v2）：`user` / `assistant` / **`reasoning`** / `tool_call` / `tool_result` / `system` / `error`。
+  ★ **I9/I10**（v3 新增，只约束声明 `protocol >= 3` 的流）：`kind:"user"` 块必须带**唯一**
+  `client_id`，`workspace` 响应必须带 `request_id` / 布尔 `ok` / `path`（失败还须 `message`）。
+- **`kind` 七个值**（v2 起）：`user` / `assistant` / **`reasoning`** / `tool_call` / `tool_result` / `system` / `error`。
 - **转录的唯一作者是 core**：GUI 不产生转录块，用户输入由 core 回显为 `kind:"user"`。
+  ★ **v3 的边界**：GUI 可以先画一个**待确认**的本地气泡（`· 发送中`），但它不是转录块——
+  core 用同一 `client_id` 回显后该气泡**原位确认**，绝不插入第二块；被拒或断连则标 `· 未确认`
+  并**不进入**规范转录（因此也不进入回放）。
+- **工作区切换是租约，不是命令**（v3）：`workspace` 只在 `idle` 被受理，一次只允许一个未决请求；
+  未决期间 GUI **必须禁用发送**，core 也**必须拒绝**交错的 `prompt` / 第二个 `workspace`。
+  成功后 GUI 只认 core 回的**实际路径**（规范化：绝对 / `/` 分隔 / 无尾随 `/` / 无 `.`·`..`）。
 - **回放两模式**：`instant`（一次性灌入，测稳态渲染）/ `timed`（按 `ts` 真实间隔，测流式刷新）。
 - ★ **`ask` 权限门是合作性契约，不是安全边界**（详见 `docs/positioning.md` §4.2）。
 
@@ -119,7 +127,7 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 | ★ **定位与信任模型** | `docs/positioning.md`（**两个目的** · 协议不是安全边界 · MCP 决策） |
 | **ECDI 能力需求 / 缺陷登记** | `docs/ecdi-capability-requests.md`（**唯一账本**） |
 | **评估读数**（机器可读 JSON） | `evals/` |
-| **协议契约** | `protocol/PROTOCOL.md`（v2） |
+| **协议契约** | `protocol/PROTOCOL.md`（v3） |
 | 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` |
 | GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
 
@@ -150,8 +158,6 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 （未知 `kind` 必须中性渲染）+ §7 渲染形态（**默认收起**，标题 `﹀ 思考中` / `﹀ 已完成`，
 点击展开箭头翻 `︿`）。另增 `hello.context`（用量百分比的分母）与 `block_end.tokens`。
 详见 `protocol/PROTOCOL.md` §3.3 / §5 / §7 与账本 §2。
-（未知 `kind` 必须中性渲染并显式提示）。渲染形态（默认折叠？显 token 数？）
-**先用 `protocol/fixtures/cot/` 取读数再定**。
 
 ## 夹具
 
@@ -160,23 +166,72 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 | `fixtures/demo-session.jsonl` | 正常路径：完整一场会话（43 条消息） |
 | `fixtures/hostile/seq-gap.jsonl` | **I4 负向**：`seq` 缺口 + 未知 `t` + 悬空 `block_end` + 迟到 `delta` |
 | `fixtures/hostile/truncated-final-line.jsonl` | **§1.2 负向**：最后一行被截断 |
+| `fixtures/hostile/missing-client-id.jsonl` | **I9 负向（v3）**：`kind:"user"` 块没有 `client_id`——GUI 无处确认自己的临时气泡 |
+| `fixtures/hostile/duplicate-client-id.jsonl` | **I9 负向（v3）**：两个用户块共用同一 `client_id`——确认会错位到其中任意一个 |
+| `fixtures/hostile/workspace-bad-ack.jsonl` | **I10 负向（v3）**：`ok:false` 无 `message` + 重复 `request_id` + `ok:"yes"`（真值字符串会被当成成功） |
 | `fixtures/realistic/realistic-session.jsonl` | 真实编码会话形态（Markdown / 长日志 / 1213 条消息） |
-| `fixtures/scale/scale-transcript-2000.jsonl` | 规模基线（2000 块 / 8906 条消息 / 916 KB） |
+| `fixtures/scale/scale-transcript-2000.jsonl` | 规模基线（2000 块 / 8906 条消息 / **921 KB**） |
 | `fixtures/cot/cot-session.jsonl` | **思维链**：长 + 流式 + **默认折叠**（1044 条消息 / 44 块）。★ `hello` 带 `context`、思维链 `block_end` 带 `tokens` |
+
+★ **九份夹具全部声明 `protocol:3`**：四份正向（demo / realistic / cot / scale，`client_id` 由生成器或手写保证）
+与五份 hostile。hostile 也必须声明 3——I9/I10 只约束 v3 流，若 hostile 停在 2，「负向用例」会被版本门豁免成空转。
 
 三个生成器都是**确定性**的（同参 ⇒ 逐字节相同），所以 2000 / 5000 / 20000 是**旋钮**，不是砖：
 `gen_scale.py` · `gen_realistic.py` · `gen_cot.py`（`--turns --thinking-chars --kind --context --tokens`）。
 
 ## 编码约定
 
-| 文件类型 | 编码 | 行尾 |
-|---|---|---|
-| 文本（`.md` / `.cpp` / `.h` / `.go` / `.py`） | UTF-8 **带 BOM** | CRLF |
-| **`*.jsonl`** | UTF-8 **不带 BOM** | **LF** |
-| 配置文件（`.gitignore` / `CMakeLists.txt` / `go.mod` / `*.json`） | UTF-8 不带 BOM | 随该工具预期 |
+★ **先分清两条互不相干的轴**。把它们混成「一套文件该怎么存」正是上一版表格的错误：
+它说「文本一律 BOM + CRLF」，于是有人照着它把 `PROTOCOL.md` 与 `validate.py` 改成了 CRLF ——
+一次「照文档办事」制造了两份坏文件。
 
-★ `.jsonl` 的 **LF 是硬要求**（分帧靠 `\n`，CRLF 会污染每行尾字符），已由 `.gitattributes` 钉死。
-BOM 不是风格问题：缺 BOM 且含中文 ⇒ MSVC 按 CP936 读 ⇒ `C4819` + 注释乱码。
+### 轴一：行尾 —— 全仓一条规则，且已强制
+
+`.gitattributes` 声明 `* text=auto eol=lf`；`git ls-files --eol` 对每个文本文件都回 `i/lf`。
+**仓库里存的就是 LF，没有例外。** 工作区偶尔出现 CRLF 副本是本地工具留下的漂移，提交时被归一化，
+`git checkout` 之后也会消失 —— 所以**不要拿工作区字节当约定**。
+
+唯一的硬后果在 `*.jsonl`：CRLF 会被 `validate.py` 的 `read_fixture` 判 `ENC`（分帧靠 `\n`）。
+
+### 轴二：BOM —— 按文件，且必须与该文件在 HEAD 中的字节一致
+
+实测 139 个文本文件里 **37 个带 BOM、102 个不带**，与扩展名无关：
+
+| 带 BOM（UTF-8 `EF BB BF`） | 不带 BOM |
+|---|---|
+| `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
+| `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（5 个中 4 个） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/prototype/harness-hifi-variant-a.html` |
+| `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` · 三个 `gen_*.py` | **全部 `*.jsonl`**（九份夹具）· 全部 `evals/*.json` |
+
+★ **BOM 在本仓库不是编译正确性问题，别把它说成问题。** `gui/CMakeLists.txt:20` 给
+`harness_gui` 传了 `/utf-8`（自初始提交 `f243579` 起），MSVC 不看 BOM 也知道源文件是 UTF-8——
+证据是 `gui/src/App.cpp` 带 **31692 个非 ASCII 字符、无 BOM**，编译干净。
+（`C4819` 那类教训属于**没有** `/utf-8` 的构建，比如 ECDI 自己的工程。）
+
+那为什么还要按文件对齐 BOM？**因为逐字节回归基线**：本项目的判据大量依赖
+「探针关闭时摘要逐字节不变」和「重建前后快照相等」。一次没有理由的加 BOM 会让 `git diff`、
+sha256 基线与历史 A/B 全部失去可比性，而且这种改动看起来毫无意义，最难被复核。
+⇒ **规则是「别动它」，不是「统一它」。**
+
+复现这张表（**读 HEAD，不读工作区**）：
+
+```bash
+python - <<'PY'
+import subprocess
+files = [f for f in subprocess.run(['git', 'ls-files'], capture_output=True, text=True
+                                  ).stdout.split('\n') if f]
+bom = [f for f in files
+       if subprocess.run(['git', 'cat-file', 'blob', 'HEAD:' + f],
+                         capture_output=True).stdout.startswith(b'\xef\xbb\xbf')]
+print('%d/%d files carry a BOM' % (len(bom), len(files)))
+for f in bom:
+    print('  ', f)
+PY
+```
+
+★ 真正**可强制**的只有一处，它已经写进验证器：`*.jsonl` **无 BOM + LF**。
+其余按现状描述 —— **不要发明统一规则**，那是上一版表格的原罪。
 
 ## 当前状态
 
@@ -184,6 +239,10 @@ BOM 不是风格问题：缺 BOM 且含中文 ⇒ MSVC 按 CP936 读 ⇒ `C4819`
 - ECDI 自带套件 Debug 与 Release **各 445/445**；回放冒烟 `seqGaps 0 / violations 0`；
   I4 负向注入**每处 `seq` 缺口都产出显式提示**；无僵尸进程。
 - **协议 v2 已落地**（思维链一等公民 + I8 + `hello.context` + `block_end.tokens`）。
+- **协议 v3 的契约层已收口**（`client_id` 确认 + `workspace` 租约 + `error.client_id` + I9/I10 +
+  三份新 hostile 用例）：文档、验证器、九份夹具、三个生成器已一致，`validate.py` 退出码 0。
+  ★ **v3 尚未在 core / GUI 落地**——两侧实现还在 v2，且 GUI 会在 `hello.protocol > 2` 时
+  **拒绝连接**；这正是 §9 要求的「不支持就明确拒绝，不静默降级」。
 - ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 - `status.txt` 是逐轮进度摘要（机器向）；本 README 是人向入口。
 

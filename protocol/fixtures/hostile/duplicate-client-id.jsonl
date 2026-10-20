@@ -1,0 +1,9 @@
+{"t":"hello","seq":0,"ts":"2026-10-20T09:00:00.000Z","protocol":3,"core":"0.1.0","session":"s-hostile-v3-2","caps":["tools","ask","workspace"]}
+{"t":"state","seq":1,"ts":"2026-10-20T09:00:10.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-10-20T09:00:10.100Z","id":"b1","kind":"user","text":"第一条 prompt。","client_id":"p1"}
+{"t":"block_end","seq":3,"ts":"2026-10-20T09:00:10.100Z","id":"b1","ok":true}
+{"t":"block_start","seq":4,"ts":"2026-10-20T09:00:10.300Z","id":"b2","kind":"user","text":"第二条复用了同一个 client_id。","client_id":"p1"}
+{"t":"block_end","seq":5,"ts":"2026-10-20T09:00:10.300Z","id":"b2","ok":true}
+{"t":"usage","seq":6,"ts":"2026-10-20T09:00:10.600Z","turn":1,"input":100,"output":20}
+{"t":"state","seq":7,"ts":"2026-10-20T09:00:10.600Z","value":"idle"}
+{"t":"bye","seq":8,"ts":"2026-10-20T09:00:10.600Z","reason":"eof","code":0}

@@ -126,8 +126,8 @@ def main(argv=None):
         messages.append(ordered)
         now += datetime.timedelta(milliseconds=rng.uniform(2.0, 20.0))
 
-    emit({"t": "hello", "protocol": 1, "core": "0.1.0", "session": session,
-          "caps": ["tools", "ask"]})
+    emit({"t": "hello", "protocol": 3, "core": "0.1.0", "session": session,
+          "caps": ["tools", "ask", "workspace"]})
     emit({"t": "state", "value": "running"})
 
     made = 0
@@ -137,6 +137,7 @@ def main(argv=None):
         # a user turn roughly every eight blocks
         if made % 8 == 0 and made + 1 <= opts.blocks:
             emit({"t": "block_start", "id": "b%d" % made, "kind": "user",
+                  "client_id": "p%d" % turn,
                   "text": rng.choice(USER_TEXT)})
             emit({"t": "block_end", "id": "b%d" % made, "ok": True})
             made += 1

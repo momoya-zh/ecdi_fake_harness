@@ -250,8 +250,8 @@ def main(argv=None):
         ordered.update(payload)
         messages.append(ordered)
 
-    hello = {"t": "hello", "protocol": 2, "core": "0.1.0", "session": session,
-             "caps": ["tools", "ask"]}
+    hello = {"t": "hello", "protocol": 3, "core": "0.1.0", "session": session,
+             "caps": ["tools", "ask", "workspace"]}
     # context is the DENOMINATOR of the usage percentage; --context 0 omits it
     # so the fixture can exercise "no denominator => show a dash" (PROTOCOL 3.1).
     if opts.context > 0:
@@ -264,6 +264,7 @@ def main(argv=None):
         # ── user turn (core echoes it: the transcript's only author is core) ──
         uid = "b%d" % made
         emit({"t": "block_start", "id": uid, "kind": "user",
+              "client_id": "p%d" % turn,
               "text": rng.choice(USER_TURNS)}, rng.uniform(3000, 20000))
         emit({"t": "block_end", "id": uid, "ok": True}, 15)
         made += 1

@@ -1,4 +1,4 @@
-{"t":"hello","seq":0,"ts":"2026-10-03T11:00:00.000Z","protocol":1,"core":"0.1.0","session":"s-hostile-1","caps":["tools","ask"]}
+{"t":"hello","seq":0,"ts":"2026-10-03T11:00:00.000Z","protocol":3,"core":"0.1.0","session":"s-hostile-1","caps":["tools","ask"]}
 {"t":"state","seq":1,"ts":"2026-10-03T11:00:00.010Z","value":"running"}
 {"t":"block_start","seq":2,"ts":"2026-10-03T11:00:00.100Z","id":"b1","kind":"assistant"}
 {"t":"delta","seq":3,"ts":"2026-10-03T11:00:00.130Z","id":"b1","text":"这条会到达。"}

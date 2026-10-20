@@ -230,8 +230,8 @@ def main(argv=None):
         ordered.update(payload)
         messages.append(ordered)
 
-    emit({"t": "hello", "protocol": 1, "core": "0.1.0", "session": session,
-          "caps": ["tools", "ask"]}, 0)
+    emit({"t": "hello", "protocol": 3, "core": "0.1.0", "session": session,
+          "caps": ["tools", "ask", "workspace"]}, 0)
     emit({"t": "state", "value": "running"}, 10)
 
     made = 0
@@ -242,6 +242,7 @@ def main(argv=None):
         # ── user turn ──
         uid = "b%d" % made
         emit({"t": "block_start", "id": uid, "kind": "user",
+              "client_id": "p%d" % turn,
               "text": rng.choice(USER_TURNS)}, rng.uniform(8000, 45000))
         emit({"t": "block_end", "id": uid, "ok": True}, 15)
         made += 1

@@ -1,6 +1,6 @@
-{"t":"hello","seq":0,"ts":"2026-10-03T10:40:00.000Z","protocol":1,"core":"0.1.0","session":"s-0001","caps":["tools","ask"]}
+{"t":"hello","seq":0,"ts":"2026-10-03T10:40:00.000Z","protocol":3,"core":"0.1.0","session":"s-0001","caps":["tools","ask","workspace"]}
 {"t":"state","seq":1,"ts":"2026-10-03T10:40:00.010Z","value":"running"}
-{"t":"block_start","seq":2,"ts":"2026-10-03T10:40:00.020Z","id":"b1","kind":"user","text":"看一下 docs/README.md 里有没有过期的数字，有就改掉"}
+{"t":"block_start","seq":2,"ts":"2026-10-03T10:40:00.020Z","id":"b1","kind":"user","client_id":"p1","text":"看一下 docs/README.md 里有没有过期的数字，有就改掉"}
 {"t":"block_end","seq":3,"ts":"2026-10-03T10:40:00.030Z","id":"b1","ok":true}
 {"t":"block_start","seq":4,"ts":"2026-10-03T10:40:00.410Z","id":"b2","kind":"assistant"}
 {"t":"delta","seq":5,"ts":"2026-10-03T10:40:00.430Z","id":"b2","text":"我先"}

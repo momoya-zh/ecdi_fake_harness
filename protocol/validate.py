@@ -32,7 +32,7 @@ BOM = b"\xef\xbb\xbf"
 KNOWN_TYPES = {
     "hello", "state", "block_start", "delta", "block_end", "ask", "usage",
     "error", "bye",                       # core -> gui
-    "prompt", "cancel", "answer",         # gui -> core
+    "prompt", "cancel", "answer", "workspace", # gui -> core; workspace also core -> gui ack
 }
 CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
               "usage", "error", "bye"}
@@ -54,7 +54,7 @@ KNOWN_KINDS = {"user", "assistant", "reasoning", "tool_call", "tool_result",
 # higher one (no downgrade guessing).  v2 (2026-10-14) added `reasoning` + I8.
 # Fixtures declaring <= this are fine; anything above is a hard failure here,
 # because such a stream is one the GUI would refuse to connect to at all.
-SUPPORTED_PROTOCOL_MAX = 2
+SUPPORTED_PROTOCOL_MAX = 3
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURES = os.path.join(HERE, "fixtures")
@@ -255,6 +255,61 @@ def check_stream(parsed, findings):
         findings.note("first message is not 'hello'")
     if last is not None and last.get("t") != "bye":
         findings.note("last message is not 'bye'")
+
+    # ---- PROTOCOL 3 (v3, 2026-10-20): I9 user client_id, I10 workspace ack ----
+    # I9: every kind:"user" block_start must carry a non-empty client_id, and
+    # client_ids must be unique within one stream (the GUI confirms its local
+    # bubble by this id -- a duplicate would make the bubble ambiguous).
+    # I10: every workspace response must carry request_id / boolean ok / path;
+    # ok:false must explain itself with message; request_ids must be unique
+    # (only one pending workspace request is allowed at a time, PROTOCOL 3.9).
+    # Both apply only to streams declaring protocol >= 3; pre-v3 fixtures are
+    # exempt (they predate client_id / workspace entirely).
+    declared_protocol = None
+    if first is not None and first.get("t") == "hello":
+        declared_protocol = first.get("protocol")
+    v3_stream = isinstance(declared_protocol, int) and declared_protocol >= 3
+    if v3_stream:
+        seen_client_ids = set()
+        for i, m in parsed:
+            if m is None or m["t"] != "block_start" or m.get("kind") != "user":
+                continue
+            cid = m.get("client_id")
+            if not isinstance(cid, str) or not cid:
+                findings.hit("I9", i,
+                             "kind:\"user\" block_start without a non-empty "
+                             "'client_id'")
+            elif cid in seen_client_ids:
+                findings.hit("I9", i,
+                             "duplicate client_id %r across user blocks" % cid)
+            else:
+                seen_client_ids.add(cid)
+
+        seen_request_ids = set()
+        for i, m in parsed:
+            if m is None or m["t"] != "workspace":
+                continue
+            rid = m.get("request_id")
+            if not isinstance(rid, str) or not rid:
+                findings.hit("I10", i,
+                         "workspace response without a non-empty "
+                         "'request_id'")
+                rid = None
+            if rid is not None and rid in seen_request_ids:
+                findings.hit("I10", i,
+                             "duplicate request_id %r across workspace "
+                             "responses" % rid)
+            elif rid is not None:
+                seen_request_ids.add(rid)
+            if not isinstance(m.get("ok"), bool):
+                findings.hit("I10", i,
+                             "workspace response missing boolean 'ok'")
+            elif m.get("ok") is False and not m.get("message"):
+                findings.hit("I10", i,
+                             "workspace ok:false without 'message'")
+            if not m.get("path"):
+                findings.hit("I10", i,
+                             "workspace response without 'path'")
 
     # PROTOCOL 9: a declared version above the supported ceiling means the GUI
     # would refuse to connect -- so a fixture claiming it cannot be "valid".
