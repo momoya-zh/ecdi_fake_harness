@@ -464,6 +464,11 @@ void HarnessApp::SwitchToSession(size_t index) {
     if (index >= m_sessions.size()) return;
     if (index == m_activeIndex && m_sess == m_sessions[index].get()) return;   // 已在该会话
 
+    // ★★ 2026-10-20：临时会话在切走时消失（用户裁决 m09443）。
+    //   必须在改 `m_activeIndex` **之前**：此时 `m_sess` 还指着旧会话，
+    //   才能判断"旧会话是不是临时的"。
+    MaybeDeleteTemporarySession();
+
     // ① 冻结当前活动会话的 timed 时钟（切走 ⇒ 它不该继续"到期"）
     PauseActiveTimedClock();
     // ①b ★ 在**还指着旧会话**时把视图状态同步进旧会话的模型。
@@ -608,7 +613,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
 // ★★ 2026-10-20：工作区分组标题行。
 //   两种行长得不一样，但**只差在尺寸与颜色**，不需新控件类型：
 //   `SnapshotSessionList` 靠“行根是不是 Button”区分两类行（第 5 段 `kind`）。
-std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string& title) {
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string& title,
+                                                               const std::string& workspaceId) {
     auto row = std::make_unique<ECDI::Panel>();
     row->SetSize(kSidebarRowW, kSidebarGroupH);
     // 透明底 + 无边框：标题是分隔，不是按钮。透明度用 alpha=0（与 `×` 子钮同一手法）。
@@ -624,14 +630,42 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string
     //     `D:/Project/ECDI_fake_harn`（少了 3 个字），而两个工作区的差异几乎总在叶子段。
     //     尾部一丢，“按工作区区分”就退化成“按前缀区分”：两个都在 `D:/Project/` 下的
     //     工作区在屏幕上会是同一行。把省略放在中间，尾部至少保留叶子段。
-    const std::string shown = ElideMiddleByCodepoints(title, kSidebarGroupTitleCp);
-    auto label = uikit::Label(shown, kSidebarRowW - 8, kSidebarGroupH - 4, kDarkMuted,
+    // ★ 有「＋」按钮时标题宽度让出 22px（按钮 18 + 间隙 4）。
+    const int labelW = workspaceId.empty() ? (kSidebarRowW - 8) : (kSidebarRowW - 30);
+    // ★★ 省略预算必须跟着 labelW 走：有按钮时可用宽度少了 22px，
+    //   若仍用 22 码点（≈132px）而 labelW 只有 128px，绘制层会裁掉尾部。
+    const size_t elideCp = workspaceId.empty() ? kSidebarGroupTitleCp : (kSidebarGroupTitleCp - 1);
+    const std::string shown = ElideMiddleByCodepoints(title, elideCp);
+    auto label = uikit::Label(shown, labelW, kSidebarGroupH - 4, kDarkMuted,
                               harness::kFontMicro, true);
     label->SetPosition(8, 2);
     // 禁用：标题不参与命中（`Panel::ContainsPoint` 已经恒 false，这里只是让
     //   “文字不是交互对象”也成立；无绘制消费者 ⇒ 不变灰）。
     label->SetEnabled(false);
     row->AddChild(std::move(label));
+
+    // ★★ 「＋」按钮：拉起该工作区的临时会话（m09443）。
+    //   行根是 Panel（`ContainsPoint` 恒 false）⇒ 只有这个子 Button 能被点到。
+    //   回调捕获 workspaceId（稳定字符串），不捕获下标。
+    if (!workspaceId.empty()) {
+        auto plus = std::make_unique<ECDI::Button>();
+        plus->SetText("＋");
+        plus->SetSize(18, 18);
+        plus->SetPosition(kSidebarRowW - 24, (kSidebarGroupH - 18) / 2);
+        plus->SetFont(harness::SansFont(harness::kFontSmall));
+        plus->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .borderWidth = 0.0f,
+            .cornerRadius = 4.0f,
+            .pressedBackground = kLine,
+            .hoverBackground = kLine,
+            .textAlignment = ECDI::TextAlignment::Center,
+            .foreground = kDarkMuted});
+        plus->SetOnClick([this, workspaceId] {
+            NewTemporarySession(workspaceId);
+        });
+        row->AddChild(std::move(plus));
+    }
     return row;
 }
 
@@ -696,7 +730,7 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
         std::vector<bool> shown(n, false);
         for (size_t wi : GroupTitlesForDisplay()) {
             const Workspace& ws = *m_workspaces[wi];
-            place(BuildSessionGroupRow(ws.path), kSidebarGroupH);
+            place(BuildSessionGroupRow(ws.path, ws.id), kSidebarGroupH);
             for (size_t i = 0; i < n; ++i) {
                 if (m_sessions[i]->workspaceId != ws.id) continue;
                 place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
@@ -711,7 +745,7 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
             // ★ 外键指向一个不存在的工作区也落在这里（`WorkspaceById` 返回 nullptr 时
             //   就是这么处理的，两处口径一致）：宁可显示“未归属”，也不能把它悄悄
             //   塞进第一个工作区——那会把归错桶伪装成正常。
-            place(BuildSessionGroupRow("未归属工作区"), kSidebarGroupH);
+            place(BuildSessionGroupRow("未归属工作区", std::string()), kSidebarGroupH);
             for (size_t i = 0; i < n; ++i) {
                 if (shown[i]) continue;
                 place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
@@ -1431,6 +1465,8 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     RebuildSessionList();
     // ★ Step 5：历史区同样要首帧填上（同一理由：此刻还没有定时器，置脏要等一 tick）。
     RebuildHistoryList();
+    // ★★ 2026-10-20：「项目」段同样要首帧填上（同理由）。
+    RebuildProjectList();
     root.Arrange();
 }
 
@@ -1782,37 +1818,23 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     }
 
     // ── 项目 / 工作区文件（C 的「项目」段）──
+    // ★★ 2026-10-20（m09443）：数据源从 `m_options.replayPath` 反推的伪树
+    //   改为**当前工作区的真实目录内容**（活动会话的 `workspacePath`）。
+    //   回放会话没有工作区 ⇒ 显示「无工作区」。
     AddLine(*side, "项目", kDarkMuted, true, 172, harness::kFontMicro);
     {
-        // 夹具路径链 → 伪树（dir `▽` / 文件 `·`；真实数据 = replayPath 的父目录链）
-        // ★ 2026-10-18：`▾`(U+25BE) / `▸`(U+25B8) 在两个主题的 face 里**都没有字形**
-        //   （`.scratch/symcand.py` 两轮实测：GDI 靠字体链接偷画、GL 直接空白）
-        //   ⇒ 换成 `▽`(U+25BD) / `›`(U+203A)，两主题都真有。
-        std::filesystem::path p = m_options.replayPath;
-        const std::string file = p.filename().generic_string();
-        p = p.parent_path();
-        std::vector<std::string> dirs;
-        for (int i = 0; i < 2 && !p.empty(); ++i) {   // 最多两级父目录
-            const std::string name = p.filename().generic_string();
-            if (!name.empty()) dirs.push_back(name);
-            p = p.parent_path();
-        }
-        int indent = 0;
-        for (auto it = dirs.rbegin(); it != dirs.rend(); ++it) {
-            auto lbl = std::make_unique<ECDI::Label>("▽ " + *it + "/");
-            lbl->SetTextColor(kDarkInk);
-            ECDI::Font f = harness::MonoFont(12.0f);
-            lbl->SetFont(f);
-            lbl->SetSize(172 - indent * 12, 16);
-            side->AddChild(std::move(lbl));
-            ++indent;
-        }
-        auto fileLbl = std::make_unique<ECDI::Label>("· " + file);
-        fileLbl->SetTextColor(kDarkMuted);
-        ECDI::Font ff = harness::MonoFont(12.0f);
-        fileLbl->SetFont(ff);
-        fileLbl->SetSize(172 - indent * 12, 16);
-        side->AddChild(std::move(fileLbl));
+        auto list = std::make_unique<ECDI::ScrollView>();
+        m_hud.projectList = list.get();
+        list->SetSize(kSidebarListW, kSidebarRowH);
+        list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
+        list->SetScrollBarVisible(true);
+        side->AddChild(std::move(list));
+    }
+    {
+        auto cnt = uikit::Label("无工作区", kSidebarListW, 14, kDarkMuted,
+                                harness::kFontMicro);
+        m_hud.projectCount = cnt.get();
+        side->AddChild(std::move(cnt));
     }
 
     // ── ★★ Step 5：历史会话（磁盘上的夹具 = 可打开的文件）──
@@ -2184,6 +2206,9 @@ void HarnessApp::OnReplayTick() {
     if (m_sidebarDirty) {
         m_sidebarDirty = false;
         RebuildSessionList();
+        // ★★ 2026-10-20：「项目」段与「会话列表」同一条链：活动会话变了
+        //   ⇒ 工作区可能变了 ⇒ 目录内容要跟着刷。
+        RebuildProjectList();
         RequestRepaint();
     }
     // ★★ Step 4：整树重建的**唯一执行点**（同族的派发栈 UAF 理由见
@@ -4120,7 +4145,12 @@ void HarnessApp::RunSidebarProbe() {
                                  rowAt(1)->GetHeight() == kSidebarRowH,
                              "title and session rows are not visually distinguishable"},
                             {selectedIndex() == 1, "grouping lost the active-session marker"},
-                            {deleteButtonOf(0) == nullptr, "a group title offered a delete button"}});
+                            // ★★ m09443：标题行现在有「＋」按钮（不是「×」）。
+                            //   旧判据 `deleteButtonOf(0) == nullptr` 会因「＋」的存在而翻红。
+                            //   新判据：标题行的按钮（如果有）文字必须是「＋」，不能是「×」。
+                            {deleteButtonOf(0) == nullptr ||
+                                 deleteButtonOf(0)->GetText() == "＋",
+                             "a group title offered a delete button instead of ＋"}});
 
         // ⑭ ★★ 2026-10-20（截图抓到的那一类）：分组标题必须真的**放得下**。
         //   为何必须量宽而不是只比字符串：裁剪发生在**绘制层**（`Label` → 单行 DrawText），
@@ -5087,6 +5117,8 @@ std::string HarnessApp::PostPrompt(const std::string& text, bool allowBusyForPro
     }
 
     const std::string clientId = "p" + std::to_string(m_sess->nextClientId++);
+    // ★★ m09443：发了 prompt ⇒ 临时会话转正。
+    m_sess->temporary = false;
     PendingPrompt pending;
     pending.clientId = clientId;
     pending.text = text;
@@ -5235,6 +5267,157 @@ std::string HarnessApp::InheritedWorkspacePath() const {
     //   后者在"已发请求、等 ack"的窗口里可能还留着旧值，而在"确认失败"之后
     //   会保留失败前的值——两种情况都不是"这个会话现在在哪"的可靠答案。
     return ws->path;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ★★ 2026-10-20：临时会话（用户裁决 m09443）
+// ───────────────────────────────────────────────────────────────────────
+// 从工作区标题行的「＋」按钮拉起的会话是**临时**的：它还没有执行过任何
+// 任务（没发过 prompt）。一旦用户切走（`SwitchToSession` 到另一个会话），
+// 临时会话就被删除——因为它的存在理由（"在这个工作区开一个空会话"）
+// 已经被放弃。一旦发了 prompt（`PostPrompt` 成功），它转为正式会话。
+// ═══════════════════════════════════════════════════════════════════════
+
+void HarnessApp::NewTemporarySession(const std::string& workspaceId) {
+    // 只允许 live 模式（有 core 才能"执行任务"）。
+    if (m_options.corePath.empty()) return;
+    const Workspace* ws = WorkspaceById(workspaceId);
+    if (!ws) return;
+
+    Session* created = CreateSessionFromOptions();
+    if (!created) {
+        AddNoticeRow("[新建会话失败：core 启动失败，见日志]", kErrorDark);
+        Relayout();
+        RequestRepaint();
+        return;
+    }
+    created->label = "会话 " + std::to_string(m_sessions.size());
+    created->temporary = true;
+    // 外键在创建时就设好——路径已经确认过了，工作区实体已经存在，
+    // 不需要等 ack（与 `MaybeStartWorkspaceSync` 的继承口径不同：
+    // 那里是"还没确认"，这里是"已经确认"）。
+    created->workspaceId = workspaceId;
+    created->workspacePath = ws->path;
+    created->workspaceSyncComplete = true;
+    created->workspaceStatus = "已由 core 确认";
+
+    const size_t idx = m_sessions.size() - 1;
+    SwitchToSession(idx);
+    Session& s = *m_sessions[idx];
+    if (s.writer) s.writer->Hello("0.0.1");
+    if (m_options.timed) s.timedAnchor = std::chrono::steady_clock::now();
+    m_sidebarDirty = true;
+}
+
+void HarnessApp::MaybeDeleteTemporarySession() {
+    if (!m_sess || !m_sess->temporary) return;
+    // ★ 只删"没发过 prompt"的临时会话：发过 prompt 的已经转正（`PostPrompt`
+    //   里把 `temporary` 清掉了）。
+    //   ★ 用 `m_activeIndex` 定位：此时 `m_sess` 还指着旧会话（`SwitchToSession`
+    //     在改 `m_activeIndex` 之前调用本函数）。
+    const size_t idx = m_activeIndex;
+    if (idx >= m_sessions.size()) return;
+    // 与 `DeleteSessionAt` 同一条纪律：禁删到零会话。
+    if (m_sessions.size() <= 1) return;
+    // 删除前不需要先切邻居——`SwitchToSession` 马上就会改 `m_activeIndex`。
+    m_sessions.erase(m_sessions.begin() + static_cast<std::ptrdiff_t>(idx));
+    // 修正活动下标（与 `DeleteSessionAt` 同逻辑）。
+    if (m_activeIndex > idx) --m_activeIndex;
+    if (m_activeIndex >= m_sessions.size()) m_activeIndex = m_sessions.size() - 1;
+    m_sess = m_sessions[m_activeIndex].get();
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容
+// ───────────────────────────────────────────────────────────────────────
+// 数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
+// 回放会话没有工作区 ⇒ 此段显示「无工作区」。
+// ★ 只列一级（不递归）：侧栏宽度 172px，递归树会立刻溢出；且用户要的是
+//   「这个工作区里有什么」，不是文件浏览器。
+// ═══════════════════════════════════════════════════════════════════════
+
+void HarnessApp::RebuildProjectList() {
+    if (!m_hud.projectList) return;
+    ECDI::Widget& content = m_hud.projectList->GetContentView();
+    while (content.GetChildCount() > 0) {
+        content.RemoveChild(content.GetChildAt(0));
+    }
+
+    // 数据源：活动会话的已确认工作区路径。
+    std::string wsPath;
+    if (m_sess && !m_sess->workspacePath.empty()) {
+        wsPath = m_sess->workspacePath;
+    }
+
+    int y = 0;
+    const int rowH = 16;
+    const int gap = 2;
+
+    if (wsPath.empty()) {
+        // 回放会话 / 无工作区：诚实显示。
+        auto lbl = uikit::Label("无工作区", kSidebarListW, rowH, kDarkMuted,
+                                harness::kFontMicro);
+        lbl->SetPosition(0, y);
+        content.AddChild(std::move(lbl));
+        y += rowH + gap;
+    } else {
+        // 列一级目录内容。
+        std::error_code ec;
+        std::vector<std::string> dirs;
+        std::vector<std::string> files;
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 std::filesystem::path(wsPath), ec)) {
+            const std::string name = entry.path().filename().generic_string();
+            if (name.empty()) continue;
+            if (entry.is_directory(ec)) {
+                dirs.push_back(name + "/");
+            } else {
+                files.push_back(name);
+            }
+            ec.clear();
+        }
+        // 目录在前、文件在后，各自按名称排序（确定性）。
+        std::sort(dirs.begin(), dirs.end());
+        std::sort(files.begin(), files.end());
+
+        for (const auto& d : dirs) {
+            auto lbl = uikit::Label("▽ " + d, kSidebarListW, rowH, kDarkInk,
+                                    harness::kFontMicro, true);
+            lbl->SetPosition(0, y);
+            content.AddChild(std::move(lbl));
+            y += rowH + gap;
+        }
+        for (const auto& f : files) {
+            auto lbl = uikit::Label("· " + f, kSidebarListW, rowH, kDarkMuted,
+                                    harness::kFontMicro, true);
+            lbl->SetPosition(0, y);
+            content.AddChild(std::move(lbl));
+            y += rowH + gap;
+        }
+        if (dirs.empty() && files.empty()) {
+            auto lbl = uikit::Label("（空目录）", kSidebarListW, rowH, kDarkMuted,
+                                    harness::kFontMicro);
+            lbl->SetPosition(0, y);
+            content.AddChild(std::move(lbl));
+            y += rowH + gap;
+        }
+    }
+
+    const int totalH = y > 0 ? y - gap : 0;
+    const int visibleH = std::min(totalH, kSidebarMaxRows * (rowH + gap) - gap);
+    m_hud.projectList->SetSize(kSidebarListW, std::max(visibleH, rowH));
+    m_hud.projectList->SetContentExtent(kSidebarListW, std::max(totalH, rowH));
+    m_hud.projectList->SetContentOffset(0, m_hud.projectList->GetScrollOffsetY());
+
+    if (m_hud.projectCount) {
+        std::string wsShort = wsPath.empty() ? std::string("无工作区")
+            : ElideMiddleByCodepoints(wsPath, kSidebarGroupTitleCp);
+        m_hud.projectCount->SetText(wsShort);
+    }
+
+    if (ECDI::Widget* parent = m_hud.projectList->GetParent()) parent->Arrange();
 }
 
 void HarnessApp::MaybeStartWorkspaceSync() {

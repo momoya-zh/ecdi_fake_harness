@@ -275,6 +275,11 @@ private:
         //     而侧栏是定宽定高的列（同 `sessList` 的理由）。
         ECDI::ScrollView* historyList = nullptr;  // 左栏：历史会话列表滚动容器
         ECDI::Label* historyCount = nullptr;      // 左栏：历史计数 `3 个历史文件`
+        // ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容。
+        //   数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
+        //   回放会话没有工作区 ⇒ 此段显示「无工作区」。
+        ECDI::ScrollView* projectList = nullptr;  // 左栏：项目目录滚动容器
+        ECDI::Label* projectCount = nullptr;      // 左栏：项目计数
         // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
         //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
         //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，
@@ -470,6 +475,15 @@ private:
         //   ⇒ 这两个字段只在“拿到 hello、还没发 workspace 请求”之间被读一次：
         //     `workspaceInheritedPath` = 要继承的路径（空 = 不继承，回落到 cwd）。
         std::string workspaceInheritedPath;
+        // ★★ 2026-10-20：临时会话标志（用户裁决 m09443）。
+        //   从工作区标题行的「＋」按钮拉起的会话是**临时**的：它还没有执行过任何
+        //   任务（没发过 prompt）。一旦用户切走（`SwitchToSession` 到另一个会话），
+        //   临时会话就被删除——因为它的存在理由（"在这个工作区开一个空会话"）
+        //   已经被放弃。一旦发了 prompt（`PostPrompt` 成功），它转为正式会话。
+        //   ★ 为什么不用「有没有消息」判断：`PostPrompt` 是唯一的"开始对话"入口，
+        //     用它当转正条件最精确；而"有没有消息"会被 notice 行污染（新建会话时
+        //     可能先收到 hello 通知）。
+        bool temporary = false;
         std::string workspaceStatus = "等待 core 确认";
         std::string pendingWorkspaceId;
         bool pendingWorkspaceInitialSync = false;
@@ -537,6 +551,24 @@ private:
     bool RequestWorkspace(const std::string& path, bool initialSync = false);
     void ChooseWorkspaceFolder();
     void MaybeStartWorkspaceSync();
+
+    // ── ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容 ─────────────
+    // 数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
+    // 回放会话没有工作区 ⇒ 此段显示「无工作区」。
+    // ★ 只列一级（不递归）：侧栏宽度 172px，递归树会立刻溢出；且用户要的是
+    //   「这个工作区里有什么」，不是文件浏览器。
+    void RebuildProjectList();
+
+    // ── ★★ 2026-10-20：临时会话（用户裁决 m09443）──────────────────────
+    // 从工作区标题行的「＋」按钮拉起的会话是临时的：还没执行过任何任务。
+    // 一旦切走就被删除；一旦发了 prompt 就转为正式。
+    //   ★ `workspaceId` 参数：新会话直接归属该工作区（外键在创建时就设好，
+    //     不等 ack——因为路径已经确认过了，工作区实体已经存在）。
+    void NewTemporarySession(const std::string& workspaceId);
+    // 切换会话时调用：如果当前活动会话是临时的且没发过 prompt，删除它。
+    //   ★ 必须在 `SwitchToSession` 改 `m_activeIndex` **之前**调用（否则
+    //     “当前活动会话”已经变成新会话了）。
+    void MaybeDeleteTemporarySession();
 
     // ── ★★ 2026-10-20：工作区注册表（模型侧）────────────────────────────
     // `WorkspaceById()`：空 id 或查不到 ⇒ nullptr。
@@ -661,7 +693,8 @@ private:
     //   ★ 它**不承载**任何会话模型：标题行不是会话，探针按行的 `kind` 区分两类
     //     （见 `SnapshotSessionList` 的第 5 段），否则“分组标题”会被当成“会话行”
     //     参与 selected 判定，读数全是假的。
-    std::unique_ptr<ECDI::Widget> BuildSessionGroupRow(const std::string& title);
+    std::unique_ptr<ECDI::Widget> BuildSessionGroupRow(const std::string& title,
+                                                       const std::string& workspaceId = std::string());
     // `GroupTitlesForDisplay()`：算出分组标题的**显示序**（返回 `m_workspaces` 的下标）。
     //   ★ 用户裁决（m08553）：工作区列表序固定为**创建序**，且后创建的排在上面
     //     （A 先建 ⇒ A 在 B 下面），不因切换会话或新建会话而改变。
