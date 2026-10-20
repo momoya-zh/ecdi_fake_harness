@@ -47,6 +47,8 @@ public:
     //   `modelprobe-p1-preliminary-design.md:130`「disabled 视觉灰化：demo 层处理」）,
     //   ⇒ 「变灰」是**调用方责任**，本方法显式替换禁用态配色。
     void SetStateDrivenEnabled(bool enabled);
+    // v3 workspace handshake can disable Send without falsely enabling Stop.
+    void SetButtonStates(bool sendEnabled, bool stopEnabled);
 
 private:
     void LayoutChildren();

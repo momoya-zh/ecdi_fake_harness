@@ -13,7 +13,7 @@ file(GLOB_RECURSE HARNESS_SOURCES CONFIGURE_DEPENDS
 
 add_executable(harness_gui WIN32 ${HARNESS_SOURCES})
 target_include_directories(harness_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(harness_gui PRIVATE ECDI::ECDI shell32)
+target_link_libraries(harness_gui PRIVATE ECDI::ECDI shell32 ole32)
 
 target_compile_definitions(harness_gui PRIVATE UNICODE _UNICODE)
 if(MSVC)

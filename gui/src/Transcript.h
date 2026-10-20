@@ -11,6 +11,7 @@
 // 一个转录块：block_start .. block_end 之间可被 delta 追加（I6：end 后只读）
 struct Block {
     std::string id;
+    std::string clientId;      // 协议 v3 user 回显关联键
     std::string kind;         // user / assistant / reasoning / tool_call / tool_result / system / error
     std::string name;         // tool_call 的工具名
     std::string argsPretty;   // tool_call 的 args 美化文本

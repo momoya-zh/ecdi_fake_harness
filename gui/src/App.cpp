@@ -3,6 +3,8 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <ShlObj.h>
+#include <objbase.h>
 
 #ifdef DrawText
 #undef DrawText
@@ -41,6 +43,34 @@
 
 namespace {
 
+std::string Utf8FromWidePath(const std::wstring& value) {
+    if (value.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+                                         static_cast<int>(value.size()), nullptr, 0,
+                                         nullptr, nullptr);
+    if (size <= 0) return {};
+    std::string out(static_cast<size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+                            static_cast<int>(value.size()), out.data(), size,
+                            nullptr, nullptr) != size) return {};
+    return out;
+}
+
+std::wstring WideFromUtf8Path(const std::string& value) {
+    if (value.empty()) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                                         static_cast<int>(value.size()), nullptr, 0);
+    if (size <= 0) return {};
+    std::wstring out(static_cast<size_t>(size), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
+                            static_cast<int>(value.size()), out.data(), size) != size) return {};
+    return out;
+}
+
+std::string PathToUtf8(const std::filesystem::path& value) {
+    return Utf8FromWidePath(value.native());
+}
+
 constexpr int kListRowHeight = 28;   // listlayout 模式的固定行高（DIP）
 constexpr int kRowGap = 10;          // 行间距（原型 C 的消息间距 23px ⇒ 折半，紧凑窗口下够用）
 constexpr int kRowPadX = 10;
@@ -67,7 +97,7 @@ constexpr int kSidebarMaxRows = 4;   // 可视高度上限；更多的靠滚动
 // ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
 //   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 `RouteLastMessage`）。
 //   ★ 改这一处 = 声明支持新的主版本——与 `protocol/PROTOCOL.md` §9 的表格**必须同步**。
-constexpr int kProtocolMaxSupported = 2;
+constexpr int kProtocolMaxSupported = 3;
 
 using harness::kDarkInk;
 using harness::kDarkMuted;
@@ -1198,6 +1228,7 @@ int HarnessApp::Run() {
     // ★ --probe-contrast：白底（探针测量用；默认路径逐位不变）
     win.SetBackgroundColor(m_options.probeContrast ? kProbeCanvas : harness::kContentBg);
     BuildUi(win);
+    RefreshHud();  // Before hello, live controls are deliberately gated closed.
     uikit::WarnZeroSized(win.GetRootWidget());   // F2/D9 巡检：漏 SetSize 的 0×0 静默不可见 → 告警
 
     // P1.5 live：收到 core 的 hello 之后回 hello（协议 §4：seq 0）
@@ -1219,9 +1250,13 @@ int HarnessApp::Run() {
         win.GetPlatformWindow().StartTimer(kCloseTimer,
                                            static_cast<unsigned int>(m_options.autoCloseMs));
     }
-    // P1.5：--auto-prompt（跑批/冒烟——启动后立即走一次真实发送路径）
-    if (!m_options.autoPrompt.empty() && m_sess->writer) {
-        SendPrompt(m_options.autoPrompt);
+    MaybeSendAutoPrompt();  // Replay keeps its prior immediate note; live waits for workspace ack.
+    // v3 auto-prompt waits for the core-confirmed initial workspace path.
+    // ★ 2026-10-20：探针需要更长的安全超时，但**不得写回 `m_options`**——那是 CLI 选项，
+    //   改写它等于让 `--auto-close` 在探针下静默失真（写摘要时读到的是被篡改后的值）。
+    //   只重设计时器，选项本身不动。
+    if (m_options.workspaceProbe && m_options.autoCloseMs < 90000) {
+        win.GetPlatformWindow().StartTimer(kCloseTimer, 90000);
     }
 
     const int code = application.Run();
@@ -1282,6 +1317,7 @@ void HarnessApp::RebuildUi() {
     //    但这里动的是**整棵树**（连 `m_scroll` 都要换），必须在拆之前再保一次，
     //    否则行的展开/已答会跟着旧控件一起消失（0c 的 `buildTitle` 就是这类回退）。
     SyncRowViewState();
+    m_pendingPromptViews.clear();  // old UI widgets are about to be destroyed; Session models survive.
 
     // ② 评估计数器快照。**必须在拆树之前**读——旧面板一析构就读不到了。
     const size_t paints = m_counting ? m_counting->PaintCount() : 0;
@@ -1534,6 +1570,33 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     //   那种手撒空格是伪装 letter-spacing，等宽观感下反而散）。
     //   ★ 分区名 `工作区`/`项目` 直接沿用 C 的措辞（C 左侧第一段就叫「工作区」）。
     AddLine(*side, "工作区", kDarkMuted, true, 172, harness::kFontMicro);
+    {
+        auto path = std::make_unique<ECDI::Label>("等待 core 确认实际路径");
+        m_hud.workspacePath = path.get();
+        path->SetTextColor(kDarkInk);
+        path->SetFont(harness::MonoFont(10.0f));
+        path->SetWordWrap(true);
+        path->SetSize(172, 34);
+        side->AddChild(std::move(path));
+
+        auto status = uikit::Label("未连接", 172, 14, kDarkMuted, harness::kFontMicro);
+        m_hud.workspaceStatus = status.get();
+        side->AddChild(std::move(status));
+
+        auto pick = std::make_unique<ECDI::Button>("选择文件夹…");
+        m_hud.workspacePick = pick.get();
+        pick->SetTextColor(kDarkInk);
+        pick->SetFont(harness::SansFont(harness::kFontSmall));
+        pick->SetStyle(ECDI::ButtonStyleOverride{
+            .background = kPanel2,
+            .border = kLine,
+            .borderWidth = 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .hoverBackground = kToolHeaderHover});
+        pick->SetSize(172, 26);
+        pick->SetOnClick([this] { ChooseWorkspaceFolder(); });
+        side->AddChild(std::move(pick));
+    }
 
     // ★★ Step 1（2026-10-19）：会话列表替换掉此前**单行硬编码**的会话条目。
     //   改动前的形态是一行 `uikit::Row` + 两个 Label（id / core 版本），只能显示
@@ -1712,7 +1775,8 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
         // 操作钮：C 是 3 个 iconbtn（↗ ☷ ···）——`↗` 两主题都有字形，
         // `☷` 与 `⋯`(U+22EF) 都没有 ⇒ 后两个用 ASCII 文字（诚实降级，不画缺字图标）。
-        auto mkAct = [&head](const std::string& text, const std::string& tip) {
+        auto mkAct = [&head, this](const std::string& text, const std::string& tip,
+                                   bool toggleInspector = false) {
             auto b = std::make_unique<ECDI::Button>(text);
             b->SetTextColor(kDarkMuted);
             b->SetFont(harness::SansFont(harness::kFontSmall));
@@ -1729,16 +1793,20 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                 .pressedBackground = kToolHeaderPressed,
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(28, 24);
-            b->SetOnClick([tip] {
-                // ★ 这三个钮在原型 C 里也是装饰（inspector 显隐 + 分享 + 更多），
-                //   而右栏承载评估读数、**不能藏**（README 第一目的）⇒ 点了只提示，
-                //   不改变布局。tip 仅作提示文案用。
+            if (toggleInspector) m_hud.inspectorToggle = b.get();
+            b->SetOnClick([this, tip, toggleInspector] {
                 (void)tip;
+                if (!toggleInspector || !m_hud.inspector) return;
+                m_inspectorVisible = !m_inspectorVisible;
+                m_hud.inspector->SetVisible(m_inspectorVisible);
+                if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
+                Relayout();
+                RequestRepaint();
             });
             head->AddChild(std::move(b));
         };
         mkAct("↗", "分享");
-        mkAct("≡", "检查器");
+        mkAct("≡", "检查器", true);
         mkAct("···", "更多");
         counting->AddChild(std::move(head));
     }
@@ -1780,6 +1848,8 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     // ── 右栏检查器（hi-fi .insp：卡片化）──
     auto insp = std::make_unique<ECDI::Panel>();
+    m_hud.inspector = insp.get();
+    insp->SetVisible(m_inspectorVisible);
     insp->SetSize(230, 100);
     insp->SetStyle(ECDI::PanelStyleOverride{
         .background = kInspBg,
@@ -2003,7 +2073,14 @@ void HarnessApp::OnReplayTick() {
         m_historyOpenPending.clear();
         OpenHistorySession(file);   // 内部会置 m_sidebarDirty + RequestRepaint
     }
-    if (!m_sess->source) return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
+    if (!m_sess->source) {
+        if (m_options.workspaceProbe && !m_workspaceProbeDone) RunWorkspaceProbe();
+        return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
+    }
+    if (m_options.workspaceProbe && !m_sess->source->IsLive()) {
+        RunWorkspaceProbe();  // Probe requires a live core; report unavailable instead of hanging on replay.
+        return;
+    }
     if (m_sess->source->IsLive()) {
         // ── live（子进程）：本 tick 内带超时批量拉取，把时间还给消息循环 ──
         // （v1 定案：UI 线程仍做拉取，但**不无限阻塞**——每 tick 8ms 预算，
@@ -2024,9 +2101,11 @@ void HarnessApp::OnReplayTick() {
             RequestRepaint();
         } else if (m_sess->child->Eof() && !m_sess->liveEof) {
             m_sess->liveEof = true;   // core 退出（stdin EOF 或 bye 收尾）
+            FailPendingOperations("core EOF / 断连");
             m_hudDirty = true;
             RefreshHud();
         }
+        if (m_options.workspaceProbe && !m_workspaceProbeDone) RunWorkspaceProbe();
         return;
     }
 
@@ -2196,6 +2275,19 @@ void HarnessApp::RouteLastMessage() {
 
     if (t == "block_start") {
         if (const Block* block = m_sess->transcript.FindBlock(msg.GetString("id"))) {
+            if (block->kind == "user" && !block->clientId.empty()) {
+                const std::string clientId = block->clientId;
+                for (auto it = m_pendingPromptViews.begin(); it != m_pendingPromptViews.end(); ++it) {
+                    if (it->clientId == clientId) {
+                        if (m_content && it->row.panel) m_content->RemoveChild(it->row.panel);
+                        m_pendingPromptViews.erase(it);
+                        break;
+                    }
+                }
+                auto& pending = m_sess->pendingPrompts;
+                pending.erase(std::remove_if(pending.begin(), pending.end(),
+                    [&](const PendingPrompt& p) { return p.clientId == clientId; }), pending.end());
+            }
             CreateBlockRow(*block);
         }
         return;
@@ -2285,20 +2377,52 @@ void HarnessApp::RouteLastMessage() {
         return;
     }
     if (t == "error") {
-        AddNoticeRow("[error] " + msg.GetString("message"), kErrorDark);
+        const std::string clientId = msg.GetString("client_id");
+        const std::string message = msg.GetString("message", "core error");
+        const json::Value* fatalField = msg.Find("fatal");
+        // ★ 协议 §3.8：`fatal` 缺省 = **false**。缺字段不是「致命」——§9 的宽容原则
+        //   （「宽容比拒连更安全」）同样适用于这里：一个漏写字段的 core 不该被判死，
+        //   真致命的 core 会自己退出，EOF 仍会兜住。
+        const bool fatal = fatalField && fatalField->IsBool() && fatalField->boolean;
+        const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
+            m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
+                return p.clientId == clientId && p.status == "sending";
+            });
+        const bool correlated = !clientId.empty() && pending != m_sess->pendingPrompts.end();
+        if (correlated) FailPrompt(clientId, message);
+        if (fatal) {
+            FailPendingOperations(message);
+            AddNoticeRow("[fatal error] " + message, kErrorDark);
+        } else if (!correlated) {
+            AddNoticeRow("[error] " + message, kErrorDark);
+        }
         return;
     }
     if (t == "hello") {
-        // 捕获给 HUD 左栏（转录里仍留一行 core 信息，与原型一致）
         m_sess->sessionId = msg.GetString("session");
         m_sess->coreVer = msg.GetString("core");
-        m_sess->protocolVer = static_cast<int>(msg.GetNumber("protocol"));
-        // ★★ 协议 §9（v2 落地，2026-10-14）：core 声明的版本**高于**本 GUI 支持的上限
-        //   ⇒ **拒绝连接并显示原因，不做降级猜测**。
-        //   ★ 为何现在才实现：该规则自 v1 就写在文档里，但**从未被实现**——
-        //     在只有 v1 的世界里它恒不触发，属"写在纸上但没人执行"的条款。
-        //     v2 出现的这一刻它才真正开始起作用（也正是它存在的理由）。
-        //   ★ 缺字段 ⇒ 按 v1 处理（宽容优于拒连：缺字段不是"更高的版本"）。
+        const json::Value* protocol = msg.Find("protocol");
+        m_sess->protocolVer = protocol && protocol->IsNumber()
+            ? static_cast<int>(protocol->number) : 0;
+        const json::Value* caps = msg.Find("caps");
+        bool capsValid = caps && caps->IsArray();
+        bool hasWorkspace = false;
+        std::string joined;
+        if (capsValid) {
+            for (const auto& cap : caps->array) {
+                if (!cap.IsString()) {
+                    capsValid = false;
+                    break;
+                }
+                if (!joined.empty()) joined += ", ";
+                joined += cap.text;
+                if (cap.text == "workspace") hasWorkspace = true;
+            }
+        }
+        m_sess->capsStr = capsValid ? joined : std::string();
+        m_sess->workspaceCap = capsValid && hasWorkspace;
+        // ★★ 协议 §9：只有 core 声明的主版本**高于**本 GUI 上限才拒连（不做降级猜测）。
+        //   缺字段按 v1 宽容；**低于**上限从来不是拒绝理由（§9 无此条）。
         if (m_sess->protocolVer > kProtocolMaxSupported) {
             char buf[192];
             std::snprintf(buf, sizeof(buf),
@@ -2307,20 +2431,20 @@ void HarnessApp::RouteLastMessage() {
                           m_sess->protocolVer, kProtocolMaxSupported);
             AddNoticeRow(buf, kErrorDark);
             m_sess->protocolIncompatible = true;
+            m_sess->disconnected = true;
             m_hudDirty = true;
             if (m_application) m_application->Exit();   // 不进入渲染路径
             return;
         }
-        if (const json::Value* caps = msg.Find("caps"); caps && caps->IsArray()) {
-            std::string joined;
-            for (const auto& cap : caps->array) {
-                if (!joined.empty()) joined += ", ";
-                joined += cap.text;
-            }
-            m_sess->capsStr = joined;
+        // ★★ 协议 v3 §3.1：caps 缺 `workspace` **不是**拒连条件，而是「GUI 不得显示
+        //   工作区选择器」⇒ 隐藏整段工作区交互，但**连接与发送照常**。
+        //   ★ 2026-10-20 修正：旧实现把 `!workspaceCap` 也写进上面的拒连条件，
+        //     而两份 hostile 夹具的 hello 恰好是 `protocol:3` + caps 无 workspace
+        //     ⇒ 它们一行都没被解析（blocks=0/violations=0），I1/I4/I5 的负对照
+        //     全部空转。规范从没有「必须声明 workspace 才能连接」这一条。
+        if (!m_sess->workspaceCap) {
+            m_sess->workspaceStatus = "core 未声明 workspace 能力";
         }
-        // ★ 协议 v2 §3.1：上下文容量（百分比的分母）。缺字段 ⇒ 保持 0 ⇒ 显示 `—`。
-        //   ★ **不猜容量**：分母未知时百分比无定义，猜一个比不显示更糟（编造读数）。
         if (const json::Value* ctx = msg.Find("context");
             ctx && ctx->IsNumber() && ctx->number > 0) {
             m_sess->contextLimit = static_cast<long long>(ctx->number);
@@ -2328,13 +2452,65 @@ void HarnessApp::RouteLastMessage() {
         m_hudDirty = true;
         AddNoticeRow("core " + msg.GetString("core") + " · session " +
                          msg.GetString("session") + " · protocol " +
-                         std::to_string(m_sess->protocolVer),
-                     kDarkMuted);
+                         std::to_string(m_sess->protocolVer), kDarkMuted);
+        // The v3 core starts in idle and does not emit a redundant initial state line.
+        if (m_sess->coreState.empty()) m_sess->coreState = "idle";
+        MaybeStartWorkspaceSync();
         return;
     }
     if (t == "state") {
         m_sess->coreState = msg.GetString("value");
         m_hudDirty = true;
+        if (m_sess->coreState == "idle") MaybeStartWorkspaceSync();
+        MaybeSendAutoPrompt();
+        return;
+    }
+    if (t == "workspace") {
+        const std::string requestId = msg.GetString("request_id");
+        const json::Value* requestField = msg.Find("request_id");
+        if (!requestField || !requestField->IsString() || requestId.empty()) {
+            if (!m_sess->pendingWorkspaceId.empty()) {
+                const bool initialSync = m_sess->pendingWorkspaceInitialSync;
+                m_sess->pendingWorkspaceId.clear();
+                m_sess->pendingWorkspaceInitialSync = false;
+                m_sess->workspaceStatus = "工作区确认无效：缺少 request_id";
+                if (initialSync && !m_sess->workspaceSyncComplete) {
+                    m_sess->workspaceStatus = "初始工作区未确认：" + m_sess->workspaceStatus;
+                }
+                RefreshHud();
+            }
+            AddNoticeRow("[workspace ack 缺少 request_id]", kErrorDark);
+            return;
+        }
+        if (m_sess->pendingWorkspaceId.empty() || requestId != m_sess->pendingWorkspaceId) {
+            AddNoticeRow("[workspace ack 不匹配] " + requestId, kErrorDark);
+            return;
+        }
+        const bool initialSync = m_sess->pendingWorkspaceInitialSync;
+        m_sess->pendingWorkspaceId.clear();
+        m_sess->pendingWorkspaceInitialSync = false;
+        const json::Value* ok = msg.Find("ok");
+        if (!ok || !ok->IsBool()) {
+            m_sess->workspaceStatus = "工作区确认无效：ok 必须是 boolean";
+        } else if (ok->boolean) {
+            const json::Value* path = msg.Find("path");
+            if (!path || !path->IsString() || path->text.empty()) {
+                m_sess->workspaceStatus = "工作区确认无效：缺少实际路径";
+            } else {
+                m_sess->workspacePath = path->text;
+                m_sess->workspaceSyncComplete = true;
+                m_sess->workspaceStatus = "已由 core 确认";
+            }
+        } else {
+            m_sess->workspaceStatus = "切换失败：" + msg.GetString("message", "core 拒绝请求");
+        }
+        if (initialSync && !m_sess->workspaceSyncComplete) {
+            // Initial sync failure leaves the GUI gated until an explicit folder request succeeds.
+            m_sess->workspaceStatus = "初始工作区未确认：" + m_sess->workspaceStatus;
+        }
+        m_hudDirty = true;
+        RefreshHud();
+        MaybeSendAutoPrompt();
         return;
     }
     if (t == "usage") {
@@ -2345,6 +2521,7 @@ void HarnessApp::RouteLastMessage() {
         return;
     }
     if (t == "bye") {
+        FailPendingOperations("core 已发送 bye");
         AddNoticeRow("会话结束 (" + msg.GetString("reason") + ", code " +
                          std::to_string(static_cast<int>(msg.GetNumber("code"))) + ")",
                      kDarkMuted);
@@ -2370,6 +2547,7 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     RowRec& ref = m_sess->rows.back();
     m_content->AddChild(std::move(row));
     if (!blockId.empty()) m_sess->blockRows[blockId] = &ref;
+    MaterializePendingPrompts();  // keep transient rows physically after canonical rows.
     // settle 后新增的行（发送/停止/回答反馈）没有逐 tick 的 Relayout 可蹭——
     // 排一个补重排脉冲，让定时器把它布局出来
     m_relayoutPulse = std::max(m_relayoutPulse, 2);
@@ -2753,6 +2931,7 @@ void HarnessApp::MaterializeRows() {
 //   ★ 拆之前必须先把视图状态同步进模型，否则等于"照着一份更旧的模型重建"。
 void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOverride) {
     SyncRowViewState();
+    m_pendingPromptViews.clear();
 
     // ★ 重建会让内容重新排一遍 ⇒ 不刻意恢复的话视图会跳回顶部。
     //   "换主题/切会话之后回到刚才读到的地方"是**可用性**要求，不是装饰：
@@ -2791,6 +2970,7 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
             if (stored.body && stored.headerBtn) BindCollapsible(*block, stored);
         }
     }
+    MaterializePendingPrompts();
 
     // ★ 重建后必须自己收尾：重排（几何是新的）再把滚动位置放回去。
     //   让调用方记得补这一步是设计要求里最容易漏的一环，故内置。
@@ -3688,6 +3868,37 @@ void HarnessApp::RunSidebarProbe() {
                            "expand disturbed the session list"}});
     }
 
+    // ⑪ ★★ 2026-10-20：检查器藏/显臂。
+    //   这块在 GPT 完成前是**零判据**的：`≡` 的回调只改一个布尔 + `SetVisible`，
+    //   一旦父容器 `Arrange()` 没跑，屏幕不对而所有既有探针全绿。
+    //   形态照抄 ⑩：以**中栏宽度**为读据（检查器 230px，藏起来中栏必须宽出正好 230）。
+    //   ★ 同样必须点真钮：直接调 `SetVisible` 会把“回调接上了没有”绕过去。
+    //   ★ 第三条判据是负对照：藏检查器**不能**动转录行数——若实现走成“重搭整棵树”，
+    //     中栏变宽仍然成立，但行数会变。
+    if (m_hud.inspector && m_hud.inspectorToggle && m_counting) {
+        const int midBefore = m_counting->GetWidth();
+        const int inspWidth = m_hud.inspector->GetWidth();
+        const size_t txBefore = m_sess->rows.size();
+
+        const bool clickedHide = clickCentreOf(m_hud.inspectorToggle);
+        expect("inspector-hide", {{clickedHide, "inspector toggle did not dispatch"},
+                                  {!m_inspectorVisible, "model still says visible"},
+                                  {!m_hud.inspector->IsVisible(), "inspector still visible"},
+                                  {m_counting->GetWidth() == midBefore + inspWidth,
+                                   "mid column did not reclaim the inspector width"},
+                                  {m_sess->rows.size() == txBefore,
+                                   "hiding the inspector disturbed the transcript"}});
+
+        const bool clickedShow = clickCentreOf(m_hud.inspectorToggle);
+        expect("inspector-show", {{clickedShow, "inspector toggle did not dispatch"},
+                                   {m_inspectorVisible, "model still says hidden"},
+                                   {m_hud.inspector->IsVisible(), "inspector still hidden"},
+                                   {m_counting->GetWidth() == midBefore,
+                                    "mid column did not return to its original width"},
+                                   {m_sess->rows.size() == txBefore,
+                                    "showing the inspector disturbed the transcript"}});
+    }
+
     // ★ 焦点复原：合成点击把焦点交给了被点的 Button，留下的焦点框与 caret 闪烁
     //   会多画几帧 ⇒ paints/frames 读数被污染（同 RunHitProbe 的收尾）。
     if (m_window) m_window->SetFocusedWidget(focusBefore);
@@ -4565,22 +4776,584 @@ HarnessApp::ReplayDigest HarnessApp::DigestReplayFile(
 
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
-    // ★ --hit-probe：探针合成点击时**只计数、零副作用**——
-    //   否则每跑一次探针就会往转录里塞一行 "[prompt 仅记录] …"，污染摘要读数。
+    // ★ --hit-probe：探针合成点击时只计数、零副作用，保持旧读数。
     if (m_hitProbeActive) {
         ++m_hitProbeSendCalls;
         return;
     }
     if (m_sess->writer) {
-        // live：真发 prompt（协议 §6：仅 idle 合法——按钮使能已由 state 驱动）
-        const bool ok = m_sess->writer->Prompt(text);
-        AddNoticeRow(ok ? "[prompt → core] " + text : "[prompt 发送失败] " + text,
-                     ok ? kDarkMuted : kErrorDark);
-    } else {
-        AddNoticeRow("[prompt 仅记录] " + text, kDarkMuted);   // 回放：只记录
+        (void)PostPrompt(text);
+        return;
     }
-    Relayout();   // settle 后立即反馈，不等下一个 tick
+    AddNoticeRow("[prompt 仅记录] " + text, kDarkMuted);   // 回放：只记录
+    Relayout();
     RequestRepaint();
+}
+
+std::string HarnessApp::PostPrompt(const std::string& text, bool allowBusyForProbe) {
+    if (!m_sess || !m_sess->writer || m_sess->disconnected ||
+        m_sess->protocolIncompatible || m_sess->protocolVer != 3 ||
+        (m_sess->workspaceCap && !m_sess->workspaceSyncComplete) ||
+        !m_sess->pendingWorkspaceId.empty()) {
+        return {};
+    }
+    if (allowBusyForProbe) {
+        if (m_sess->coreState != "running" || HasUnconfirmedPrompt()) return {};
+    } else if (m_sess->coreState != "idle" || HasUnconfirmedPrompt()) {
+        return {};
+    }
+
+    const std::string clientId = "p" + std::to_string(m_sess->nextClientId++);
+    PendingPrompt pending;
+    pending.clientId = clientId;
+    pending.text = text;
+    m_sess->pendingPrompts.push_back(std::move(pending));
+
+    // Materialize and paint the optimistic row before touching the reverse-channel pipe.
+    MaterializePendingPrompts();
+    Relayout();
+    FollowTailIfPinned();
+    RefreshHud();
+    RequestRepaint();
+
+    if (!m_sess->writer->Prompt(text, clientId)) {
+        FailPendingOperations("prompt 写入失败，连接未确认");
+    }
+    return clientId;
+}
+
+bool HarnessApp::HasUnconfirmedPrompt() const {
+    if (!m_sess) return false;
+    return std::any_of(m_sess->pendingPrompts.begin(), m_sess->pendingPrompts.end(),
+                       [](const PendingPrompt& p) { return p.status == "sending"; });
+}
+
+void HarnessApp::FailPrompt(const std::string& clientId, const std::string& reason) {
+    if (!m_sess || clientId.empty()) return;
+    for (PendingPrompt& pending : m_sess->pendingPrompts) {
+        if (pending.clientId != clientId || pending.status != "sending") continue;
+        pending.status = "failed";
+        pending.failure = reason.empty() ? "core 未确认" : reason;
+        MaterializePendingPrompts();
+        Relayout();
+        FollowTailIfPinned();
+        RefreshHud();
+        RequestRepaint();
+        return;
+    }
+}
+
+void HarnessApp::FailPendingOperations(const std::string& reason) {
+    if (!m_sess) return;
+    m_sess->disconnected = true;
+    const std::string detail = reason.empty() ? "连接已断开" : reason;
+    for (PendingPrompt& pending : m_sess->pendingPrompts) {
+        if (pending.status == "sending") {
+            pending.status = "failed";
+            pending.failure = detail;
+        }
+    }
+    if (!m_sess->pendingWorkspaceId.empty()) {
+        m_sess->pendingWorkspaceId.clear();
+        m_sess->pendingWorkspaceInitialSync = false;
+        m_sess->workspaceStatus = "工作区未确认：" + detail;
+    }
+    MaterializePendingPrompts();
+    Relayout();
+    RefreshHud();
+    RequestRepaint();
+}
+
+bool HarnessApp::RequestWorkspace(const std::string& path, bool initialSync) {
+    if (!m_sess || !m_sess->writer || m_sess->protocolVer != 3 ||
+        !m_sess->workspaceCap || m_sess->protocolIncompatible || m_sess->disconnected ||
+        path.empty() || m_sess->coreState != "idle" ||
+        !m_sess->pendingWorkspaceId.empty()) {
+        return false;
+    }
+    if (initialSync && m_sess->workspaceSyncStarted) return false;
+    if (initialSync) m_sess->workspaceSyncStarted = true;
+
+    const std::string requestId = "w" + std::to_string(m_sess->nextWorkspaceRequestId++);
+    m_sess->pendingWorkspaceId = requestId;
+    m_sess->pendingWorkspaceInitialSync = initialSync;
+    m_sess->workspaceStatus = "等待 core 确认…";
+    RefreshHud();
+    if (!m_sess->writer->Workspace(requestId, path)) {
+        m_sess->pendingWorkspaceId.clear();
+        m_sess->pendingWorkspaceInitialSync = false;
+        m_sess->workspaceStatus = "工作区请求发送失败";
+        FailPendingOperations("workspace 写入失败，连接未确认");
+        return false;
+    }
+    return true;
+}
+
+void HarnessApp::MaybeStartWorkspaceSync() {
+    if (!m_sess || !m_sess->writer || m_sess->protocolVer != 3 ||
+        !m_sess->workspaceCap || m_sess->workspaceSyncStarted ||
+        m_sess->disconnected || m_sess->coreState != "idle") {
+        return;
+    }
+    std::error_code ec;
+    const std::filesystem::path cwd = std::filesystem::current_path(ec);
+    if (ec) {
+        m_sess->workspaceSyncStarted = true;
+        m_sess->workspaceStatus = "无法读取启动工作目录：" + ec.message();
+        RefreshHud();
+        return;
+    }
+    if (!RequestWorkspace(PathToUtf8(cwd), true)) {
+        if (!m_sess->disconnected) {
+            m_sess->workspaceSyncStarted = true;
+            m_sess->workspaceStatus = "启动工作区请求未能发送";
+            RefreshHud();
+        }
+    }
+}
+
+void HarnessApp::MaybeSendAutoPrompt() {
+    if (!m_sess || m_options.autoPrompt.empty() || m_sess->autoPromptSent ||
+        m_options.workspaceProbe) {
+        return;
+    }
+    if (!m_sess->writer) {
+        m_sess->autoPromptSent = true;
+        SendPrompt(m_options.autoPrompt);
+        return;
+    }
+    if (m_sess->protocolVer != 3 ||
+        (m_sess->workspaceCap && !m_sess->workspaceSyncComplete) ||
+        m_sess->coreState != "idle" || !m_sess->pendingWorkspaceId.empty() ||
+        m_sess->disconnected) {
+        return;
+    }
+    m_sess->autoPromptSent = true;
+    (void)PostPrompt(m_options.autoPrompt);
+}
+
+void HarnessApp::ChooseWorkspaceFolder() {
+    if (!m_sess || !m_sess->writer || !m_sess->workspaceCap ||
+        m_sess->protocolVer != 3 || m_sess->disconnected ||
+        m_sess->coreState != "idle" || !m_sess->pendingWorkspaceId.empty()) {
+        return;
+    }
+    BROWSEINFOW browse{};
+    browse.lpszTitle = L"选择工作区文件夹";
+    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST item = SHBrowseForFolderW(&browse);
+    if (!item) return;
+    wchar_t selected[MAX_PATH]{};
+    const bool ok = SHGetPathFromIDListW(item, selected) != FALSE;
+    CoTaskMemFree(item);
+    if (!ok) {
+        m_sess->workspaceStatus = "无法读取所选文件夹";
+        RefreshHud();
+        return;
+    }
+    const std::string path = Utf8FromWidePath(selected);
+    if (path.empty() || !RequestWorkspace(path, false)) {
+        if (!m_sess->disconnected) {
+            m_sess->workspaceStatus = "工作区请求未能发送";
+            RefreshHud();
+        }
+    }
+}
+
+void HarnessApp::MaterializePendingPrompts() {
+    if (!m_content || !m_sess) return;
+    // Transient rows are intentionally rebuilt rather than inserted into canonical row/timeline state.
+    for (const PendingPromptView& view : m_pendingPromptViews) {
+        if (view.row.panel) m_content->RemoveChild(view.row.panel);
+    }
+    m_pendingPromptViews.clear();
+
+    for (const PendingPrompt& pending : m_sess->pendingPrompts) {
+        auto panel = std::make_unique<ECDI::Panel>();
+        RowRec row;
+        row.alignRight = true;
+        row.label = nullptr;
+        std::string display;
+        // ★★ 协议 §7（原文）：待确认气泡「与已确认 `user` 气泡**同位置同形状**，只多一个
+        //   弱化后缀 `· 发送中`」；失败态「后缀改 `· 未确认`，描边转为错误色」。
+        //   ★ 2026-10-20 修正：此前是**换行**追加「未确认 · 等待 core 接受」/「未确认：<原因>」，
+        //     那会改变气泡高度与形状（违反「同形状」），文案也不是规范里的那两个后缀；
+        //     listlayout 又自创了 `[未确认] ` / `[失败] ` 前缀。现在一律只用同行后缀。
+        display = pending.text;
+        display += pending.status == "sending" ? " · 发送中" : " · 未确认";
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = Pick(m_options.probeContrast, kUserBg, kProbeBg),
+            .cornerRadius = kRadiusCard,
+            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            // ★ 协议 §7：失败态「描边转为错误色」；发送中仍用 user 气泡的常规描边
+            //   （“同形状”也包括边框，只有颜色在失败时换）。
+            .borderColor = pending.status == "sending" ? kUserBorder : kErrorDark});
+        auto label = std::make_unique<ECDI::Label>(display);
+        row.label = label.get();
+        label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        label->SetFont(harness::SansFont(harness::kFontBody));
+        panel->AddChild(std::move(label));
+        row.panel = panel.get();
+        if (m_options.rowModeList) row.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
+        m_content->AddChild(std::move(panel));
+        PendingPromptView view;
+        view.clientId = pending.clientId;
+        view.row = row;
+        m_pendingPromptViews.push_back(std::move(view));
+    }
+}
+
+void HarnessApp::RunWorkspaceProbe() {
+    if (!m_options.workspaceProbe || m_workspaceProbeDone || !m_sess) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (m_workspaceProbeDeadline == std::chrono::steady_clock::time_point{}) {
+        m_workspaceProbeDeadline = now + std::chrono::seconds(80);
+    }
+    auto sendEnabled = [&]() {
+        return m_promptBar && m_promptBar->sendButton() && m_promptBar->sendButton()->IsEnabled();
+    };
+    auto canonicalCount = [&](const std::string& clientId) {
+        size_t count = 0;
+        for (const TimelineEntry& entry : m_sess->timeline) {
+            if (entry.kind != TimelineEntry::Kind::Block) continue;
+            const Block* block = m_sess->transcript.FindBlock(entry.id);
+            if (block && block->kind == "user" && block->clientId == clientId) ++count;
+        }
+        return count;
+    };
+    auto append = [&](const std::string& phase, const std::string& clientId,
+                      size_t matches, bool matched, bool expectedMismatch) {
+        WorkspaceProbeRec rec;
+        rec.phase = phase;
+        rec.clientId = clientId;
+        rec.path = m_sess->workspacePath;
+        rec.pendingId = m_sess->pendingWorkspaceId;
+        rec.canonicalMatches = matches;
+        rec.sendEnabled = sendEnabled();
+        rec.matched = matched;
+        rec.expectedMismatch = expectedMismatch;
+        rec.bubbleText = m_workspaceProbeBubbleText;
+        rec.bubbleShapeOk = m_workspaceProbeBubbleShapeOk;
+        m_workspaceProbeLog.push_back(std::move(rec));
+    };
+    auto stopFailed = [&](const std::string& phase, const std::string& clientId, size_t matches) {
+        append(phase, clientId, matches, false, false);
+        m_workspaceProbeDone = true;
+        if (m_application) m_application->Exit();
+    };
+    auto equivalent = [](const std::string& path, const std::filesystem::path& expected) {
+        if (path.empty()) return false;
+        std::error_code ec;
+        const bool same = std::filesystem::equivalent(std::filesystem::path(WideFromUtf8Path(path)), expected, ec);
+        return same && !ec;
+    };
+    // ★★ 协议 §7 判据：待确认气泡「与已确认 `user` 气泡同位置同形状，只多一个弱化后缀」。
+    //   “同形状”的可测形式 = **去掉后缀必须逐字等于正文**，且**不含换行**——旧实现的
+    //   `\n未确认 · 等待 core 接受` 正是靠换行改变气泡高度，违的也是这一条。
+    //   ★ 读的是控件（`row.label->GetText()`），不是模型：模型里从来不存后缀，
+    //     只对模型下断言等于自证（与 Step 3 的 ReadBack 纪律同族）。
+    //   ★ 描边颜色读不回来（ECDI::Panel 无 style getter），所以那一半只能靠截图取证；
+    //     这里只钉住文案与形状。
+    auto bubbleProbe = [&](const std::string& clientId) {
+        m_workspaceProbeBubbleText.clear();
+        m_workspaceProbeBubbleShapeOk = false;
+        const auto view = std::find_if(m_pendingPromptViews.begin(), m_pendingPromptViews.end(),
+            [&](const PendingPromptView& v) { return v.clientId == clientId; });
+        if (view == m_pendingPromptViews.end() || !view->row.label) return;
+        const std::string text = view->row.label->GetText();
+        m_workspaceProbeBubbleText = text;
+        const auto model = std::find_if(m_sess->pendingPrompts.begin(), m_sess->pendingPrompts.end(),
+            [&](const PendingPrompt& p) { return p.clientId == clientId; });
+        if (model == m_sess->pendingPrompts.end()) return;
+        const std::string suffix = model->status == "sending" ? " \u00b7 \u53d1\u9001\u4e2d"
+                                                             : " \u00b7 \u672a\u786e\u8ba4";
+        m_workspaceProbeBubbleShapeOk =
+            text.find('\n') == std::string::npos &&
+            text.size() >= suffix.size() &&
+            text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0 &&
+            text == model->text + suffix;
+    };
+
+    if (now >= m_workspaceProbeDeadline) {
+        stopFailed("timeout", m_workspaceProbeRejectedId, 0);
+        return;
+    }
+    if (!m_sess->writer) {
+        stopFailed("unavailable", {}, 0);
+        return;
+    }
+    if (m_sess->protocolIncompatible ||
+        (m_sess->disconnected && m_workspaceProbeStep != 11 && m_workspaceProbeStep != 12)) {
+        stopFailed("disconnected", {}, 0);
+        return;
+    }
+
+    switch (m_workspaceProbeStep) {
+        case 0: {
+            if (!m_sess->workspaceSyncComplete || !m_sess->pendingWorkspaceId.empty()) return;
+            std::error_code ec;
+            const std::filesystem::path cwd = std::filesystem::current_path(ec);
+            if (ec) {
+                stopFailed("baseline", {}, 0);
+                return;
+            }
+            m_workspaceProbeOriginalPath = m_sess->workspacePath;
+            const bool baselineOk = equivalent(m_sess->workspacePath, cwd);
+            append("baseline", {}, 0, baselineOk, false);
+            if (!baselineOk) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            std::filesystem::path target = cwd.parent_path();
+            if (target.empty() || target == cwd) target = std::filesystem::temp_directory_path(ec);
+            if (ec || target.empty() || target == cwd ||
+                !std::filesystem::is_directory(target, ec) || ec) {
+                stopFailed("pick-ok", {}, 0);
+                return;
+            }
+            m_workspaceProbeTargetPath = PathToUtf8(target);
+            const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+            if (ec || temp.empty()) {
+                stopFailed("pick-fail", {}, 0);
+                return;
+            }
+            m_workspaceProbeFailPath = PathToUtf8(
+                temp / ("dsh-v3-workspace-missing-" + std::to_string(now.time_since_epoch().count())));
+            m_workspaceProbeStep = 1;
+            return;
+        }
+        case 1: {
+            const bool sent = RequestWorkspace(m_workspaceProbeTargetPath, false);
+            m_workspaceProbeWorkspaceId = m_sess->pendingWorkspaceId;
+            const bool locked = sent && !m_workspaceProbeWorkspaceId.empty() && !sendEnabled() &&
+                                m_sess->workspacePath == m_workspaceProbeOriginalPath;
+            append("pending-lock", {}, 0, locked, false);
+            if (!locked) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 2;
+            return;
+        }
+        case 2: {
+            if (!m_sess->pendingWorkspaceId.empty()) return;
+            const bool ok = m_sess->workspaceStatus == "已由 core 确认" &&
+                            equivalent(m_sess->workspacePath,
+                                       std::filesystem::path(WideFromUtf8Path(m_workspaceProbeTargetPath)));
+            append("pick-ok", {}, 0, ok, false);
+            if (!ok) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 3;
+            return;
+        }
+        case 3: {
+            if (!RequestWorkspace(m_workspaceProbeFailPath, false)) {
+                stopFailed("pick-fail", {}, 0);
+                return;
+            }
+            m_workspaceProbeWorkspaceId = m_sess->pendingWorkspaceId;
+            m_workspaceProbeStep = 4;
+            return;
+        }
+        case 4: {
+            if (!m_sess->pendingWorkspaceId.empty()) return;
+            const bool pathPreserved = equivalent(m_sess->workspacePath,
+                                                  std::filesystem::path(WideFromUtf8Path(m_workspaceProbeTargetPath)));
+            const bool failedAck = m_sess->workspaceStatus.find("切换失败：") == 0;
+            const bool ok = pathPreserved && failedAck && sendEnabled();
+            append("pick-fail", {}, 0, ok, false);
+            if (!ok) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 5;
+            return;
+        }
+        case 5: {
+            m_workspaceProbeAcceptedId = PostPrompt("workspace probe accepted bubble");
+            if (m_workspaceProbeAcceptedId.empty()) {
+                stopFailed("bubble-flying", {}, 0);
+                return;
+            }
+            const size_t matches = canonicalCount(m_workspaceProbeAcceptedId);
+            const bool pending = std::any_of(m_sess->pendingPrompts.begin(),
+                m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
+                    return p.clientId == m_workspaceProbeAcceptedId && p.status == "sending";
+                });
+            const auto transientView = std::find_if(m_pendingPromptViews.begin(),
+                m_pendingPromptViews.end(), [&](const PendingPromptView& view) {
+                    return view.clientId == m_workspaceProbeAcceptedId;
+                });
+            const bool rendered = transientView != m_pendingPromptViews.end() &&
+                                  transientView->row.panel && transientView->row.label;
+            bubbleProbe(m_workspaceProbeAcceptedId);
+            const bool ok = pending && rendered && matches == 0 && !sendEnabled() &&
+                            m_workspaceProbeBubbleShapeOk;
+            append("bubble-flying", m_workspaceProbeAcceptedId, matches, ok, false);
+            if (!ok) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 6;
+            return;
+        }
+        case 6: {
+            const size_t matches = canonicalCount(m_workspaceProbeAcceptedId);
+            const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
+                m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
+                    return p.clientId == m_workspaceProbeAcceptedId;
+                });
+            if (pending != m_sess->pendingPrompts.end() && pending->status == "failed") {
+                stopFailed("bubble-confirmed", m_workspaceProbeAcceptedId, matches);
+                return;
+            }
+            if (matches == 0 || pending != m_sess->pendingPrompts.end()) return;
+            const bool ok = matches == 1;
+            // 已确认后临时气泡应当**已不存在**：这里如实记为 shapeOk=false / 空文案。
+            bubbleProbe(m_workspaceProbeAcceptedId);
+            append("bubble-confirmed", m_workspaceProbeAcceptedId, matches, ok, false);
+            if (!ok) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 7;
+            return;
+        }
+        case 7: {
+            if (m_sess->coreState != "running") return;
+            m_workspaceProbeRejectedId = PostPrompt("workspace probe correlated rejection", true);
+            if (m_workspaceProbeRejectedId.empty()) {
+                stopFailed("bubble-failed", {}, 0);
+                return;
+            }
+            m_workspaceProbeStep = 8;
+            return;
+        }
+        case 8: {
+            const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
+                m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
+                    return p.clientId == m_workspaceProbeRejectedId;
+                });
+            const size_t matches = canonicalCount(m_workspaceProbeRejectedId);
+            if (pending == m_sess->pendingPrompts.end() || pending->status == "sending") {
+                if (matches == 0) return;
+                stopFailed("bubble-failed", m_workspaceProbeRejectedId, matches);
+                return;
+            }
+            const bool ok = pending->status == "failed" && matches == 0;
+            bubbleProbe(m_workspaceProbeRejectedId);
+            const bool shaped = m_workspaceProbeBubbleShapeOk;
+            append("bubble-failed", m_workspaceProbeRejectedId, matches, ok && shaped, false);
+            if (!ok) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 9;
+            return;
+        }
+        case 9: {
+            // Start a real turn so the following forced prompt is queued while core is busy.
+            m_workspaceProbeAcceptedId = PostPrompt("workspace probe disconnect trigger");
+            if (m_workspaceProbeAcceptedId.empty()) {
+                stopFailed("disconnect-trigger", {}, 0);
+                return;
+            }
+            m_workspaceProbeStep = 10;
+            return;
+        }
+        case 10: {
+            if (m_sess->coreState != "running" || canonicalCount(m_workspaceProbeAcceptedId) != 1) return;
+            m_workspaceProbeRejectedId = PostPrompt("workspace probe disconnect before ack", true);
+            if (m_workspaceProbeRejectedId.empty() || !m_sess->child) {
+                stopFailed("disconnect-unconfirmed", m_workspaceProbeRejectedId, 0);
+                return;
+            }
+            const size_t matches = canonicalCount(m_workspaceProbeRejectedId);
+            const bool pending = std::any_of(m_sess->pendingPrompts.begin(),
+                m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
+                    return p.clientId == m_workspaceProbeRejectedId && p.status == "sending";
+                });
+            if (!pending || matches != 0) {
+                stopFailed("disconnect-unconfirmed", m_workspaceProbeRejectedId, matches);
+                return;
+            }
+            m_workspaceProbeStep = 11;
+            m_sess->child->Stop(0);  // deterministic EOF before the busy core can answer the queued prompt.
+            return;
+        }
+        case 11: {
+            if (!m_sess->disconnected) return;
+            const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
+                m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
+                    return p.clientId == m_workspaceProbeRejectedId;
+                });
+            const auto view = std::find_if(m_pendingPromptViews.begin(),
+                m_pendingPromptViews.end(), [&](const PendingPromptView& item) {
+                    return item.clientId == m_workspaceProbeRejectedId;
+                });
+            const size_t matches = canonicalCount(m_workspaceProbeRejectedId);
+            const bool failedView = view != m_pendingPromptViews.end() &&
+                                    view->row.panel && view->row.label;
+            const bool ok = pending != m_sess->pendingPrompts.end() &&
+                            pending->status == "failed" && matches == 0 && failedView &&
+                            !sendEnabled();
+            // ★ 这一相用的是**新的** clientId（step 10 重新赋了值），所以必须重新读
+            //   控件；不重读就会把上一相 p2 的文案当成 p4 的读数（实测过）。
+            bubbleProbe(m_workspaceProbeRejectedId);
+            const bool shaped = m_workspaceProbeBubbleShapeOk;
+            append("disconnect-unconfirmed", m_workspaceProbeRejectedId, matches, ok && shaped, false);
+            if (!ok) {
+                m_workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            m_workspaceProbeStep = 12;
+            return;
+        }
+        case 12: {
+            const std::string before = m_sess->workspacePath;
+            const std::filesystem::path expected =
+                std::filesystem::path(WideFromUtf8Path(m_workspaceProbeTargetPath));
+            m_sess->workspacePath = m_workspaceProbeOriginalPath;  // probe-only local corruption
+            RefreshHud();
+            const bool expectedMismatch = equivalent(before, expected) &&
+                                          !equivalent(m_sess->workspacePath, expected);
+            // ★★ §7 判据的负对照：光有正相“匹配”证明不了什么——一个永远返回
+            //   `true` 的判据也会匹配。把气泡文案改成旧实现那种**带换行**的形态
+            //   （`\n未确认 · …`），判据必须翻红，否则前面的 `bubbleShapeOk`
+            //   根本没有区分能力。判完立即恢复原文案。
+            bool shapeNegControl = false;
+            {
+                const auto view = std::find_if(m_pendingPromptViews.begin(), m_pendingPromptViews.end(),
+                    [&](const PendingPromptView& v) { return v.clientId == m_workspaceProbeRejectedId; });
+                if (view != m_pendingPromptViews.end() && view->row.label) {
+                    const std::string saved = view->row.label->GetText();
+                    view->row.label->SetText(saved + "\n\u672a\u786e\u8ba4 \u00b7 \u7b49\u5f85 core \u63a5\u53d7");
+                    bubbleProbe(m_workspaceProbeRejectedId);
+                    shapeNegControl = !m_workspaceProbeBubbleShapeOk;
+                    view->row.label->SetText(saved);
+                    // ★ 不把 shapeOk 改回 true：日志里应当留下「负对照确实看见了
+                    //   换行」这个读数，而不是抹掉证据好看。
+                }
+            }
+            append("negative", {}, 0, false, expectedMismatch && shapeNegControl);
+            m_workspaceProbeDone = true;
+            if (m_application) m_application->Exit();
+            return;
+        }
+        default:
+            stopFailed("invalid-step", {}, 0);
+            return;
+    }
 }
 
 void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
@@ -4703,6 +5476,11 @@ void HarnessApp::Relayout() {
         for (RowRec& r : m_sess->rows) {
             if (r.panel->GetHeight() != kListRowHeight) {
                 r.panel->SetSize(contentW, kListRowHeight);
+            }
+        }
+        for (PendingPromptView& view : m_pendingPromptViews) {
+            if (view.row.panel && view.row.panel->GetHeight() != kListRowHeight) {
+                view.row.panel->SetSize(contentW, kListRowHeight);
             }
         }
         m_content->Arrange();
@@ -4828,6 +5606,36 @@ void HarnessApp::Relayout() {
         }
         y += rowH + kRowGap;
     }
+    for (PendingPromptView& view : m_pendingPromptViews) {
+        RowRec& r = view.row;
+        if (!r.panel) continue;
+        const int maxBubbleW = std::max(120, innerW * 78 / 100);
+        const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
+        if (r.label) {
+            if (!r.wrapped) r.label->AutoSize();
+            const bool hasNewline = r.label->GetText().find('\n') != std::string::npos;
+            const bool needWrap = r.wrapped || hasNewline || r.label->GetWidth() > maxTextW;
+            if (needWrap != r.wrapped) {
+                r.wrapped = needWrap;
+                r.label->SetWordWrap(needWrap);
+            }
+            if (r.wrapped) {
+                if (r.lastWrapW != maxTextW) {
+                    r.label->SetSize(maxTextW, r.label->GetHeight());
+                    r.lastWrapW = maxTextW;
+                }
+                r.label->AutoSize();
+            }
+            r.label->SetPosition(kRowPadX, 8);
+        }
+        const int rowH = r.label ? r.label->GetHeight() + 16 : 0;
+        const int bubbleW = r.label
+            ? (r.wrapped ? maxBubbleW : std::min(maxBubbleW, r.label->GetWidth() + 2 * kRowPadX + 2))
+            : maxBubbleW;
+        r.panel->SetSize(bubbleW, rowH);
+        r.panel->SetPosition(kCanvasPadX + innerW - bubbleW, y);
+        y += rowH + kRowGap;
+    }
     m_scroll->SetContentExtent(contentW, std::max(0, y - kRowGap));
 }
 
@@ -4910,12 +5718,56 @@ void HarnessApp::RefreshHud() {
     const std::string stateText =
         m_sess->coreState.empty() ? std::string("idle") : m_sess->coreState;
     const bool active = (m_sess->coreState == "running" || m_sess->coreState == "waiting");
-    // ★ REQ-04（2026-10-13）：按 `state` 驱动发送/停止的使能（协议 §6 硬要求）。
-    //   判据 A5「idle 时发送可点/停止灰；running 时相反」在此兑现。
-    //   ★ 只在**回放/live 都成立**的语义下驱动：默认空 state = idle ⇒ 发送可用。
-    //   `active` 已含 running + waiting（waiting = ask 未答，同样不可再发）。
-    if (m_promptBar) {
-        m_promptBar->SetStateDrivenEnabled(!active);
+    const bool live = m_sess->writer != nullptr;
+    // ★★ 2026-10-20：`liveReady` **不再**包含 `workspaceCap`——协议 §3.1 只要求
+    //   「未声明 workspace 的 core，GUI 不得显示工作区选择器」，而不是「不能对话」。
+    //   旧写法把 workspace 能力当成 live 就绪的前提，导致一份合法的不支持工作区的
+    //   core 连一句 prompt 都发不出去（发送钮永久置灰）。
+    const bool liveReady = live && m_sess->protocolVer == 3 &&
+                           !m_sess->protocolIncompatible && !m_sess->disconnected &&
+                           !m_sess->liveEof;
+    // 只有「core 声明了 workspace 且初始同步未完成」才是阻塞条件；无此能力时直接放行。
+    const bool workspaceReady = !m_sess->workspaceCap || m_sess->workspaceSyncComplete;
+    const bool sendEnabled = live
+        ? (liveReady && workspaceReady && m_sess->coreState == "idle" &&
+           m_sess->pendingWorkspaceId.empty() && !HasUnconfirmedPrompt())
+        : !active;
+    const bool stopEnabled = live ? (liveReady && active) : active;
+    if (m_promptBar) m_promptBar->SetButtonStates(sendEnabled, stopEnabled);
+    const bool pickerEnabled = m_sess->workspaceCap && liveReady &&
+                               m_sess->coreState == "idle" &&
+                               m_sess->pendingWorkspaceId.empty();
+    // ★★ 协议 §3.1：对一份**真实的 core**，它未声明 workspace ⇒ GUI「不得显示工作区
+    //   选择器」。⇒ 隐藏路径与选择钮，只留一行诚实的状态说明（“core 未声明 workspace 能力”）。
+    //   ★ 只在 live 下藏：回放/空会话根本没有 core，沿用既有外观（零回归风险）。
+    //   ★ 用控件自己的 IsVisible() 当“上次已应用值”，不新增模型字段——重建后新建的
+    //     控件默认可见，这个判据会自己纠回来；换成成员记录反而会在重建后陈旧。
+    const bool hideWorkspace = live && !m_sess->workspaceCap;
+    bool workspaceVisChanged = false;
+    auto applyWorkspaceVis = [&](ECDI::Widget* w) {
+        if (!w) return;
+        if (w->IsVisible() == hideWorkspace) {
+            w->SetVisible(!hideWorkspace);
+            workspaceVisChanged = true;
+        }
+    };
+    applyWorkspaceVis(m_hud.workspacePath);
+    applyWorkspaceVis(m_hud.workspacePick);
+    if (workspaceVisChanged) {
+        // VerticalLayout 只在 Arrange 时给隐藏子不占槽（C-VIS-1）⇒ 不重排就会留个空洞。
+        if (ECDI::Widget* p = m_hud.workspaceStatus ? m_hud.workspaceStatus->GetParent()
+                                                    : nullptr) {
+            p->Arrange();
+        }
+    }
+    if (m_hud.workspacePath) {
+        m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
+            ? "core 实际工作区：尚未确认" : "core 实际工作区：" + m_sess->workspacePath);
+    }
+    if (m_hud.workspaceStatus) m_hud.workspaceStatus->SetText(m_sess->workspaceStatus);
+    if (m_hud.workspacePick) {
+        m_hud.workspacePick->SetEnabled(pickerEnabled);
+        m_hud.workspacePick->SetTextColor(pickerEnabled ? kDarkInk : kDarkMuted);
     }
     // ★★ REQ-04 直接回读探针（--state-probe，2026-10-14）
     //   · `SetEnabled` 不内建 Invalidate（Widget.h:185-187）⇒ 使能翻转**没有**绘制侧读数
@@ -5699,6 +6551,62 @@ void HarnessApp::WriteSummary() {
     std::snprintf(buf, sizeof(buf), "  \"contextLimit\": %lld,\n",
                   static_cast<long long>(m_sess->contextLimit));
     json += buf;
+    if (m_options.workspaceProbe) {
+        json::Value records;
+        records.type = json::Value::Type::Array;
+        auto putString = [](json::Value& object, const char* key, const std::string& value) {
+            json::Value field;
+            field.type = json::Value::Type::String;
+            field.text = value;
+            object.object[key] = std::move(field);
+        };
+        size_t expectedMismatches = 0;
+        bool checksPassed = true;
+        for (const WorkspaceProbeRec& rec : m_workspaceProbeLog) {
+            json::Value item;
+            item.type = json::Value::Type::Object;
+            putString(item, "phase", rec.phase);
+            putString(item, "clientId", rec.clientId);
+            putString(item, "path", rec.path);
+            putString(item, "pendingId", rec.pendingId);
+            json::Value count;
+            count.type = json::Value::Type::Number;
+            count.number = static_cast<double>(rec.canonicalMatches);
+            item.object["canonicalMatches"] = std::move(count);
+            json::Value send;
+            send.type = json::Value::Type::Bool;
+            send.boolean = rec.sendEnabled;
+            item.object["sendEnabled"] = std::move(send);
+            json::Value matched;
+            matched.type = json::Value::Type::Bool;
+            matched.boolean = rec.matched;
+            item.object["matched"] = std::move(matched);
+            json::Value expected;
+            expected.type = json::Value::Type::Bool;
+            expected.boolean = rec.expectedMismatch;
+            // ★ §7 判据的机器读数：控件上的实际文案 + 形状判据。
+            putString(item, "bubbleText", rec.bubbleText);
+            {
+                json::Value shape;
+                shape.type = json::Value::Type::Bool;
+                shape.boolean = rec.bubbleShapeOk;
+                item.object["bubbleShapeOk"] = std::move(shape);
+            }
+            item.object["expectedMismatch"] = std::move(expected);
+            records.array.push_back(std::move(item));
+            if (rec.expectedMismatch) {
+                ++expectedMismatches;
+                checksPassed = checksPassed && !rec.matched && rec.phase == "negative";
+            } else {
+                checksPassed = checksPassed && rec.matched;
+            }
+        }
+        const bool probePassed = m_workspaceProbeDone && m_workspaceProbeLog.size() == 9 &&
+                                 expectedMismatches == 1 && checksPassed;
+        json += "  \"workspaceProbe\": " + records.Dump() + ",\n";
+        json += std::string("  \"workspaceProbePassed\": ") +
+                (probePassed ? "true,\n" : "false,\n");
+    }
     // ★ 上下文占用读数（分子/分母都如实输出，便于复核百分比是否算对）
     std::snprintf(buf, sizeof(buf), "  \"usageInput\": %lld\n",
                   static_cast<long long>(m_sess->usageIn));

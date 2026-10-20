@@ -171,6 +171,7 @@ struct CliOptions {
     //       ★ 探针收尾会把这份状态文件删掉，夹具目录保持零改动。
     //   ★ 默认 false ⇒ 零行为变化；摘要里连 `history` 键都不出现。
     bool historyProbe = false;
+    bool workspaceProbe = false;       // --workspace-probe：v3 workspace/optimistic prompt 判据
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -258,6 +259,14 @@ private:
         //   （走 `Button::RaiseClick` → 回调 → `RebuildUi`）。
         //   ★ 句柄进 Hud 的理由同 `sidebarToggle`：重建后要能被探针摸到并合成点击。
         ECDI::Button* themeToggle = nullptr;    // 顶栏：深色/浅色切换
+        ECDI::Panel* inspector = nullptr;       // 右栏检查器容器（可切换显隐）
+        // ★★ 2026-10-20：中栏头 `≡` = 检查器显隐钮。此前它是**无判据**的装饰回调：
+        //   一旦 `parent->Arrange()` 漏掉，屏幕会把检查器留在原位而探针全绿。
+        //   句柄进 Hud 才能被合成点击（同 `sidebarToggle`/`themeToggle`）。
+        ECDI::Button* inspectorToggle = nullptr;
+        ECDI::Label* workspacePath = nullptr;   // 左栏：仅显示 core 确认的路径
+        ECDI::Label* workspaceStatus = nullptr;// 左栏：workspace 请求状态
+        ECDI::Button* workspacePick = nullptr;  // 左栏：目录选择器
         // ★★ Step 5（2026-10-19）：侧栏「历史会话」区。
         //   ★ 这里是**磁盘上的文件**变成会话的入口：点一行 = 新建一个 replay 会话
         //     并直接跳到末尾。历史行与 `sessList` 里的会话行是两种东西：
@@ -363,6 +372,18 @@ private:
         size_t timelineIdx = 0;
     };
 
+    struct PendingPrompt {
+        std::string clientId;
+        std::string text;
+        std::string status = "sending";  // sending / failed；确认后转入规范时间线并移除
+        std::string failure;
+    };
+
+    struct PendingPromptView {
+        std::string clientId;
+        RowRec row;                         // 只属于临时视图，不进入 Session::rows/timeline
+    };
+
     // ★★ 0b（2026-10-18）：**逐会话**状态收进一个可整体替换的对象。
     //   为什么需要这样一层：下面这些字段此前和窗口/控件指针平铺在同一个类里，等于
     //   断言「一个应用 = 一个会话」。于是"新建会话"**无处落脚**——新会话的转录、
@@ -399,6 +420,20 @@ private:
         // ★ 协议 §9：core 声明的版本高于本 GUI 上限 ⇒ 已拒绝连接（2026-10-14）。
         //   用途：摘要里如实记下"这次运行是被拒的"，避免读到一个空摘要却以为跑成功了。
         bool protocolIncompatible = false;
+
+        // ── v3 workspace / optimistic prompt state (transient prompts never enter timeline) ──
+        bool workspaceCap = false;
+        bool workspaceSyncStarted = false;
+        bool workspaceSyncComplete = false;
+        bool disconnected = false;
+        bool autoPromptSent = false;
+        size_t nextClientId = 1;
+        size_t nextWorkspaceRequestId = 1;
+        std::string workspacePath;          // 最后一次成功 ack 的 core 实际路径
+        std::string workspaceStatus = "等待 core 确认";
+        std::string pendingWorkspaceId;
+        bool pendingWorkspaceInitialSync = false;
+        std::vector<PendingPrompt> pendingPrompts;
 
         // ── usage / 上下文容量 ──
         int usageTurn = -1;                        // usage 捕获（HUD 右栏/状态栏）
@@ -458,6 +493,15 @@ private:
     void CreateAskRow(const json::Value& msg);
     void MarkAnswered(RowRec& rec, const std::string& choice);
     void AddNoticeRow(const std::string& text, const ECDI::Color& color);
+    std::string PostPrompt(const std::string& text, bool allowBusyForProbe = false);
+    bool RequestWorkspace(const std::string& path, bool initialSync = false);
+    void ChooseWorkspaceFolder();
+    void MaybeStartWorkspaceSync();
+    void MaybeSendAutoPrompt();
+    bool HasUnconfirmedPrompt() const;
+    void FailPrompt(const std::string& clientId, const std::string& reason);
+    void FailPendingOperations(const std::string& reason);
+    void MaterializePendingPrompts();
     // ★★ Step 3：把"已答"连同**答的是什么**一起画出来。
     //   ★ 为什么必须抽成函数：首答（`MarkAnswered`）与重建（`MaterializeOne`）必须
     //     走**同一条**视觉路径。若重建分支只写 `SetEnabled(false)`，同一条目在
@@ -667,6 +711,7 @@ private:
     void RebuildUi();
     // Step 4 探针入口（`--theme-probe`）。
     void RunThemeProbe();
+    void RunWorkspaceProbe();
 
     CliOptions m_options;
 
@@ -693,6 +738,8 @@ private:
     ECDI::MeasureProbe* m_measureProbe = nullptr;  // 同上（测量链探针）
     ECDI::ScrollView* m_scroll = nullptr;          // 非拥有
     ECDI::Widget* m_content = nullptr;             // ScrollContent，非拥有
+    std::vector<PendingPromptView> m_pendingPromptViews; // 当前活动会话的 UI-only 气泡视图
+    bool m_inspectorVisible = true;
     PromptBar* m_promptBar = nullptr;              // 非拥有
     ECDI::ProgressBar* m_usageBarIn = nullptr;     // 右栏用量条（非拥有）
     ECDI::ProgressBar* m_usageBarOut = nullptr;
@@ -1059,6 +1106,32 @@ private:
     // 探针自己算出的真值（`content` 相的双路比对用）：
     ReplayDigest m_historyProbeDigest;
 
+    struct WorkspaceProbeRec {
+        std::string phase;
+        std::string clientId;
+        std::string path;
+        std::string pendingId;
+        size_t canonicalMatches = 0;
+        bool sendEnabled = false;
+        bool matched = true;
+        bool expectedMismatch = false;
+        // ★ §7 判据的读数：控件上的实际文案，以及「去掉后缀 == 正文且无换行」是否成立。
+        std::string bubbleText;
+        bool bubbleShapeOk = false;
+    };
+    std::vector<WorkspaceProbeRec> m_workspaceProbeLog;
+    // ★ 当前帧的 §7 读数（snap 时拷入 rec；只用于探针）
+    std::string m_workspaceProbeBubbleText;
+    bool m_workspaceProbeBubbleShapeOk = false;
+    int m_workspaceProbeStep = 0;
+    bool m_workspaceProbeDone = false;
+    std::string m_workspaceProbeOriginalPath;
+    std::string m_workspaceProbeTargetPath;
+    std::string m_workspaceProbeFailPath;
+    std::string m_workspaceProbeWorkspaceId;
+    std::string m_workspaceProbeAcceptedId;
+    std::string m_workspaceProbeRejectedId;
+    std::chrono::steady_clock::time_point m_workspaceProbeDeadline{};
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
     size_t m_evalPaints = 0;

@@ -38,6 +38,7 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         }
         Block block;
         block.id = id;
+        block.clientId = m_last.GetString("client_id");
         block.kind = m_last.GetString("kind");
         block.name = m_last.GetString("name");
         block.forId = m_last.GetString("for");
@@ -112,7 +113,7 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
 
     // I5：未知 t 忽略并记录（不得崩溃）
     static const char* kKnown[] = {"hello", "state", "block_start", "delta", "block_end",
-                                   "ask", "usage", "error", "bye"};
+                                   "ask", "usage", "error", "workspace", "bye"};
     bool known = false;
     for (const char* k : kKnown) known = known || (t == k);
     if (!known) {

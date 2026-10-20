@@ -137,13 +137,15 @@ void PromptBar::ApplyStopStyle(bool enabled) {
 }
 
 void PromptBar::SetStateDrivenEnabled(bool enabled) {
-    // ① 行为：真正的使能（`HitTest` 会按 `IsEnabled` 过滤 ⇒ 禁用后点击不达）
-    if (m_send) m_send->SetEnabled(enabled);
-    if (m_stop) m_stop->SetEnabled(!enabled);
-    // ② 视觉：显式灰化（框架不做 disabled 绘制）
-    ApplySendStyle(enabled);
-    ApplyStopStyle(!enabled);
-    // ③ 重绘（SetStyle 内部已 Invalidate，此处不重复请求）
+    SetButtonStates(enabled, !enabled);
+}
+
+void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
+    // 行为与视觉分开驱动：workspace pending 禁用 Send，但不得启用 Stop。
+    if (m_send) m_send->SetEnabled(sendEnabled);
+    if (m_stop) m_stop->SetEnabled(stopEnabled);
+    ApplySendStyle(sendEnabled);
+    ApplyStopStyle(stopEnabled);
 }
 
 void PromptBar::LayoutChildren() {

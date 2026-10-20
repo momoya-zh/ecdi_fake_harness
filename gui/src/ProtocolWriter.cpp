@@ -48,7 +48,7 @@ bool ProtocolWriter::Hello(const std::string& guiVersion) {
     json::Value msg;
     msg.type = json::Value::Type::Object;
     json::Value t;   t.type = json::Value::Type::String;  t.text = "hello";
-    json::Value proto; proto.type = json::Value::Type::Number; proto.number = 1;
+    json::Value proto; proto.type = json::Value::Type::Number; proto.number = 3;
     json::Value gui; gui.type = json::Value::Type::String; gui.text = guiVersion;
     msg.object["t"] = t;
     msg.object["protocol"] = proto;
@@ -56,13 +56,27 @@ bool ProtocolWriter::Hello(const std::string& guiVersion) {
     return SendWith(std::move(msg));
 }
 
-bool ProtocolWriter::Prompt(const std::string& text) {
+bool ProtocolWriter::Prompt(const std::string& text, const std::string& clientId) {
     json::Value msg;
     msg.type = json::Value::Type::Object;
     json::Value t;   t.type = json::Value::Type::String;  t.text = "prompt";
     json::Value txt; txt.type = json::Value::Type::String; txt.text = text;
     msg.object["t"] = t;
+    json::Value client; client.type = json::Value::Type::String; client.text = clientId;
     msg.object["text"] = txt;
+    msg.object["client_id"] = client;
+    return SendWith(std::move(msg));
+}
+
+bool ProtocolWriter::Workspace(const std::string& requestId, const std::string& path) {
+    json::Value msg;
+    msg.type = json::Value::Type::Object;
+    json::Value t; t.type = json::Value::Type::String; t.text = "workspace";
+    json::Value id; id.type = json::Value::Type::String; id.text = requestId;
+    json::Value p; p.type = json::Value::Type::String; p.text = path;
+    msg.object["t"] = t;
+    msg.object["request_id"] = id;
+    msg.object["path"] = p;
     return SendWith(std::move(msg));
 }
 
