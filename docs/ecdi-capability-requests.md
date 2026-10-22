@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力）；REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力）；REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 开放（2026-10-22 新立，窗口无最小尺寸约束）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -386,6 +386,98 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 
 ---
 
+### REQ-12 多行 `TextBox` 的 `GetPreferredSize` 返回**当前尺寸**——同一框架内与 `TextWidget` 的 wrap 分支自相矛盾
+
+> ★ **触发（2026-10-21）**：用户报告「多行不自动长高」，并据此推断「气泡必然不能设成内容滚动，是不是该给 ECDI 加个新控件」。
+> ★ **归属判据**：已读 ECDI 源码仓 `TextBox.cpp` / `TextWidget.cpp` / `Widget.cpp` 与**其自带测试** `TextBoxTests.cpp`，
+>   并做了受控对照（同一 `GetPreferredSize` 的两个分支、两种控件）。**结论：不需要新控件**——缺的不是控件，是**一条规则的不一致**。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | （无——本轮新立） |
+| 状态 | ✅ **已闭合（2026-10-21，ECDI 侧采纳 ⓐ 订正语义）**——`TextBox::MultilinePreferred` 落地；★ 本仓组合实现已**收敛回框架**（见末行） |
+| 归属 | **ECDI 侧**（同一框架内两条 preferred 规则互相矛盾；不是"两类控件的分野"） |
+| 现象 | 多行输入框**永远无法**用 `AutoSize()` 随内容长高：`TextBox::GetPreferredSize` 一见到 `\n` 就 `return Widget::GetPreferredSize()` = **当前尺寸**（`TextBox.cpp:166-174`）⇒ `Widget::AutoSize` 比较后判定"同尺寸"⇒ 返回 `false`、**结构性 no-op** |
+| ★★ 矛盾所在 | **同一条 `GetPreferredSize` 在 `TextWidget` 的 wrap 分支返回 `{GetWidth(), 行数 × 行高}`**（`TextWidget.cpp:428-436`，需求稿 D29-B）。⇒ 在同一个框架里：**`Label`（开 wrap）能长高，`TextBox`（多行）不能**。用户看到的"气泡会高、输入框不会"正是这条不一致的可见后果，**不是**两类控件应有的区别 |
+| ★ 挂账出处（不是"忘了"，是**记过账的**） | `phase29-text-multiline-requirements.md:36`（K4：「多行高度 v1 手工 SetSize，不参与 AutoSize」）· `phase9.8-autosize-detailed-design.md:110`（同一句的原始出处）· `phase9.8-autosize-requirements.md:47/127-128`（「v1 挂账」「多行高度仍手工 SetSize」） |
+| ★ 现状的**真实代价** | 调用方若想让多行框长高，只能自己算「行数 × 行高 + padding×2」，即**在应用层复制两条框架规则**（行数 = `\n` 数 + 1，见 `TextBox.cpp:390-403`；行高 = `TextMeasurer::LineHeight`，见 `TextBox.cpp:431-438`）。一旦 Phase 29 的 **O2**（编辑器内 wrap）兑现，「`\n` 数 + 1」会**静默算错**——框高少一行，且**没有任何读数会报** |
+| ★ 已有的、本可复用的量 | `GetMaxScrollOffset()` 里**已经在算** `行数 × 行高 − 视口高`（`TextBox.cpp:452-457`）。但它是 `private` 且**带 `max(0, …)`** ⇒ **不能**直接拿来当"内容高"：不溢出时它恒为 0 ⇒ 用它会导致**只会变高、永远缩不回去**（本仓 `--grow-probe` 的 `shrink` 相专门盯这条，见 `.scratch/probe_grow_negctl.py` 的 M5） |
+| ★ 修法候选（按我方倾向排序） | ⓐ **订正语义**（API **+0**）：多行分支改为返回 `{GetWidth(), ceil(行数 × 行高 + padding×2)}` ⇒ `AutoSize()` 立刻可用，且与 wrap 分支**同构**。代价：要改 `TextBoxTests.cpp:1182-1190` 那条**锁定旧行为**的断言（`TestTextBoxPreferredMultilineNotParticipating`），并回扫上述六处文档 · ⓑ **加一条只读查询**（API **+1**）：`GetContentHeight()`，语义按「**不受 `max(0,·)` 钳制**」写清，不动 `AutoSize` 语义、零回归 · ⓒ 不做（本仓继续组合实现） |
+| ★ 不建议 | **不要为此加新控件**。用户最初的提议（"ECDI 给个新控件"）会把 `TextBox` 一千三百行复制一遍，而真正的缺口只有一条 `if` 分支。同理也不建议把气泡改成滚动容器——**气泡的长高能力本来就是对的**（wrap 的 `Label` 已经能长高），问题只在输入框那一侧 |
+| ★ 我方本轮处置 | 走 **ⓒ 组合实现**（用户 2026-10-21 拍板）：`gui/src/PromptBar.cpp` 的 `ComposerBox` 用 **protected 可见性**（`GetWindow()` + `TextWidget::m_style`）算内容高，`PromptBar::SyncInputHeight` 负责 clamp 到 `[单行高, kInputMaxH]` 并重排父布局。**零 ECDI 改动、零私有后门** |
+| ★ 取证（本仓） | `--grow-probe` 7 相（`type-newline` / `grow` / `max-clamp` / `send-reset` / `shrink` / `exact-fit` / `baseline`）在 light+dark 双主题全绿；负对照 `.scratch/probe_grow_negctl.py` 5 条变异：M1（摘掉 `OnTextChanged` 上报）⇒ `type-newline` 红、M2（摘掉 `SetText` 后同步）⇒ `send-reset` 红、M4（去掉封顶）⇒ `max-clamp` 红、M5（只增不减）⇒ `send-reset`+`shrink` 红、M3（`ceil`→截断）⇒ **EXPECTED-GREEN**，因为本机实测行高 = **17.0（整数）**，`lines×17+12` 恒为整数 ⇒ `ceil` 是恒等变换。★ 这条如实记为「该变异在本配置下语义等价」，**不计入**判别力证据；行高为非整数的字体/字号下它会红 |
+
+
+**★★ 闭合记录（2026-10-21，ECDI 采纳 ⓐ）**
+
+ECDI 的裁决理由只有一条，但够重：**这条缺陷的形状是「同一个虚函数对同一个问题给两个答案」。
+ⓐ 修的是答案；ⓑ 是再加一个问题。** ⓑ 落地后框架里会同时存在 `GetPreferredSize`（多行仍返回
+当前尺寸）与 `GetContentHeight`（返回真话），而下一个消费者先伸手拿的一定是前者——那是所有控件
+的统一入口——然后**还是会掉进同一个坑**。不一致没有消失，只是多了一块绕行标志牌。
+
+ECDI 侧落地（`ECDI/src/Widget/TextBox.cpp` 的 `MultilinePreferred`）：
+
+| 契约 | 落地方式 |
+|---|---|
+| 多行 preferred | `{当前宽, ceil(行数 × 行高 + padding×2)}`——与 wrap 分支 D29-B **同构** |
+| **① 取整归属** | `ceil` 做在 `GetPreferredSize` **内部**，不留给 `Widget::AutoSize`（那是向零截断）⇒ 69.6→69 的 exact-fit 滚动条 bug 不会由框架自己复现 |
+| **② 无测量器/无窗口** | 退回当前尺寸，与 wrap「无有限宽 ⇒ 退化单行」同构——保住无头测试零污染 |
+| **③ 行数口径** | `\n` 数 + 1，与 `RecalculateLines` 同源；O2（编辑器内 wrap）兑现时**只需改这一处真相源** |
+| 旧测试 | **不删，翻转成反向断言**（`TextBox.MultilinePreferred`）：装不下 ⇒ preferred > 当前；装得下 ⇒ 报内容高而非视口高；删行 ⇒ 变矮 |
+
+★ **负对照（证明测试不是装饰）**：`.scratch/ecdi_multiline_negctl.py` 四条变异，
+每条都要求测试**变红**，跑完按字节还原并校验 sha256：
+· M1 改回「返回当前尺寸」（缺陷本体）⇒ RED · M2 `ceil`→截断 ⇒ RED ·
+· M3 只增不减（`max(内容高, 当前高)`）⇒ RED · M4 无测量器时**编造 0 高**（而非退回）⇒ RED。
+基线 `487 passed / 0 failed`，还原后回到全绿。
+
+★★ **本轮两个「仪器先错」的实例，都靠负对照抓出来，如实记账**：
+1. **基线读错了版本**：第一次跑的是 `cmake-build-release-visual-studio/ecdi_tests.exe`（10-10 的陈旧
+   产物，372 用例），真实产物在 `Release/` 子目录（487 用例）。⇒ 之后的每一步都以 487 为基线。
+2. **M2 一度 STILL-GREEN**：`FakeTextMeasurer::LineHeight` 恒为 **16.0（整数）** ⇒
+   `行数×16` 恒为整数 ⇒ `ceil` 是**恒等变换**，取整方向在既有夹具上**根本不可观测**。
+   ⇒ 补了 `FractionalLineHeightTextBox`（行高 19.2，2 行 ⇒ 38.4）才让 M2 变红。
+   ★ 这与 harness 侧 M3 的结论**同源**：**整数行高会让「取整方向」这个契约隐形**。
+
+**本仓收敛（同日）**：`ComposerBox::ContentHeight` 的手算三行删除，改为
+`GetPreferredSize().height`；`LineHeightNow` 删除；`DesiredInputHeight` 不再
+`dynamic_cast`、不再自算 padding/行高。★ **`--grow-probe` 七相判据一字未改**，
+高度读数与收敛前**逐位相同**（29/46/63/132/29/29/63，light/dark 一致）——
+这正是收口的验收方式：行为不变，实现变干净。若哪一相变红，就说明框架的订正与旧行为不等价。
+
+
+---
+
+### REQ-13 窗口**无最小尺寸约束**——没有 API，也不处理 `WM_GETMINMAXINFO`，调用方只能在 resize 已发生之后拒绝
+
+> ★ **触发（2026-10-21）**：用户要求给窗口加最小尺寸约束（UI 打磨清单第 2 项）。查过后确认框架侧无入口，
+>   本仓只能在 `OnWindowResized` 里夹，**代价是可见的一次回弹**，故按铁律登记。
+> ★ **归属判据**：已读 ECDI 源码仓与安装前缀的公共头，并做全仓（含文档）关键词扫描；
+>   判据是**「该能力在框架里存不存在」**，不是「我方用法对不对」——本条属前者。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | （无——本轮新立；`status.txt` 的 MIN-SIZE 条目曾口头称它「an ECDI-side capability request」，但**从未落到本账本**，现补登） |
+| 状态 | 🔄 **开放**（ECDI 侧未闭合；本仓已有可用的**绕行**，只是不彻底） |
+| 归属 | **ECDI 侧**（框架无该能力；非 harness 用法问题） |
+| 现象 | 窗口可以被拖到任意小。ECDI **不拦**：① `include/ECDI/Window/Window.h` 的公开 API 里**没有任何尺寸约束函数**（`SetChromeMode`/`SetCaptionHeight`/`SetResizeInset`/`SetWindowLayer`/`SetWindowBackdrop`/`SetBackgroundColor`/`SetBounds`/`SetFocusedWidget`/`SetCaptureWidget`/`SetFileDropEnabled` 全表核对过，无名称为 `MinSize`/`MinimumSize`/`SetMinTrack` 者）；② `src/` 全树**不处理 `WM_GETMINMAXINFO`**——全仓（含 `docs/`）该串只出现 **1 次**，且是在 `Window.h:182` 的注释里说明 `SetBounds` 是「请求而非保证」时被顺带提及（原话：「超屏被移回 / 最大化态下受 `WM_GETMINMAXINFO` 影响」）⇒ **框架自己提到过这条消息，却从未拦截它** |
+| ★ 为什么这构成缺陷而不是「设计选择」 | 拖拽缩放的最小尺寸是**操作系统在 `WM_GETMINMAXINFO` 里问出来的**，这是 Win32 唯一能在**用户松手之前**拒绝尺寸的钩子。不拦它 ⇒ 系统先改完尺寸、再派发 `WM_SIZE`，框架此时已经是「事后」⇒ **任何调用方都只能事后纠正**，而事后纠正的可见后果就是窗口先缩后弹 |
+| ★ 调用方（本仓）现在怎么做 | `gui/src/App.cpp` 的 `HarnessApp::OnWindowResized`：⓪ 步 `ClampToMinimum()`，超下限则重发 `SetBounds` 并**直接 return**（不排版），让 `SetBounds` 自己派发的那次事件来排版；第二轮 `want == have` 收敛，**恰好两轮不成环**。下限 `880x460` 是**推导**的：中栏头 `padding 14×2 + 标题 300 + 三钮 28×3 + 间隙 8×4 = 444`，两翼 `侧栏 200 + 检查器 230 = 430` ⇒ 客户区最小宽 `874`（取 880）；垂直固定带 `顶栏 36 + 会话头 62 + composer 92 + 状态栏 26 = 216`，视口至少留 244 ⇒ 最小高 `460` |
+| ★ 可见代价（实测，非推测） | 把边框拖到下限以下时窗口会**先缩再弹回**——一次橡皮筋式的回弹，而不是在边框处硬停。这是「事后拒绝」的必然形状，不是实现没写好。消除它**只能**由框架在 `WM_GETMINMAXINFO` 阶段拦下 ⇒ 本条的全部理由 |
+| ★ 修法候选 | ⓐ **`Window::SetMinimumSize(int w, int h)`**（或 `SetSizeLimits`）：配置期 API，与 `SetResizeInset` 同组语义；Win32 侧在 `Win32PlatformWindow` 的窗口过程里处理 `WM_GETMINMAXINFO`、填 `ptMinTrackSize`（**注意单位是物理像素**，需按当前 DPI 折算——`Window.h:179-181` 的 `SetBounds` doc 明写入参是「屏幕坐标（DIP）」「与 `Application::Create(width, height)` 同口径」，而 `Win32PlatformWindow.cpp:825` 的 `case WM_SIZE:` 里用的是 `PixelsToDip(LOWORD(lParam), dpi)` ⇒ **框架在 `WM_SIZE` 已经做过一次 px→DIP 折算**，新的 `ptMinTrackSize` 必须走反方向，这里很容易再次吃单位口径的亏）。同时建议在 `WindowResizedEvent` 文档里**声明**「有最小尺寸时 resize 事件不会报出小于下限的尺寸」，否则消费者仍不知道要不要自己再夹一遍 · ⓑ 只在文档里补一句「最小尺寸由调用方在 resize 回调里自行钳制」——**不解决问题**，回弹照旧，只是把代价写明白了 · ⓒ 不做 |
+| ★ 不建议 | **不要**在 harness 侧再包一层 `WM_GETMINMAXINFO` 子类化窗口过程。ECDI 刻意不暴露 `HWND`：`include/ECDI/Platform/PlatformWindow.h:20`「Window 不接触 HWND/创建细节」（结构性约束，接口层就不带 Win32 类型）⇒ 绕过去要反查 `GetParent`/`EnumThreadWindows` 之类，**那正是这条边界想防的事**。★ 另注：`include/ECDI/Application/Application.h:78`「不绑定 Window、不暴露 HWND 或任何 Win32 类型（R3 / D1）」这句**出自 `PostToUi` 的 doc**（讨论异步投递为何不携带平台句柄），不是一条全局禁令——引用时不应把它当成窗口层的总原则，**真正撑住本条的是 `PlatformWindow.h:20` 与接口全表零 Win32 类型这两点** |
+| ★ 我方本轮处置 | 走 **ⓒ 事后钳制**（已知会回弹），并把代价**写在产品行为上**：`--resize-probe` 第 6 相 `min-size` 把窗口驱到 `640x360`（远低于下限），断言**整条事件链之后** `rootW >= 880` 且 `midW >= 444`——故意**不**断言 `ClampToMinimum() >= 880`（那是同义反复：我们写的就是 `max(880, x)`）。闸门 `m_minSizeEnforced` 让探针仍能造出「低于下限」的世界，否则破损状态不可达、「下限有效」与「没人试过」同形 |
+| ★ 取证（本仓） | `.scratch/scan_min_size.py` 递减扫：`1120/1000/940/900` 按请求生效，`880` 以下全部回 `880x700`；边界截图 `.scratch/resize-shots/bound-880.png`（三钮齐全）vs `bound-860.png`（第三个 `···` **被裁掉**）；负对照 `.scratch/probe_minsize_negctl.py` 两条变异均 RED（M1 删宽度钳制 ⇒ `root width 640 is below the floor 880 ... middle column 210 < head requirement 444`；M2 闸门默认 false ⇒ 差异串以 `setup: the floor is disabled` 开头）|
+
+★ **与 `REQ-12` 的形态对照（值得记）**：`REQ-12` 是「**同一框架两条规则矛盾**」——缺陷在框架内部，修答案即可；
+`REQ-13` 是「**框架根本没有这条能力**」——不是矛盾，是缺项，只能在框架侧加 API。
+判别方法也因此不同：`REQ-12` 靠**分支对读**（`TextBox` 与 `TextWidget` 的同名虚函数）判定，`REQ-13` 靠**全仓关键词扫描 + 公开 API 全表核对**判定。
+★ 另注：本仓对 `REQ-13` 的**绕行是可用且已验证的**，所以它不阻塞任何已规划功能——这一点与 `REQ-11`（当前零消费者）不同：
+`REQ-13` 的消费者**现在就在**，只是被迫接受一个可见缺陷。
+
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -499,8 +591,9 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | ★ `TODO-01` | **双主题令牌化**：`Theme.h` 从「编译期常量」改成「运行期可切换」，让 `harness-hifi-variant-c.html` 的浅色形态能在**真 GUI** 上验证，而不是只停在 HTML 原型 | ✅ **已落地**（2026-10-18）：`struct Theme` 53 色 + `sansFamily`，`MakeDark()`/`MakeLight()`，`SwitchTheme()` + **引用别名**（`inline const ECDI::Color& kX = g_theme.x`）⇒ 全仓 ~200 处按名引用**零改动**；`--theme dark\|light` CLI。★ 硬约束：只能在 `BuildUi()` 之前调（颜色值在 BuildUi 时被拷进各 `PanelStyle`）。回归双主题各 5 用例全 PASS。详见 `docs/variant-c-ecdi-mapping.md` §5 |
 | ★ `TODO-04` | **自绘标题栏随主题切色**：系统 `CaptionBar` 的底色/标题/三钮颜色在 ECDI 里全部写死（`CaptionBar.cpp:31/37` · `CaptionButton.cpp:14-27`），框架无 caption 样式令牌 ⇒ 深色主题下外观正常，`--theme light` 下标题栏仍是深灰（未验证，本轮才发现） | ✅ **已落地**（2026-10-18）：应用侧派生 `gui/src/ThemedCaptionBar.h`（`ThemedCaptionBar : ECDI::CaptionBar` + `ThemedCaptionButton : ECDI::Widget`），`Theme.h` 增 8 个 caption 令牌（`captionBg/captionInk/captionGlyph/captionGlyphHot/captionHover/captionPressed/captionCloseHover/captionClosePressed`）+ 8 个 `kCaption*` 别名；`App.cpp:388` 构造点换成派生类。**ECDI 一行未改**（铁律）。深色令牌与原生逐值相同 ⇒ 回归基线不变。★ 关键约束：派生类把基类三个按钮 `RemoveChild` 释放后，**绝不能**再调 `CaptionBar::SetSize`（→`RelayoutChildren` 解引用）或 `CaptionBar::OnPaint`（→`m_maxButton->SetGlyph`）⇒ 两个 override 都限定到 `ECDI::Widget` / `ECDI::Panel` 基类实现 |
 | ★ `TODO-05` | **`--theme light` 下未实际跑通全链验证**：本轮新增 caption 令牌后需按 §4 既有回归口径复跑，避免「只编译过、没实机看过」 | ✅ **已复跑并截图**（2026-10-18 晚）：10 组（2 主题 × demo/scale/realistic × gdi/gl）全部 `rc=0` 且 `seqGaps=0 / violations=0`（demo 8/19/43 · scale 2000/4590/8906 · realistic 220/717/1213，两主题逐项一致）⇒ 「换主题只改颜色令牌」这条结论对 caption 同样成立。截图 `.scratch/caption-theme/caption-*-top.png`：caption 底色浅 `#f8f9fb` / 深 `#26282d`，标题字 `#23262e` / `#ebecf0`，close glyph `#696f7b` / `#cfcfd5` ⇒ 三处颜色全部随主题切换。回归驱动 `.scratch/caption_theme_regress.py`、截图 `.scratch/caption_theme_shots.py`、读数 `.scratch/caption-theme-regress.log` / `caption-theme-shots.log` |
-| ★ `TODO-02` | **字体工厂**：全仓 `ECDI::Font` 构造散落 18 处、`family` 只有 `Consolas` 一个值，中文正文全部落到 SimSun；且 `AddLine()` 只在传了字号时才 `SetFont` ⇒ 同一界面里两种中文字形混排 | ✅ **已落地**（2026-10-18）：`harness::SansFont(float)` / `MonoFont(float)` 单一入口；`AddLine()` 改为无条件 `SetFont`（默认 `14.0f` = `Font::size` 出厂值）。深色刻意保留 `sansFamily = ""`（SimSun）作**回归基线**，浅色才用 `Microsoft YaHei` |
+| ★ `TODO-02` | **字体工厂**：全仓 `ECDI::Font` 构造散落 18 处、`family` 只有 `Consolas` 一个值，中文正文全部落到 SimSun；且 `AddLine()` 只在传了字号时才 `SetFont` ⇒ 同一界面里两种中文字形混排 | ✅ **已落地**（2026-10-18）：`harness::SansFont(float)` / `MonoFont(float)` 单一入口；`AddLine()` 改为无条件 `SetFont`（默认 `14.0f` = `Font::size` 出厂值）。★ **2026-10-22 订正**：原写「深色刻意保留 `sansFamily = ""`（SimSun）作回归基线，浅色才用雅黑」——该决定已被**推翻并撤回**：两主题现在**都**用 `Microsoft YaHei`（`Theme.h` 的 `MakeDark()` 里 `t.sansFamily = "Microsoft YaHei"`）。撤回理由见下条 `FONT-UNIFIED` 与 §6 的 v3.0 |
 | ★ `TODO-03` | **输入框焦点视觉**：ECDI 默认 `DrawFocusRect` 点线框，本项目输入框**启动即获焦**（验收 A2）⇒ 常态就是一圈蓝色虚线，与 variant-c 的实线描边形态冲突 | ✅ **已落地**（2026-10-18）：派生 `ComposerBox` 关掉点线框（`SetShowFocusRect(false)`），改让 `borderColor` 表达焦点（失焦 `kInputBorder` / 获焦 `kDarkAccent`）。★ **不是**直接关掉焦点框——那样焦点完全不可见，是拿可访问性换观感 |
+| ★ `FONT-UNIFIED` | **两主题字族统一**（用户报「中间上面三个按键深浅主题样子不同」，收窄为「three dots 暗色每个 dot 的间隔比浅色大」）：`gui/src/Theme.h:184` 深色 `sansFamily = ""` ⇒ ECDI 默认 face = **SimSun**，`Theme.h:281` 浅色 `"Microsoft YaHei"`，而 `SansFont()` 读 `g_theme.sansFamily` ⇒ **同一串字符被两个 face 光栅化** | ✅ **已落地**（2026-10-22）：`MakeDark()` 里 `t.sansFamily = "Microsoft YaHei"`（改一行）。★ 实测比用户报告更严重：浅色把 `·`(U+00B7) 渲成**一条 9px 实心横杠**（三点粘连），深色是**三个独立 2px 点、中心距 12.0px**；浅色 `↗`/`≡` 另带 ClearType 彩边（15 种墨色 vs 3 种）⇒ 根因是**字族**不是间距。修后 `dump_dots3.py` 两主题 run 数/pitch/墨色数完全一致（`SAME=True`）。代价：深色 paints 变（demo 22→23 · realistic 17→19 · cot 21→22 · scale 21→23），**此前深色 paints/frames 不可直接对比**；六夹具 × 两主题的结构读数（blocks/deltas/messages）全不变。★ 这是本仓第一次有意改变深色字形基线，`TODO-02` 里「深色刻意保留 SimSun 作回归基线」一句已随之作废 |
 
 ---
 
@@ -532,6 +625,51 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 
 ## §6 修订记录（新在前）
 
+- **v3.0（2026-10-22）★ UI 打磨七项落地 + 新立 `REQ-13` + 撤回「深色保留 SimSun 作回归基线」这一决定**：
+  ① **七项**（用户按清单逐项点名，全部已落地并各带探针与负对照）：**空回调**（中栏头 `↗`/`···` 从
+  `(void)tip; return;` 变成真动作，`HeadAct` 枚举取代单 `bool toggleInspector`）·**字体统一**（见 ③）·
+  **窗口可拉伸**（此前全仓零处 `WindowResized` 处理，行宽是 `Relayout()` 量出来的，`Resize` 之后不重量）·
+  **最小尺寸**（新立 `REQ-13`）·**Enter 发送 / Shift+Enter 换行**（改前两个键**都是死的**，
+  `SetSingleLine(true)` 让 `TextBox` 的 `InsertText("\n")` 永不执行）·**HUD 审计**
+  （`backendChip`/`sessSession`/`sessCore` 三个字段**读而不写**）·**多行自动长高**（`REQ-12`）。
+  ② ★ **一条共性，比七项本身更值得记**：七项里有**四项**在改前是「控制看起来在、其实什么也不做」——
+  空回调、backendChip（`RefreshHud` 每 tick 求值一个恒假的 `if`）、Enter 键（提示行写「点击发送提交」
+  是对缺陷的**如实描述**）、resize（行宽不跟随，右侧一片白）。它们的共同形状是**静默**：
+  没有崩溃、没有日志、探针全绿。⇒ 判据因此从「有没有报错」改成「**这个东西建过没有 / 动过没有**」，
+  `--hud-probe` 的 `HudTouch` 就是这条判据的机械形式（`m_hudAudit` 默认 false ⇒ 产品路径零开销）。
+  ③ ★★ **撤回一条自己写下的决定**：`TODO-02` 里「深色刻意保留 `sansFamily = ""`（SimSun）作**回归基线**，
+  浅色才用雅黑；两主题字形不同是**有意为之**」——**作废**。两主题现在都用 `Microsoft YaHei`。
+  撤回理由不是审美：用户报「three dots 暗色每个 dot 的间隔比浅色大」，实测比报告更严重——
+  浅色把 `·`(U+00B7) 渲成**一条 9px 实心横杠**（三点粘连），深色是**三个独立 2px 点、中心距 12.0px**；
+  浅色 `↗`/`≡` 另带 ClearType 彩边（15 种墨色 vs 3 种）。根因正是**两套字族**。
+  ⇒ 判定：**让同一个控件在两主题下长得不一样，不是「有意为之」，是可预期的缺陷源**；
+  「回归基线」这个词在这里被用错了——基线是**为了让改动可被观测**，不是**为了让两张图不一样**。
+  代价照付：深色 paints 变（demo 22→23 · realistic 17→19 · cot 21→22 · scale 21→23），
+  **今天之前的深色 paints/frames 不可直接对比**；结构读数（blocks/deltas/messages）六夹具 × 两主题全不变。
+  这是本仓**第一次有意改变深色字形基线**。
+  ④ ★★ **本轮最重要的方法论收获：仪器错了三次，每次都是「自动检测器里藏了没写出来的假设」**（都已记入 `status.txt`）：
+  - 裁切框锚在扫描右缘、正好落在画布边 ⇒ 把最后一个按钮**切掉一半**，然后"发现"按钮少了一个；
+  - 判按钮底色用「行上第二常见色」，换字体后计数跌破硬阈值，**静默退化**成页面底色（量出 86px 的"按钮"）；
+  - 用「颜色种类最多的行」定位字形行，两主题各挑到一行不同位置的行。
+  ⇒ 最后能用的办法是**不检测**：坐标取自探针自己的读数，再打 ASCII 位图人工看。
+  ★ 同族还有两例：`export-text` 首版数「以 `[` 开头的行数」立刻红（9 vs 8，错的是仪器——`[ask]` 行也以 `[` 开头）；
+  `enter-sends` 首版数 `kind=="user"` 的块、断言发送相 +1 立刻红（1→1），
+  因为回放模式下 `SendPrompt` 走 `AddNoticeRow("[prompt 仅记录] …")`、**永不产生 user 块**。
+  **若相信推理而不跑，会去「修」一段本来正确的代码。**
+  ⑤ ★ **探针反过来抓到我自己的布置错**：加最小尺寸后 `shrink` 相变红，因为它请求 `base−320=800`、
+  被下限正确拒绝——判据没错、**测试布置错了**。改成 `base−240=880`（正好下限），
+  把「低于下限」留给专门的 `min-size` 相：**两个不同命题不能挤在一相**。
+  ⑥ **新立 `REQ-13`**（窗口无最小尺寸约束）：详见该条。★ 它的取证方法与 `REQ-12` **不同**——
+  `REQ-12` 靠**分支对读**（同一虚函数两条规则打架），`REQ-13` 靠**全仓关键词扫描 + 公开 API 全表核对**
+  （`WM_GETMINMAXINFO` 在 ECDI 含 `docs/` 全树只出现 1 次，且是注释里顺带提及，从未被拦截）。
+  ⑦ **一条流程纪律**（第三次同族）：批量改源文件时**不要用行数组写入器**（`[IO.File]::WriteAllLines` /
+  `Path.write_text`）。本轮用它插 22 处埋点，把 `gui/src/App.cpp` 整体写成 CRLF（8990 行），
+  `probe_hud_negctl.py` 当场拒绝运行（`REFUSING: App.cpp is not LF-only`）——
+  **那个前置检查正是为此存在**。已按字节归一 + sha256 复核。
+  ⑧ **`REQ-12` 收口后的清理**：负对照三条 needle 因收敛而失配（`SKIP needle hits=0`），
+  两个脚手架函数（`ContentHeight`/`LineHeightNow`）与一个只为它们的 `#include` 已删，
+  头注释从「手抄三个量」改写为「内容高问框架，本类只管 clamp」（原注释还引用了一个**已不存在**的 `kInputMinH`）。
+  `--grow-probe` 删死物前后读数**逐位相同**（29/46/63/132/29/29/63）。
 - **v2.9（2026-10-18 晚）★ 系统标题栏随主题切色（`TODO-04` 落地 + `TODO-05` 复跑闭合）**：
   ① **触发**：§5 落地的是 HUD 顶栏（36px），窗口最上面那条 32px `ECDI::CaptionBar` 仍用 ECDI 硬编码深色
   （`CaptionBar.cpp:31` 底色 `#26282d` + `:37` 标题 `#ebecf0`）⇒ `--theme light` 下「上面糊了一条深色带」。
@@ -587,6 +725,9 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
   ⑦ **仍未兑现（诚实边界）**：字重层级（`REQ-10`）· 阴影/渐变（无原语）·
   **CJK 加粗两链无公共解** · **中文字形只在 `sansFamily` 非空时改善**（深色刻意保留 SimSun 作回归基线；
   换雅黑行高 +19%：SimSun 16 → YaHei 19 @14px，需连带调所有硬编码行高）。
+  ★ **2026-10-22 前向指针（不改写上文，只标注）**：本段 ⑦ 里「深色刻意保留 SimSun 作回归基线」一句**已作废**，
+  两主题现均为 `Microsoft YaHei`；作废理由见本文件 §6 的 `v3.0` ③ 与 `FONT-UNIFIED` 行。历史记录保留原貌，
+  以免读者以为「当时的判断本来就不存在」。
 - **v2.7（2026-10-18）★ 新立 `REQ-10`（`Font` 表达力）+ `REQ-11`（alpha 双链不对等）+ 推翻本仓库自己的两个错误结论**：
   ① **触发**：用户给出高保真原型 `docs/prototype/harness-hifi-variant-c.html`，要求评估落地缺口。
   原型用 10 处 `font-weight: 600/650/700` 建立层级 ⇒ 必须先回答「ECDI 能不能画字重」。

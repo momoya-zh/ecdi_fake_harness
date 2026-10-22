@@ -5,6 +5,11 @@
 #include <Windows.h>
 #include <ShlObj.h>
 #include <objbase.h>
+// ★★ 2026-10-20：导出转录的保存对话框（`GetSaveFileNameW`）。
+//   它与已有的 `SHBrowseForFolderW`（选文件夹）同属 Windows 壳对话框族，
+//   但声明在 `commdlg.h` 而**不在** `ShlObj.h` 里 ⇒ 必须单独包，
+//   且在 `gui/CMakeLists.txt` 里要链 `comdlg32`。
+#include <commdlg.h>
 
 #ifdef DrawText
 #undef DrawText
@@ -25,11 +30,17 @@
 #include "ECDI/EventSystem/Input/Mouse/MouseButton.h"
 #include "ECDI/EventSystem/Input/Mouse/MouseButtonDownEvent.h"
 #include "ECDI/EventSystem/Input/Mouse/MouseButtonUpEvent.h"
+// ★★ 2026-10-21：Enter 发送探针要合成真按键（`SynthesizeKey`）⇒ 完整类型。
+#include "ECDI/EventSystem/Input/KeyBoard/KeyDownEvent.h"
 #include "ECDI/EventSystem/Window/TimerEvent.h"
 #include "ECDI/Layout/HorizontalLayout.h"
 #include "ECDI/Layout/ListLayout.h"
 #include "ECDI/Layout/VerticalLayout.h"
 #include "ECDI/Theme/PanelStyle.h"
+// ★★ 2026-10-21：`--grow-probe` 的 exact-fit 相要读输入框**内部**滚动条的可见性
+//   （`TextBox::GetVerticalScrollBar` 返回 `ScrollBar*`）⇒ 完整类型。
+#include "ECDI/Widget/ScrollBar.h"
+#include "ECDI/Widget/TextBox.h"
 #include "ECDI/Window/Window.h"
 #include "ECDI/Window/CaptionBar.h"
 
@@ -40,6 +51,7 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -324,6 +336,16 @@ void HarnessApplication::OnTimer(const ECDI::TimerEvent& event) {
         }
     }
     ECDI::Application::OnTimer(event);   // 光标闪烁 / 动画 tick
+}
+
+// ★★ 2026-10-21：窗口拉伸 → 走我们自己的重排链。
+//   ★ 顺序不可换：**先**让基类同步 `RootWidget` 尺寸（基类 `OnWindowResized` 干的就是
+//     这一件事），**再**重排。反过来的话，`Relayout()` 会拿 `m_scroll` 的**旧宽度**
+//     去测每一行 ⇒ 重排白跑一次，下一帧才发现宽度已经变了。
+//   ★ 这里**不**重建树、**不**重建转录视图：尺寸不属于模型，`Relayout()` 已经覆盖。
+void HarnessApplication::OnWindowResized(const ECDI::WindowResizedEvent& event) {
+    ECDI::Application::OnWindowResized(event);   // ① root 尺寸同步（必须在重排之前）
+    if (m_owner) m_owner->OnWindowResized(event.GetWidth(), event.GetHeight());
 }
 
 // ── 构造 / 运行 ────────────────────────────────────────────────
@@ -1594,7 +1616,13 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     // （ECDI 原生 CaptionBar 把颜色写死，跟不了主题 —— 见 ThemedCaptionBar.h 头注）。
     auto caption = std::make_unique<harness::ThemedCaptionBar>(
         window, "ECDI harness - " + m_options.fixtureName);
-    caption->SetSize(1120, ECDI::CaptionBar::kDefaultHeight);
+    m_caption = caption.get();
+    // ★★ 2026-10-21：宽度不再写死 1120 —— 取当前客户区宽度。
+    //   写死的后果：窗口一拉伸，标题栏（它自己画最小化/最大化/关闭三个钮）就停在
+    //   1120 宽的位置，右侧留一条同色空白、三个钮不在窗口右上角。
+    //   ★ 这里读的是**构造时**的真实宽度；运行期变化由 `OnWindowResized` 接手。
+    caption->SetSize(std::max(320, window.GetRootWidget().GetWidth()),
+                     ECDI::CaptionBar::kDefaultHeight);
     root.AddChild(std::move(caption));
 
     BuildTopBar(root);
@@ -1679,6 +1707,13 @@ void HarnessApp::RebuildUi() {
             m_promptBar->input()->SetText(draft);
             m_promptBar->input()->MoveCaretToEnd();
         }
+        // ★★ 2026-10-21：草稿恢复**必须显式重算高度**。
+        //   `SetText` 不走 `RaiseTextChanged`（D7 契约），而 `ComposerBox` 的自动长高
+        //   挂在 `OnTextChanged` 上 ⇒ 这里若不同步，一个 3 行的草稿会在重建后
+        //   被塞回单行高（垂直压扁、光标跑到框外）——而 `CompareUi` 的
+        //   `inputText` 通道**读的是文本，看不见高度**，所以这个缺陷在整树重建
+        //   探针里是全绿的。这正是"读文本看不见几何"那条老账。
+        m_promptBar->SyncInputHeight();
         // ⑨ 焦点交还输入框：既恢复 caret 闪烁（证明焦点真的回来了），
         //    也让 `Application::OnTimer` 重新有派发目标（否则 tick 停摆）。
         m_window->SetFocusedWidget(m_promptBar->input());
@@ -1688,6 +1723,21 @@ void HarnessApp::RebuildUi() {
     if (!m_sidebarVisible && m_hud.sidebar) {
         m_hud.sidebar->SetVisible(false);
         if (ECDI::Widget* parent = m_hud.sidebar->GetParent()) parent->Arrange();
+    }
+    // ★★ 2026-10-20⑩b / 2026-10-21 订正：`···` 菜单条的显隐同样是模型侧状态。
+    //   ★ 原文写的是「新树的菜单条是**可见**的（`BuildUi` 建完还没投影）」——
+    //     那句在 2026-10-21 之后**已经不成立**：`BuildMainArea` 现在建完就按
+    //     `m_moreMenuOpen` 投影了（缺陷经过见那一段的注释）。留着旧说法会让人以为
+    //     这里在补一件 `BuildUi` 没做的事，而实际上两处做的是同一件事。
+    //   ★ 之所以**仍然保留**这一步：`BuildUi` 那句只在**建树那一刻**读模型，
+    //     而这里是整树重建收尾前的最后一道对齐；代价是一次赋值 + 一次 Arrange，
+    //     且 `SetVisible` 同值不 Invalidate（`Widget.cpp:427-446`）。
+    //   ★ 仍然直接打 `SetVisible` 而不调 `SetMoreMenuOpen`：后者带同值守卫
+    //     （`m_moreMenuOpen == open` 直接返回），这里要的是「把控件状态对齐到模型」，
+    //     两者不是一回事；且它还会 Relayout/Repaint，此处收尾会统一做。
+    if (m_hud.moreMenu) {
+        m_hud.moreMenu->SetVisible(m_moreMenuOpen);
+        if (ECDI::Widget* parent = m_hud.moreMenu->GetParent()) parent->Arrange();
     }
 
     // ⑪ 收尾：环进度条的颜色级别缓存要作废（新控件 + 新令牌），HUD 全量刷一次。
@@ -1799,6 +1849,30 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     auto rowLabel = uikit::Centered("autosize", 80, 20, kDarkMuted, 11.0f, /*mono=*/false);
     m_hud.rowChip = rowLabel.get();
     bar->AddChild(makeChip(std::move(rowLabel), 80, false));
+
+    // ★★ 2026-10-21：后端读数胶囊（`gdi` / `gl`）。
+    //
+    //   【改前是什么样】`Hud::backendChip` **只被读过、从没被写过**：`RefreshHud`
+    //     里有 `if (m_hud.backendChip) { ...SetText(m_backendName + " ▽") }`，
+    //     而建树处**根本没有这个控件** ⇒ 那个分支永远不成立，屏幕上从来没有它。
+    //     也就是说：一个"看起来存在的读数"实际上不存在，而代码里读得若有其事。
+    //     这与 `sessSession` / `sessCore` 是同一类（读了但永不写），
+    //     故一并处理，并且把这一类做成了可机检的判据（`--hud-probe`）。
+    //
+    //   【为什么**不**画 `▽`】原代码拼的是 `m_backendName + " ▽"`，`▽` 是个
+    //     "可以点开选"的暗示。但后端**在 `Create` 时就定死了**（`--gl` /
+    //     `--backend`，运行期没有任何切换路径：全仓只有一处给 `m_backendName`
+    //     赋值，就在 GL 就绪检查之后），切后端要重建整个 `PlatformWindow`。
+    //     ⇒ 画一个下拉箭头等于承诺一个不存在的菜单——这正是本步要清掉的那类
+    //     "看着能点、其实不能"。所以这里**只显示名字**，不带箭头。
+    //   ★ 也不做成 Button：它没有动作可做。做成按钮就是把人引到一条死路上。
+    //   ★ **必须**把句柄存进 `Hud`：否则 `RefreshHud` 里那个 `if` 又变成死分支
+    //     ——那正是它改前的状态。建树时赋值是这条链唯一的写入点。
+    {
+        auto backendLabel = chipLabel(m_backendName, kDarkMuted, 52);
+        m_hud.backendChip = backendLabel.get();
+        bar->AddChild(makeChip(std::move(backendLabel), 52, false));
+    }
 
     bar->AddChild(uikit::DotCell(8, kOkDark, 20, &m_hud.statusDot));
 
@@ -2064,8 +2138,13 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
         // 操作钮：C 是 3 个 iconbtn（↗ ☷ ···）——`↗` 两主题都有字形，
         // `☷` 与 `⋯`(U+22EF) 都没有 ⇒ 后两个用 ASCII 文字（诚实降级，不画缺字图标）。
+        // ★★ 2026-10-20：动作从「`bool toggleInspector`」改为枚举。
+        //   原来一参布尔只能表达「是不是检查器」，于是 `↗`/`···` 只能落到
+        //   `(void)tip; return;`（空回调）。加动作就得加枚举——否则第三个布尔参
+        //   会变成 `mkAct("···", "更多", false, true)` 那种读不懂的调用。
+        enum class HeadAct { Export, Inspector, Menu };
         auto mkAct = [&head, this](const std::string& text, const std::string& tip,
-                                   bool toggleInspector = false) {
+                                   HeadAct act) {
             auto b = std::make_unique<ECDI::Button>(text);
             b->SetTextColor(kDarkMuted);
             b->SetFont(harness::SansFont(harness::kFontSmall));
@@ -2082,10 +2161,22 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                 .pressedBackground = kToolHeaderPressed,
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(28, 24);
-            if (toggleInspector) m_hud.inspectorToggle = b.get();
-            b->SetOnClick([this, tip, toggleInspector] {
-                (void)tip;
-                if (!toggleInspector || !m_hud.inspector) return;
+            if (act == HeadAct::Inspector) m_hud.inspectorToggle = b.get();
+            else if (act == HeadAct::Export) m_hud.exportToggle = b.get();
+            else m_hud.moreToggle = b.get();
+            b->SetOnClick([this, tip, act] {
+                (void)tip;   // 提示文字目前无处显示（ECDI 无 tooltip 控件）；保留参数为将来
+                switch (act) {
+                case HeadAct::Export:
+                    (void)ExportTranscript();
+                    return;
+                case HeadAct::Menu:
+                    ToggleMoreMenu();
+                    return;
+                case HeadAct::Inspector:
+                    break;
+                }
+                if (!m_hud.inspector) return;
                 m_inspectorVisible = !m_inspectorVisible;
                 m_hud.inspector->SetVisible(m_inspectorVisible);
                 if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
@@ -2094,10 +2185,80 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             });
             head->AddChild(std::move(b));
         };
-        mkAct("↗", "分享");
-        mkAct("≡", "检查器", true);
-        mkAct("···", "更多");
+        mkAct("↗", "导出转录", HeadAct::Export);
+        mkAct("≡", "检查器", HeadAct::Inspector);
+        mkAct("···", "更多", HeadAct::Menu);
         counting->AddChild(std::move(head));
+    }
+
+    // ── ★★ 2026-10-20：`···` 菜单条（内联下拉）───────────
+    // 位置：`head` 与 `scroll` **之间**——点 `···` 后在头部正下方撑开一行，
+    //   下方转录区自然下移。为什么不做真浮层见 `Hud::moreMenu` 的注释（ECDI
+    //   没有菜单控件也没有跳过布局机制，浮层要跟三条 Arrange 路径手工对齐）。
+    // ★★ 【2026-10-21 实测缺陷】建树时必须**按模型值**投影显隐，不能留默认可见。
+    //   第一次落地时这里只写了 `SetSize`，把「默认隐藏」当成注释里的意图；
+    //   而 `Widget` 的缺省状态是**可见**（`m_state.visible` 初值）⇒ 启动第一帧
+    //   菜条就撑在头下面。截图证据 `.scratch/mid-shots/before-open-mid.png`：
+    //   四个菜单项（导出/归档/清空视图）在**谁也没点 `···`** 时就挂在屏上，
+    //   转录区被顶下去 34px。`RebuildUi` ⑩b 里那条投影**只救重建路径**，
+    //   救不了首帧（`BuildUi` 跑完就直接 `Arrange` 了）。
+    //   ⇒ 唯一正确的写法是建完立刻投影一次模型值：`m_moreMenuOpen` 的初值是 false，
+    //     于是首帧是关的；而「菜单开着时换主题」走的也是同一句（重建后 ⑩b 再投影）。
+    //   ★ 这里打 `SetVisible` 而不是 `SetMoreMenuOpen`：后者带同值守卫
+    //     （`m_moreMenuOpen == open` 就返回），首帧两条都是 false ⇒ 会直接返回、
+    //     **一句 SetVisible 都不发**，缺陷原样留下。守卫防的是「重复动作」，
+    //     而这里要的是「把控件状态对齐到模型」，两者不是一回事。
+    {
+        auto menu = std::make_unique<ECDI::Panel>();
+        m_hud.moreMenu = menu.get();
+        menu->SetVisible(m_moreMenuOpen);   // ★ 见上：缺这一句 = 首帧露出 34px 空洞
+        menu->SetSize(600, 34);
+        menu->SetStyle(ECDI::PanelStyleOverride{
+            .background = m_options.probeContrast ? kProbeBg : kPanel2,
+            .borderWidth = 1.0f,
+            .borderColor = m_options.probeContrast ? kProbeBg : kLine});
+        menu->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 8));
+
+        // 三件都是**真实动作**（本步的目的：不再有空回调）：
+        //   导出 = 同 `↗`；归档 = 同侧栏的「↓」；清空视图 = 重建视图（不碰模型）。
+        auto mkMenuItem = [&menu, this](const std::string& label, const char* tip,
+                                        std::function<void()> action) {
+            auto b = std::make_unique<ECDI::Button>(label);
+            b->SetTextColor(kDarkInk);
+            b->SetFont(harness::SansFont(harness::kFontSmall));
+            b->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b->SetSize(84, 24);
+            (void)tip;
+            b->SetOnClick([this, action = std::move(action)] {
+                // ★ 先合菜单再做事：动作本身可能弹对话框（导出）/ 改活动会话（归档），
+                //   菜单留在原处会让人以为下一步还能点。
+                SetMoreMenuOpen(false);
+                action();
+            });
+            menu->AddChild(std::move(b));
+        };
+        mkMenuItem("导出", "导出转录到文件", [this] { (void)ExportTranscript(); });
+        mkMenuItem("归档", "归档当前会话", [this] {
+            if (!m_sess) return;
+            for (size_t i = 0; i < m_sessions.size(); ++i) {
+                if (m_sessions[i].get() == m_sess) {
+                    (void)ArchiveSessionAt(i);
+                    return;
+                }
+            }
+        });
+        // ★ 「清空视图」= 从模型重建视图（`RebuildTranscriptView`）。
+        //   ★ 不写成「清空 m_sess->timeline」：那会**真的删掉转录模型**——
+        //     而 `timeline` 是历史会话/重建/导出的唯一来源，删了就找不回来。
+        //     这里要的是「视图错乱了就重画一遍」，模型的作者不是这个按钮。
+        mkMenuItem("清空视图", "从模型重画视图", [this] { RebuildTranscriptView(); });
+        counting->AddChild(std::move(menu));
     }
 
     auto scroll = std::make_unique<ECDI::ScrollView>();
@@ -2119,6 +2280,10 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         SendPrompt(text);
         if (m_promptBar && m_promptBar->input()) {
             m_promptBar->input()->SetText("");   // 已发出/记录，输入框清空（聊天惯例）
+            // ★★ 2026-10-21：清空是 `SetText` 路径 ⇒ 自动长高不会自己知道。
+            //   不同步的症状很难看：发出一条 3 行的消息后，框里已经空了，
+            //   但它仍占 3 行高、提示行与按钮被推到下面 —— 看起来像"卡住了"。
+            m_promptBar->SyncInputHeight();
         }
     });
     composer->SetOnStop([this](const std::string&) {
@@ -2438,6 +2603,28 @@ void HarnessApp::OnReplayTick() {
             if (m_options.answerProbe && !m_answerProbeDone) {
                 RunAnswerProbe();
             }
+            // ★★ 2026-10-21 菜单/导出探针：同步跑完即 Exit，同上。
+            //   ★ 必须排在 `RunSidebarProbe` **之后**：侧栏那一支收尾会 Exit，
+            //     排在它前面的探针才有机会跑。
+            if (m_options.menuProbe && !m_menuProbeDone) {
+                RunMenuProbe();
+            }
+            // ★★ 2026-10-21 窗口拉伸探针：同步跑完即 Exit，同上。
+            if (m_options.resizeProbe && !m_resizeProbeDone) {
+                RunResizeProbe();
+            }
+            // ★★ 2026-10-21 Enter 发送探针：同步跑完即 Exit，同上。
+            if (m_options.enterProbe && !m_enterProbeDone) {
+                RunEnterProbe();
+            }
+            // ★★ 2026-10-21 输入框自动长高探针：同步跑完即 Exit，同上。
+            if (m_options.growProbe && !m_growProbeDone) {
+                RunGrowProbe();
+            }
+            // ★★ 2026-10-21 HUD 覆盖探针：同步跑完即 Exit，同上。
+            if (m_options.hudProbe && !m_hudProbeDone) {
+                RunHudProbe();
+            }
             // ★★ Step 4 主题/整树重建探针：排在最后。
             //   ★ 与前五个不同，它是**跨 tick** 的（toggle 相要点真实按钮，
             //     而重建被延迟到下一个 tick）⇒ 它**不能**和上面的同步探针同 tick 共存：
@@ -2512,6 +2699,102 @@ void HarnessApp::OnSweepTick() {
     if (m_sweepDone && m_application) {
         m_application->Exit();
     }
+}
+
+// ★★ 2026-10-21：窗口缩放的**下限**（理由与常量来源见 `App.h` 的 `kMinClientW` 注释）。
+//
+//   ★ 返回值是**实际生效**的尺寸，调用方必须用它（而不是原始入参）——否则
+//     就会出现"算出了下限、却按原始尺寸排版"的分裂状态。
+//   ★ `m_minSizeEnforced` 为 false 时原样返回：探针要能造出"低于下限"的世界，
+//     否则"下限真的拦住了吗"这件事无从检验（同所有负对照的纪律）。
+ECDI::Size HarnessApp::ClampToMinimum(int width, int height) const {
+    ECDI::Size out;
+    out.width = static_cast<float>(width);
+    out.height = static_cast<float>(height);
+    if (!m_minSizeEnforced) return out;
+    if (out.width < static_cast<float>(kMinClientW)) {
+        out.width = static_cast<float>(kMinClientW);
+    }
+    if (out.height < static_cast<float>(kMinClientH)) {
+        out.height = static_cast<float>(kMinClientH);
+    }
+    return out;
+}
+
+// ★★ 2026-10-21（用户要求「先把 UI 完善」第 1 项）：窗口可拉伸。
+//
+// 【改前是什么样】`App.cpp` 用 `Create(..., 1120, 760)` 建窗，`caption` 也是
+//   `SetSize(1120, ...)` 定宽，全仓**零处**响应窗口尺寸变化。实测
+//   （`.scratch/probe_resize_shots.py`，真 `SetWindowPos` 走真 WM_SIZE）：
+//     · 拉到 1400x900 —— 转录行**仍是 1120 时的宽度**，右侧空出一大片白；
+//     · 压到 800x560 —— 行**比视口还宽**，出现横向滚动条，文字在窗口右缘被截断。
+//   两种症状同一个原因：行的宽度是 `Relayout()` 按 `ContentWidth(m_scroll)` **量**出来的，
+//   而没人再调过它。ECDI 自己只同步 `RootWidget` 尺寸，它不知道我们的行是测量出来的。
+//
+// 【为什么不重建视图】尺寸不属于模型。`RebuildTranscriptView` 会清空行表、重放
+//   整个 timeline、重算滚动位置——那是给「模型变了」用的。这里只需要重测宽度。
+//   代价差得很远：重建会把每一行（含折叠体）重新测量一遍，而 `Relayout` 只碰宽度
+//   真正变了的行（`lastWrapW` / `lastBodyW` 有同值守卫）。
+//
+// 【顺序为什么是这五步】
+//   ① caption 改宽 —— 它内部按 `GetWidth()` 排三个系统钮，不改宽三个钮就停在原地；
+//   ② `root.Arrange()` —— `VerticalLayout(fillCrossAxis=true)` 把新宽度下发到三个栏；
+//      漏了这一步，下面的 `Relayout` 会拿**旧**的 `m_scroll->GetWidth()` 去测；
+//   ③ `Relayout()` —— 按新内容宽重测每一行、重算滚动范围；
+//   ④ `FollowTailIfPinned()` —— 用户在底部时保持贴底，否则一拉伸就被甩上去；
+//   ⑤ `RequestRepaint()` —— 几何变了必须重画（`Arrange` 本身不 Invalidate）。
+void HarnessApp::OnWindowResized(int width, int height) {
+    if (!m_window) return;
+
+    // ⓪ 下限钳制。★ **必须**排在所有排版动作之前：基类已经把 root 设成了
+    //   这次事件的原始尺寸，若这里不先把它推回下限，`Arrange` 就会按
+    //   "低于下限的尺寸"排一遍、再被下一帧纠正 ⇒ 一次可见的闪动。
+    //   ★ 比较对象是**客户区**（`kMinClientW/H` 都是客户区口径），而
+    //     `GetBounds` 给的是**含边框总尺寸** ⇒ 必须把边框差值补回去。
+    const ECDI::Size clamped = ClampToMinimum(width, height);
+    const int wantW = static_cast<int>(clamped.width);
+    const int wantH = static_cast<int>(clamped.height);
+    if (wantW != width || wantH != height) {
+        ECDI::Rect b = m_window->GetPlatformWindow().GetBounds();
+        const ECDI::Size cur = m_window->GetPlatformWindow().GetClientSize();
+        if (b.width > 0.0f) {
+            b.width = static_cast<float>(wantW) + (b.width - cur.width);
+            b.height = static_cast<float>(wantH) + (b.height - cur.height);
+            // ★ 这一次 `SetBounds` 会**再派发一次** `WindowResized`（尺寸真变了），
+            //   那一轮进来时 `wantW == width` 成立 ⇒ 不会再进来，收敛。
+            m_window->GetPlatformWindow().SetBounds(b);
+            // 重排交给下一轮那个事件做：此处直接 return，避免按旧尺寸排一次。
+            return;
+        }
+    }
+
+    const int effW = wantW;
+    const int effH = wantH;
+
+    // ① 标题栏跟着改宽（它创建时是定宽的）
+    if (m_caption) {
+        const int w = std::max(320, effW);
+        if (m_caption->GetWidth() != w) m_caption->SetSize(w, m_caption->GetHeight());
+    }
+
+    // ② root 重排。★ 基类已经把 root 的尺寸设好了，这里只是让布局把新宽度用起来。
+    //   ★ 钳制路径下 root 可能仍是上一次的尺寸（`SetBounds` 的事件还没来），
+    //     故显式对齐一次，保证"排版用的尺寸 == 生效的尺寸"。
+    ECDI::Widget& root = m_window->GetRootWidget();
+    if (root.GetWidth() != effW || root.GetHeight() != effH) {
+        root.SetSize(effW, effH);
+    }
+    root.Arrange();
+
+    // ③ 重测每一行（内容宽变了 ⇒ 折行位置变了）
+    //   ★ 空会话（回放模式下新建的）`rows` 为空，`Relayout` 内部对空表安全；
+    //     但仍要先确认 `m_content` 在——`BuildUi` 之前不该走到这里。
+    if (!m_content || !m_sess) return;
+    Relayout();
+
+    // ④ 贴底保持 + ⑤ 重画
+    FollowTailIfPinned();
+    RequestRepaint();
 }
 
 void HarnessApp::DrainInstant() {
@@ -3404,6 +3687,20 @@ void HarnessApp::SynthesizeClickAt(int x, int y) {
     m_application->OnEvent(down);
     ECDI::MouseButtonUpEvent up(m_window, x, y, ECDI::MouseButton::Left);
     m_application->OnEvent(up);
+}
+
+// ★★ 2026-10-21：合成一次真实按键（Enter 发送探针用）。
+//   ★ 与 `SynthesizeClickAt` 同一纪律：走 `Application::OnEvent`，不直接调
+//     `PromptBar::Submit()`。直接调会把"这个按键真的派给了输入框吗"整个绕过——
+//     那正是要检验的命题（回调接没接上与函数对不对是两件事）。
+//   ★ 键盘是**单收件人**语义（`Application::OnKeyDown` 的注释：不冒泡），
+//     所以这里合成的事件只会交给当前焦点控件 ⇒ 焦点在哪就是自变量。
+void HarnessApp::SynthesizeKey(ECDI::KeyCode code, bool shift) {
+    if (!m_window || !m_application) return;
+    const ECDI::KeyModifier mod =
+        shift ? ECDI::KeyModifier::Shift : ECDI::KeyModifier::None;
+    ECDI::KeyDownEvent down(m_window, code, mod);
+    m_application->OnEvent(down);
 }
 
 void HarnessApp::RunHitProbe() {
@@ -4665,6 +4962,1095 @@ void HarnessApp::RunAnswerProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ 2026-10-21：中栏头 `↗`（导出）/ `···`（菜单）的取证。
+//
+// 要回答的问题：**这两个钮点下去真的有事发生吗，而且是「对」的那件事吗？**
+//   改之前它们是空回调（`(void)tip; return;`），而这一点在**任何**既有读数里
+//   都看不出来：侧栏探针只碰侧栏、主题探针只碰重建，中栏头从来没有判据。
+//
+// 判据设计（每条都带一条能让它变红的负对照）：
+//   ① menu-closed   模型 false ∧ 控件不可见 ∧ **不占槽**（scrollTop == headBottom）
+//      ★ 为什么不能只看 `IsVisible()`：布局只在 Arrange 时跳过隐藏子（C-VIS-1）。
+//        只改可见性不重排，`IsVisible()` 是 false 而屏幕上仍留着 34px 空洞——
+//        这正是本次实测抓到首帧缺陷的同一形状（见 `BuildMainArea` 的注释）。
+//   ② menu-open     点 `···` ⇒ 模型 true ∧ 可见 ∧ scrollTop 下移**正好** headH
+//      ★ "正好"而不是"变大了"：重复撑开/撑开两次都会让"变大了"成立。
+//   ③ menu-toggle-back  再点一次必须回到 ① 的顶边（不是"窄了"就行）
+//   ④ menu-clear    点「清空视图」⇒ 行数不变 ∧ `timeline` 长度不变
+//      ★ 负对照在 ⑤：若实现走成"清空模型"，两个读数会一起掉；而"只重画视图"
+//        必须两个都不动。两条都记，失败时一眼看出错在哪一侧。
+//   ⑤ export-text   导出文本的块行数 == `Transcript::Blocks()`（同源）
+//      ★ **关键负对照**：导出里必须出现某条**通知**的原文，而通知**不在块表里**
+//        ⇒ 这条同时证明了"导出源是 timeline"且"块表确实没有它"。
+//        只断言"导出非空"是恒真的，什么也证明不了。
+//   ⑥ export-file   真的落盘 ∧ 与 `BuildTranscriptExportText()` 逐字节相等 ∧ 只有 LF
+//      ★ 走的是**同一个** `WriteTranscriptExport()`，绕开的只有"路径从哪儿来"。
+//        `GetSaveFileNameW` 那个模态对话框**没有被覆盖**，这是诚实的缺口。
+void HarnessApp::RunMenuProbe() {
+    if (!m_sess) { m_menuProbeDone = true; return; }
+    // 只在回放模式：live 下点「清空视图」/导出都安全，但 live 的转录在持续增长，
+    //   两次快照之间必然不同 ⇒ `timeline` 长度判据会假失败。
+    if (!m_sess->replay) { m_menuProbeDone = true; return; }
+    if (!m_hud.moreMenu || !m_hud.moreToggle || !m_hud.exportToggle || !m_content) {
+        m_menuProbeDone = true;
+        return;
+    }
+
+    // 会话头 = 菜单条的**上一个兄弟**（`counting` 的子节点顺序是 head / menu / scroll）。
+    //   ★ 用结构关系取，不用硬编码下标：下标会在有人插入控件时静默指错。
+    ECDI::Widget* const head = m_hud.moreMenu->GetParent()
+                                   ? m_hud.moreMenu->GetParent()->GetChildAt(0)
+                                   : nullptr;
+
+    auto snap = [&](const char* phase) {
+        MenuProbeRec rec;
+        rec.phase = phase;
+        rec.modelOpen = m_moreMenuOpen;
+        rec.widgetVisible = m_hud.moreMenu->IsVisible();
+        rec.headBottom = head ? head->GetAbsolutePosition().y + head->GetHeight() : 0;
+        rec.scrollTop = m_scroll ? static_cast<int>(m_scroll->GetAbsolutePosition().y) : 0;
+        rec.gap = rec.scrollTop - rec.headBottom;
+        rec.midWidth = m_counting ? m_counting->GetWidth() : 0;
+        rec.transcriptRows = m_sess->rows.size();
+        rec.timelineLen = m_sess->timeline.size();
+        rec.modelBlockLines = m_sess->transcript.Blocks();
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Notice) ++rec.noticeRows;
+        }
+        m_menuProbeLog.push_back(std::move(rec));
+    };
+    auto expect = [&](const char* phase,
+                      std::vector<std::pair<bool, const char*>> conds) {
+        snap(phase);
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        std::string bad;
+        for (const auto& c : conds) {
+            if (c.first) continue;
+            if (!bad.empty()) bad += "; ";
+            bad += c.second;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    };
+
+    // 焦点守卫（同 `RunSidebarProbe` 的收尾理由）：合成点击会把焦点交给被点的 Button
+    //   ⇒ caret 闪烁重绘多画几帧 ⇒ paints/frames 被这份探针污染。
+    ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+    auto clickCentreOf = [&](ECDI::Widget* w) -> bool {
+        if (!w) return false;
+        const ECDI::Point abs = w->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + w->GetWidth() / 2,
+                          static_cast<int>(abs.y) + w->GetHeight() / 2);
+        return true;
+    };
+
+    // ① baseline：**首帧**（已经过若干 tick）菜单必须是关的、且不占槽。
+    //   ★ 这条是本次实测缺陷的直检：改动前这里 gap == 34（菜单条可见）。
+    expect("menu-closed", {{!m_moreMenuOpen, "model says the menu is open"},
+                           {!m_hud.moreMenu->IsVisible(), "menu bar is visible"},
+                           {head != nullptr, "conversation head not found"}});
+    // ★ gap 的判据要等 snap 之后才能读到，故单独判（失败时把它写进差异里）。
+    {
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        const int menuH = m_hud.moreMenu->GetHeight();
+        if (rec.gap != 0) {
+            rec.matched = false;
+            if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
+            rec.firstDivergence += "closed menu still takes a slot (gap=" +
+                                   std::to_string(rec.gap) + ", menuH=" +
+                                   std::to_string(menuH) + ")";
+        }
+    }
+
+    // ② menu-open：点真钮（走 `Application::OnEvent` 派发链，不是直接调 ToggleMoreMenu）
+    const int closedGap = m_menuProbeLog.back().gap;
+    const int menuH = m_hud.moreMenu->GetHeight();
+    const bool clickedOpen = clickCentreOf(m_hud.moreToggle);
+    expect("menu-open", {{clickedOpen, "menu toggle click did not dispatch"},
+                         {m_moreMenuOpen, "model did not flip to open"},
+                         {m_hud.moreMenu->IsVisible(), "menu bar still hidden"}});
+    {
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        if (rec.gap != closedGap + menuH) {
+            rec.matched = false;
+            if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
+            rec.firstDivergence += "open menu did not push the transcript down by exactly " +
+                                   std::to_string(menuH) + " (gap " +
+                                   std::to_string(closedGap) + " -> " +
+                                   std::to_string(rec.gap) + ")";
+        }
+    }
+
+    // ③ menu-toggle-back：再点一次必须回到原顶边（"窄了"不算返回）
+    const bool clickedClose = clickCentreOf(m_hud.moreToggle);
+    expect("menu-toggle-back", {{clickedClose, "second toggle click did not dispatch"},
+                                 {!m_moreMenuOpen, "model did not flip back to closed"},
+                                 {!m_hud.moreMenu->IsVisible(), "menu bar still visible"}});
+    {
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        if (rec.gap != closedGap) {
+            rec.matched = false;
+            if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
+            rec.firstDivergence += "gap did not return to " + std::to_string(closedGap) +
+                                   " (got " + std::to_string(rec.gap) + ")";
+        }
+    }
+
+    // ④ menu-clear：点菜单里的「清空视图」——先开菜单，找到那个钮，再点。
+    //   ★ 必须**重新开一次**菜单：③ 已经把它合上了，而菜单项在合上时不可点
+    //     （`Hidden` ⇒ 不参与 HitTest）——这正是"菜单关着就点不到"的正确行为。
+    {
+        const size_t rowsBefore = m_sess->rows.size();
+        const size_t timelineBefore = m_sess->timeline.size();
+        clickCentreOf(m_hud.moreToggle);          // 开
+        ECDI::Button* clear = nullptr;
+        for (size_t c = 0; c < m_hud.moreMenu->GetChildCount(); ++c) {
+            if (auto* b = dynamic_cast<ECDI::Button*>(m_hud.moreMenu->GetChildAt(c))) {
+                if (b->GetText() == "清空视图") { clear = b; break; }
+            }
+        }
+        const bool clicked = clear && clickCentreOf(clear);
+        expect("menu-clear", {{clear != nullptr, "no 清空视图 button in the menu bar"},
+                              {clicked, "menu item click did not dispatch"},
+                              // ★ 菜单项点完必须自己合上（否则"下一步还能点"是错觉）
+                              {!m_moreMenuOpen, "menu did not close after an item was used"},
+                              {m_sess->rows.size() == rowsBefore,
+                               "clear-view changed the number of transcript rows"},
+                              {m_sess->timeline.size() == timelineBefore,
+                               "clear-view mutated the model timeline (it must only repaint)"}});
+    }
+
+    // ⑤ export-click ★★ 这是本探针**唯一**能证明 `↗` 不是空回调的判据。
+    //
+    //   ★ 为什么不能只测 ⑤/⑥ 那两个函数：`BuildTranscriptExportText()` /
+    //     `WriteTranscriptExport()` 都是**直接被探针调用**的。若 `↗` 的回调仍是
+    //     那个空壳（`(void)tip; return;`），两个函数照样跑得好好的，判据全绿——
+    //     这正是 0c `buildTitle` 的同族陷阱：**函数对了，钮没接上**。
+    //   ★ 所以这一臂必须**点真钮**（走 `Application::OnEvent` 派发链）。
+    //   ★ 障碍是保存对话框（`GetSaveFileNameW` 是模态循环，点上去会把探针挂死）。
+    //     解法是把 `m_menuProbeExportPath` 预置成一个临时路径 ⇒ `ExportTranscript()`
+    //     跳过对话框、直接落盘。**绕过去的只有"路径从哪儿来"**，回调、按钮、
+    //     写盘都是真的。未被覆盖的仍是对话框本身（诚实缺口，写在这里）。
+    //   ★ 判据：点之前文件不存在 ⇒ 点之后**存在且非空**。
+    //     若 `↗` 是空回调，文件不会出现 ⇒ 这一条立刻红。
+    {
+        std::error_code ec;
+        const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+        const std::filesystem::path target =
+            dir / ("harness-menu-click-" +
+                   std::to_string(static_cast<unsigned long long>(
+                       std::chrono::steady_clock::now().time_since_epoch().count())) +
+                   ".txt");
+        std::filesystem::remove(target, ec);
+        const bool absentBefore = !std::filesystem::exists(target);
+
+        m_menuProbeExportPath = target;    // 探针专用：让回调跳过对话框
+        const size_t noticesBefore = m_sess->timeline.size();
+        const bool clicked = clickCentreOf(m_hud.exportToggle);
+        m_menuProbeExportPath.clear();
+
+        std::error_code ec2;
+        const bool exists = std::filesystem::exists(target, ec2);
+        const auto size = exists ? std::filesystem::file_size(target, ec2) : 0u;
+        // ★ 导出成功必须**在屏上**说一声（否则用户不知道文件去哪了）——
+        //   通知行是唯一反馈，故它必须真的多出一行。
+        const bool noticeAdded = m_sess->timeline.size() == noticesBefore + 1;
+
+        expect("export-click", {{absentBefore, "setup: the target file already existed"},
+                                {clicked, "export button click did not dispatch"},
+                                {exists, "clicking the export button wrote no file "
+                                         "(the callback is probably still empty)"},
+                                {size > 0, "exported file is empty"},
+                                {noticeAdded, "export did not report itself on screen"}});
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        rec.exportWrote = exists;
+        rec.exportBytes = static_cast<size_t>(size);
+        std::filesystem::remove(target, ec2);
+        // ★ 收尾把那条「已导出」通知从模型里摘掉：探针不许把自己的副作用
+        //   留在会话里（它与 `RunSidebarProbe` 收尾复原焦点是同一条纪律）。
+        if (noticeAdded && !m_sess->timeline.empty()) {
+            m_sess->timeline.pop_back();
+            RebuildTranscriptView();
+        }
+    }
+
+    // ⑥ export-text：导出**按 timeline 的顺序**逐条重现，且真的含通知原文
+    //
+    //   ★ 第一版判据是「以 `[` 开头的行数 == `Transcript::Blocks()`」，实测立刻红了
+    //     （demo 夹具 9 vs 8）。查下来**错的是判据，不是实现**：`[ask]` 行也以
+    //     `[` 开头，而 ask 不是块 ⇒ 这条判据把问句行算成了块。
+    //     这是"量出来的东西不是想量的东西"的典型形状，故换掉而不是放宽。
+    //
+    //   ★ 新判据读的是**顺序**，而不是数数：
+    //     · 导出正文里，`timeline` 的每一条都必须**依次**出现——这一条同时钉住了
+    //       ① 内容来自 timeline（块的正文原样搬过去）② 顺序是到达序（不是字典序）。
+    //       0a 已经量过：字典序在 cot/realistic/scale 上与到达序差 42/218/1998 处，
+    //       若导出改走块表，这条判据会在那三份夹具上立刻变红。
+    //     · **通知原文必须出现**，而通知**不在块表里** ⇒ 这是 timeline 独有的事实。
+    //       负对照：`FindBlock(通知文本) == nullptr`（块 id 是 `bN`，不可能撞上）。
+    //   ★ 用「找下一个位置」的单调游标而不是 `find()`：重复文本（同一句话出现两次）
+    //     会让 `find()` 永远命中第一处，顺序判据退化成存在判据。
+    {
+        const std::string text = BuildTranscriptExportText();
+        size_t cursor = 0;
+        size_t missing = 0;
+        std::string missingWhat;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            std::string needle;
+            if (e.kind == TimelineEntry::Kind::Block) {
+                const Block* block = m_sess->transcript.FindBlock(e.id);
+                if (block && !block->text.empty()) needle = block->text;
+            } else if (e.kind == TimelineEntry::Kind::Ask) {
+                needle = e.text;
+            } else {
+                needle = e.text;
+            }
+            if (needle.empty()) continue;   // 空正文的块无法定位，跳过而不是记账
+            const size_t at = text.find(needle, cursor);
+            if (at == std::string::npos) {
+                ++missing;
+                if (missingWhat.empty()) missingWhat = needle.substr(0, 24);
+                continue;
+            }
+            cursor = at + needle.size();
+        }
+        // 找一条真实的通知原文（模型里 Notice 条目的 text），断言它出现在导出里。
+        std::string someNotice;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Notice && !e.text.empty()) {
+                someNotice = e.text;
+                break;
+            }
+        }
+        // ★ 负对照：块表里**查不到**这条通知 ⇒ "导出含通知"只能来自 timeline。
+        const bool noticeAbsentFromBlocks =
+            someNotice.empty() || m_sess->transcript.FindBlock(someNotice) == nullptr;
+        const bool hasNotice = !someNotice.empty() &&
+                               text.find(someNotice) != std::string::npos;
+
+        snap("export-text");
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        rec.exportLines = m_sess->timeline.size() - missing;
+        rec.exportHasNotice = hasNotice;
+        rec.noticeRows = 0;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Notice) ++rec.noticeRows;
+        }
+        rec.matched = false;   // 先置红，下面几条都过了才转绿（fail-closed）
+        std::string bad;
+        if (missing != 0) {
+            bad = "export lost or reordered " + std::to_string(missing) +
+                  " timeline entries (first: " + missingWhat + ")";
+        }
+        if (someNotice.empty()) {
+            if (!bad.empty()) bad += "; ";
+            bad += "this session has no notice row, so the export source cannot be proven";
+        } else if (!hasNotice) {
+            if (!bad.empty()) bad += "; ";
+            bad += "export is missing the notice text (source is probably the block table)";
+        }
+        if (!noticeAbsentFromBlocks) {
+            if (!bad.empty()) bad += "; ";
+            bad += "negative control broken: the notice text is also a block id";
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
+
+    // ⑦ export-file：真的落盘、内容逐字节相等、行尾只有 LF
+    {
+        std::error_code ec;
+        const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
+        m_menuProbeTempFile = dir / ("harness-menu-probe-" +
+                                     std::to_string(static_cast<unsigned long long>(
+                                         std::chrono::steady_clock::now().time_since_epoch().count())) +
+                                     ".txt");
+        std::string err;
+        const bool wrote = WriteTranscriptExport(m_menuProbeTempFile, &err);
+        const std::string expected = BuildTranscriptExportText();
+        std::string actual;
+        size_t bytes = expected.size();
+        bool lfOnly = false;
+        if (wrote) {
+            std::ifstream in(m_menuProbeTempFile, std::ios::binary);
+            actual.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+            bytes = actual.size();
+            lfOnly = actual.find('\r') == std::string::npos;
+        }
+        snap("export-file");
+        MenuProbeRec& rec = m_menuProbeLog.back();
+        rec.exportWrote = wrote;
+        rec.exportBytes = bytes;
+        rec.exportLfOnly = lfOnly;
+        std::string bad;
+        if (!wrote) {
+            bad = "WriteTranscriptExport returned false (" + err + ")";
+        } else {
+            if (actual != expected) {
+                bad = "written file differs from BuildTranscriptExportText()";
+            }
+            if (!lfOnly) {
+                if (!bad.empty()) bad += "; ";
+                bad += "written file contains CR (expected LF only)";
+            }
+            if (bytes == 0) {
+                if (!bad.empty()) bad += "; ";
+                bad += "written file is empty";
+            }
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
+
+    // 收尾：删掉探针造的临时文件（仓库/夹具目录保持零改动）
+    if (!m_menuProbeTempFile.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(m_menuProbeTempFile, ec);
+    }
+    if (m_window) m_window->SetFocusedWidget(focusBefore);
+    // 菜单恢复成关（探针不许把状态留在屏上）
+    SetMoreMenuOpen(false);
+
+    m_menuProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ 2026-10-21：窗口拉伸的布局判据（--resize-probe）。
+//
+// 这条探针存在的理由（与 `--menu-probe` 同一族）：尺寸变化的失败在**所有既有
+//   读数里都不可见**——`blocks`/`deltas`/`seqGaps` 与窗口多大毫无关系，而截图只能
+//   证明"某一刻看起来还行"。改前的实测：1400x900 下转录行仍是 1120 时的宽度，
+//   800x560 下行比视口还宽并出现横向滚动条。两条症状都在像素里，但判据必须在**读数**里。
+//
+// 判据设计（每条都有能变红的负对照）：
+//   · grow      —— 客户区变大 ⇒ **每一行**都变宽；`m_scroll` 变高；标题栏跟着变宽
+//     ★ 用"行的最小/最大宽度"而不是"某一行"：只测一行会被"恰好那一行是通栏工具卡"
+//       骗过（工具卡的宽度来自 `innerW`，用户气泡来自文本测量，两条路径不同）。
+//   · shrink    —— 客户区变小 ⇒ 行宽都变小，且 **`GetMaxOffsetX() == 0`**
+//     ★ 这是"行比视口宽"的**机器可读**证据：横向滚动条出现本身就是那条缺陷。
+//   · roundtrip —— 回到原尺寸 ⇒ 行宽**逐位**回到原值（不是"差不多"）。
+//     ★ 它同时防"每次 resize 都累积一点误差"这类不收敛的实现。
+//   · negative  —— 只把 `root` 改窄、**不**调 `OnWindowResized` ⇒ 行宽必须不变。
+//     ★ 这条是单变量纪律：证明"行宽跟着窗口变"是那条重排链做的，而不是
+//       `Arrange` 自己顺手完成的（否则上面三条可能恒真）。
+void HarnessApp::ProbeResizeClient(int width, int height) {
+    if (!m_window) return;
+    // 走真正的平台调用：`SetBounds` → `SetWindowPos` → `WM_SIZE` → `Window::OnResized`
+    //   → `HarnessApplication::OnWindowResized`。不直接 `root.SetSize`——那会跳过
+    //   整个事件链，把"事件真的到达了吗"这个命题绕过（同"合成点击 vs 直接调函数"）。
+    ECDI::Rect b = m_window->GetPlatformWindow().GetBounds();
+    if (b.width <= 0.0f) return;
+    // GetBounds 是**总尺寸**（含边框）；把差值保出来再把客户区尺寸换算回去。
+    const ECDI::Size client = m_window->GetPlatformWindow().GetClientSize();
+    const float dw = b.width - client.width;
+    const float dh = b.height - client.height;
+    b.width = static_cast<float>(width) + dw;
+    b.height = static_cast<float>(height) + dh;
+    m_window->GetPlatformWindow().SetBounds(b);
+}
+
+void HarnessApp::RunResizeProbe() {
+    if (!m_window || !m_sess || !m_scroll || !m_content) {
+        m_resizeProbeDone = true;
+        return;
+    }
+    // 只在回放模式：live 的转录在持续增长，两次快照之间行数会变（同 `RunMenuProbe`）。
+    if (!m_sess->replay) { m_resizeProbeDone = true; return; }
+
+    auto snap = [&](const char* phase) {
+        ResizeProbeRec rec;
+        rec.phase = phase;
+        const ECDI::Widget& root = m_window->GetRootWidget();
+        rec.rootW = root.GetWidth();
+        rec.rootH = root.GetHeight();
+        rec.scrollW = m_scroll->GetWidth();
+        rec.scrollH = m_scroll->GetHeight();
+        rec.midW = m_counting ? m_counting->GetWidth() : 0;
+        rec.captionW = m_caption ? m_caption->GetWidth() : 0;
+        rec.maxOffsetX = m_scroll->GetMaxOffsetX();
+        rec.rows = m_sess->rows.size();
+        // 行宽的极值：所有可见行必须一起变宽。空表时留 0（判据会因此变红，如实）。
+        rec.rowWMin = 0;
+        rec.rowWMax = 0;
+        bool first = true;
+        for (const RowRec& r : m_sess->rows) {
+            if (!r.panel) continue;
+            const int w = r.panel->GetWidth();
+            if (first) {
+                rec.rowWMin = rec.rowWMax = w;
+                first = false;
+            } else {
+                rec.rowWMin = std::min(rec.rowWMin, w);
+                rec.rowWMax = std::max(rec.rowWMax, w);
+            }
+        }
+        m_resizeProbeLog.push_back(std::move(rec));
+    };
+    auto expect = [&](const char* phase,
+                      std::vector<std::pair<bool, const char*>> conds) {
+        snap(phase);
+        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        std::string bad;
+        for (const auto& c : conds) {
+            if (c.first) continue;
+            if (!bad.empty()) bad += "; ";
+            bad += c.second;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    };
+
+    const ECDI::Size baseSize = m_window->GetPlatformWindow().GetClientSize();
+    // ★ `Size` 是 float（`Core/Size.h`）⇒ 全程按 int 用，先量化一次。
+    struct ClientBox { int width = 0; int height = 0; };
+    const ClientBox base{static_cast<int>(baseSize.width),
+                         static_cast<int>(baseSize.height)};
+
+    // ① baseline：前置条件 —— 必须有行可测，否则"一起变宽"是空真。
+    expect("baseline", {{m_sess->rows.size() >= 1, "no transcript row to measure"},
+                        {base.width > 0, "client size is zero"}});
+    const ResizeProbeRec baseRec = m_resizeProbeLog.back();
+
+    // ② grow：客户区 +280/+140。每一行都必须变宽，且标题栏跟上。
+    ProbeResizeClient(base.width + 280, base.height + 140);
+    expect("grow", {{m_window->GetRootWidget().GetWidth() == base.width + 280,
+                     "root did not take the new width"},
+                    {baseRec.rows == 0 || m_sess->rows.size() == baseRec.rows,
+                     "resizing changed the number of rows (it must not touch the model)"}});
+    {
+        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        std::string bad = rec.firstDivergence;
+        auto add = [&](const std::string& s) {
+            if (!bad.empty()) bad += "; ";
+            bad += s;
+        };
+        // ★★ 判据是「行宽**跟随**视口宽」，不是「最小行宽必须变大」。
+        //   第一版写的是 `rowWMin` 必须变大，实测立刻红了（148 -> 148），
+        //   而**错的是判据**：短行（如 `› read_file`）是**按内容定宽**的，
+        //   视口变宽时它本来就不该变——那正是"气泡贴合文字"的正确外观。
+        //   ⇒ 改成量**通栏行**（rowWMax）与视口的关系：两者之差是内容宽度里
+        //     固定的那部分留白（画布留白 + 滚动条），它必须**不随窗口变化**。
+        //     实测该差值在 1120/1400/800 三种宽度下都是 72，是一个不变量。
+        const int baseSlack = baseRec.scrollW - baseRec.rowWMax;
+        const int nowSlack = rec.scrollW - rec.rowWMax;
+        if (nowSlack != baseSlack) {
+            add("the full-width row stopped following the viewport (slack " +
+                std::to_string(baseSlack) + " -> " + std::to_string(nowSlack) + ")");
+        }
+        if (rec.rowWMax <= baseRec.rowWMax) {
+            add("the full-width row did not get wider (" + std::to_string(baseRec.rowWMax) +
+                " -> " + std::to_string(rec.rowWMax) + ")");
+        }
+        if (rec.captionW != rec.rootW) {
+            add("caption width " + std::to_string(rec.captionW) +
+                " != root width " + std::to_string(rec.rootW));
+        }
+        if (rec.scrollH <= baseRec.scrollH) {
+            add("transcript viewport did not grow taller (" + std::to_string(baseRec.scrollH) +
+                " -> " + std::to_string(rec.scrollH) + ")");
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
+
+    // ③ shrink：客户区 −240/−140。行必须变窄，且**不许**出现横向滚动条。
+    //   ★ 步长必须选在**下限之上**：base 是 1120，减 240 得 880 == 下限。
+    //     第一版写的是 −320（= 800），加了最小尺寸之后这个尺寸会被钳回 880，
+    //     于是 `root == base-320` 这条判据必然红——**红得对，是探针的布置错了**：
+    //     它想测"缩小"，却请求了一个产品不允许的尺寸。要测"低于下限"那是
+    //     第 ⑥ 相（min-size）的命题，两个命题不能混在同一相里。
+    ProbeResizeClient(base.width - 240, base.height - 140);
+    expect("shrink", {{m_window->GetRootWidget().GetWidth() == base.width - 240,
+                       "root did not take the smaller width"}});
+    {
+        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        std::string bad = rec.firstDivergence;
+        auto add = [&](const std::string& s) {
+            if (!bad.empty()) bad += "; ";
+            bad += s;
+        };
+        const int baseSlack = baseRec.scrollW - baseRec.rowWMax;
+        const int nowSlack = rec.scrollW - rec.rowWMax;
+        if (nowSlack != baseSlack) {
+            add("the full-width row did not shrink with the viewport (slack " +
+                std::to_string(baseSlack) + " -> " + std::to_string(nowSlack) + ")");
+        }
+        if (rec.rowWMax >= baseRec.rowWMax) {
+            add("the full-width row did not get narrower (" + std::to_string(baseRec.rowWMax) +
+                " -> " + std::to_string(rec.rowWMax) + ")");
+        }
+        // ★ 这条是本次缺陷的机器可读直检：横滚条 = 行比视口宽。
+        if (rec.maxOffsetX != 0) {
+            add("horizontal scrollbar appeared (maxOffsetX=" +
+                std::to_string(rec.maxOffsetX) + ") -- rows are wider than the viewport");
+        }
+        if (rec.captionW != rec.rootW) {
+            add("caption width " + std::to_string(rec.captionW) +
+                " != root width " + std::to_string(rec.rootW));
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
+
+    // ④ roundtrip：回到原尺寸 ⇒ 逐位等于 baseline（不是"差不多"）。
+    ProbeResizeClient(base.width, base.height);
+    expect("roundtrip", {{m_window->GetRootWidget().GetWidth() == baseRec.rootW,
+                          "root width did not return"},
+                         {m_scroll->GetWidth() == baseRec.scrollW,
+                          "viewport width did not return"},
+                         {m_scroll->GetHeight() == baseRec.scrollH,
+                          "viewport height did not return"}});
+    {
+        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        std::string bad = rec.firstDivergence;
+        auto add = [&](const std::string& s) {
+            if (!bad.empty()) bad += "; ";
+            bad += s;
+        };
+        if (rec.rowWMax != baseRec.rowWMax || rec.rowWMin != baseRec.rowWMin) {
+            add("row widths did not return bit-for-bit (was " +
+                std::to_string(baseRec.rowWMin) + ".." + std::to_string(baseRec.rowWMax) +
+                ", now " + std::to_string(rec.rowWMin) + ".." +
+                std::to_string(rec.rowWMax) + ")");
+        }
+        if (rec.rowWMin != baseRec.rowWMin) {
+            // ★ 短行也必须逐位回来：它们按内容定宽，**不该**被视口宽度影响。
+            //   若这一条红了，说明重排把短行也拉成了通栏（气泡不再贴合文字）。
+            add("the content-sized row changed width across a roundtrip (" +
+                std::to_string(baseRec.rowWMin) + " -> " + std::to_string(rec.rowWMin) + ")");
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
+
+    // ⑤ negative（单变量纪律）：只把 root 改窄，**不**走 `OnWindowResized` 那条链。
+    //   判据 = 视口窄了，而行宽**没**跟着变（`scrollW - rowWMax` 不再等于 baseline
+    //   的那个不变量）。若这一条红了，说明行宽是 `Arrange` 顺手改的，而不是我们
+    //   那条重排链做的 ⇒ 上面三条证明不了任何事。
+    //   ★ 用 `root.SetSize` 而不是 `ProbeResizeClient`：后者会派发真事件。
+    {
+        ECDI::Widget& root = m_window->GetRootWidget();
+        root.SetSize(baseRec.rootW - 240, baseRec.rootH);
+        root.Arrange();                       // 只重排，**不**调 Relayout()
+        expect("negative", {{m_sess->rows.size() == baseRec.rows,
+                             "setup: rows changed"}});
+        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        std::string bad = rec.firstDivergence;
+        auto add = [&](const std::string& s) {
+            if (!bad.empty()) bad += "; ";
+            bad += s;
+        };
+        // 前置：视口必须真的窄了（否则这条负对照没有自变量）。
+        if (rec.scrollW >= baseRec.scrollW) {
+            add("setup: the viewport did not narrow, so the negative control has no variable");
+        }
+        const int baseSlack = baseRec.scrollW - baseRec.rowWMax;
+        const int nowSlack = rec.scrollW - rec.rowWMax;
+        if (nowSlack == baseSlack) {
+            add("rows followed the viewport WITHOUT OnWindowResized "
+                "(slack stayed " + std::to_string(baseSlack) +
+                ") -- the earlier criteria prove nothing");
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        // 复原：把窗口设回原尺寸，让那条链把一切摆回去。
+        ProbeResizeClient(base.width, base.height);
+        root.Arrange();
+        Relayout();
+    }
+
+    // ⑥ min-size（2026-10-21）：下限**真的**拦住了吗？
+    //   ★ 这一相必须**真的把窗口设到下限以下**，不能只断言 `ClampToMinimum` 的返回值——
+    //     后者是同义反复（我们写 `max(880, x)`，再断言结果 >= 880）。
+    //     要检验的是：**经过整条事件链之后**根控件与视口确实停在 >= 下限，
+    //     即"系统给的 640 被我们推回了 880"。
+    //   ★ 前置：`m_minSizeEnforced` 必须是 true（产品默认）；探针收尾会复原。
+    {
+        ProbeResizeClient(640, 360);          // 远低于下限（880x460）
+        expect("min-size", {{m_minSizeEnforced, "setup: the floor is disabled"}});
+        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        std::string bad = rec.firstDivergence;
+        auto add = [&](const std::string& s) {
+            if (!bad.empty()) bad += "; ";
+            bad += s;
+        };
+        // 客户区必须被抬到下限（允许 +8 的取整/边框余量，方向只允许偏大）
+        if (rec.rootW < kMinClientW) {
+            add("root width " + std::to_string(rec.rootW) + " is below the floor " +
+                std::to_string(kMinClientW) + " -- the clamp did not take effect");
+        }
+        if (rec.rootH < kMinClientH) {
+            add("root height " + std::to_string(rec.rootH) + " is below the floor " +
+                std::to_string(kMinClientH));
+        }
+        // ★ 头部完整性：中栏必须 >= 头部需要的 444（这条才是"下限为什么是 874"本身）
+        constexpr int kHeadNeed = 2 * 14 + 300 + 3 * 28 + 4 * 8;   // = 444
+        if (rec.midW < kHeadNeed) {
+            add("middle column " + std::to_string(rec.midW) + " < head requirement " +
+                std::to_string(kHeadNeed) + " -- the last head button would be clipped");
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        // 复原到 baseline 尺寸
+        ProbeResizeClient(base.width, base.height);
+        m_window->GetRootWidget().Arrange();
+        Relayout();
+    }
+
+    m_resizeProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ 2026-10-21：**Enter 发送 / Shift+Enter 换行**的取证（--enter-probe）。
+//
+// 【它要回答什么】改前输入框是单行的（`SetSingleLine(true)`），Enter 被基类当
+//   no-op 吞掉，Shift+Enter 同样（单行模式下 `InsertText("\n")` 不执行）
+//   ⇒ 聊天框**只能点按钮发**。这条缺陷在任何既有读数里都不可见：`blocks` 只
+//   反映"发了几条"，而没有任何探针**按过键**。
+//
+// 【为什么每一相都要合成真按键】直接调 `PromptBar::Submit()` 会把
+//   "这个按键真的派给了输入框吗" 绕过——而那正是本步要证明的东西。
+//   同 `--hit-probe` / `--sidebar-probe` 的点击臂纪律。
+//
+// 【"发出去了"怎么读——这一条我第一版写错了，记在这里】
+//   第一版去数 `timeline` 里 `kind=="user"` 的块，断言"发送相要比之前多 1"。
+//   实测 `enter-sends` 红了（1 -> 1），而**错的不是实现**：回放模式下
+//   `SendPrompt` 走的是 `AddNoticeRow("[prompt 仅记录] …")`——它只追加一条
+//   **通知行**，永远不产生 user 块（转录的唯一作者是 core，见 PROTOCOL:244）。
+//   ⇒ 判据改成读**它真正做的事**：发送 = `timeline` 里多出一条 Notice。
+//   （顺带说明为什么不能用 `timeline.size()` 整体：抑制相若也让它变，就分不清
+//     "发了一条"和"多了一行别的"。所以两面都记：sent 相比 Notice 数 +1。）
+void HarnessApp::RunEnterProbe() {
+    if (!m_sess || !m_promptBar || !m_promptBar->input()) {
+        m_enterProbeDone = true;
+        return;
+    }
+    // ★ 只在回放模式：live 下发送会真的写进子进程管道，探针不该制造真副作用。
+    if (!m_sess->replay) { m_enterProbeDone = true; return; }
+
+    ECDI::TextBox* const input = m_promptBar->input();
+
+    // 数 Notice 条目：回放模式下"发送"的可观测副作用就是这一行。
+    //   ★ 不数 `kind=="user"` 的块——回放模式永远不会有新的（transcript 只由
+    //     core 产生，GUI 不是作者）。第一版正是错在这里。
+    auto noticeCount = [&]() -> size_t {
+        size_t n = 0;
+        for (const TimelineEntry& e : m_sess->timeline) {
+            if (e.kind == TimelineEntry::Kind::Notice) ++n;
+        }
+        return n;
+    };
+
+    auto snap = [&](const char* phase, size_t before, bool sent) {
+        EnterProbeRec rec;
+        rec.phase = phase;
+        rec.promptCount = noticeCount();     // 字段名沿用；语义 = "发送副作用条数"
+        rec.inputText = input->GetText();
+        rec.noticeRows = rec.promptCount;
+        rec.sent = sent;
+        // 判据：
+        //   · 发送相：Notice 必须 = before+1，且输入框必须空
+        //   · 抑制相：Notice 必须 = before
+        std::string bad;
+        if (sent) {
+            if (rec.promptCount != before + 1) {
+                bad = "expected one new prompt record (" + std::to_string(before) + " -> " +
+                      std::to_string(rec.promptCount) + ")";
+            }
+            if (!rec.inputText.empty()) {
+                if (!bad.empty()) bad += "; ";
+                bad += "input was not cleared after sending";
+            }
+        } else {
+            if (rec.promptCount != before) {
+                bad = "a prompt was sent although it should not be (" +
+                      std::to_string(before) + " -> " +
+                      std::to_string(rec.promptCount) + ")";
+            }
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        m_enterProbeLog.push_back(std::move(rec));
+    };
+
+    // 焦点守卫：合成按键之前记下焦点，收尾复原（同 `RunHitProbe` 的收尾纪律）。
+    ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+
+    // ① enter-sends：有文字 ⇒ Enter 必须发出去，且框被清空。
+    {
+        const size_t before = noticeCount();
+        input->SetText("probe-enter-sends");
+        input->MoveCaretToEnd();
+        if (m_window) m_window->SetFocusedWidget(input);   // 前置：焦点必须在框里
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/false);
+        snap("enter-sends", before, /*sent=*/true);
+    }
+
+    // ② shift-enter-newline：Shift+Enter 必须**不**发送，且文本真的多一个换行。
+    {
+        const size_t before = noticeCount();
+        input->SetText("line1");
+        input->MoveCaretToEnd();
+        if (m_window) m_window->SetFocusedWidget(input);
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/true);
+        snap("shift-enter-newline", before, /*sent=*/false);
+        // ★ 额外判据：换行真的进去了（抑制相只证明"没发"，不证明"换了行"——
+        //   一个把 Shift+Enter 整个吞掉的实现同样满足"没发"）。
+        EnterProbeRec& rec = m_enterProbeLog.back();
+        if (rec.inputText.find('\n') == std::string::npos) {
+            rec.matched = false;
+            if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
+            rec.firstDivergence += "Shift+Enter did not insert a newline (text=" +
+                                   rec.inputText + ")";
+        }
+        input->SetText("");
+    }
+
+    // ③ enter-empty：空框按 Enter ⇒ 不发送。
+    {
+        const size_t before = noticeCount();
+        input->SetText("");
+        if (m_window) m_window->SetFocusedWidget(input);
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/false);
+        snap("enter-empty", before, /*sent=*/false);
+    }
+
+    // ④ enter-whitespace：只有空白 ⇒ 不发送。
+    //   ★ 这一相比 ③ 强：`!text.empty()` 判不出"看起来有内容"的空白串，
+    //     而用户敲了 Shift+Enter 再回删，剩下的正好就是 "\n"。
+    {
+        const size_t before = noticeCount();
+        input->SetText("  \n ");
+        if (m_window) m_window->SetFocusedWidget(input);
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/false);
+        snap("enter-whitespace", before, /*sent=*/false);
+        input->SetText("");
+    }
+
+    // ⑤ enter-unfocused：★ 负对照——焦点不在输入框时，同一个合成按键必须**不**发送。
+    //   若这一相也发了，说明"发送"根本不取决于事件派给谁 ⇒ 前面四相证明不了什么。
+    {
+        const size_t before = noticeCount();
+        input->SetText("probe-not-focused");
+        input->MoveCaretToEnd();
+        // 把焦点交给发送按钮（一个 CanFocus 的别的控件）
+        if (m_window && m_promptBar->sendButton()) {
+            m_window->SetFocusedWidget(m_promptBar->sendButton());
+        }
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/false);
+        snap("enter-unfocused", before, /*sent=*/false);
+        input->SetText("");
+    }
+
+    if (m_window) m_window->SetFocusedWidget(focusBefore);
+    m_enterProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ 2026-10-21：输入框自动长高探针（--grow-probe）。
+//
+// 【为什么这条不能只测函数】`PromptBar::DesiredInputHeight` 算得对、
+//   `SyncInputHeight` 也写进去了，仍然可能是"没人调用"——0c 记下的那个家族
+//   （函数对、接线没接）。所以**每一相都打真按键**（`SynthesizeKey`），
+//   绝不直接调 `SyncInputHeight()`：直接调会把"文本变化真的会触发长高吗"
+//   这个命题整个绕过。唯一例外是 `baseline` 相之后那次绝对化清理。
+//
+// 【为什么 `shrink` 相是这个功能唯一的负对照】最诱人的错误实现是用
+//   `GetMaxScrollOffset() + GetTextAreaHeight()` 当内容高（`TextBox.cpp:541` 的
+//   `contentExtent` 式子）。那个式子带 `max(0, ...)` ⇒ **不溢出时恒等于视口高**。
+//   用它的实现在所有"变高"相里**全绿**，只有删掉换行时才暴露：
+//   框会停在最大高度再也不下来。故 `shrink` 不是补充，它是唯一能打红这个陷阱的方向。
+//
+// 【为什么还要 `exact-fit` 相】行高是 float（雅黑 13px ≈ 19~20），而
+//   `Widget::AutoSize` 是 `static_cast<int>` **截断**（`Widget.cpp`）。
+//   若本实现也截断，则"恰好装下"会变成"差一点装下" ⇒ `GetMaxScrollOffset > 0`
+//   ⇒ 输入框里冒出一条**不该有的内部滚动条**，且最后一行被切掉零点几像素。
+//   判据 = 恰好 N 行时 `GetMaxScrollOffset()` 必须 == 0。
+void HarnessApp::RunGrowProbe() {
+    if (!m_sess || !m_promptBar || !m_promptBar->input()) {
+        m_growProbeDone = true;
+        return;
+    }
+    // 只在回放模式：live 下发送会真的写进子进程管道，探针不该制造真副作用。
+    if (!m_sess->replay) { m_growProbeDone = true; return; }
+
+    ECDI::TextBox* const input = m_promptBar->input();
+    PromptBar* const bar = m_promptBar;
+
+    // 行数 = `\n` 数 + 1（与产品实现同一口径；探针要独立算一遍，否则它只是在读回自己的实现）
+    auto linesOf = [](const std::string& text) {
+        int n = 1;
+        for (char c : text) if (c == '\n') ++n;
+        return n;
+    };
+
+    auto snap = [&](const char* phase, const std::string& why) {
+        GrowProbeRec rec;
+        rec.phase = phase;
+        rec.inputH = bar->inputHeight();
+        rec.barH = bar->GetHeight();
+        rec.lines = linesOf(input->GetText());
+        // 提示行 / 发送按钮的位置：判"输入框变高后有没有把它们压住"。
+        //   ★ 这两个 Y 在本轮之前是硬编码 66 / 58，输入框一变高就会与它重叠——
+        //     而那是一次**没有任何读数会报**的重叠（控件都在、只是叠在一起）。
+        rec.hintY = -1;
+        rec.buttonY = -1;
+        if (ECDI::Widget* hint = bar->GetChildAt(0)) {
+            // GetChildAt(0) = 输入框；提示行与按钮按 AddChild 顺序排在其后
+            (void)hint;
+        }
+        for (size_t i = 0; i < bar->GetChildCount(); ++i) {
+            ECDI::Widget* child = bar->GetChildAt(i);
+            if (child == input) continue;
+            if (dynamic_cast<ECDI::Button*>(child) && rec.buttonY < 0) {
+                rec.buttonY = child->GetY();
+            } else if (dynamic_cast<ECDI::Label*>(child)) {
+                rec.hintY = child->GetY();
+            }
+        }
+        rec.matched = why.empty();
+        rec.firstDivergence = why;
+        m_growProbeLog.push_back(std::move(rec));
+    };
+
+    ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+
+    // 单行基准高：由**产品路径**给出（不是探针自己按行高算的），
+    //   这样后面的判据全部相对于它，字体/DPI 变化不会让判据变脆。
+    input->SetText("");
+    bar->SyncInputHeight();
+    const int singleH = bar->inputHeight();
+    {
+        std::string why;
+        if (singleH <= 0) why = "single-line height is not positive";
+        snap("baseline", why);
+    }
+
+    // ① type-newline：Shift+Enter 打**真按键** ⇒ 必须真的变高。
+    //   ★ 这一相考的是"键盘 → 文本变化 → OnTextChanged → SyncInputHeight"整条链。
+    {
+        input->SetText("line1");
+        input->MoveCaretToEnd();
+        if (m_window) m_window->SetFocusedWidget(input);
+        const int before = bar->inputHeight();
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/true);
+        std::string why;
+        if (input->GetText().find('\n') == std::string::npos) {
+            why = "Shift+Enter did not insert a newline";
+        } else if (bar->inputHeight() <= before) {
+            why = "the box did not grow after a newline (" + std::to_string(before) + " -> " +
+                  std::to_string(bar->inputHeight()) + ")";
+        }
+        snap("type-newline", why);
+    }
+
+    // ② grow：3 行必须比 1 行高，且提示行/按钮**跟着下移**（不是被压住）。
+    {
+        input->SetText("aa\nbb\ncc");
+        bar->SyncInputHeight();
+        std::string why;
+        const int h3 = bar->inputHeight();
+        if (h3 <= singleH) {
+            why = "3 lines are not taller than 1 line (" + std::to_string(singleH) + " -> " +
+                  std::to_string(h3) + ")";
+        }
+        // 压住判据：提示行与按钮的 Y 必须 >= 输入框底边
+        const int inputBottom = input->GetY() + input->GetHeight();
+        for (size_t i = 0; i < bar->GetChildCount() && why.empty(); ++i) {
+            ECDI::Widget* child = bar->GetChildAt(i);
+            if (child == input) continue;
+            if (child->GetY() < inputBottom) {
+                why = "a sibling is overlapped by the taller input (sibling y=" +
+                      std::to_string(child->GetY()) + " < input bottom=" +
+                      std::to_string(inputBottom) + ")";
+            }
+        }
+        snap("grow", why);
+    }
+
+    // ③ max-clamp：30 行必须封顶，不许无限长高。
+    {
+        std::string many;
+        for (int i = 0; i < 30; ++i) {
+            if (i) many += '\n';
+            many += "x";
+        }
+        input->SetText(many);
+        bar->SyncInputHeight();
+        std::string why;
+        if (bar->inputHeight() != PromptBar::kInputMaxH) {
+            why = "30 lines are not clamped to kInputMaxH (" +
+                  std::to_string(bar->inputHeight()) + " != " +
+                  std::to_string(PromptBar::kInputMaxH) + ")";
+        }
+        snap("max-clamp", why);
+    }
+
+    // ④ send-reset：Enter 发出 ⇒ 高度回到单行。
+    //   ★ 这一相考的是 `SetText` 路径：`SetText` 不走 `OnTextChanged`（D7 契约），
+    //     所以"发送后清空"这个副作用**必须**在 App 侧显式同步一次。
+    //     漏了它的症状：消息发完，框里空了但仍然占着 3 行高，看起来像卡住。
+    {
+        input->SetText("a\nb\nc");
+        bar->SyncInputHeight();
+        const int tall = bar->inputHeight();
+        input->MoveCaretToEnd();
+        if (m_window) m_window->SetFocusedWidget(input);
+        SynthesizeKey(ECDI::KeyCode::Enter, /*shift=*/false);
+        std::string why;
+        if (!input->GetText().empty()) {
+            why = "Enter did not send (text is still there)";
+        } else if (bar->inputHeight() != singleH) {
+            why = "the box did not return to single-line height after sending (" +
+                  std::to_string(tall) + " -> " + std::to_string(bar->inputHeight()) +
+                  ", expected " + std::to_string(singleH) + ")";
+        }
+        snap("send-reset", why);
+    }
+
+    // ⑤ shrink：删掉换行后必须**变矮**。
+    //   ★★ 这是唯一能打红 `max(0, ...)` 陷阱的方向（见本函数头注）。
+    {
+        input->SetText("aa\nbb\ncc");
+        bar->SyncInputHeight();
+        const int tall = bar->inputHeight();
+        input->SetText("aa");
+        bar->SyncInputHeight();
+        std::string why;
+        if (bar->inputHeight() >= tall) {
+            why = "the box did not shrink after the newlines were removed (" +
+                  std::to_string(tall) + " -> " + std::to_string(bar->inputHeight()) + ")";
+        }
+        if (bar->inputHeight() != singleH) {
+            if (!why.empty()) why += "; ";
+            why += "shrink did not land on the single-line height (" +
+                   std::to_string(bar->inputHeight()) + " != " + std::to_string(singleH) + ")";
+        }
+        snap("shrink", why);
+    }
+
+    // ⑥ exact-fit：恰好装下时，`GetMaxScrollOffset()` 必须 == 0。
+    //   ★ 取整方向判据（`ceil` vs 截断）。截断实现会在这里多出一条内部滚动条。
+    {
+        input->SetText("a\nb\nc");
+        bar->SyncInputHeight();
+        std::string why;
+        // GetMaxScrollOffset 是 private；`GetScrollOffsetY`/滚动条可见性是公开观察口。
+        //   ★ 用滚动条的可见性做判据：`SyncScrollBar` 的判据正是
+        //     `!singleLine && GetMaxScrollOffset() > 0`（`TextBox.cpp:540`），
+        //     故"恰好装下 ⇒ 条不可见"与"偏移为 0"是同一件事的两个可观测面。
+        if (ECDI::ScrollBar* vbar = input->GetVerticalScrollBar()) {
+            if (vbar->IsVisible()) {
+                why = "a scrollbar appeared although the content should fit exactly "
+                      "(rounding direction is wrong — truncation instead of ceil)";
+            }
+        }
+        if (input->GetScrollOffsetY() != 0.0f) {
+            if (!why.empty()) why += "; ";
+            why += "scroll offset is not zero (" + std::to_string(input->GetScrollOffsetY()) + ")";
+        }
+        snap("exact-fit", why);
+    }
+
+    // 收尾：清干净，恢复焦点（同 `RunHitProbe` / `RunEnterProbe` 的收尾纪律）。
+    input->SetText("");
+    bar->SyncInputHeight();
+    if (m_window) m_window->SetFocusedWidget(focusBefore);
+
+    m_growProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。
+//
+// 【它要回答什么】`Hud` 里那些指针，**建树时真的都赋过值吗**？
+//   这一类缺陷的形状是"读了但从不写"：`RefreshHud` 里
+//   `if (m_hud.X) { ...SetText(...) }` 看着像是"有就更新"，而建树时没赋值
+//   就永远是假分支——代码正确、屏幕空白、**所有既有读数都看不见**。
+//   实测到三个实例：`backendChip`（屏幕上从来没有）、`sessSession` /
+//   `sessCore`（Step 1 之后不再建）。三个都已处理，但那只是修实例。
+//
+// 【判据】`hud-built`：把审计打开，跑一次 `RefreshHud`，然后要求
+//   **"被读过但从未被赋值"的字段集合为空**。
+//   失败时把字段名原样写出来——"少了哪个"必须能直接读到，否则这条判据
+//   只会告诉你有问题，不告诉你问题在哪。
+//
+// 【负对照 `hud-built-negative`】光有一条"集合为空"证明不了判据有判别力：
+//   一个永远返回空集合的实现同样满足它。所以再跑一相：**人为把一个指针置空、
+//   再跑 `RefreshHud`**，此时集合必须**非空**且包含那个字段名。
+//   若这一相也返回空，说明判据是瞎的（`--sidebar-probe` 的逆序负对照同族）。
+void HarnessApp::RunHudProbe() {
+    if (!m_sess || !m_window) { m_hudProbeDone = true; return; }
+
+    auto report = [&](const char* phase, size_t touched,
+                      const std::vector<std::string>& unbuilt) {
+        HudProbeRec rec;
+        rec.phase = phase;
+        rec.touched = touched;
+        rec.unbuilt = unbuilt.size();
+        for (size_t i = 0; i < unbuilt.size(); ++i) {
+            if (i) rec.unbuiltNames += ",";
+            rec.unbuiltNames += unbuilt[i];
+        }
+        m_hudProbeLog.push_back(std::move(rec));
+    };
+
+    // ① hud-built：全部建好时，集合必须为空。
+    {
+        m_hudTouched.clear();
+        m_hudAudit = true;
+        RefreshHud();                       // 触发每一个读取点
+        const std::vector<std::string> unbuilt = HudUnbuilt();
+        const size_t touched = m_hudTouched.size();
+        m_hudAudit = false;
+        report("hud-built", touched, unbuilt);
+        HudProbeRec& rec = m_hudProbeLog.back();
+        std::string bad;
+        // 前置：必须真的读过东西（否则"集合为空"是空真——一次都没碰就当通过）
+        if (touched < 15) {
+            bad = "setup: only " + std::to_string(touched) +
+                  " HUD reads were recorded; the audit is probably not wired";
+        }
+        if (!unbuilt.empty()) {
+            if (!bad.empty()) bad += "; ";
+            bad += "HUD fields are read by RefreshHud but never built: " + rec.unbuiltNames;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
+
+    // ② hud-built-negative：人为打掉一个**确定会读**的指针（`stateChip`），
+    //    集合必须非空且正好包含它。★ 用完立刻复原（探针不许把状态留在屏上）。
+    {
+        ECDI::Label* const saved = m_hud.stateChip;
+        m_hud.stateChip = nullptr;          // probe-only corruption
+        m_hudTouched.clear();
+        m_hudAudit = true;
+        RefreshHud();
+        const std::vector<std::string> unbuilt = HudUnbuilt();
+        m_hudAudit = false;
+        m_hud.stateChip = saved;            // 复原（先复原再看结论，避免提前返回漏复原）
+        report("hud-built-negative", m_hudTouched.size(), unbuilt);
+        HudProbeRec& rec = m_hudProbeLog.back();
+        std::string bad;
+        const bool sawIt = std::find(unbuilt.begin(), unbuilt.end(), "stateChip") !=
+                           unbuilt.end();
+        if (unbuilt.empty()) {
+            bad = "negative control saw nothing -- the audit cannot detect a missing HUD "
+                  "pointer, so the `hud-built` result proves nothing";
+        } else if (!sawIt) {
+            bad = "negative control did not name `stateChip`; it reported: " + rec.unbuiltNames;
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        // 复原之后再刷一次，保证屏幕上那个读数不是空的
+        RefreshHud();
+    }
+
+    m_hudProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // ★★ Step 4 / 0e（2026-10-19）：整树重建 + 运行期主题切换的取证。
 //   【与前面五个探针的形状差异】那些是"一步做完"的（同一个 tick 里造前置、重建、比对），
 //   因为局部重建是同步的。本探针不行：
@@ -5704,6 +7090,202 @@ void HarnessApp::ChooseWorkspaceFolder() {
     }
 }
 
+// ── ★★ 2026-10-20：中栏头 `↗`（导出）/ `···`（菜单）─────────────
+
+// ★★ 2026-10-21：导出拆成**三段纯函数**，因为原来它是一整个「弹对话框 + 写文件」。
+//   不拆的话，导出这条路径**无法被探针覆盖**：`GetSaveFileNameW` 是模态死循环，
+//   合成点击一旦点上去，探针就卡在对话框里，整个 `--menu-probe` 会挂死。
+//   拆开之后各自有判据：
+//     · `BuildTranscriptExportText()` —— 纯函数，返回**将要写出的文本**。
+//       判据：行数/内容与模型对得上、通知行真的在里面（负对照：块表里没有它们）。
+//     · `WriteTranscriptExport()` —— 只负责落盘，返回 false 时给错误串。
+//     · `ExportTranscript()` —— 只剩「选路径 + 调用上面两个 + 说一声」。
+//   ★ 仍然**没被覆盖**的是那个对话框本身（`GetSaveFileNameW` 的调用点）。
+//     探针走 `m_menuProbeExportPath` 直接给它一个路径，绕开对话框。
+//     这是**诚实的缺口**，写在这里而不是假装探针覆盖了保存对话框。
+
+// 把活动会话的转录渲染成文本。**只读**：不碰模型、不碰协议、不改 seq。
+// ★ 导出源是 `timeline`（视图看到的那一份），**不是** `Transcript::m_blocks`。
+//   两者不等价：`m_blocks` 只有协议块，而 `timeline` 还含通知行（`[error]` /
+//   `[协议不兼容]` / I4 缺口告警）与问句行。导出后者才叫「把屏幕存下来」；
+//   导出前者会把「这次运行可不可信」的全部读数默默丢掉。
+std::string HarnessApp::BuildTranscriptExportText() const {
+    if (!m_sess) return {};
+    const std::vector<TimelineEntry>& entries = m_sess->timeline;
+
+    std::string out;
+    out.reserve(4096);
+    out += "# harness 转录\n";
+    out += "# 会话：" + m_sess->label + "\n";
+    out += "# 来源：" + m_sess->originKind +
+           (m_sess->originPath.empty() ? std::string() : (" " + PathToUtf8(m_sess->originPath))) +
+           "\n";
+    out += "# 契约：protocol " + std::to_string(m_sess->protocolVer) + "\n";
+    out += "# 违规：" + std::to_string(m_sess->transcript.Violations()) +
+           "，seq 缺口：" + std::to_string(m_sess->transcript.SeqGaps()) + "\n";
+    out += "\n";
+    for (const TimelineEntry& e : entries) {
+        switch (e.kind) {
+        case TimelineEntry::Kind::Block: {
+            const Block* block = m_sess->transcript.FindBlock(e.id);
+            if (!block) {
+                out += "[块 已丢失] " + e.id + "\n\n";
+                break;
+            }
+            out += "[" + block->kind + "]";
+            if (!block->name.empty()) out += " " + block->name;
+            out += "\n";
+            if (!block->text.empty()) out += block->text + "\n";
+            if (block->kind == "tool_call" && !block->argsPretty.empty()) {
+                out += block->argsPretty + "\n";
+            }
+            if (!block->summary.empty() && block->summary != block->text) {
+                out += "摘要：" + block->summary + "\n";
+            }
+            out += "\n";
+            break;
+        }
+        case TimelineEntry::Kind::Ask:
+            out += "[ask] " + e.text + "\n";
+            if (!e.answer.empty()) out += "  答：" + e.answer + "\n";
+            out += "\n";
+            break;
+        case TimelineEntry::Kind::Notice:
+            out += e.text + "\n";
+            break;
+        }
+    }
+    return out;
+}
+
+bool HarnessApp::WriteTranscriptExport(const std::filesystem::path& path, std::string* error) {
+    if (!m_sess) return false;
+    const std::string out = BuildTranscriptExportText();
+    // ★ 二进制模式 + 手动 `\n`：`std::ofstream` 在 Windows 文本模式下会把 `\n`
+    //   翻译成 `\r\n`，那会让导出文件与仓库里 `*.jsonl` 的无 BOM+LF 纪律不一致
+    //   （虽然导出物不入库，但「同一产品的文件行尾应当一致」）。
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        if (error) *error = "无法写入文件";
+        return false;
+    }
+    f.write(out.data(), static_cast<std::streamsize>(out.size()));
+    const bool wrote = static_cast<bool>(f);
+    f.close();
+    if (!wrote && error) *error = "写入中断";
+    return wrote;
+}
+
+bool HarnessApp::ExportTranscript() {
+    if (!m_sess) return false;
+
+    if (m_sess->timeline.empty()) {
+        // 空会话不弹对话框：弹了也只能存个空文件，不如在转录里说一声。
+        AddNoticeRow("[导出] 当前会话没有内容", kDarkMuted);
+        Relayout();
+        RequestRepaint();
+        return false;
+    }
+
+    // 默认文件名：会话 label + 时间戳。用**本地时间到分钟**——两次导出不互相覆盖，
+    // 同时文件名仍可读（用 epoch 秒就只剩一串数字了）。
+    std::string baseName = m_sess->label.empty() ? std::string("transcript") : m_sess->label;
+    // 文件名里不能有路径分隔符/冒号（label 可能是 fixture 路径派生出来的）。
+    for (char& c : baseName) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' ||
+            c == '<' || c == '>' || c == '|') {
+            c = '_';
+        }
+    }
+    std::string stamp;
+    {
+        const auto now = std::chrono::system_clock::now();
+        const std::time_t t = std::chrono::system_clock::to_time_t(now);
+        std::tm tmBuf{};
+#ifdef _WIN32
+        localtime_s(&tmBuf, &t);
+#else
+        localtime_r(&t, &tmBuf);
+#endif
+        char buf[32]{};
+        std::strftime(buf, sizeof(buf), "%Y%m%d-%H%M", &tmBuf);
+        stamp = buf;
+    }
+    const std::string suggested = baseName + "-" + stamp + ".txt";
+
+    // ★★ 2026-10-21：探针用**定死的目标路径**绕开保存对话框。
+    //   理由见 `BuildTranscriptExportText` 头注：`GetSaveFileNameW` 是模态循环，
+    //   合成点击走上去会把整个探针挂死。这不是"为了测试改产品逻辑"——
+    //   探针走的是**同一个写盘函数**，绕过去的只有"路径从哪儿来"。
+    //   ★ 只在 `--menu-probe` 且已经指定路径时生效（默认空 ⇒ 零行为变化）。
+    std::filesystem::path target;
+    if (!m_menuProbeExportPath.empty()) {
+        target = m_menuProbeExportPath;
+    } else {
+        // 保存对话框。`OFN_OVERWRITEPROMPT` 让覆盖变成用户的选择而不是我们默默做决定。
+        wchar_t fileBuf[1024]{};
+        {
+            const std::wstring wSuggested = WideFromUtf8Path(suggested);
+            const size_t n = std::min(wSuggested.size(), static_cast<size_t>(1023));
+            std::copy(wSuggested.begin(), wSuggested.begin() + static_cast<std::ptrdiff_t>(n),
+                      fileBuf);
+        }
+        OPENFILENAMEW ofn{};
+        ofn.lStructSize = sizeof(ofn);
+        // ★ `hwndOwner = nullptr`：ECDI 的 `PlatformWindow` **不暴露**原生窗口句柄
+        //   （`grep Handle|NativeHandle Platform/PlatformWindow.h` 零命中），所以无法把
+        //   对话框挂到主窗口。后果是对话框不模态于主窗口（用户可以在它开着时操作主窗口）
+        //   —— 可接受：保存对话框自带自己的模态循环，不会因此错乱。
+        //   ★ 不为此去 reflecion/GetActiveWindow()：那是靠推断拿句柄，拿错了会让
+        //     对话框挂到别的程序的窗口上。诚实的 `nullptr` 比猜一个句柄安全。
+        ofn.hwndOwner = nullptr;
+        ofn.lpstrFilter = L"\u6587\u672c\u6587\u4ef6 (*.txt)\0*.txt\0\u6240\u6709\u6587\u4ef6 (*.*)\0*.*\0\0";
+        ofn.lpstrFile = fileBuf;
+        ofn.nMaxFile = static_cast<DWORD>(std::size(fileBuf));
+        ofn.lpstrTitle = L"\u5bfc\u51fa\u8f6c\u5f55";
+        ofn.lpstrDefExt = L"txt";
+        ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&ofn)) {
+            // 用户取消。★ 不写通知行：取消不是事件，往转录里塞「已取消」会把
+            //   用户的视图弄脏（而且下次导出会多一行）。
+            return false;
+        }
+        target = Utf8FromWidePath(fileBuf);
+    }
+
+    std::string error;
+    if (!WriteTranscriptExport(target, &error)) {
+        AddNoticeRow("[导出失败] " + error, kErrorDark);
+        Relayout();
+        RequestRepaint();
+        return false;
+    }
+
+    // 成功也要**说一声**：保存对话框关掉后屏幕上看不出任何变化，
+    //   用户只能去文件管理器里找。通知行是唯一能确认「真的导出了」的反馈。
+    AddNoticeRow("[已导出] " + PathToUtf8(target), kDarkMuted);
+    Relayout();
+    RequestRepaint();
+    return true;
+}
+
+void HarnessApp::ToggleMoreMenu() { SetMoreMenuOpen(!m_moreMenuOpen); }
+
+void HarnessApp::SetMoreMenuOpen(bool open) {
+    // ★ 幂等：同值不做事。否则每次重建都 Arrange 一次就白掉一帧。
+    if (m_moreMenuOpen == open) return;
+    m_moreMenuOpen = open;
+    if (m_hud.moreMenu) {
+        m_hud.moreMenu->SetVisible(open);
+        // ★ 必须重排**父容器**（`counting`）：布局跳过隐藏子（C-VIS-1），
+        //   但「跳过」只在 Arrange 时发生。不 Arrange 的话菜单条消失后
+        //   那个 34px 的槽位会留着——转录区凭空缩进一块。
+        if (ECDI::Widget* parent = m_hud.moreMenu->GetParent()) parent->Arrange();
+        Relayout();
+        RequestRepaint();
+    }
+}
+
 void HarnessApp::MaterializePendingPrompts() {
     if (!m_content || !m_sess) return;
     // Transient rows are intentionally rebuilt rather than inserted into canonical row/timeline state.
@@ -6423,6 +8005,79 @@ void HarnessApp::CacheEvalMetrics() {
     }
 }
 
+// ★★ 2026-10-21：HUD 覆盖自检（理由见 `App.h` 里 `HudTouch` 的声明注释）。
+//
+//   这一类缺陷的形状：**读了但从不写**。`RefreshHud` 里写着
+//   `if (m_hud.X) { m_hud.X->SetText(...) }`，字面上像"有这个控件就更新它"，
+//   而如果建树时从来没赋值，那个 `if` 就永远是假分支——代码看着对，
+//   屏幕上是空的，**所有既有读数都看不见它**。
+//   已发现三个实例：`backendChip`（屏幕上从来没有）、
+//   `sessSession` / `sessCore`（Step 1 之后不再建）。前两个已删、
+//   `backendChip` 已补上真实实现——但"修三个实例"不是修这一类，所以这里把它
+//   变成一条会自己变红的判据。
+//
+//   ★ 开销：默认 `m_hudAudit == false` ⇒ `HudTouch` 只做一次 bool 判断就返回，
+//     不分配、不记录。只有探针打开它之后才登记。
+void HarnessApp::HudTouch(const char* name) {
+    if (!m_hudAudit) return;
+    m_hudTouched.emplace_back(name);
+}
+
+std::vector<std::string> HarnessApp::HudUnbuilt() const {
+    // ★ "这个字段建过没有"直接看**指针本身**，不另维护"已建"表——
+    //   指针非空 ⇔ 建树时赋过值，这是唯一可靠且不会漂移的判据。
+    auto nonNull = [this](const std::string& n) -> bool {
+        const Hud& h = m_hud;
+        if (n == "title") return h.title != nullptr;
+        if (n == "rowChip") return h.rowChip != nullptr;
+        if (n == "backendChip") return h.backendChip != nullptr;
+        if (n == "sessChip") return h.sessChip != nullptr;
+        if (n == "statusDot") return h.statusDot != nullptr;
+        if (n == "sbDot") return h.sbDot != nullptr;
+        if (n == "stateChip") return h.stateChip != nullptr;
+        if (n == "sessProgress") return h.sessProgress != nullptr;
+        if (n == "convTitle") return h.convTitle != nullptr;
+        if (n == "convSub") return h.convSub != nullptr;
+        if (n == "workspacePath") return h.workspacePath != nullptr;
+        if (n == "workspaceStatus") return h.workspaceStatus != nullptr;
+        if (n == "workspacePick") return h.workspacePick != nullptr;
+        if (n == "historyList") return h.historyList != nullptr;
+        if (n == "historyCount") return h.historyCount != nullptr;
+        if (n == "projectList") return h.projectList != nullptr;
+        if (n == "sessList") return h.sessList != nullptr;
+        if (n == "sessCount") return h.sessCount != nullptr;
+        if (n == "healthSeq") return h.healthSeq != nullptr;
+        if (n == "healthViol") return h.healthViol != nullptr;
+        if (n == "healthKind") return h.healthKind != nullptr;
+        if (n == "evalPaints") return h.evalPaints != nullptr;
+        if (n == "probeCmds") return h.probeCmds != nullptr;
+        if (n == "probeExec") return h.probeExec != nullptr;
+        if (n == "usageInV") return h.usageInV != nullptr;
+        if (n == "usageOutV") return h.usageOutV != nullptr;
+        if (n == "ctxPct") return h.ctxPct != nullptr;
+        if (n == "histChip") return h.histChip[0] != nullptr;
+        if (n == "histWhat") return h.histWhat[0] != nullptr;
+        if (n == "inspector") return h.inspector != nullptr;
+        if (n == "inspectorToggle") return h.inspectorToggle != nullptr;
+        if (n == "exportToggle") return h.exportToggle != nullptr;
+        if (n == "moreToggle") return h.moreToggle != nullptr;
+        if (n == "moreMenu") return h.moreMenu != nullptr;
+        // ★ 不在表里 ⇒ 按**未建**处理（fail-closed：宁可报红，不可静默通过）。
+        //   这条很关键：将来新增一个 Hud 字段却忘了加进这张表，判据会立刻红，
+        //   而不是默默漏检——"表会漏项"是这套机制唯一的真实弱点，所以要让它
+        //   **漏了就吵**。
+        return false;
+    };
+    std::vector<std::string> out;
+    std::vector<std::string> seen;
+    for (const std::string& n : m_hudTouched) {
+        if (std::find(seen.begin(), seen.end(), n) != seen.end()) continue;
+        seen.push_back(n);
+        if (!nonNull(n)) out.push_back(n);
+    }
+    return out;
+}
+
 // HUD 刷新：每 tick 至多一次；SetText 同值仍会请求重绘，
 // 因此靠 m_hudDirty + settled 判定避免 30Hz 空转。
 void HarnessApp::RefreshHud() {
@@ -6430,15 +8085,17 @@ void HarnessApp::RefreshHud() {
     if (!m_hud.title) return;
 
     m_hud.title->SetText("harness");
-    if (m_hud.rowChip) {
+    if (HudTouch("rowChip"), m_hud.rowChip) {
         m_hud.rowChip->SetText(m_options.rowModeList ? "listlayout" : "autosize");
     }
-    if (m_hud.sessChip) {
+    if (HudTouch("sessChip"), m_hud.sessChip) {
         m_hud.sessChip->SetText(m_sess->sessionId.empty() ? "s-____" : m_sess->sessionId);
     }
-    if (m_hud.backendChip) {
-        // ★ 2026-10-18：`▾`(U+25BE) 两主题 face 都无字形 ⇒ `▽`(U+25BD) 空心下三角
-        m_hud.backendChip->SetText(m_backendName + " ▽");
+    if (HudTouch("backendChip"), m_hud.backendChip) {
+        // ★★ 2026-10-21：**不再拼 `▽`**。后端在 `Create` 时定死，运行期没有切换
+        //   路径（全仓唯一赋值处是 GL 就绪检查之后）⇒ 箭头会承诺一个不存在的菜单。
+        //   原写法 `m_backendName + " ▽"` 是"看着能点、其实不能"的标本。
+        m_hud.backendChip->SetText(m_backendName);
     }
     // 中栏会话头（2026-10-18，原型 C）：副标随会话 id / core 版本到达而更新。
     // ★ 2026-10-18 订正：此前只拼 `协议 v2 · 回放模式 · <sessionId>`，漏掉
@@ -6447,10 +8104,10 @@ void HarnessApp::RefreshHud() {
     //   `version/protocol` 呈现位不符，看着像没接上 hello）。
     //   ★ 只更新**会变的部分**（模式与工作区是启动即定的），标题保持建头时的值。
     // ★ 0d：标题改成反映**活动会话**（多会话后，标题不该恒是首会话的名字）。
-    if (m_hud.convTitle) {
+    if (HudTouch("convTitle"), m_hud.convTitle) {
         m_hud.convTitle->SetText(m_sess->label.empty() ? ConversationTitle() : m_sess->label);
     }
-    if (m_hud.convSub) {
+    if (HudTouch("convSub"), m_hud.convSub) {
         std::string sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
         if (!m_sess->sessionId.empty()) sub += " · " + m_sess->sessionId;
         sub += " · protocol " + std::to_string(m_sess->protocolVer);
@@ -6505,12 +8162,12 @@ void HarnessApp::RefreshHud() {
             p->Arrange();
         }
     }
-    if (m_hud.workspacePath) {
+    if (HudTouch("workspacePath"), m_hud.workspacePath) {
         m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
             ? "core 实际工作区：尚未确认" : "core 实际工作区：" + m_sess->workspacePath);
     }
-    if (m_hud.workspaceStatus) m_hud.workspaceStatus->SetText(m_sess->workspaceStatus);
-    if (m_hud.workspacePick) {
+    if (HudTouch("workspaceStatus"), m_hud.workspaceStatus) m_hud.workspaceStatus->SetText(m_sess->workspaceStatus);
+    if (HudTouch("workspacePick"), m_hud.workspacePick) {
         m_hud.workspacePick->SetEnabled(pickerEnabled);
         m_hud.workspacePick->SetTextColor(pickerEnabled ? kDarkInk : kDarkMuted);
     }
@@ -6542,37 +8199,35 @@ void HarnessApp::RefreshHud() {
             }
         }
     }
-    if (m_hud.stateChip) {
+    if (HudTouch("stateChip"), m_hud.stateChip) {
         m_hud.stateChip->SetText(stateText);
         m_hud.stateChip->SetTextColor(kDarkMuted);
     }
-    if (m_hud.statusDot) {
+    if (HudTouch("statusDot"), m_hud.statusDot) {
         m_hud.statusDot->SetStyle(ECDI::PanelStyleOverride{
             .background = active ? kOkDark : kDarkMuted, .cornerRadius = 4.0f});
     }
-    if (m_hud.sbDot) {
+    if (HudTouch("sbDot"), m_hud.sbDot) {
         m_hud.sbDot->SetStyle(ECDI::PanelStyleOverride{
             .background = active ? kOkDark : kDarkMuted, .cornerRadius = 3.5f});
     }
 
     // ★★ Step 1：侧栏会话的"活动会话"读数**搬到了列表行里**（每行自带 id/label/选中态）。
-    //   `sessSession` / `sessCore` 两个槽位因此**不再赋值**——它们原本服务于
-    //   "全局只有一行会话条目"的形态。字段仍留在 `Hud` 里（删字段是独立清理，
-    //   见 App.h 里的注释），故这里的两处 `if` 永远不成立（死代码但无害）。
-    if (m_hud.sessSession) {
-        m_hud.sessSession->SetText(m_sess->sessionId.empty() ? "—" : m_sess->sessionId);
-    }
-    if (m_hud.sessCore) {
-        m_hud.sessCore->SetText(m_sess->coreVer.empty() ? "—" : m_sess->coreVer);
-    }
-    if (m_hud.sessCount) {
+    //   `sessSession` / `sessCore` 两个槽位因此**不再赋值**。
+    //   ★★ 2026-10-21：这两个槽位与它们的 `if` 分支**已删除**。原注释写的是
+    //     "字段仍留在 Hud 里（删字段是独立清理），故这里的两处 if 永远不成立
+    //     （死代码但无害）"——"无害"这个判断错了：留着它们会让**下一个读代码的人
+    //     以为侧栏有一行会话 id/meta**，而那一行早就不存在了。更重要的是，
+    //     它们是"**读了但永远不写**"这一类缺陷的样板，而这类缺陷刚好可以机检
+    //     （见 `--hud-probe`）。修一个样板、留一个样板是自相矛盾的。
+    if (HudTouch("sessCount"), m_hud.sessCount) {
         // 计数与列表同源：都从 m_sessions.size() 出发 ⇒ 这一行是列表的**文字对照**。
         // 两者不一致（列表少画/多画了一行）时，人和探针都读得出来。
         char buf[48];
         std::snprintf(buf, sizeof(buf), "%zu 个会话", m_sessions.size());
         m_hud.sessCount->SetText(buf);
     }
-    if (m_hud.sessProgress) {
+    if (HudTouch("sessProgress"), m_hud.sessProgress) {
         char buf[64];
         if (m_sess->replay) {
             std::snprintf(buf, sizeof(buf), "%zu / %zu 条", m_sess->replay->Consumed(),
@@ -6600,7 +8255,7 @@ void HarnessApp::RefreshHud() {
         }
     }
 
-    if (m_hud.healthSeq) {
+    if (HudTouch("healthSeq"), m_hud.healthSeq) {
         const size_t gaps = m_sess->transcript.SeqGaps();
         if (gaps == 0) {
             m_hud.healthSeq->SetText("seq 连续 · 0 缺口");
@@ -6610,14 +8265,14 @@ void HarnessApp::RefreshHud() {
             m_hud.healthSeq->SetTextColor(kErrorDark);
         }
     }
-    if (m_hud.healthViol) {
+    if (HudTouch("healthViol"), m_hud.healthViol) {
         m_hud.healthViol->SetText("违规 " + std::to_string(m_sess->transcript.Violations()) +
                                   " · 未知 " + std::to_string(m_sess->transcript.UnknownTypes()));
     }
     // ★ 未知 kind 单列一行（2026-10-13）：它与「未知 t」管辖**不同的判别符**，
     //   合并会同时导致①语义误读（把「协议空白」读成「I5 已覆盖」）
     //   ②文本裁切（并进上行实测被裁，见 BuildInspector 注释）。
-    if (m_hud.healthKind) {
+    if (HudTouch("healthKind"), m_hud.healthKind) {
         const size_t uk = m_sess->transcript.UnknownKinds();
         if (uk == 0) {
             m_hud.healthKind->SetText("未知 kind · 0");
@@ -6630,18 +8285,18 @@ void HarnessApp::RefreshHud() {
             m_hud.healthKind->SetTextColor(kWarn);
         }
     }
-    if (m_hud.evalPaints) {
+    if (HudTouch("evalPaints"), m_hud.evalPaints) {
         m_hud.evalPaints->SetText(std::to_string(m_evalPaints) + " 次 · 请求 " +
                                   std::to_string(m_invalidations));
     }
-    if (m_hud.probeCmds) {
+    if (HudTouch("probeCmds"), m_hud.probeCmds) {
         if (m_options.cullProbe && m_probe) {
             m_hud.probeCmds->SetText("avg " + std::to_string(m_evalProbeAvg));
         } else {
             m_hud.probeCmds->SetText("—");
         }
     }
-    if (m_hud.probeExec) {
+    if (HudTouch("probeExec"), m_hud.probeExec) {
         if (m_options.cullProbe && m_probe) {
             m_hud.probeExec->SetText("avg " +
                                      std::to_string(static_cast<unsigned long long>(m_evalAvgExecUs)) +
@@ -6650,11 +8305,11 @@ void HarnessApp::RefreshHud() {
             m_hud.probeExec->SetText("—");
         }
     }
-    if (m_hud.usageInV) {
+    if (HudTouch("usageInV"), m_hud.usageInV) {
         m_hud.usageInV->SetText(m_sess->usageIn < 0 ? "—"
                                               : std::to_string(m_sess->usageIn));
     }
-    if (m_hud.usageOutV) {
+    if (HudTouch("usageOutV"), m_hud.usageOutV) {
         m_hud.usageOutV->SetText(m_sess->usageOut < 0 ? "—"
                                                 : std::to_string(m_sess->usageOut));
     }
@@ -6666,7 +8321,7 @@ void HarnessApp::RefreshHud() {
     //     output 是本轮新生成的，尚未回到下一轮的上下文里。
     //   ★ 三者任一未知 ⇒ 显示 `—` 且条归零（**不猜**；分母未知时百分比无定义）。
     const bool ctxKnown = (m_sess->contextLimit > 0 && m_sess->usageIn >= 0);
-    if (m_hud.ctxPct) {
+    if (HudTouch("ctxPct"), m_hud.ctxPct) {
         if (!ctxKnown) {
             m_hud.ctxPct->SetText("—");
             m_hud.ctxPct->SetTextColor(kDarkMuted);
@@ -7149,6 +8804,251 @@ void HarnessApp::WriteSummary() {
                           r.buttonsDisabled ? "true" : "false",
                           r.matched ? "true" : "false",
                           escA(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ 2026-10-21：中栏头 `↗`/`···` 的机读证据（--menu-probe）。
+    //   判据（跑批脚本执行，每条都带负对照，见 `RunMenuProbe` 头注）：
+    //     · menu-closed.matched == true（首帧菜单关着且不占槽）
+    //     · menu-open.matched == true（点钮 ⇒ 模型翻 ∧ 转录区下移正好 menuH）
+    //     · menu-toggle-back.matched == true（再点 ⇒ 回到原顶边）
+    //     · menu-clear.matched == true（清空视图只重画，不动模型/行数）
+    //     · export-text.matched == true（导出源是 timeline 而非块表）
+    //     · export-file.matched == true（真的落盘、逐字节相等、LF）
+    //   ★ 默认关闭 ⇒ 摘要里连 `menuProbe` 键都不出现（本仓铁律）。
+    if (m_options.menuProbe && !m_menuProbeLog.empty()) {
+        json += "  \"menuProbe\": [";
+        // 第五份转义 lambda（各段作用域独立，不能复用别段的局部 lambda）
+        auto escM = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_menuProbeLog.size(); ++i) {
+            const MenuProbeRec& r = m_menuProbeLog[i];
+            json += (i ? ", " : "");
+            char b[768];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"modelOpen\": %s, \"widgetVisible\": %s, "
+                          "\"headBottom\": %d, \"scrollTop\": %d, \"gap\": %d, "
+                          "\"midWidth\": %d, \"transcriptRows\": %zu, \"timelineLen\": %zu, "
+                          "\"exportLines\": %zu, \"modelBlockLines\": %zu, "
+                          "\"noticeRows\": %zu, \"exportHasNotice\": %s, "
+                          "\"exportWrote\": %s, \"exportBytes\": %zu, \"exportLfOnly\": %s, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.modelOpen ? "true" : "false",
+                          r.widgetVisible ? "true" : "false",
+                          r.headBottom, r.scrollTop, r.gap, r.midWidth,
+                          r.transcriptRows, r.timelineLen,
+                          r.exportLines, r.modelBlockLines, r.noticeRows,
+                          r.exportHasNotice ? "true" : "false",
+                          r.exportWrote ? "true" : "false", r.exportBytes,
+                          r.exportLfOnly ? "true" : "false",
+                          r.matched ? "true" : "false",
+                          escM(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ 2026-10-21：HUD 覆盖率（--hud-probe）。
+    //   判据：hud-built.matched == true（读过的字段全部建过）
+    //         ∧ hud-built-negative.matched == true（打掉一个指针必须被看见）
+    if (m_options.hudProbe && !m_hudProbeLog.empty()) {
+        json += "  \"hudProbe\": [";
+        auto escH2 = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default: out += static_cast<char>(c);
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_hudProbeLog.size(); ++i) {
+            const HudProbeRec& r = m_hudProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"touched\": %zu, \"unbuilt\": %zu, "
+                          "\"unbuiltNames\": \"%s\", \"matched\": %s, "
+                          "\"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.touched, r.unbuilt,
+                          escH2(r.unbuiltNames).c_str(),
+                          r.matched ? "true" : "false",
+                          escH2(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ 2026-10-21：Enter 发送的机读证据（--enter-probe）。
+    //   判据（跑批脚本执行，见 `RunEnterProbe` 头注）：
+    //     · enter-sends.matched          == true（真发出去了且框被清空）
+    //     · shift-enter-newline.matched  == true（没发 + 真换了行）
+    //     · enter-empty.matched          == true（空框不发）
+    //     · enter-whitespace.matched     == true（只有空白也不发）
+    //     · enter-unfocused.matched      == true（负对照：焦点不在框里就不发；
+    //                                       若这条红了，前四相证明不了任何事）
+    //   ★ 默认关闭 ⇒ 摘要里连 `enterProbe` 键都不出现（本仓铁律）。
+    if (m_options.enterProbe && !m_enterProbeLog.empty()) {
+        json += "  \"enterProbe\": [";
+        auto escE = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_enterProbeLog.size(); ++i) {
+            const EnterProbeRec& r = m_enterProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"promptCount\": %zu, "
+                          "\"inputText\": \"%s\", \"noticeRows\": %zu, "
+                          "\"sent\": %s, \"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.promptCount, escE(r.inputText).c_str(),
+                          r.noticeRows, r.sent ? "true" : "false",
+                          r.matched ? "true" : "false",
+                          escE(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ 2026-10-21：输入框自动长高的机读证据（--grow-probe）。
+    //   判据（跑批脚本执行，见 `RunGrowProbe` 头注）：
+    //     · baseline.matched     == true（单行基准高为正，否则后面是空真）
+    //     · type-newline.matched == true（Shift+Enter 真按键后**真的变高**——接线判据）
+    //     · grow.matched         == true（3 行 > 1 行，且兄弟控件**没被压住**）
+    //     · max-clamp.matched    == true（30 行封顶 kInputMaxH，不无限增长）
+    //     · send-reset.matched   == true（发出后回到单行高——`SetText` 路径的同步判据）
+    //     · shrink.matched       == true（删掉换行后**变矮**；★ 唯一能打红
+    //                              `max(0,·)` 陷阱的方向）
+    //     · exact-fit.matched    == true（恰好装下时没有内部滚动条——取整方向判据）
+    //   ★ 默认关闭 ⇒ 摘要里连 `growProbe` 键都不出现（本仓铁律）。
+    if (m_options.growProbe && !m_growProbeLog.empty()) {
+        json += "  \"growProbe\": [";
+        auto escG = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_growProbeLog.size(); ++i) {
+            const GrowProbeRec& r = m_growProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"inputH\": %d, \"barH\": %d, "
+                          "\"lines\": %d, \"hintY\": %d, \"buttonY\": %d, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.inputH, r.barH, r.lines, r.hintY, r.buttonY,
+                          r.matched ? "true" : "false",
+                          escG(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    //   判据（跑批脚本执行，见 `RunResizeProbe` 头注）：
+    //     · baseline.matched  == true（有行可测，否则后面是空真）
+    //     · grow.matched      == true（每行都变宽 + 视口变高 + 标题栏 == root 宽）
+    //     · shrink.matched    == true（每行都变窄 + **maxOffsetX == 0** + 标题栏跟上）
+    //     · roundtrip.matched == true（行宽逐位回到 baseline）
+    //     · negative.matched  == true（只有 Arrange、没有 Relayout ⇒ 行宽不变；
+    //                            若这一条红了，说明前面三条证明不了任何事）
+    //   ★ 默认关闭 ⇒ 摘要里连 `resizeProbe` 键都不出现（本仓铁律）。
+    if (m_options.resizeProbe && !m_resizeProbeLog.empty()) {
+        json += "  \"resizeProbe\": [";
+        auto escR = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\\\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default:
+                        if (c < 0x20) {
+                            char e[8];
+                            std::snprintf(e, sizeof(e), "\\u%04x", c);
+                            out += e;
+                        } else {
+                            out += static_cast<char>(c);
+                        }
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_resizeProbeLog.size(); ++i) {
+            const ResizeProbeRec& r = m_resizeProbeLog[i];
+            json += (i ? ", " : "");
+            char b[640];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"rootW\": %d, \"rootH\": %d, "
+                          "\"scrollW\": %d, \"scrollH\": %d, \"midW\": %d, "
+                          "\"captionW\": %d, \"maxOffsetX\": %d, "
+                          "\"rowWMin\": %d, \"rowWMax\": %d, \"rows\": %zu, "
+                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.rootW, r.rootH, r.scrollW, r.scrollH,
+                          r.midW, r.captionW, r.maxOffsetX, r.rowWMin, r.rowWMax, r.rows,
+                          r.matched ? "true" : "false",
+                          escR(r.firstDivergence).c_str());
             json += b;
         }
         json += "],\n";

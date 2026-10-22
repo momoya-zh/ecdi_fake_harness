@@ -181,7 +181,16 @@ inline Theme MakeDark() {
     t.inputBg     = ECDI::Color::FromRGBA8(35, 38, 47, 255);
     t.inputBorder = ECDI::Color::FromRGBA8(46, 51, 62, 255);
     t.inputCaret  = ECDI::Color::FromRGBA8(91, 157, 255, 255);
-    t.sansFamily  = "";   // 保持既有渲染（SimSun），深色是回归基线，不动字形
+    // ★★ 2026-10-21（用户裁决）：深色也换成雅黑，与浅色**同族**。
+    //   改前是 `""` = ECDI 默认 face（SimSun），原注释写的是「深色是回归基线，
+    //   不动字形」。这条基线被用户报告打破了：中栏头那三个 `·`(U+00B7) 在
+    //   两种 face 里根本不是同一个字形——SimSun 画成三个 2px 小点（中心距 12px），
+    //   雅黑画成一条居中的 9px 实心横杠，于是"同一排三个钮"在深浅两主题下
+    //   看起来是两套东西。同一根因还让浅色的 `↗`/`≡` 带上 ClearType 彩边。
+    //   ⇒ 逐字节基线让位于"同一份 UI 在两种主题下是同一套字形"。
+    //   ★ 代价（实测记录，不隐藏）：深色正文行高按雅黑重算，`paints`/`frames`
+    //     与回改之前**不再逐字节相等**；这是本仓第一次有意改变深色的字形基线。
+    t.sansFamily  = "Microsoft YaHei";
     // 自绘标题栏 —— 与 ECDI 原生 caption 同值（CaptionBar.cpp:31/37 · CaptionButton.cpp:14-27），
     // 保证深色主题下外观与接入本仓之前逐字节一致。
     t.captionBg            = ECDI::Color::FromRGBA8(38, 40, 45, 255);

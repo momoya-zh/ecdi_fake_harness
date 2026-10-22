@@ -14,6 +14,14 @@
 
 #include "ECDI/Application/Application.h"
 #include "ECDI/Core/Color.h"
+// ★★ 2026-10-21：`OnWindowResized` 的 override 签名需要完整类型。
+//   `Application.h` 里只有前置声明（`class WindowResizedEvent;`）——
+//   前置声明够写引用形参，但 override 检查要在派生类里比对基类签名，
+//   完整定义更稳妥（且 `event.GetWidth()` 必须有定义）。
+#include "ECDI/EventSystem/Window/WindowResizedEvent.h"
+// ★★ 2026-10-21：`SynthesizeKey(ECDI::KeyCode, bool)` 的形参需要完整枚举，
+//   而按值传参**不能**用前置声明（枚举无法前置声明）⇒ 必须包这个头。
+#include "ECDI/EventSystem/Input/KeyBoard/KeyCode.h"
 #include "ECDI/Widget/Button.h"
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/Label.h"
@@ -172,18 +180,99 @@ struct CliOptions {
     //   ★ 默认 false ⇒ 零行为变化；摘要里连 `history` 键都不出现。
     bool historyProbe = false;
     bool workspaceProbe = false;       // --workspace-probe：v3 workspace/optimistic prompt 判据
+    // ★★ 2026-10-21：中栏头两个钮（`↗` 导出 / `···` 菜单）的取证。
+    //   ★ 为什么必须有：这两件在此之前是**空回调**（`(void)tip; return;`），
+    //     而"按钮存在 + 有 hover 反馈"在**任何**既有读数里都看不出区别——
+    //     侧栏探针只看侧栏、主题探针只看重建，没有一个探针碰过中栏头。
+    //   ★ 判据（脚本执行，逐条都有负对照）：
+    //     · menu-closed：模型 false ∧ 控件不可见 ∧ 菜单条**不占槽**
+    //       （判据取「转录区顶边 == 头底边」，而不是 `IsVisible()`——
+    //        只改可见性不 Arrange 会让可见性正确而屏幕仍留着 34px 空洞）
+    //     · menu-open：点 `···` 后模型 true ∧ 控件可见 ∧ 转录区顶边下移**正好 34**
+    //     · menu-toggle-back：再点一次必须**回到原位**（不是"变窄了"就行）
+    //     · menu-clear：点「清空视图」⇒ 转录行数不变（它重画视图，**不动模型**）
+    //       ★ 负对照：同时断言 `timeline` 长度不变——若实现走成"清空模型"，
+    //         行数会掉到 0，而那同样"看起来像重画了"
+    //     · export-text：导出的文本**逐条**对得上 `timeline`，且含通知行
+    //       ★ 负对照：`Transcript::Blocks()` 里**没有**那些通知行 ⇒ 证明导出源
+    //         真的是 `timeline` 而不是块表（否则这条判据恒真）
+    //     · export-file：真的落盘、内容与 `BuildTranscriptExportText()` 逐字节相等、
+    //       且行尾是 LF（不是 CRLF）
+    //   ★ 默认 false ⇒ 摘要逐字节不变（本仓铁律）。
+    bool menuProbe = false;            // --menu-probe：中栏头导出/菜单判据
+    // ★★ 2026-10-21（「先把 UI 完善」第 1 项）：窗口可拉伸的取证。
+    //   ★ 为什么必须有：尺寸变化的失败**在既有读数里完全不可见**——`blocks`/
+    //     `deltas`/`seqGaps` 与窗口多大毫无关系，而截图只能证明"某一刻看起来还行"。
+    //     改前的实测（`.scratch/probe_resize_shots.py`）：1400x900 下转录行仍是
+    //     1120 时的宽度（右侧一片白），800x560 下行比视口还宽（出现横向滚动条）。
+    //   ★ 判据逐条（每条都能变红）：
+    //     · grow：客户区变大 ⇒ 每一行的宽度**都**跟着变大，且 `m_scroll` 变高
+    //     · shrink：客户区变小 ⇒ 行宽度**都**变小，且**不出现横向滚动条**
+    //       （横向滚动条是"行比视口宽"的机器可读证据，`GetMaxOffsetX() > 0`）
+    //     · caption：标题栏宽度 == 客户区宽度（三个系统钮必须贴着右上角）
+    //     · roundtrip：回到原尺寸 ⇒ 行宽**逐位**回到原值（不是"差不多"）
+    //     · negative：只改一个自变量（把 root 改窄但不调 `OnWindowResized`）⇒
+    //       行宽必须**不**变，证明"行宽跟着窗口变"是那条重排链做的，不是巧合
+    //   ★ 默认 false ⇒ 摘要逐字节不变（本仓铁律）。
+    bool resizeProbe = false;          // --resize-probe：窗口拉伸的布局判据
+    // ★★ 2026-10-21（「UI 完善」第 5 项）：**Enter 发送 / Shift+Enter 换行**的取证。
+    //   ★ 为什么必须有：改前输入框是单行的，按 Enter 什么也不发生。这件事在
+    //     **所有既有读数里都不可见**——`blocks`/`deltas` 只反映"发了几条"，
+    //     而探针从不按键，截图也证明不了"这个键有反应"。
+    //   ★ 判据（每条都能变红）：
+    //     · enter-sends：输入框里有文字时合成一次 `KeyDown(Enter)`
+    //       ⇒ 会话里**多出一条** prompt，且输入框被清空
+    //       （清空由 `App` 的 `SetOnSend` 做——这一条同时证明两条路径合流了）
+    //     · shift-enter-newline：`KeyDown(Shift+Enter)` ⇒ **不发送**，
+    //       且文本框里真的多了一个 `\n`
+    //     · enter-empty：空框按 Enter ⇒ **不发送**（负对照：否则凭空多一条空气泡）
+    //     · enter-whitespace：只有空白时按 Enter ⇒ **不发送**
+    //       （★ 比"空串"强：`!empty()` 判不出这种"看起来有内容"
+    //        ——用户敲了 Shift+Enter，剩下的是 `\n`）
+    //     · enter-unfocused：焦点移出输入框再合成 Enter ⇒ **不发送**
+    //       （★ 负对照：证明"发不发送"取决于事件真的派给了输入框，
+    //        而不是探针直接调了 `Submit()`）
+    //   ★ 默认 false ⇒ 摘要逐字节不变（本仓铁律）。
+    bool enterProbe = false;           // --enter-probe：Enter 发送 / Shift+Enter 换行
+    // ★★ 2026-10-21：输入框自动长高（--grow-probe）。
+    //   判据（跑批脚本执行，见 `RunGrowProbe` 头注）：
+    //     · type-newline：Shift+Enter 后高度**必须真的变高**（键盘接线判据）
+    //     · grow：3 行 > 1 行，且提示行/按钮**跟着下移**（不是被压住）
+    //     · max-clamp：30 行时高度封顶 `kInputMaxH`，**不无限增长**
+    //     · send-reset：Enter 发出后高度回到单行（`SetText` 路径的同步判据）
+    //     · shrink：删掉换行后高度**必须变矮**（★ 唯一能打红 max(0,·) 陷阱的方向）
+    //     · exact-fit：恰好装下时不出现内部滚动条（取整方向判据）
+    bool growProbe = false;            // --grow-probe：多行自动长高
+    // ★★ 2026-10-21：`Hud` 覆盖率自检（--hud-probe）。
+    //   ★ 为什么必须有：`RefreshHud` 里有二十来处 `if (m_hud.X)`，而
+    //     **建树时漏掉某个字段**这件事在任何既有读数里都不可见——
+    //     那个 if 永远为假，屏幕上就那么空着，代码读起来却像"有就更新"。
+    //     已实测到三个实例（`backendChip` / `sessSession` / `sessCore`）。
+    //   ★ 判据：被读过但从未赋值的字段集合必须为空；负对照把那集合造非空。
+    //   ★ 默认 false ⇒ 摘要逐字节不变。
+    bool hudProbe = false;             // --hud-probe：HUD 指针"读了但没建"判据
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
 
 // Application 子类：只把本应用的三个定时器路由进 HarnessApp，
 // 其余（光标闪烁 / 动画 tick）转发基类——与 ECDI ModelProbe 同款先例。
+//
+// ★★ 2026-10-21：新增 `OnWindowResized` 转发（窗口可拉伸）。
+//   为什么**必须**在 Application 层接，而不是在某个 Widget 上接：
+//   `WindowResizedEvent` 不是坐标事件（没有 HitTest 目标），框架把它交给
+//   `Application::OnWindowResized`。而基类那一份**只**同步 `RootWidget` 的尺寸——
+//   它不知道转录行是「按内容宽度测出来」的，也不知道 caption 是定宽的。
+//   ⇒ 基类做完它那一步之后，我们还必须再走一遍**我们自己的**重排链。
+//   ★ 调用 `ECDI::Application::OnWindowResized(event)` 在前：基类负责 root 尺寸，
+//     我们的重排依赖它已经生效（漏掉就是按旧宽度重排一次，白跑）。
 class HarnessApplication : public ECDI::Application {
 public:
     void SetOwner(HarnessApp* owner) { m_owner = owner; }
 
 protected:
     void OnTimer(const ECDI::TimerEvent& event) override;
+    void OnWindowResized(const ECDI::WindowResizedEvent& event) override;
 
 private:
     HarnessApp* m_owner = nullptr;
@@ -200,6 +289,17 @@ public:
     void OnReplayTick();
     void OnAutoClose();
     void OnSweepTick();
+    // ★★ 2026-10-21：窗口客户区变了（用户拉伸窗口）。
+    //   契约（与 `RebuildUi` 同一族，但**不**重建树）：
+    //     ① 基类先把 root 尺寸同步好（由 `HarnessApplication` 保证顺序）；
+    //     ② caption 是**定宽**创建的（`SetSize(1120, ...)`），必须跟着改宽；
+    //     ③ 转录行宽度是按 `ContentWidth(m_scroll)` 量出来的 ⇒ 必须 `Relayout()`
+    //        重测，否则大窗口里文字仍按 1120 时的宽度折行、只用到左侧一条；
+    //     ④ `FollowTailIfPinned()`：用户在底部时，重排后要保持贴底（否则一拉伸
+    //        就被甩到上面去）。
+    //   ★ 不做 `RebuildTranscriptView`：尺寸变化不动模型，重建是白花的测量成本，
+    //     而且会把滚动位置和展开态再跑一遍（`Relayout` 已足够）。
+    void OnWindowResized(int width, int height);
     void SendPrompt(const std::string& text);     // P1.5：发送路径（按钮与自动发共用）
 
     static constexpr int kReplayTimer = 100;   // ~30Hz（33ms）
@@ -216,8 +316,6 @@ private:
         ECDI::Panel* statusDot = nullptr;    // 顶栏状态圆点（ok/dim 随 state 翻色）
         ECDI::Panel* sbDot = nullptr;        // 状态栏圆点
         ECDI::Label* stateChip = nullptr;    // 顶栏：running / idle
-        ECDI::Label* sessSession = nullptr;  // 左栏：活动会话 id
-        ECDI::Label* sessCore = nullptr;     // 左栏：会话行 meta（core 版本）
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
         ECDI::Label* convTitle = nullptr;    // 中栏会话头：标题（原型 C .conversation-head）
         ECDI::Label* convSub = nullptr;      // 中栏会话头：元信息副标
@@ -264,6 +362,21 @@ private:
         //   一旦 `parent->Arrange()` 漏掉，屏幕会把检查器留在原位而探针全绿。
         //   句柄进 Hud 才能被合成点击（同 `sidebarToggle`/`themeToggle`）。
         ECDI::Button* inspectorToggle = nullptr;
+        // ★★ 2026-10-20：中栏头 `↗`（导出转录）与 `···`（菜单开关）两个钮。
+        //   此前 `↗`/`···` 都是**空回调**（`mkAct` 里 `(void)tip; return;`）——
+        //   点得下去但什么也不发生，是纯粹装饰。这里给它们真实接上。
+        //   ★ 句柄进 Hud 的理由同 `inspectorToggle`：探针要能合成点击。
+        ECDI::Button* exportToggle = nullptr;    // 中栏头 `↗`：导出转录到文件
+        ECDI::Button* moreToggle = nullptr;      // 中栏头 `···`：菜单显隐
+        // ★★ 2026-10-20：`···` 的菜单条。
+        //   ★ 为什么是「内联下拉条」而不是浮层：ECDI **没有**菜单/弹出层控件，
+        //     也**没有**「跳过布局」机制（`grep IgnoreLayout|absolute` 零命中），
+        //     而 `counting` 是 `VerticalLayout` ⇒ 挂上去的子控件必被布局接管。
+        //     浮层只能挂在 root 上再在每次 `Arrange` 后手动重定位，那要跟整树重建、
+        //     主题切换、侧栏收起三条路径同时对齐——一个漏了就错位。
+        //     内联条让布局**自己**处理位置：菜单是 `counting` 的第 2 个子控件，
+        //     藏在 `head` 与 `scroll` 之间，显隐只影响自己占不占槽。
+        ECDI::Panel* moreMenu = nullptr;         // 菜单条容器（显隐切换）
         ECDI::Label* workspacePath = nullptr;   // 左栏：仅显示 core 确认的路径
         ECDI::Label* workspaceStatus = nullptr;// 左栏：workspace 请求状态
         ECDI::Button* workspacePick = nullptr;  // 左栏：目录选择器
@@ -279,19 +392,35 @@ private:
         //   数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
         //   回放会话没有工作区 ⇒ 此段显示「无工作区」。
         ECDI::ScrollView* projectList = nullptr;  // 左栏：工作区目录滚动容器（收进「工作区」段）
-        // ⚠️ `sessSession` / `sessCore` **在 Step 1 之后不再被侧栏使用**：
-        //   它们原本服务于"全局只有一行会话条目"，而现在每一行都有自己的 id/meta。
-        //   保留字段（不在本步删除）的理由：第一，删字段要连带改 RefreshHud 与声明处，
-        //   属**独立的清理**，混进这一步会把"侧栏列表"的 diff 撑大；
-        //   第二，将来"活动会话的详细信息"若要在别处显示，这两个槽位是现成的。
-        //   现状 = **声明仍在、恒不赋值、RefreshHud 里两处 `if` 永远不成立**（死代码但无害）。
-        //   ⇒ 待办：下一步清理时连同这两条注释一起删。
+        // ★★ 2026-10-21：`sessSession` / `sessCore` **已删除**（原注释说"待办：下一步
+        //   清理时连同注释一起删"——这就是那一步）。
+        //   删的理由不是"它俩占两行"，而是：它们属于"**读了但永不写**"这一类，
+        //   而这类字段会让读者以为界面某处有一行会话 id/meta，实际没有。
+        //   同一个家族的 `backendChip` 也已处理，并且加了一条**机检**
+        //   （`--hud-probe` 的 `hud-built` 相）：凡是 `RefreshHud` 会写、
+        //   而建树时从不赋值的 `Hud` 指针，都会被列出来并判红。
     };
 
     void BuildUi(ECDI::Window& window);
     void BuildTopBar(ECDI::Widget& root);
     void BuildMainArea(ECDI::Widget& root);
     void BuildBottom(ECDI::Widget& root);
+    // ★★ 2026-10-21：**HUD 覆盖自检**——`Hud` 里被 `RefreshHud` 读的指针，
+    //   建树时必须全部被赋值，否则那个 `if` 永远是死分支。
+    //
+    //   为什么要这条：`backendChip`（只读从不写，屏幕上从来没有这个胶囊）、
+    //   `sessSession` / `sessCore`（Step 1 之后不再建，但字段与 if 都留着）
+    //   是同一类缺陷的**三个实例**，而且它们在**任何**既有读数里都不可见——
+    //   `RefreshHud` 写得若有其事，`if (ptr)` 的条件求值成功，只是永远为假。
+    //   光靠"下次注意"修三个实例没有意义，要把它变成一个**会自己变红**的判据。
+    //
+    //   做法：在 `RefreshHud` 的**每个** `if (m_hud.X)` 上挂一条记录（`Touch`），
+    //   收尾时把所有"碰过但从未赋值"的名字报出来。赋值在 `BuildUi` 期间发生，
+    //   而 `RefreshHud` 在 `BuildUi` 之后才第一次跑 ⇒ 这个顺序使判据成立。
+    //   ★ 只在 `--hud-probe` 下启用记录（`m_hudAudit`），默认零开销、零行为变化。
+    void HudTouch(const char* name);          // RefreshHud 里每个 if 调一次
+    // 返回"被读过但建树时从未赋值"的字段名列表（空 = 覆盖完整）。
+    std::vector<std::string> HudUnbuilt() const;
     void DrainInstant();
     void DrainTimed();
     void HandleLine(const std::string& line);
@@ -770,6 +899,34 @@ private:
     //     指针是稳定的（`unique_ptr` 持有、从不搬动），点击时现查下标才是对的。
     bool SwitchToSessionByPtr(const Session* target);
 
+    // ── ★★ 2026-10-20：中栏头两个钮（`↗` 导出 / `···` 菜单）─────────────
+    // 这两件此前都是 `mkAct` 里的**空回调**：按钮有 hover/pressed 反馈，点下去
+    //   什么也不发生。它们比其它「空回调」更难被发现——`↗`/`···` 看起来像真功能。
+    //
+    // `ExportTranscript()`：把活动会话的转录写成文本文件（弹出保存对话框）。
+    //   ★ 导出的对象是 **`m_sess->timeline`**（视图看到的那一份），不是
+    //     `Transcript::m_blocks`——后者不含通知行/问句行，导出会悄悄丢掉
+    //     `[error]`/`[协议不兼容]` 这些「这次运行可不可信」的读数。
+    //   ★ 导出是**只读投影**：不碰模型、不碰协议、不改 seq。回放会话也能导。
+    //   ★ 返回 false = 用户取消或写入失败（取消不写通知行：取消不是事件）。
+    bool ExportTranscript();
+    // ★★ 2026-10-21：导出拆三段的产物（理由见 `.cpp` 里的头注）。
+    //   `BuildTranscriptExportText()` 是**纯函数**：同样的模型出同样的文本，
+    //   不碰控件、不碰文件、不弹对话框 ⇒ 探针可以直接读它，无需合成点击。
+    //   `WriteTranscriptExport()` 只负责落盘；失败时把原因写进 `*error`。
+    std::string BuildTranscriptExportText() const;
+    bool WriteTranscriptExport(const std::filesystem::path& path, std::string* error);
+    // 探针专用：非空 ⇒ `ExportTranscript()` 跳过保存对话框，直接写这个路径。
+    //   ★ 唯一的存在理由：`GetSaveFileNameW` 是模态循环，探针点上去会挂死。
+    //     默认空 ⇒ 产品路径零行为变化。
+    std::filesystem::path m_menuProbeExportPath;
+    // `ToggleMoreMenu()`：`···` 菜单条显隐（**唯一入口**，按钮与探针共用）。
+    //   ★ 纪律同 `SetSidebarVisible`：瞬时切换 + 重排**父容器**，不用动画。
+    //     `counting` 是 `VerticalLayout`，隐藏子不占槽 ⇒ 不 Arrange 的话
+    //     菜单条消失的位置会留着一条 34px 空洞。
+    void ToggleMoreMenu();
+    void SetMoreMenuOpen(bool open);
+
     // ── ★★ Step 5（2026-10-19）：打开历史会话 ────────────────────────────
     // 历史 = 磁盘上的 `protocol/fixtures/**/*.jsonl`。点开 = **新建一个 replay 会话**
     //   并立刻抽干到末尾（用户点开历史想看的是"那次对话长什么样"，不是从头再播一遍）。
@@ -875,8 +1032,21 @@ private:
     ECDI::MeasureProbe* m_measureProbe = nullptr;  // 同上（测量链探针）
     ECDI::ScrollView* m_scroll = nullptr;          // 非拥有
     ECDI::Widget* m_content = nullptr;             // ScrollContent，非拥有
+    // ★★ 2026-10-21：自绘标题栏的句柄（窗口可拉伸后必须跟着改宽）。
+    //   为什么必须留句柄：它是按 `SetSize(1120, ...)` **定宽**创建的，而
+    //   `VerticalLayout` 的跨轴填充要 `fillCrossAxis=true`——`root` 的布局是
+    //   `VerticalLayout(0, true)`，理论上会把它拉到全宽；但 `ThemedCaptionBar`
+    //   自己内部还按 `GetWidth()` 排三个系统钮，**排过一次就不会再排**
+    //   （没有 SetSize 触发），所以宽变了必须显式 `SetSize` 一次。
+    ECDI::Widget* m_caption = nullptr;             // 非拥有
     std::vector<PendingPromptView> m_pendingPromptViews; // 当前活动会话的 UI-only 气泡视图
     bool m_inspectorVisible = true;
+    // ★★ 2026-10-20：`···` 菜单条的开合状态。
+    //   ★ 为什么这个 bool 必须住在模型侧而不是控件里：`RebuildUi()`（主题切换）
+    //     会把整棵树拆掉重建。若开合态只活在 `ecdi::Panel::IsVisible()` 上，
+    //     一次换主题就会把用户刚拉开的菜单**静默合上**——正是 0c/Step 2 踩过的
+    //     「重建即丢状态」同一坑。`RebuildUi()` 第⑩步会按它重新投影。
+    bool m_moreMenuOpen = false;
     PromptBar* m_promptBar = nullptr;              // 非拥有
     ECDI::ProgressBar* m_usageBarIn = nullptr;     // 右栏用量条（非拥有）
     ECDI::ProgressBar* m_usageBarOut = nullptr;
@@ -1269,6 +1439,159 @@ private:
     std::string m_workspaceProbeAcceptedId;
     std::string m_workspaceProbeRejectedId;
     std::chrono::steady_clock::time_point m_workspaceProbeDeadline{};
+
+    // ★★ 2026-10-21：中栏头 `↗`/`···` 的取证（--menu-probe）。
+    //   形状照抄 `RunSidebarProbe`：同步跑完即 Exit（无动画、无跨 tick 等待）。
+    struct MenuProbeRec {
+        std::string phase;         // baseline / menu-open / menu-toggle-back /
+                                   // menu-clear / menu-clear-negative /
+                                   // export-text / export-file / export-negative
+        bool modelOpen = false;    // `m_moreMenuOpen`（模型侧）
+        bool widgetVisible = false;// `Hud::moreMenu->IsVisible()`（控件侧）
+        int headBottom = 0;        // 会话头底边（绝对坐标）
+        int scrollTop = 0;         // 转录区顶边（绝对坐标）——判"有没有占槽"就看它
+        int gap = 0;               // scrollTop - headBottom（0=菜单关 / 34=菜单开）
+        int midWidth = 0;          // 中栏宽（负对照：开关菜单不该改宽度）
+        size_t transcriptRows = 0; // `m_sess->rows.size()`
+        size_t timelineLen = 0;    // `m_sess->timeline.size()`
+        size_t exportLines = 0;    // 导出文本里以 `[` 开头的行数
+        size_t modelBlockLines = 0;// `Transcript::Blocks()`——负对照的比对面
+        size_t noticeRows = 0;     // 模型里 Notice 条目数（导出必须含有它们）
+        bool exportHasNotice = false; // 导出正文里真的出现了某条通知的原文
+        bool exportWrote = false;  // 文件真的落盘了吗
+        size_t exportBytes = 0;
+        bool exportLfOnly = false;// 行尾是 LF 而非 CRLF
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<MenuProbeRec> m_menuProbeLog;
+    bool m_menuProbeDone = false;
+    void RunMenuProbe();
+    // 探针写入的临时文件（收尾会删掉：夹具目录/仓库保持零改动）
+    std::filesystem::path m_menuProbeTempFile;
+    // ★★ 2026-10-21：下界闸门。默认 **true**（产品行为）；只有探针在
+    //   "验证下限真的拦得住"的那一相里临时置 false，造出低于下限的世界。
+    //   ★ 为什么需要它：若下限永远开着，探针根本**造不出**"860 宽"这个状态，
+    //     于是"下限拦住了"与"下限没起作用但也没人试"在读数上完全同形——
+    //     同 `--hit-probe` 的 forced-enabled/forced-disabled 两相纪律。
+    bool m_minSizeEnforced = true;
+
+    // ★★ 2026-10-21：窗口拉伸探针（--resize-probe）。形状同 `RunMenuProbe`：
+    //   同步跑完即 Exit。★ 它**会真的改窗口尺寸**（`SetBounds`），因此必须在
+    //   `--out` 落盘之前跑完，且跑完要恢复原尺寸——否则摘要里的 paints/frames
+    //   会带上探针自己制造的重排成本。
+    struct ResizeProbeRec {
+        std::string phase;        // baseline / grow / shrink / roundtrip / negative
+        int rootW = 0;            // `root` 的宽度（模型侧）
+        int rootH = 0;
+        int scrollW = 0;          // 转录视口宽
+        int scrollH = 0;          // 转录视口高（被 composer 挤压的读数就是它）
+        int captionW = 0;         // 标题栏宽（必须 == rootW）
+        int midW = 0;             // 中栏宽
+        int maxOffsetX = 0;       // > 0 ⇒ 出现横向滚动条（行比视口宽）
+        int rowWMin = 0;          // 行宽的**最小值/最大值**：所有行必须一起变宽
+        int rowWMax = 0;
+        size_t rows = 0;
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<ResizeProbeRec> m_resizeProbeLog;
+    bool m_resizeProbeDone = false;
+    void RunResizeProbe();
+    // 探针用：把窗口设成给定客户区尺寸（走真正的平台 `SetBounds`）。
+    //   ★ 用它而不是直接 `root.SetSize`：后者绕过了 `Window::OnResized`，
+    //     会把"事件真的到达了吗"这个命题整个跳过（同"合成点击 vs 直接调函数"）。
+    void ProbeResizeClient(int width, int height);
+    // ★★ 2026-10-21：窗口缩放的**下限**（客户区，DIP）。
+    //   为什么要有：用户可以直接把窗口拖到很小。实测（`.scratch/scan_min_size.py`
+    //   逐档扫 + `bound-880.png` / `bound-860.png` 两张截图）：
+    //     · 860 宽 —— 中栏头第三个钮 `···` **被裁掉**（中栏 430 < 头部需要的 444）；
+    //     · 880 宽 —— 三个钮都在，一切正常。
+    //   ⇒ 下限不是"拍脑袋的舒适值"，是从**控件的固定尺寸**反推出来的：
+    //       中栏头 = padding 14×2 + 标题 300 + 三个钮 28×3 + 间隙 8×4 = **444**
+    //       两翼   = 侧栏 200 + 检查器 230                              = **430**
+    //       客户区最小宽 = 444 + 430 = **874**（取整 880，留 6px 余量）
+    //   高度同理：顶栏 36 + 会话头 62 + composer 92 + 状态栏 26 = **216** 固定，
+    //   转录视口至少留 240（约 5 行）⇒ 客户区最小高 = **456**（取整 460）。
+    //
+    //   ★★ 为什么只能**在** `OnWindowResized` 里夹，而不是用 `WM_GETMINMAXINFO`：
+    //     ECDI **没有**暴露任何最小尺寸 API（`grep MinSize|MinimumSize|SetMinTrack`
+    //     零命中，`WM_GETMINMAXINFO` 在 ECDI 源码里同样零命中）。
+    //     ⇒ 原生拖拽时系统不会拦我们，唯一能夹的地方就是我们自己的 resize 回调。
+    //     **代价如实记录**：拖边框的过程中窗口会先缩到目标大小、再被弹回下限，
+    //     表现为一次回弹。彻底消除需要 ECDI 暴露 `SetMinimumSize`（ECDI 侧能力
+    //     请求，不在本仓改——见 README 铁律）。
+    static constexpr int kMinClientW = 880;
+    static constexpr int kMinClientH = 460;
+    // 应用下限：返回**实际生效**的客户区尺寸（可能被抬高到下限）。
+    //   ★ 单独抽出来的理由：`OnWindowResized` 与探针共用同一份逻辑，
+    //     若探针自己再写一遍"取 max"，那测的是它自己而不是产品路径。
+    ECDI::Size ClampToMinimum(int width, int height) const;
+
+    // ★★ 2026-10-21：`Hud` 覆盖自检的状态（见 `HudTouch` 的声明注释）。
+    //   `m_hudAudit` 默认 **false**：默认零开销、零行为变化（本仓铁律）。
+    //   探针打开它之后，`RefreshHud` 里每个读取点登记一次字段名；
+    //   收尾时把"登记过、但建树时从未赋值"的字段名报出来。
+    bool m_hudAudit = false;
+    std::vector<std::string> m_hudTouched;      // 读过的字段名（去重不必要，逐次记）
+
+    // ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。同步跑完即 Exit。
+    struct HudProbeRec {
+        std::string phase;              // hud-built / hud-built-negative
+        size_t touched = 0;             // RefreshHud 读过多少个 Hud 字段
+        size_t unbuilt = 0;             // 其中多少"从未被赋值"
+        std::string unbuiltNames;       // 逗号分隔的字段名（空 = 全覆盖）
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<HudProbeRec> m_hudProbeLog;
+    bool m_hudProbeDone = false;
+    void RunHudProbe();
+
+    struct EnterProbeRec {
+        std::string phase;        // enter-sends / shift-enter-newline /
+                                  // enter-empty / enter-whitespace / enter-unfocused
+        size_t promptCount = 0;   // `Session::timeline` 里 user 块数量
+        std::string inputText;    // 合成按键之后输入框里的文本（"清空了吗"就是读它）
+        size_t noticeRows = 0;    // Notice 条目数（发送会追加 receipt 行）
+        bool sent = false;        // 这一相判断"发出去了"
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<EnterProbeRec> m_enterProbeLog;
+    bool m_enterProbeDone = false;
+    void RunEnterProbe();
+    // 合成一次真实按键：走 `Application::OnEvent`，与系统消息到达后同源。
+    //   ★ 与 `SynthesizeClickAt` 同一纪律：不直接调 `PromptBar::Submit()`，
+    //     否则"事件真的派给了输入框吗"这个命题被整个绕过。
+    void SynthesizeKey(ECDI::KeyCode code, bool shift);
+
+    // ★★ 2026-10-21：输入框自动长高探针（--grow-probe）。
+    //
+    //   【它要证明什么】`PromptBar::DesiredInputHeight` 那套组合实现**真的接到了事件链上**，
+    //   而不是"函数算得对、但没人调用它"（本仓 0c 记下的那个家族：
+    //   函数对、按钮没接线）。故每一相都用 `SynthesizeKey` 打**真按键**，
+    //   绝不直接调 `SyncInputHeight()`——直接调会把"文本变化真的会触发长高吗"整个绕过。
+    //
+    //   【为什么必须有一相盯"缩回去"】最容易踩的陷阱是用
+    //   `GetMaxScrollOffset() + GetTextAreaHeight()` 当内容高：那个式子带 `max(0, ...)`，
+    //   **不溢出时恒等于视口高** ⇒ 框只会变高、永远缩不回来（删掉换行也不变矮）。
+    //   这种实现在"长高"相里是**全绿**的，只有在"变矮"相才会红。故 `shrink` 相不是补充，
+    //   它是这个功能唯一的负对照方向。
+    struct GrowProbeRec {
+        std::string phase;     // baseline / type-newline / grow / max-clamp /
+                               // send-reset / shrink / exact-fit
+        int inputH = 0;        // 输入框高（产品路径写进去的那个值）
+        int barH = 0;          // `PromptBar` 自身高
+        int lines = 0;         // 文本里的行数（`\n` 数 + 1）
+        int hintY = 0;         // 提示行 Y——判"有没有被输入框压住"
+        int buttonY = 0;       // 发送按钮 Y（同上）
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<GrowProbeRec> m_growProbeLog;
+    bool m_growProbeDone = false;
+    void RunGrowProbe();
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
     size_t m_evalPaints = 0;

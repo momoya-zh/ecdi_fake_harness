@@ -98,6 +98,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.historyProbe = true;    // ★ Step 5：打开历史会话（回放 + 跳到末尾 + sidecar）
         } else if (arg == L"--workspace-probe") {
             options.workspaceProbe = true;  // v3：workspace ack 与 optimistic prompt 判据
+        } else if (arg == L"--menu-probe") {
+            options.menuProbe = true;       // ★ 2026-10-21：中栏头导出/菜单判据
+        } else if (arg == L"--resize-probe") {
+            options.resizeProbe = true;     // ★ 2026-10-21：窗口拉伸的布局判据
+        } else if (arg == L"--enter-probe") {
+            options.enterProbe = true;      // ★ 2026-10-21：Enter 发送 / Shift+Enter 换行
+        } else if (arg == L"--hud-probe") {
+            options.hudProbe = true;        // ★ 2026-10-21：HUD 指针"读了但没建"判据
+        } else if (arg == L"--grow-probe") {
+            options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
         }
     }
     if (argv) LocalFree(argv);
@@ -127,6 +137,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --theme-probe                    Step 4：整树重建 + 运行期主题切换判据\n"
                     L"  --history-probe                  Step 5：打开历史会话（列表/跳到末尾/sidecar）判据\n"
                     L"  --workspace-probe                协议 v3：workspace 与 prompt client_id 判据\n"
+                    L"  --menu-probe                     中栏头 `↗` 导出 / `···` 菜单判据\n"
+                    L"  --resize-probe                   窗口拉伸：行宽/标题栏/无横滚条判据\n"
+                    L"  --enter-probe                    Enter 发送 / Shift+Enter 换行判据\n"
+                    L"  --hud-probe                      HUD 指针“读了但没建”判据\n"
+                    L"  --grow-probe                     输入框多行自动长高判据\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;
