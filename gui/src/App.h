@@ -238,7 +238,8 @@ struct CliOptions {
     //   判据（跑批脚本执行，见 `RunGrowProbe` 头注）：
     //     · type-newline：Shift+Enter 后高度**必须真的变高**（键盘接线判据）
     //     · grow：3 行 > 1 行，且提示行/按钮**跟着下移**（不是被压住）
-    //     · max-clamp：30 行时高度封顶 `kInputMaxH`，**不无限增长**
+    //     · max-clamp：30 行时高度封顶当前 root 高度对应的动态上限
+    //     · resize-adapt / resize-return：真实改窗高后上限随之变化，并在还原时收敛
     //     · send-reset：Enter 发出后高度回到单行（`SetText` 路径的同步判据）
     //     · shrink：删掉换行后高度**必须变矮**（★ 唯一能打红 max(0,·) 陷阱的方向）
     //     · exact-fit：恰好装下时不出现内部滚动条（取整方向判据）
@@ -1580,7 +1581,9 @@ private:
     //   它是这个功能唯一的负对照方向。
     struct GrowProbeRec {
         std::string phase;     // baseline / type-newline / grow / max-clamp /
-                               // send-reset / shrink / exact-fit
+                               // resize-adapt / resize-return / send-reset / shrink / exact-fit
+        int rootH = 0;         // 当前 root 客户区高度
+        int maxInputH = 0;     // 产品按当前窗口计算的自适应上限
         int inputH = 0;        // 输入框高（产品路径写进去的那个值）
         int barH = 0;          // `PromptBar` 自身高
         int lines = 0;         // 文本里的行数（`\n` 数 + 1）

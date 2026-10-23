@@ -13,9 +13,11 @@
 #include "ECDI/Theme/ButtonStyle.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Theme/TextBoxStyle.h"
+#include "ECDI/Window/Window.h"
 
 #include "Theme.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -80,10 +82,10 @@ public:
     //     · 那三条规则**还给框架**；
     //     · `ContentHeight()` 与 `LineHeightNow()` 两个转接函数**一并删掉**
     //       （它们只剩"调一次虚函数"的作用，留着会被下一个读者当成真相源）；
-    //     · `#include "ECDI/Window/Window.h"` 也不再需要（本文件不再动 Window 成员）。
+    //     · 本文件不再手抄内容测量规则；`Window.h` 仅用于读取 root 高度的 UI 上限。
     //   ★ 这正是当初登记 REQ 的意义：抄的规则要还得回去，连给绕过用的脚手架一起拆。
     //   ★ 顺带消失的三处隐患：`max(0,·)` 陷阱、取整方向、`ceil` 归属。
-    //   ★ 产品侧唯一剩下的判断是 clamp 到 [下限, kInputMaxH]——那是 UI 策略，
+    //   ★ 产品侧唯一剩下的判断是 clamp 到 [下限, MaxInputHeight()]——那是 UI 策略，
     //     不是内容测量，本来就该住在 `PromptBar` 里（见 `.cpp` 的 `DesiredInputHeight`）。
 
 protected:
@@ -280,6 +282,18 @@ void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
     ApplyStopStyle(stopEnabled);
 }
 
+int PromptBar::MaxInputHeight() {
+    if (ECDI::Window* win = GetWindow()) {
+        const int rootH = win->GetRootWidget().GetHeight();
+        if (rootH > 0) {
+            // 700px 高度下恰为 132（既有基准）；窗口拉伸时按比例扩展/收缩。
+            const float scaled = static_cast<float>(rootH) * (kInputMaxH / 700.0f);
+            return std::clamp(static_cast<int>(std::round(scaled)), 46, 260);
+        }
+    }
+    return kInputMaxH;
+}
+
 // ── ★★ 2026-10-21（收口）：多行自动长高 ──────────────────────
 //
 // 【改前的形状】ECDI 对**多行** `TextBox` 的 `GetPreferredSize` 返回当前尺寸
@@ -290,10 +304,11 @@ void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
 // 【现在】ECDI 采纳 ⓐ 订正了语义 ⇒ 本类不再手算，只调 `GetPreferredSize()`。
 // 取整（`ceil`）、`max(0,·)` 陷阱、`ceil` 归属这些**全部回到框架内部**，
 // 调用方只剩"clamp 到 [单行高, 上限]"这一件真正属于 UI 策略的事。
-// ★ `--grow-probe` 的七相判据**一字未改**——这正是收口的验收方式：
-//   行为不变，实现变干净。若哪一相变红，说明框架的订正与本仓的旧行为不等价。
+// ★ `--grow-probe` 同时验证内容高度和窗口高度变化下的 clamp 策略；
+//   内容测量仍由框架负责，本类只应用当前窗口的 UI 上限。
 int PromptBar::DesiredInputHeight() {
-    if (!m_input) return kInputMaxH;
+    const int maxH = MaxInputHeight();
+    if (!m_input) return maxH;
 
     // ① 期望 = 框架给出的内容高（多行 = ceil(行数 × 行高 + padding×2)；
     //    单行 = 内容测量 + padding×2；无窗口/无测量器 ⇒ 当前尺寸）。
@@ -308,7 +323,7 @@ int PromptBar::DesiredInputHeight() {
     if (want <= 0) want = m_input->GetHeight();
 
     // ③ 上限：超出交给 `TextBox` 自己的内部滚动条（既有能力，`SyncScrollBar` 按需显示）
-    if (want > kInputMaxH) want = kInputMaxH;
+    if (want > maxH) want = maxH;
     if (want <= 0) want = 1;
     return want;
 }

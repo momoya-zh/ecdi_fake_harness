@@ -50,6 +50,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -2790,6 +2791,9 @@ void HarnessApp::OnWindowResized(int width, int height) {
     //   ★ 空会话（回放模式下新建的）`rows` 为空，`Relayout` 内部对空表安全；
     //     但仍要先确认 `m_content` 在——`BuildUi` 之前不该走到这里。
     if (!m_content || !m_sess) return;
+    if (m_promptBar) {
+        m_promptBar->SyncInputHeight();
+    }
     Relayout();
 
     // ④ 贴底保持 + ⑤ 重画
@@ -5751,9 +5755,9 @@ void HarnessApp::RunEnterProbe() {
 //
 // 【为什么这条不能只测函数】`PromptBar::DesiredInputHeight` 算得对、
 //   `SyncInputHeight` 也写进去了，仍然可能是"没人调用"——0c 记下的那个家族
-//   （函数对、接线没接）。所以**每一相都打真按键**（`SynthesizeKey`），
-//   绝不直接调 `SyncInputHeight()`：直接调会把"文本变化真的会触发长高吗"
-//   这个命题整个绕过。唯一例外是 `baseline` 相之后那次绝对化清理。
+//   type-newline / send-reset 用 `SynthesizeKey` 验证真实派发；clamp / shrink phases 设置
+//   明确文本状态验证尺寸策略。resize-adapt 走 `ProbeResizeClient` 的真实窗口事件链，
+//   不手动调用 `SyncInputHeight()`，以验证 resize 回调确实更新了输入框高度。
 //
 // 【为什么 `shrink` 相是这个功能唯一的负对照】最诱人的错误实现是用
 //   `GetMaxScrollOffset() + GetTextAreaHeight()` 当内容高（`TextBox.cpp:541` 的
@@ -5783,10 +5787,18 @@ void HarnessApp::RunGrowProbe() {
         for (char c : text) if (c == '\n') ++n;
         return n;
     };
+    // Independent oracle: validate the UI policy rather than reading the product getter back.
+    auto expectedMaxForRootHeight = [](int rootH) {
+        if (rootH <= 0) return PromptBar::kInputMaxH;
+        const float scaled = static_cast<float>(rootH) * (PromptBar::kInputMaxH / 700.0f);
+        return std::clamp(static_cast<int>(std::round(scaled)), 46, 260);
+    };
 
     auto snap = [&](const char* phase, const std::string& why) {
         GrowProbeRec rec;
         rec.phase = phase;
+        rec.rootH = m_window ? m_window->GetRootWidget().GetHeight() : 0;
+        rec.maxInputH = bar->MaxInputHeight();
         rec.inputH = bar->inputHeight();
         rec.barH = bar->GetHeight();
         rec.lines = linesOf(input->GetText());
@@ -5868,7 +5880,9 @@ void HarnessApp::RunGrowProbe() {
         snap("grow", why);
     }
 
-    // ③ max-clamp：30 行必须封顶，不许无限长高。
+    // ③ max-clamp：30 行必须封顶当前 root 高度对应的动态上限。
+    const int baseRootH = m_window ? m_window->GetRootWidget().GetHeight() : 0;
+    const int expectedBaseMax = expectedMaxForRootHeight(baseRootH);
     {
         std::string many;
         for (int i = 0; i < 30; ++i) {
@@ -5878,15 +5892,85 @@ void HarnessApp::RunGrowProbe() {
         input->SetText(many);
         bar->SyncInputHeight();
         std::string why;
-        if (bar->inputHeight() != PromptBar::kInputMaxH) {
-            why = "30 lines are not clamped to kInputMaxH (" +
+        if (bar->MaxInputHeight() != expectedBaseMax) {
+            why = "reported cap at rootH=" + std::to_string(baseRootH) + " is " +
+                  std::to_string(bar->MaxInputHeight()) + " (expected " +
+                  std::to_string(expectedBaseMax) + ")";
+        } else if (bar->inputHeight() != expectedBaseMax) {
+            why = "30 lines are not clamped to adaptive max at rootH=" +
+                  std::to_string(baseRootH) + " (inputH=" +
                   std::to_string(bar->inputHeight()) + " != " +
-                  std::to_string(PromptBar::kInputMaxH) + ")";
+                  std::to_string(expectedBaseMax) + ")";
         }
         snap("max-clamp", why);
     }
 
-    // ④ send-reset：Enter 发出 ⇒ 高度回到单行。
+    // ④ resize-adapt：30 行保持不变，真实改变窗口客户区高度；不手动同步输入框。
+    {
+        ECDI::Size baseClient{};
+        if (m_window) baseClient = m_window->GetPlatformWindow().GetClientSize();
+        const int baseClientW = static_cast<int>(baseClient.width);
+        const int baseClientH = static_cast<int>(baseClient.height);
+        int targetClientH = baseClientH + 140;
+        if (expectedMaxForRootHeight(baseRootH + targetClientH - baseClientH) == expectedBaseMax) {
+            targetClientH = baseClientH;
+            for (int delta = 140; delta <= baseClientH - kMinClientH; delta += 140) {
+                const int candidateClientH = baseClientH - delta;
+                const int candidateRootH = baseRootH - delta;
+                if (expectedMaxForRootHeight(candidateRootH) != expectedBaseMax) {
+                    targetClientH = candidateClientH;
+                    break;
+                }
+            }
+        }
+
+        std::string why;
+        if (!m_window || baseClientW <= 0 || baseClientH <= 0) {
+            why = "cannot exercise adaptive cap without a valid platform client size";
+            snap("resize-adapt", why);
+            snap("resize-return", why);
+        } else {
+            ProbeResizeClient(baseClientW, targetClientH);
+            const int resizedRootH = m_window->GetRootWidget().GetHeight();
+            const int expectedResizedMax = expectedMaxForRootHeight(resizedRootH);
+            if (resizedRootH == baseRootH) {
+                why = "window resize did not change root height (" +
+                      std::to_string(baseRootH) + ")";
+            } else if (expectedResizedMax == expectedBaseMax) {
+                why = "test resize did not cross an adaptive cap step (" +
+                      std::to_string(expectedBaseMax) + " -> " +
+                      std::to_string(expectedResizedMax) + ")";
+            } else if (bar->MaxInputHeight() != expectedResizedMax) {
+                why = "reported cap did not follow resized root height (" +
+                      std::to_string(bar->MaxInputHeight()) + " != " +
+                      std::to_string(expectedResizedMax) + ")";
+            } else if (bar->inputHeight() != expectedResizedMax) {
+                why = "30-line input did not follow resized cap (" +
+                      std::to_string(bar->inputHeight()) + " != " +
+                      std::to_string(expectedResizedMax) + ")";
+            }
+            snap("resize-adapt", why);
+
+            ProbeResizeClient(baseClientW, baseClientH);
+            const int returnedRootH = m_window->GetRootWidget().GetHeight();
+            const int expectedReturnedMax = expectedMaxForRootHeight(returnedRootH);
+            std::string returnWhy;
+            if (returnedRootH != baseRootH) {
+                returnWhy = "root height did not return after probe resize (" +
+                            std::to_string(baseRootH) + " -> " +
+                            std::to_string(returnedRootH) + ")";
+            } else if (bar->MaxInputHeight() != expectedReturnedMax ||
+                       bar->inputHeight() != expectedReturnedMax) {
+                returnWhy = "input cap/height did not return with the window (max=" +
+                            std::to_string(bar->MaxInputHeight()) + ", input=" +
+                            std::to_string(bar->inputHeight()) + ", expected=" +
+                            std::to_string(expectedReturnedMax) + ")";
+            }
+            snap("resize-return", returnWhy);
+        }
+    }
+
+    // ⑥ send-reset：Enter 发出 ⇒ 高度回到单行。
     //   ★ 这一相考的是 `SetText` 路径：`SetText` 不走 `OnTextChanged`（D7 契约），
     //     所以"发送后清空"这个副作用**必须**在 App 侧显式同步一次。
     //     漏了它的症状：消息发完，框里空了但仍然占着 3 行高，看起来像卡住。
@@ -5908,7 +5992,7 @@ void HarnessApp::RunGrowProbe() {
         snap("send-reset", why);
     }
 
-    // ⑤ shrink：删掉换行后必须**变矮**。
+    // ⑦ shrink：删掉换行后必须**变矮**。
     //   ★★ 这是唯一能打红 `max(0, ...)` 陷阱的方向（见本函数头注）。
     {
         input->SetText("aa\nbb\ncc");
@@ -5929,7 +6013,7 @@ void HarnessApp::RunGrowProbe() {
         snap("shrink", why);
     }
 
-    // ⑥ exact-fit：恰好装下时，`GetMaxScrollOffset()` 必须 == 0。
+    // ⑧ exact-fit：恰好装下时，`GetMaxScrollOffset()` 必须 == 0。
     //   ★ 取整方向判据（`ceil` vs 截断）。截断实现会在这里多出一条内部滚动条。
     {
         input->SetText("a\nb\nc");
@@ -8958,7 +9042,9 @@ void HarnessApp::WriteSummary() {
     //     · baseline.matched     == true（单行基准高为正，否则后面是空真）
     //     · type-newline.matched == true（Shift+Enter 真按键后**真的变高**——接线判据）
     //     · grow.matched         == true（3 行 > 1 行，且兄弟控件**没被压住**）
-    //     · max-clamp.matched    == true（30 行封顶 kInputMaxH，不无限增长）
+    //     · max-clamp.matched    == true（30 行封顶当前 root 高度对应的动态上限）
+    //     · resize-adapt.matched == true（实际 resize 后上限与输入框高度一起变化）
+    //     · resize-return.matched == true（窗口与输入框高度都回到 resize 前）
     //     · send-reset.matched   == true（发出后回到单行高——`SetText` 路径的同步判据）
     //     · shrink.matched       == true（删掉换行后**变矮**；★ 唯一能打红
     //                              `max(0,·)` 陷阱的方向）
@@ -8993,10 +9079,12 @@ void HarnessApp::WriteSummary() {
             json += (i ? ", " : "");
             char b[512];
             std::snprintf(b, sizeof(b),
-                          "{\"phase\": \"%s\", \"inputH\": %d, \"barH\": %d, "
-                          "\"lines\": %d, \"hintY\": %d, \"buttonY\": %d, "
-                          "\"matched\": %s, \"firstDivergence\": \"%s\"}",
-                          r.phase.c_str(), r.inputH, r.barH, r.lines, r.hintY, r.buttonY,
+                          "{\"phase\": \"%s\", \"rootH\": %d, \"maxInputH\": %d, "
+                          "\"inputH\": %d, \"barH\": %d, \"lines\": %d, "
+                          "\"hintY\": %d, \"buttonY\": %d, \"matched\": %s, "
+                          "\"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(), r.rootH, r.maxInputH, r.inputH, r.barH, r.lines,
+                          r.hintY, r.buttonY,
                           r.matched ? "true" : "false",
                           escG(r.firstDivergence).c_str());
             json += b;

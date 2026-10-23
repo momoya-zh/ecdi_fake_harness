@@ -84,7 +84,7 @@ public:
     //   【现在这个函数只做两件事】
     //     ① 问框架要内容高：`m_input->GetPreferredSize().height`
     //        （多行 = `ceil(行数 × 行高 + padding×2)`，取整已在框架内完成）
-    //     ② clamp 到 [单行时的真实高度, `kInputMaxH`]——这是 UI 策略，不是内容测量
+    //     ② clamp 到 [单行时的真实高度, `MaxInputHeight()`]——这是 UI 策略，不是内容测量
     //
     //   【为什么不用 `GetMaxScrollOffset() + GetTextAreaHeight()`】那正是
     //   `SyncScrollBar` 算 `contentExtent` 的式子（`TextBox.cpp:541`），它带 `max(0, ...)`
@@ -100,14 +100,12 @@ public:
     // 输入框当前高度（探针读数用——避免探针自己再算一遍而与产品路径漂移）。
     [[nodiscard]] int inputHeight() const { return m_input ? m_input->GetHeight() : 0; }
 
-    // 高成长度的上限（客户区 DIP）。★ public：探针要拿它当判据，不能各写一份。
-    //   · 下限**不是常量**——它等于"单行时的 preferred 高"，直接从框架问出来
-    //     （探针读 `--grow-probe` 的 `baseline.inputH`，实测 29）。改前这里曾有
-    //     一个 `kInputMinH`，收敛时随"自己算下限"一起删掉了：手写常量会与字体
-    //     绑死，而字体是可换的（FONT-UNIFIED 已经把行高从 +17% 拉到 +21%）。
-    //   · 最大 = 6 行（超出的部分交给 `TextBox` 自己的内部滚动条——那条能力是既有的、
-    //     且 `SyncScrollBar` 会按需显示，见 `scrollbar-placement-and-appearance.md`）
+    // 输入框高度上限。探针独立计算期望值，并同时记录这个产品策略值。
+    //   · `kInputMaxH` 是 700px root 高度下的基准上限（132px，约 6 行）；
+    //   · 有窗口时按 root 高度比例缩放，并夹在 [46, 260]；无窗口时回退基准值。
+    //   · 内容超限交给 `TextBox` 内部滚动条（既有能力，`SyncScrollBar` 按需显示）。
     static constexpr int kInputMaxH = 132;
+    [[nodiscard]] int MaxInputHeight();
 
 private:
     void LayoutChildren();
