@@ -1541,6 +1541,13 @@ int HarnessApp::Run() {
     // 必须在 Show()/Application::Run() 之前配置窗口 chrome。
     win.SetChromeMode(ECDI::ChromeMode::Borderless);
     win.SetCaptionHeight(ECDI::CaptionBar::kDefaultHeight);
+    // ★★ 2026-10-23（ECDI REQ-13 落地）：窗口下限交给**框架**，不再由本仓在
+    //   `OnWindowResized` 里夹。判据与理由见 `App.h` 的 `kMinClientW` 注释。
+    //   ★ 为什么必须在 `Show()` 之前登记：下限本身运行期改也有效（框架契约），
+    //     但在建窗时一次登记好，才能让**第一帧**就落在合规尺寸上——否则窗口会
+    //     先以 1120×760 之外的任何尺寸出现一瞬。1120×760 本身就在下限之上，
+    //     故此处登记不改变任何既有读数。
+    win.SetMinimumSize(kMinClientW, kMinClientH);
 
     if (m_options.useGl) {
         if (requestedBackend == nullptr || !requestedBackend->IsReady()) {
@@ -2702,25 +2709,16 @@ void HarnessApp::OnSweepTick() {
     }
 }
 
-// ★★ 2026-10-21：窗口缩放的**下限**（理由与常量来源见 `App.h` 的 `kMinClientW` 注释）。
+// ★★ 2026-10-23（ECDI REQ-13）：**本函数已删除**。
 //
-//   ★ 返回值是**实际生效**的尺寸，调用方必须用它（而不是原始入参）——否则
-//     就会出现"算出了下限、却按原始尺寸排版"的分裂状态。
-//   ★ `m_minSizeEnforced` 为 false 时原样返回：探针要能造出"低于下限"的世界，
-//     否则"下限真的拦住了吗"这件事无从检验（同所有负对照的纪律）。
-ECDI::Size HarnessApp::ClampToMinimum(int width, int height) const {
-    ECDI::Size out;
-    out.width = static_cast<float>(width);
-    out.height = static_cast<float>(height);
-    if (!m_minSizeEnforced) return out;
-    if (out.width < static_cast<float>(kMinClientW)) {
-        out.width = static_cast<float>(kMinClientW);
-    }
-    if (out.height < static_cast<float>(kMinClientH)) {
-        out.height = static_cast<float>(kMinClientH);
-    }
-    return out;
-}
+//   它曾经是本仓在没有框架能力时的下限绕行 —— `max(kMin, 请求值)` 之后再由
+//   `OnWindowResized` 用 `SetBounds` 把窗口推回去，代价是拖拽过程中的一次回弹。
+//   ECDI 现在有 `Window::SetMinimumSize`（`WM_GETMINMAXINFO` + `WM_WINDOWPOSCHANGING`，
+//   在应用尺寸**之前**生效），建窗时登记一次即可，回弹不存在。
+//
+//   ★ 为什么删干净而不是留作"双保险"：两处都夹 ⇒ 任何一侧坏掉都测不出来
+//     （`max()` 会把框架的失效掩盖成"我们的逻辑在工作"）。负对照的做法见
+//     `RunResizeProbe` ⑥：**把框架的下限清零**，看同一个请求会不会真的落下去。
 
 // ★★ 2026-10-21（用户要求「先把 UI 完善」第 1 项）：窗口可拉伸。
 //
@@ -2747,30 +2745,22 @@ ECDI::Size HarnessApp::ClampToMinimum(int width, int height) const {
 void HarnessApp::OnWindowResized(int width, int height) {
     if (!m_window) return;
 
-    // ⓪ 下限钳制。★ **必须**排在所有排版动作之前：基类已经把 root 设成了
-    //   这次事件的原始尺寸，若这里不先把它推回下限，`Arrange` 就会按
-    //   "低于下限的尺寸"排一遍、再被下一帧纠正 ⇒ 一次可见的闪动。
-    //   ★ 比较对象是**客户区**（`kMinClientW/H` 都是客户区口径），而
-    //     `GetBounds` 给的是**含边框总尺寸** ⇒ 必须把边框差值补回去。
-    const ECDI::Size clamped = ClampToMinimum(width, height);
-    const int wantW = static_cast<int>(clamped.width);
-    const int wantH = static_cast<int>(clamped.height);
-    if (wantW != width || wantH != height) {
-        ECDI::Rect b = m_window->GetPlatformWindow().GetBounds();
-        const ECDI::Size cur = m_window->GetPlatformWindow().GetClientSize();
-        if (b.width > 0.0f) {
-            b.width = static_cast<float>(wantW) + (b.width - cur.width);
-            b.height = static_cast<float>(wantH) + (b.height - cur.height);
-            // ★ 这一次 `SetBounds` 会**再派发一次** `WindowResized`（尺寸真变了），
-            //   那一轮进来时 `wantW == width` 成立 ⇒ 不会再进来，收敛。
-            m_window->GetPlatformWindow().SetBounds(b);
-            // 重排交给下一轮那个事件做：此处直接 return，避免按旧尺寸排一次。
-            return;
-        }
-    }
-
-    const int effW = wantW;
-    const int effH = wantH;
+    // ★★ 2026-10-23（ECDI REQ-13）：这里**不再**夹下限。
+    //
+    // 【改前】此处在最前面做一次 `ClampToMinimum`，把低于 880×460 的尺寸用
+    //   `SetBounds` 推回下限。那是**框架没有能力**时的绕行：原生拖拽时系统不拦，
+    //   只能在我们自己的 resize 回调里补救。
+    // 【当时的代价（原文保留）】拖边框的过程中窗口会先缩到目标大小、再被弹回下限,
+    //   表现为一次回弹。
+    // 【现在】下限由框架在 `WM_GETMINMAXINFO`（ptMinTrackSize）+ `WM_WINDOWPOSCHANGING`
+    //   两条路径上**在应用尺寸之前**落实 ⇒ 这个回调只会收到**已合规**的尺寸，
+    //   回弹在源头上不存在。绕行删掉，不是因为"它现在无害"，而是因为**前提没了**：
+    //   保留它会让"下限由谁负责"永远说不清（两处都在夹 ⇒ 谁也证明不了自己有用）。
+    // 【怎么证明框架那侧真的在拦】`--resize-probe` 的 min-size 相**反向**取证：
+    //   临时把下限清零，同一个 640×360 必须**真的**落成 640×360（对照世界），
+    //   再把下限登记回去、重发同一请求 ⇒ 落在 >= 下限。见 `RunResizeProbe` ⑥。
+    const int effW = width;
+    const int effH = height;
 
     // ① 标题栏跟着改宽（它创建时是定宽的）
     if (m_caption) {
@@ -5563,39 +5553,89 @@ void HarnessApp::RunResizeProbe() {
         Relayout();
     }
 
-    // ⑥ min-size（2026-10-21）：下限**真的**拦住了吗？
-    //   ★ 这一相必须**真的把窗口设到下限以下**，不能只断言 `ClampToMinimum` 的返回值——
-    //     后者是同义反复（我们写 `max(880, x)`，再断言结果 >= 880）。
-    //     要检验的是：**经过整条事件链之后**根控件与视口确实停在 >= 下限，
-    //     即"系统给的 640 被我们推回了 880"。
-    //   ★ 前置：`m_minSizeEnforced` 必须是 true（产品默认）；探针收尾会复原。
+    // ⑥ min-size（2026-10-23 改写：ECDI REQ-13 落地后的**两相**取证）
+    //   【改前】这一相证明的是「我们把它推回来了」——同义反复：实现写的就是
+    //     `max(880, x)`，再断言结果 >= 880 恒真；它证明的是那三行 C++。
+    //   【现在】下限在框架侧、**应用尺寸之前**生效，于是同一个请求可以跑两遍：
+    //     · `min-size`     —— 产品配置（建窗处登记的下限）下，640×360 必须被夹到
+    //       **逐位等于**下限 ⇒ 同时证明「产品真的登记了下限」与「框架真的在拦」。
+    //     · `min-size-off` —— 下限清零后，同一请求必须**真的**落成 640×360
+    //       ⇒ 证明上一相的"没落下去"归因于下限，而不是窗口本来就没变小（对照世界）。
+    //   ★ 两相都走 `ProbeResizeClient`（真 `SetBounds` → 真 `WM_SIZE` → 真回调），
+    //     检验的是"经过整条事件链之后"的根控件尺寸，不是某个函数的返回值。
+    //   ★ 顺序必须 ①→②：②会清掉下限，产品读数只能在它之前取。收尾恢复下限与 baseline。
     {
-        ProbeResizeClient(640, 360);          // 远低于下限（880x460）
-        expect("min-size", {{m_minSizeEnforced, "setup: the floor is disabled"}});
-        ResizeProbeRec& rec = m_resizeProbeLog.back();
-        std::string bad = rec.firstDivergence;
-        auto add = [&](const std::string& s) {
-            if (!bad.empty()) bad += "; ";
-            bad += s;
-        };
-        // 客户区必须被抬到下限（允许 +8 的取整/边框余量，方向只允许偏大）
-        if (rec.rootW < kMinClientW) {
-            add("root width " + std::to_string(rec.rootW) + " is below the floor " +
-                std::to_string(kMinClientW) + " -- the clamp did not take effect");
+        // ① 产品配置：请求 640×360（远低于 880×460）⇒ 必须被夹到下限
+        ProbeResizeClient(640, 360);
+        expect("min-size", {{m_window->GetRootWidget().GetWidth() >= kMinClientW,
+                             "root is below the floor -- the minimum size did not hold"},
+                            {m_window->GetRootWidget().GetHeight() >= kMinClientH,
+                             "root height is below the floor"}});
+        {
+            ResizeProbeRec& rec = m_resizeProbeLog.back();
+            std::string bad = rec.firstDivergence;
+            auto add = [&](const std::string& s) {
+                if (!bad.empty()) bad += "; ";
+                bad += s;
+            };
+            if (rec.rootW < kMinClientW) {
+                add("root width " + std::to_string(rec.rootW) + " is below the floor " +
+                    std::to_string(kMinClientW) + " -- the minimum size did not take effect");
+            }
+            if (rec.rootH < kMinClientH) {
+                add("root height " + std::to_string(rec.rootH) + " is below the floor " +
+                    std::to_string(kMinClientH));
+            }
+            // ★ 头部完整性：中栏必须 >= 头部需要的 444（这条才是"下限为什么是 874"本身）
+            constexpr int kHeadNeed = 2 * 14 + 300 + 3 * 28 + 4 * 8;   // = 444
+            if (rec.midW < kHeadNeed) {
+                add("middle column " + std::to_string(rec.midW) + " < head requirement " +
+                    std::to_string(kHeadNeed) + " -- the last head button would be clipped");
+            }
+            // ★ 逐位等于下限（不是"大于等于"）：`ptMinTrackSize` 的语义是**精确夹到**下限，
+            //   落在 800 / 1000 之类的值说明拦住它的不是下限本身（比如某处另有夹子）。
+            if (rec.rootW != kMinClientW) {
+                add("root width " + std::to_string(rec.rootW) + " != floor " +
+                    std::to_string(kMinClientW) +
+                    " (the floor clamps exactly; something else is also resizing)");
+            }
+            if (rec.rootH != kMinClientH) {
+                add("root height " + std::to_string(rec.rootH) + " != floor " +
+                    std::to_string(kMinClientH));
+            }
+            rec.matched = bad.empty();
+            rec.firstDivergence = bad;
         }
-        if (rec.rootH < kMinClientH) {
-            add("root height " + std::to_string(rec.rootH) + " is below the floor " +
-                std::to_string(kMinClientH));
+
+        // ② 对照世界：下限清零（框架契约：运行期有效，`<= 0` = 该轴不设下限）
+        m_window->SetMinimumSize(0, 0);
+        ProbeResizeClient(640, 360);
+        expect("min-size-off", {{m_window->GetRootWidget().GetWidth() == 640,
+                                 "setup: with the floor cleared the request did NOT land at 640 -- "
+                                 "the probe cannot produce a below-floor world, so the previous phase proves nothing"},
+                                {m_window->GetRootWidget().GetHeight() == 360,
+                                 "setup: with the floor cleared the request did NOT land at 360"}});
+        {
+            ResizeProbeRec& rec = m_resizeProbeLog.back();
+            std::string bad = rec.firstDivergence;
+            auto add = [&](const std::string& s) {
+                if (!bad.empty()) bad += "; ";
+                bad += s;
+            };
+            // ★ 断言方向与上一相**相反**：两条相反断言同时成立，才排除"下限不存在"
+            //   与"下限无处不在"这两种退化情形。
+            if (rec.rootW != 640) {
+                add("root width " + std::to_string(rec.rootW) + " != 640 with the floor cleared");
+            }
+            if (rec.rootH != 360) {
+                add("root height " + std::to_string(rec.rootH) + " != 360 with the floor cleared");
+            }
+            rec.matched = bad.empty();
+            rec.firstDivergence = bad;
         }
-        // ★ 头部完整性：中栏必须 >= 头部需要的 444（这条才是"下限为什么是 874"本身）
-        constexpr int kHeadNeed = 2 * 14 + 300 + 3 * 28 + 4 * 8;   // = 444
-        if (rec.midW < kHeadNeed) {
-            add("middle column " + std::to_string(rec.midW) + " < head requirement " +
-                std::to_string(kHeadNeed) + " -- the last head button would be clipped");
-        }
-        rec.matched = bad.empty();
-        rec.firstDivergence = bad;
-        // 复原到 baseline 尺寸
+
+        // 收尾：下限登记回产品配置（②把它清了），再复原到 baseline 尺寸
+        m_window->SetMinimumSize(kMinClientW, kMinClientH);
         ProbeResizeClient(base.width, base.height);
         m_window->GetRootWidget().Arrange();
         Relayout();

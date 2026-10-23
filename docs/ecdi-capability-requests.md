@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v2.8**（2026-10-18；v1.0 建立于 2026-10-08）。
+> 状态：**v3.1**（2026-10-23；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力）；REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 开放（2026-10-22 新立，窗口无最小尺寸约束）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力）；REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -448,7 +448,7 @@ ECDI 侧落地（`ECDI/src/Widget/TextBox.cpp` 的 `MultilinePreferred`）：
 
 ---
 
-### REQ-13 窗口**无最小尺寸约束**——没有 API，也不处理 `WM_GETMINMAXINFO`，调用方只能在 resize 已发生之后拒绝
+### REQ-13 窗口最小尺寸约束 —— **已闭合（ECDI 落地 + 本仓收敛）**
 
 > ★ **触发（2026-10-21）**：用户要求给窗口加最小尺寸约束（UI 打磨清单第 2 项）。查过后确认框架侧无入口，
 >   本仓只能在 `OnWindowResized` 里夹，**代价是可见的一次回弹**，故按铁律登记。
@@ -458,22 +458,74 @@ ECDI 侧落地（`ECDI/src/Widget/TextBox.cpp` 的 `MultilinePreferred`）：
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮新立；`status.txt` 的 MIN-SIZE 条目曾口头称它「an ECDI-side capability request」，但**从未落到本账本**，现补登） |
-| 状态 | 🔄 **开放**（ECDI 侧未闭合；本仓已有可用的**绕行**，只是不彻底） |
+| 状态 | ✅ **已闭合**（ECDI 落地 `Window::SetMinimumSize`，本仓已收敛：删除 `OnWindowResized` 的 `ClampToMinimum` 绕行、在建窗时登记最小尺寸，2026-10-23） |
 | 归属 | **ECDI 侧**（框架无该能力；非 harness 用法问题） |
 | 现象 | 窗口可以被拖到任意小。ECDI **不拦**：① `include/ECDI/Window/Window.h` 的公开 API 里**没有任何尺寸约束函数**（`SetChromeMode`/`SetCaptionHeight`/`SetResizeInset`/`SetWindowLayer`/`SetWindowBackdrop`/`SetBackgroundColor`/`SetBounds`/`SetFocusedWidget`/`SetCaptureWidget`/`SetFileDropEnabled` 全表核对过，无名称为 `MinSize`/`MinimumSize`/`SetMinTrack` 者）；② `src/` 全树**不处理 `WM_GETMINMAXINFO`**——全仓（含 `docs/`）该串只出现 **1 次**，且是在 `Window.h:182` 的注释里说明 `SetBounds` 是「请求而非保证」时被顺带提及（原话：「超屏被移回 / 最大化态下受 `WM_GETMINMAXINFO` 影响」）⇒ **框架自己提到过这条消息，却从未拦截它** |
 | ★ 为什么这构成缺陷而不是「设计选择」 | 拖拽缩放的最小尺寸是**操作系统在 `WM_GETMINMAXINFO` 里问出来的**，这是 Win32 唯一能在**用户松手之前**拒绝尺寸的钩子。不拦它 ⇒ 系统先改完尺寸、再派发 `WM_SIZE`，框架此时已经是「事后」⇒ **任何调用方都只能事后纠正**，而事后纠正的可见后果就是窗口先缩后弹 |
-| ★ 调用方（本仓）现在怎么做 | `gui/src/App.cpp` 的 `HarnessApp::OnWindowResized`：⓪ 步 `ClampToMinimum()`，超下限则重发 `SetBounds` 并**直接 return**（不排版），让 `SetBounds` 自己派发的那次事件来排版；第二轮 `want == have` 收敛，**恰好两轮不成环**。下限 `880x460` 是**推导**的：中栏头 `padding 14×2 + 标题 300 + 三钮 28×3 + 间隙 8×4 = 444`，两翼 `侧栏 200 + 检查器 230 = 430` ⇒ 客户区最小宽 `874`（取 880）；垂直固定带 `顶栏 36 + 会话头 62 + composer 92 + 状态栏 26 = 216`，视口至少留 244 ⇒ 最小高 `460` |
+| ★ 调用方（本仓）现在怎么做 | ★★ **本节所述绕行已于 2026-10-23 删除**（`ClampToMinimum` 整段移除，改由框架拦，见下方闭合记录）；以下按登记时的原文保留，是**历史**。`gui/src/App.cpp` 的 `HarnessApp::OnWindowResized`：⓪ 步 `ClampToMinimum()`，超下限则重发 `SetBounds` 并**直接 return**（不排版），让 `SetBounds` 自己派发的那次事件来排版；第二轮 `want == have` 收敛，**恰好两轮不成环**。下限 `880x460` 是**推导**的：中栏头 `padding 14×2 + 标题 300 + 三钮 28×3 + 间隙 8×4 = 444`，两翼 `侧栏 200 + 检查器 230 = 430` ⇒ 客户区最小宽 `874`（取 880）；垂直固定带 `顶栏 36 + 会话头 62 + composer 92 + 状态栏 26 = 216`，视口至少留 244 ⇒ 最小高 `460` |
 | ★ 可见代价（实测，非推测） | 把边框拖到下限以下时窗口会**先缩再弹回**——一次橡皮筋式的回弹，而不是在边框处硬停。这是「事后拒绝」的必然形状，不是实现没写好。消除它**只能**由框架在 `WM_GETMINMAXINFO` 阶段拦下 ⇒ 本条的全部理由 |
 | ★ 修法候选 | ⓐ **`Window::SetMinimumSize(int w, int h)`**（或 `SetSizeLimits`）：配置期 API，与 `SetResizeInset` 同组语义；Win32 侧在 `Win32PlatformWindow` 的窗口过程里处理 `WM_GETMINMAXINFO`、填 `ptMinTrackSize`（**注意单位是物理像素**，需按当前 DPI 折算——`Window.h:179-181` 的 `SetBounds` doc 明写入参是「屏幕坐标（DIP）」「与 `Application::Create(width, height)` 同口径」，而 `Win32PlatformWindow.cpp:825` 的 `case WM_SIZE:` 里用的是 `PixelsToDip(LOWORD(lParam), dpi)` ⇒ **框架在 `WM_SIZE` 已经做过一次 px→DIP 折算**，新的 `ptMinTrackSize` 必须走反方向，这里很容易再次吃单位口径的亏）。同时建议在 `WindowResizedEvent` 文档里**声明**「有最小尺寸时 resize 事件不会报出小于下限的尺寸」，否则消费者仍不知道要不要自己再夹一遍 · ⓑ 只在文档里补一句「最小尺寸由调用方在 resize 回调里自行钳制」——**不解决问题**，回弹照旧，只是把代价写明白了 · ⓒ 不做 |
 | ★ 不建议 | **不要**在 harness 侧再包一层 `WM_GETMINMAXINFO` 子类化窗口过程。ECDI 刻意不暴露 `HWND`：`include/ECDI/Platform/PlatformWindow.h:20`「Window 不接触 HWND/创建细节」（结构性约束，接口层就不带 Win32 类型）⇒ 绕过去要反查 `GetParent`/`EnumThreadWindows` 之类，**那正是这条边界想防的事**。★ 另注：`include/ECDI/Application/Application.h:78`「不绑定 Window、不暴露 HWND 或任何 Win32 类型（R3 / D1）」这句**出自 `PostToUi` 的 doc**（讨论异步投递为何不携带平台句柄），不是一条全局禁令——引用时不应把它当成窗口层的总原则，**真正撑住本条的是 `PlatformWindow.h:20` 与接口全表零 Win32 类型这两点** |
-| ★ 我方本轮处置 | 走 **ⓒ 事后钳制**（已知会回弹），并把代价**写在产品行为上**：`--resize-probe` 第 6 相 `min-size` 把窗口驱到 `640x360`（远低于下限），断言**整条事件链之后** `rootW >= 880` 且 `midW >= 444`——故意**不**断言 `ClampToMinimum() >= 880`（那是同义反复：我们写的就是 `max(880, x)`）。闸门 `m_minSizeEnforced` 让探针仍能造出「低于下限」的世界，否则破损状态不可达、「下限有效」与「没人试过」同形 |
-| ★ 取证（本仓） | `.scratch/scan_min_size.py` 递减扫：`1120/1000/940/900` 按请求生效，`880` 以下全部回 `880x700`；边界截图 `.scratch/resize-shots/bound-880.png`（三钮齐全）vs `bound-860.png`（第三个 `···` **被裁掉**）；负对照 `.scratch/probe_minsize_negctl.py` 两条变异均 RED（M1 删宽度钳制 ⇒ `root width 640 is below the floor 880 ... middle column 210 < head requirement 444`；M2 闸门默认 false ⇒ 差异串以 `setup: the floor is disabled` 开头）|
+| ★ 我方本轮处置 | **2026-10-23 已收敛**（详见下方闭合记录）：登记时走 ⓒ 事后钳制（`ClampToMinimum`），框架落地后删除绕行、改在建窗处登记下限；`--resize-probe` 第 6 相由「证明我们推回来了」改写为两相反向取证。 |
+| ★ 取证（本仓） | `.scratch/scan_min_size.py` 递减扫：`1120/1000/940/900` 按请求生效，`880` 以下全部回 `880x700`；边界截图 `.scratch/resize-shots/bound-880.png`（三钮齐全）vs `bound-860.png`（第三个 `···` **被裁掉**）；负对照 `.scratch/probe_minsize_negctl.py` 两条变异均 RED（M1 删宽度钳制 ⇒ `root width 640 is below the floor 880 ... middle column 210 < head requirement 444`；M2 闸门默认 false ⇒ 差异串以 `setup: the floor is disabled` 开头）——★ 上列 M1/M2 是**绕行时代的接缝**，`ClampToMinimum`/`m_minSizeEnforced` 已随收敛删除，脚本已于 2026-10-23 重写到新接缝（见闭合记录） |
 
 ★ **与 `REQ-12` 的形态对照（值得记）**：`REQ-12` 是「**同一框架两条规则矛盾**」——缺陷在框架内部，修答案即可；
 `REQ-13` 是「**框架根本没有这条能力**」——不是矛盾，是缺项，只能在框架侧加 API。
 判别方法也因此不同：`REQ-12` 靠**分支对读**（`TextBox` 与 `TextWidget` 的同名虚函数）判定，`REQ-13` 靠**全仓关键词扫描 + 公开 API 全表核对**判定。
-★ 另注：本仓对 `REQ-13` 的**绕行是可用且已验证的**，所以它不阻塞任何已规划功能——这一点与 `REQ-11`（当前零消费者）不同：
-`REQ-13` 的消费者**现在就在**，只是被迫接受一个可见缺陷。
+★ 另注（**登记时的原文，2026-10-23 已过期**）：本仓对 `REQ-13` 的**绕行是可用且已验证的**，所以它不阻塞任何已规划功能——这一点与 `REQ-11`（当前零消费者）不同：
+`REQ-13` 的消费者**现在就在**，只是被迫接受一个可见缺陷。★ 闭合后本仓不再有绕行，"消费者被迫接受缺陷"这半句随之失效（缺陷已由框架堵住）。
+
+
+**★★ 闭合记录（2026-10-23，ECDI 落地 ⓐ + 本仓收敛）**
+
+ECDI 采纳 ⓐ（`Window::SetMinimumSize(int w, int h)`）的裁决理由只有一条：**「客户区下限 ↔ 整窗尺寸」的换算
+是框架规则，不是调用方的**。要换算就得同时知道三件事——当前 DPI、chrome 形态（`Borderless` 时
+`WM_NCCALCSIZE` 把非客户区吞成 0，Normal 时有边框标题栏）、以及单位口径（`WM_GETMINMAXINFO` 收**物理像素**，
+而框架公开几何 API 全用 **DIP**）。这三件事框架全知道、调用方一个都拿不到（`PlatformWindow.h:20` 的
+「不接触 HWND/创建细节」边界）。⇒ 让调用方换算 = 让它在框架外复制一套框架内部规则，正是本条想防的事。
+ⓑ（只写文档）不解决回弹，已排除。
+
+ECDI 侧落地（`src/Platform/Win32/Win32PlatformWindow.cpp`，公共 API **+1**）：
+
+| 契约 | 落地方式 |
+|---|---|
+| 口径 | 入参 = **客户区 DIP**（与 `GetClientSize` 同口径）；逐轴独立，**`<= 0` = 该轴不设下限** |
+| **两路拦截** | ① `WM_GETMINMAXINFO` 填 `ptMinTrackSize`（`DipToPixels` 按 `GetDpiForWindow` 折算，`break` 交 `DefWindowProc` 补齐 `ptMaxSize` 等其余字段）——这是**鼠标拖边框**唯一能在松手之前拒绝的钩子 ⇒ 硬停、不回弹 · ② `WM_WINDOWPOSCHANGING` 夹 `cx/cy` ——★ **① 只在带 sizing frame 的窗口上被系统采用**（实测：`probe_minmaxinfo` 覆盖矩阵，Borderless 无框窗口单靠 ① 拦不住 `SetWindowPos`），故编程尺寸请求走 ② |
+| 换算归属 | `MinimumTotalSizePx()`：`Borderless` ⇒ 客户区即整窗（差值恒 0，**不能**按样式位换算，否则凭空加出一圈边框）；`Normal` ⇒ `AdjustWindowRectExForDpi(0×0 矩形)` 取边框差值 |
+| **运行期有效** | 刻意**不**仿 chrome 四件套的 `m_shown` 闸门——四件套是「一次确定」的状态机，本方法只是一份被读取的配置，没有需要一次确定的东西。★ 附带必要性：**运行期可清零**才能造出「低于下限」的对照世界（见下方 ⑥ 相） |
+| 不越权 | 登记/清零下限**不**主动改当前尺寸、不发 `SetWindowPos`「刷新」——`ptMinTrackSize` 每次 `WM_GETMINMAXINFO` 现读。`SetBounds` 的请求语义照旧，本方法**不**替调用方放大窗口 |
+| 单元测试 | `WindowChromeTests.cpp` 三个真窗口用例：`WindowMinimumSize.ClampsProgrammaticResize`（`:632`）· `NormalUsesClientArea`（`:678`，整窗 > 客户区下限且客户区**逐位等于** 500×400）· `PerAxisIndependent`（`:703`，`(500,0)` 只夹宽、`(-10,-10)` 两轴皆放行）。★ 三条替身（`AnimationTests` / `ProgressBarTests` / `RingProgressBarTests`）各补一条空实现——纯虚新增的连带改动 |
+| 文档 | `docs/usage.md:95` 运行期 API 段新增条目（客户区 DIP / `<=0` 语义 / 夹住在生效之前 / 不替调用方放大窗口） |
+
+★ **负对照（证明测试不是装饰）**：`.scratch/probe_minsize_negctl.py`（**本轮重写到新接缝**）——旧的
+两条 needle 指向已删除的 `ClampToMinimum` 与 `m_minSizeEnforced`，若不改写会永远 `SKIP: needle hits=0`，
+而**那看起来像一次干净的通过，其实什么都没测**（正是 §6-④「仪器里藏了没写出来的假设」的同族）。现在两条变异：
+· **M1** 删建窗处的产品登记 ⇒ `min-size` 相 RED：`root is below the floor -- the minimum size did not hold; ...`
+· **M2** 删探针里的 `SetMinimumSize(0, 0)` ⇒ `min-size-off` 相 RED：`setup: with the floor cleared the request did NOT land at 640 -- the probe cannot produce a below-floor world`
+每条跑完按字节还原并校验 sha256（当前 `App.cpp` = `f3b3ad2a…5b77`，`crlf=0`）；两条 **PASS**。
+ECDI 侧基线：收敛前 `487 passed / 0 failed` → 加三条用例后 `490 passed / 0 failed`。
+
+**本仓收敛（同日）**：
+1. **删除** `OnWindowResized` ⓪ 步的 `ClampToMinimum()` 整个函数与其调用（原函数位置留注释说明为何删：
+   两处都夹 ⇒ 谁也证明不了自己有用）。`OnWindowResized` 现在**直通** `effW = width, effH = height`。
+2. 登记点前移到建窗处：`Run()` 的 `win.SetChromeMode(...) / SetCaptionHeight(...)` 之后、`Show()` **之前**，
+   `win.SetMinimumSize(kMinClientW, kMinClientH)`（`880×460`，推导过程见上表「调用方现在怎么做」行——
+   那个数字仍是本仓的产品决定，只有** enforcement** 归了框架）。1120×760 本就在下限之上，不改任何既有读数。
+3. **`--resize-probe` 第 ⑥ 相改写为两相**（`App.cpp:5556` 起）：`min-size` 请求 `640×360` ⇒ 断言根控件
+   **逐位等于** `880×460`（不是 `>=`：落在 800/1000 之类说明拦住它的不是下限本身），并保留中栏 ≥ 444 的
+   头部完整性判据；`min-size-off` 先把下限清零 ⇒ 同一请求**必须真的**落成 `640×360`。
+   ★ 两条**相反**方向的断言同时成立，才排除「下限不存在」与「下限无处不在」两种退化——
+   改前那一相断言的是自己写的 `max(880, x)`，是**同义反复**。
+4. 全量回归：`tools/regress.py` **PASS**（6 夹具结构读数逐项等值 + 13 探针全绿 + `protocol/validate.py` exit=0）；
+   `--resize-probe` 7/7。★ 其余各相判据一字未改。
+
+★ **如实记一条未自动化覆盖的**：鼠标拖边框的「硬停不回弹」由 `WM_GETMINMAXINFO` 的语义 + `probe_minmaxinfo`
+覆盖矩阵保证，但探针只能走编程路径（真 `SetBounds` → 真 `WM_SIZE`），**人手拖拽未做自动化验证**。
+  ★ 且已实测确认**这条路在本环境补不了**：`probe_drag2`（`.scratch/probe_minmaxinfo/`）用 `SetCursorPos` + `mouse_event`
+  合成输入——点客户区、点右下角边框、按住拖动 20 步——**一个事件都没进窗口过程**（`click_client`/`click_border_br`/`drag_br`
+  全部 `events=[]`，且 `foreground=0`：注入输入进不了非前台窗口）。★ 作为对照，程序化 `PostMessage(WM_SYSCOMMAND, SC_SIZE)`
+  **能**进（`SYSCOMMAND→ENTERSIZEMOVE→一串 NCHITTEST`），说明窗口本身活着、是**注入通道**不通。⇒ 这条缺口不是「忘了测」，
+  是**仪器够不着**；按「没测到 ≠ 没问题」如实挂账，等有真实输入通道再补。
 
 
 ---
@@ -624,6 +676,34 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+
+- **v3.1（2026-10-23）★ `REQ-13` 闭合：ECDI 落地 `Window::SetMinimumSize` + 本仓删绕行收敛**：
+  ① **采纳 ⓐ**（公共 API **+1**），裁决理由是**换算归属**：客户区下限 → 整窗尺寸要同时知道 DPI、chrome 形态、
+  单位口径（`WM_GETMINMAXINFO` 收**物理像素**、框架公开几何 API 全用 **DIP**），这三件事框架全知道、
+  调用方一个都拿不到（`PlatformWindow.h:20` 的「不接触 HWND」边界）。⇒ 让调用方换算 = 在框架外复制框架内部规则。
+  ② ★★ **一条只在实测里才有的道理：一个钩子不够。** `ptMinTrackSize` **只在带 sizing frame 的窗口上被系统采用**
+  （`probe_minmaxinfo` 覆盖矩阵实测：Borderless 无框窗口单靠 `WM_GETMINMAXINFO` **拦不住** `SetWindowPos`），
+  而本仓的产品形态正是 Borderless ⇒ 落地是**两路**：`WM_GETMINMAXINFO`（鼠标拖边框唯一能在松手之前拒绝的钩子 ⇒
+  硬停不回弹）+ `WM_WINDOWPOSCHANGING`（编程尺寸请求）。⇒ 若照手册抄「填 `ptMinTrackSize` 即可」，
+  会交付一个**在自己的产品形态下不起作用**的能力——本条的立项证据是「框架从没拦过」，闭合证据却是「拦两次」。
+  ③ ★ **第 ⑥ 相从同义反复改成两条相反断言**：改前那一相断言的是自己写的 `max(880, x) >= 880`，
+  **读三行 C++ 就能证明，什么也没证明**。现在 `min-size` 请求 640×360 ⇒ 断言根控件**逐位等于** 880×460
+  （不是 `>=`——落在 800/1000 说明拦住它的不是下限本身），紧接着 `min-size-off` 把下限清零 ⇒ 同一请求
+  **必须真的**落成 640×360。★ 两条相反方向的断言同时成立，才排除「下限不存在」与「下限无处不在」两种退化。
+  ④ ★ **仪器自伤（同族第四次）**：`probe_minsize_negctl.py` 的两条旧 needle 指向**已删除的** `ClampToMinimum` /
+  `m_minSizeEnforced` ⇒ 会永远输出 `SKIP: needle hits=0`，而**那看起来像一次干净的通过**。已重写到新接缝：
+  M1 删建窗处的产品登记 ⇒ `min-size` RED · M2 删探针里的清零 ⇒ `min-size-off` RED；两条 PASS，跑完按字节还原 + sha256 复核。
+  ⑤ **ECDI 侧测试 487 → 490**（`WindowChromeTests.cpp` 三个真窗口用例：夹住编程请求 / `Normal` 用客户区口径 /
+  逐轴独立含负值放行）。★ 新增的是 `PlatformWindow` 的**纯虚**函数 ⇒ `AnimationTests`/`ProgressBarTests`/
+  `RingProgressBarTests` 三处替身各补一条空实现——纯虚扩张的连带成本，登记在此以免日后误判为无关改动。
+  ⑥ ★ **如实记一条没有自动化覆盖的**：鼠标拖边框的「硬停不回弹」由 `WM_GETMINMAXINFO` 语义 + 覆盖矩阵保证，
+  但探针只能走编程路径（真 `SetBounds` → 真 `WM_SIZE`），**人手拖拽未做自动化验证**。
+  ★ 并实测确认这条路**在本环境补不了**：`probe_drag2` 的 `SetCursorPos`+`mouse_event` 合成输入一个事件都进不了窗口过程
+  （`events=[]`、`foreground=0`），而程序化 `PostMessage(SC_SIZE)` 能进 ⇒ 是**注入通道**不通、不是忘了测（详见该条闭合记录）。
+  ⑦ **回归**：`tools/regress.py` 全量 **PASS**（6 夹具结构读数逐项等值 + 13 探针全绿 + `protocol/validate.py` exit=0），
+  `--resize-probe` 7/7；**其余各相判据一字未改**——这是收口的验收方式：行为不变，实现变干净。
+  ⑧ **本文件头部 `状态` 行长期落后**：写作 **v2.8（2026-10-18）**，而 §6 早已记下 v2.9 / v3.0 ⇒ 本次一并订正为 v3.1。
+     原 `status.txt` 第 57 行末句「`REQ-13` remains open on the ECDI side as filed」在写下时是**真的**，现已闭合，订正见 `status.txt` 第 58 行。
 
 - **v3.0（2026-10-22）★ UI 打磨七项落地 + 新立 `REQ-13` + 撤回「深色保留 SimSun 作回归基线」这一决定**：
   ① **七项**（用户按清单逐项点名，全部已落地并各带探针与负对照）：**空回调**（中栏头 `↗`/`···` 从

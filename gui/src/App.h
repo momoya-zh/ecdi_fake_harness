@@ -1470,13 +1470,6 @@ private:
     void RunMenuProbe();
     // 探针写入的临时文件（收尾会删掉：夹具目录/仓库保持零改动）
     std::filesystem::path m_menuProbeTempFile;
-    // ★★ 2026-10-21：下界闸门。默认 **true**（产品行为）；只有探针在
-    //   "验证下限真的拦得住"的那一相里临时置 false，造出低于下限的世界。
-    //   ★ 为什么需要它：若下限永远开着，探针根本**造不出**"860 宽"这个状态，
-    //     于是"下限拦住了"与"下限没起作用但也没人试"在读数上完全同形——
-    //     同 `--hit-probe` 的 forced-enabled/forced-disabled 两相纪律。
-    bool m_minSizeEnforced = true;
-
     // ★★ 2026-10-21：窗口拉伸探针（--resize-probe）。形状同 `RunMenuProbe`：
     //   同步跑完即 Exit。★ 它**会真的改窗口尺寸**（`SetBounds`），因此必须在
     //   `--out` 落盘之前跑完，且跑完要恢复原尺寸——否则摘要里的 paints/frames
@@ -1515,19 +1508,19 @@ private:
     //   高度同理：顶栏 36 + 会话头 62 + composer 92 + 状态栏 26 = **216** 固定，
     //   转录视口至少留 240（约 5 行）⇒ 客户区最小高 = **456**（取整 460）。
     //
-    //   ★★ 为什么只能**在** `OnWindowResized` 里夹，而不是用 `WM_GETMINMAXINFO`：
-    //     ECDI **没有**暴露任何最小尺寸 API（`grep MinSize|MinimumSize|SetMinTrack`
-    //     零命中，`WM_GETMINMAXINFO` 在 ECDI 源码里同样零命中）。
-    //     ⇒ 原生拖拽时系统不会拦我们，唯一能夹的地方就是我们自己的 resize 回调。
-    //     **代价如实记录**：拖边框的过程中窗口会先缩到目标大小、再被弹回下限，
-    //     表现为一次回弹。彻底消除需要 ECDI 暴露 `SetMinimumSize`（ECDI 侧能力
-    //     请求，不在本仓改——见 README 铁律）。
+    //   ★★ 2026-10-23（ECDI REQ-13 落地）：**下限由框架落实**，本仓不再自己夹。
+    //     · 登记点：`App.cpp` 建窗处 `win.SetMinimumSize(kMinClientW, kMinClientH)`；
+    //     · 机制（框架侧）：`WM_GETMINMAXINFO` 的 `ptMinTrackSize` +
+    //       `WM_WINDOWPOSCHANGING` 的 `cx/cy` 夹，两者都在**应用尺寸之前**生效
+    //       ⇒ 原生拖拽与程序化 `SetBounds` 都被拦住，且**没有回弹**；
+    //     · 客户区↔整窗的换算也归框架（`SetMinimumSize` 收的是客户区 DIP，
+    //       与 `GetClientSize` 同口径）——本仓原来自己补边框差值的那段已删。
+    //   ★ 为什么删掉自夹而**不是**留作双保险：两处都夹 ⇒ 任何一侧失效都会被
+    //     另一侧掩盖（`max()` 让"框架没拦住"看起来像"我们在工作"）。单点责任
+    //     才可证伪，负对照见 `RunResizeProbe` ⑥（临时清零下限 ⇒ 请求必须真的落下去）。
+    //   ★ 常量留在本仓是对的：下限值来自**本仓控件**的固定尺寸，不是框架的知识。
     static constexpr int kMinClientW = 880;
     static constexpr int kMinClientH = 460;
-    // 应用下限：返回**实际生效**的客户区尺寸（可能被抬高到下限）。
-    //   ★ 单独抽出来的理由：`OnWindowResized` 与探针共用同一份逻辑，
-    //     若探针自己再写一遍"取 max"，那测的是它自己而不是产品路径。
-    ECDI::Size ClampToMinimum(int width, int height) const;
 
     // ★★ 2026-10-21：`Hud` 覆盖自检的状态（见 `HudTouch` 的声明注释）。
     //   `m_hudAudit` 默认 **false**：默认零开销、零行为变化（本仓铁律）。
