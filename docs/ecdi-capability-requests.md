@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v3.1**（2026-10-23；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v3.2**（2026-10-24；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力）；REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70，登记不立项）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -340,7 +340,7 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮取证新立；ECDI 侧**无**既有登记，`roadmap-deferred` #69 只覆盖族名反查，不含字重与 face index） |
-| 状态 | 🔄 **开放**（待 ECDI 裁决）——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」** |
+| 状态 | 🔄 **开放**（待 ECDI 立项排期）——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」**。★★ **2026-10-24 ECDI 侧对码核验：三条全部属实**，并登记 ECDI `roadmap-deferred` **#70**（**登记不立项**——Phase 32 #58 与审计批余量在前，Phase 立项时机待拍板；初设必答三问已随登记钉出） |
 | 归属 | **ECDI 侧**（`Core/Font.h` 只有 `size` + `family` 两个字段，`Font.h:17-18`；GDI 后端硬编码 `lfWeight = FW_NORMAL`，`GDIBackend.cpp:1384`；`FontEngine` 硬编码 face index `0`，`FontEngine.cpp:236`） |
 | 现象 ① **无字重** | `Font` 没有 `weight` 字段，且**框架内部两处硬编码 `FW_NORMAL`**（`GDIBackend.cpp:1384` · `GDITextMeasurer.cpp:63`）⇒ **任何调用方都无法请求粗体**。全源码搜 `lfWeight|FW_BOLD|FW_SEMIBOLD|FontWeight` 仅 4 处命中，**全部赋 `FW_NORMAL`**（另 2 处在 `Tests/TextMeasurerTests.cpp:81`/`:492`） |
 | 现象 ② **无 face index** | `FontEngine.cpp:236` 是 `FT_New_Face(impl.library, path.c_str(), **0**, &face)` ⇒ TTC 永远只加载 **face 0**。实测 `msyh.ttc` 的 face 0 = `Microsoft YaHei / Regular`，**face 1 = `Microsoft YaHei UI / Regular` 永远拿不到**（`msyhbd.ttc` / `msyhl.ttc` / `simsun.ttc` 同型）⇒ **「UI 版与非 UI 版」在 GL 链上根本无法表达** |
@@ -351,7 +351,7 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | ★ 根因（**推翻了「Bold 是 style」的旧解释**） | GDI **同时接受族名与完整 face 名**（`Arial Bold` / `Times New Roman Bold Italic` / `Consolas Bold` / `Segoe UI Bold Italic` / `Microsoft YaHei UI Bold` 全部 ✅ 命中）。真正的失败原因是**本地化规范名**：`GetTextFaceW` 返回的是 face 的**规范名**，`Microsoft YaHei` 的规范名是**中文** `微软雅黑` ⇒ 英文完整名 `Microsoft YaHei Bold` 匹配不上而回退宋体，但 **`微软雅黑 Bold` 就能命中**。⇒ 规律：**规范名是中文的族必须用中文完整名；规范名是英文的族（Segoe UI / Arial / YaHei UI）英文名即可** |
 | ★ 消费者 | **本仓库**：`gui/src` 全部 `ECDI::Font` 只设 `size`，7 处 `family` 赋值**全是** `kMonoFamily = "Consolas"`（`App.cpp:514`/`:522`/`:747`/`:1246`/`:1266` · `UiKit.h:57`/`:106`）⇒ **中文正文全部 `family` 为空**，而空 family 两链**一致落到 SimSun**（`req11_default.cpp`：GDI 空 `lfFaceName` → `宋体`；GL `ResolveFile("")` → `simsun.ttc`）⇒ **harness 现在的中文正文实际渲染在宋体上，不是微软雅黑**。② **ECDI 自家示例**：`examples/ModelProbe/ModelProbe.cpp:474/779` 用 `"consola.ttf"` 文件名写法 |
 | ★ 对我方评估的影响 | **variant-c 的 10 处字重层级（品牌字 700 / 卡片标题 650 / 会话名与按钮 600 / 正文 400）落地后全部塌成一档** ⇒ 只能靠「字号 + 颜色 + 留白」代偿。**这不阻塞功能**（渲染正确、协议读数不受影响），阻塞的是**视觉层级**。★ 反过来说：这也是本项目作为「GUI 载体评估方」的一个**真实负载画像**——一个只有 4 档字重的常规界面，ECDI 目前画不出来 |
-| ★ ECDI 侧修法候选 | ⓐ **给 `Font` 加 `weight`（`uint16_t`，默认 400）**：GDI 后端把它送 `lfWeight`（**一行改动**，`GDIBackend.cpp:1384` 与 `GDITextMeasurer.cpp:63` 各一处）；GL 后端按 `weight` 选 face（同族已有 Bold 文件时）或走 FreeType variation 轴 ⇒ **两链同解，且调用方零改动**（条 95⑤）。**倾向此条** · ⓑ 给 `Font` 加 `faceIndex`（解 TTC face 1）——**优先级低**：`Microsoft YaHei UI` 与 `Microsoft YaHei` 的差异只是行高，可用 `size` 微调代偿 · ⓒ 让 `FamilyToFileName` 支持**复合键的第二项**（解 `Microsoft YaHei UI` 断链）——**独立可做、零风险**，与 REQ-09 同处一个函数 |
+| ★ ECDI 侧修法候选 | ⓐ **给 `Font` 加 `weight`（`uint16_t`，默认 400）**：GDI 后端把它送 `lfWeight`（**一行改动**，`GDIBackend.cpp:1384` 与 `GDITextMeasurer.cpp:63` 各一处）；GL 后端按 `weight` 选 face（同族已有 Bold 文件时）或走 FreeType variation 轴 ⇒ **两链同解，且调用方零改动**（条 95⑤）。**倾向此条** · ⓑ 给 `Font` 加 `faceIndex`（解 TTC face 1）——**优先级低**：`Microsoft YaHei UI` 与 `Microsoft YaHei` 的差异只是行高，可用 `size` 微调代偿 · ⓒ 让 `FamilyToFileName` 支持**复合键的第二项**（解 `Microsoft YaHei UI` 断链）——与 REQ-09 同处一个函数。★★ **2026-10-24 ECDI 侧订正：ⓒ 与 ②（face index）耦合，非独立闭合**——ⓒ 单独落地后 `Microsoft YaHei UI` 解析到 `msyh.ttc`，但 `FontEngine.cpp:236` 恒取 face 0 ⇒ 拿到 `Microsoft YaHei`（非 UI 版）＝比 SimSun 回退好、但仍是「**静默给错 face**」的 #69 同类陷阱 ⇒ 真正闭合 = **family → (文件, faceIndex) 二元组**或加载后按 face 名扫描，②③ 应一体设计；「独立可做、零风险」只对「消除 SimSun 回退」成立 |
 | ★ 我方本轮处置 | **不改代码**。理由：改 `Font` 是 ECDI 公共头变更，harness 侧无法自行绕过（`family` 路线已实测对 CJK 无解，且会给中英文引入两套族名规则）。★ **过渡方案**（若 ECDI 短期不动）：拉丁文用带字重的族名（`Segoe UI Semibold` / `Segoe UI Bold`，两链都通，实测 1.20×/1.38× 方向一致），中文用**字号 + 颜色压深**代偿，**不尝试伪加粗**（描边模拟会在小字号 CJK 上糊成一团） |
 | ★ 取证 | 探针 `.scratch/req11/`：`req11_weight.cpp`（`lfWeight` 400/700 墨迹比，5 个真实用例）· `req11_root.cpp`（23 个族名 × 英文名/本地化名）· `req11_facekind.cpp`（族名 vs 完整 face 名，12 个用例）· `req11_default.cpp`（空 family 双链）· `req11_ink2.cpp`（**链内**墨迹对照，修正了跨链比较的仪器错误）· `family-sim.py`（`FamilyToFileName` 逐键模拟）· `ttc-faces.py` / `ft-index.py`（TTC face 枚举）。对照表 `docs/variant-c-ecdi-mapping.md` §2 |
 
@@ -372,11 +372,11 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮新立） |
-| 状态 | 📋 **已登记（推后）**——**当前零消费者**，不阻塞任何已规划功能；但形态已钉死，将来要用时不必重新取证 |
+| 状态 | 📋 **已登记（推后）**——**当前零消费者**，不阻塞任何已规划功能；但形态已钉死，将来要用时不必重新取证。★ **2026-10-24 ECDI 侧对码核验属实**（一处行号订正见「覆盖面」行），登记 ECDI `roadmap-deferred` **#71**（推后口径一致：零消费者，触发条件 = 首个半透明文本/焦点框消费者出现） |
 | 归属 | **ECDI 侧**（后端能力不对等；`Color.h:19` 的注释只描述了 GDI 的现状，未声明这是**双链发散**） |
 | 现象 | **同一个 `Color` 在两后端合成结果不同**：GL 链**全部 9 个原语**都消费 `alpha`（`GLRenderer.cpp:731-734` `Shade()` → `glColor4f(r,g,b,**a**)`，混合模式 `:201` `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`，调用点 `:215`/`:246`/`:324`/`:329`/`:379`/`:412`/`:642`）；GDI 链**只有部分**消费 |
 | ★★ 实测读数（**只改 `Color.a`**，复刻 `GDIBackend::DrawTextImpl`：`SetBkMode(TRANSPARENT)` + `SetTextColor(ToColorRef(color))`） | 深底 `#16181D` 上画 `kDarkInk (230,233,239)`，取**最亮**字形像素：`a=255` → `#E6E9EF` · `a=128` → **`#E6E9EF`** · `a=64` → **`#E6E9EF`** · `a=16` → **`#E6E9EF`** ⇒ **四档输出逐位相同**，alpha 在光栅化前就被丢弃（`ToColorRef` 只有 RGB 三通道）。若 alpha 生效，`a=128` 应为 `~#7E8186` |
-| ★ 覆盖面（逐原语，GDI 侧） | `DrawRect` ✅（`GDIBackend.cpp:649` `if (color.a < 1.0f) BlendAlphaSolid(...)`）· `DrawRoundedRect` ✅（同款，`DrawRoundedRectBlendedAA` `:1492`）· `DrawArc` ✅（经 `RasterizeMask`，`CoverageRaster.cpp:71`/`:83`）· `DrawLine` ⚠️ **分流**：`:842-850` 若 `!m_antiAliasing \|\| (color.a >= 1.0f && IsAxisAlignedAfterRound(...))` → `DrawLineLegacy`（`:878` `CreatePen(PS_SOLID, penWidth, ToColorRef(color))` ⇒ **丢 alpha**），否则 `DrawLineCoverage` ✅ · **`DrawText` ❌ 恒丢**（`:682`/`:714` `SetTextColor(ToColorRef(color))`）· **`DrawFocusRect` ❌ 恒丢**（`:1214`/`:1222` `CreatePen(PS_SOLID, 1, ToColorRef(color))`） |
+| ★ 覆盖面（逐原语，GDI 侧） | `DrawRect` ✅（`GDIBackend.cpp:649` `if (color.a < 1.0f) BlendAlphaSolid(...)`）· `DrawRoundedRect` ✅（同款，`DrawRoundedRectBlendedAA` `:1492`）· `DrawArc` ✅（经 `RasterizeMask`，`CoverageRaster.cpp:71`/`:83`）· `DrawLine` ⚠️ **分流**：`:842-850` 若 `!m_antiAliasing \|\| (color.a >= 1.0f && IsAxisAlignedAfterRound(...))` → `DrawLineLegacy`（`:878` `CreatePen(PS_SOLID, penWidth, ToColorRef(color))` ⇒ **丢 alpha**），否则 `DrawLineCoverage` ✅ · **`DrawText` ❌ 恒丢**（`SetTextColor(ToColorRef(color))`——★ **2026-10-24 ECDI 侧订正：实为单点 `GDIBackend.cpp:746`**；`:682`/`:714` 系 ECDI Phase 34 量化统一动 `GDIBackend.cpp` 后的行漂移，现为其函数头行，实质判读不变）· **`DrawFocusRect` ❌ 恒丢**（`:1214`/`:1222` `CreatePen(PS_SOLID, 1, ToColorRef(color))`） |
 | ★ 已有测试面 | `ECDI/src/Tests/RendererTests.cpp:334-382` `TestDrawRectAlpha`（50% 透明红叠纯蓝底，断言 `\|R-128\|<=3` / `G<=3` / `\|B-127\|<=3`）+ `:214 TestGDIBackendAlphaBlend` ⇒ **只覆盖 `DrawRect`**，`DrawText` / `DrawFocusRect` 的 alpha **从未有用例**（不是回归，是从未覆盖） |
 | ★ 消费者 | **当前为零**：`gui/src` 全部 `Color::FromRGBA8(..., 255)`（`Theme.h` 全表 alpha=255）；`variant-c` 全文搜 `rgba\|opacity` **零命中**（6 处 `transparent` 都是 `background:transparent` = 不画底，不是半透明）⇒ **本条是「将来要用时才疼」的形态，不是当前阻塞项** |
 | ★ 附带缺口：**无虚线** | `RenderCommand::DrawLineCommand` **无 dash/style 字段**，GDI 侧两处 `CreatePen` 都硬编码 `PS_SOLID`（`:878`/`:1222`）⇒ 原型里的 `border:1px dashed`（variant-c `.gap` :119、`.sample-label` :130）**没有任何对应能力**。若要支持，最小面 = `DrawLine` 加一个 `dashPattern` 字段，或另立 `DrawDashedRect` |
@@ -661,7 +661,7 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | `docs/P1-gui-implementation-spec.md` §9 / `docs/P1.5-child-process-spec.md` §7–§8 | 各阶段自己的「已知局限」与实施回写 |
 | `docs/variant-c-ecdi-mapping.md` | 原型的**逐手法落地对照表**（`REQ-10` / `REQ-11` 的取证来源与实现建议） |
 | ECDI 侧 `docs/phase31-window-geometry-and-line-height-detailed-design.md` **§13.6** | `REQ-06`/`REQ-09` 的**取证结论落点**（112 格读数 + 仪器校准） |
-| ECDI 侧 `docs/roadmap-deferred.md` **#69** · `docs/phase26-freetype-gl-detailed-design.md` **§9 L1** | `REQ-09` 的 ECDI 侧登记处（同一事实的对方载体）；★ 该条**只覆盖族名反查**，**不含**字重 / face index / 复合族名第二项 ⇒ `REQ-10` 在 ECDI 侧**尚无**既有登记 |
+| ECDI 侧 `docs/roadmap-deferred.md` **#69** · `docs/phase26-freetype-gl-detailed-design.md` **§9 L1** | `REQ-09` 的 ECDI 侧登记处（同一事实的对方载体）；★ 该条**只覆盖族名反查**，**不含**字重 / face index / 复合族名第二项；★ **2026-10-24 起 `REQ-10` 已有登记处 = ECDI `docs/roadmap-deferred.md` #70**（对码核验 + ⓒ 耦合订正的对方载体），`REQ-11` = 同表 **#71** |
 | `evals/*.json` | 机器可读读数（评估证据） |
 
 ★ **纪律**（条 117）：「某需求已闭合」这类事实会被**多份文档各自登记** ⇒ 订正时先列载体清单，再按关键词全库回扫，不只在「本次改过的文件」里搜。
@@ -676,6 +676,13 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+
+- **v3.2（2026-10-24）★ `REQ-10` / `REQ-11` ECDI 侧核验收敛：对码全部属实 + 两处订正回写 + ECDI 登记 #70/#71**：
+  ① **核验结论**：ECDI 侧逐条对码——`REQ-10` 三条子缺陷**全部属实**（`Font.h:17-18` 仅 `size`+`family`；生产侧 `FW_NORMAL` 恰两处 = `GDIBackend.cpp:1384`/`GDITextMeasurer.cpp:63`，含测试全源码 4 处命中＝与本仓读数一致；`FontEngine.cpp:236` 恒 face 0；`FamilyToFileName` 三档匹配强度[精确 / `<family>␣` / `<family>␣&␣`]对复合键第二项逐档推演全不中）；`REQ-11` **逐行号属实**（GL 七个 `Shade` 调用点 :215/:246/:324/:329/:379/:412/:642 + `glBlendFunc` :201/:504；GDI `DrawRect`:649 / `DrawRoundedRectBlendedAA`:1492 / `DrawLine` 分流 :843-850[判据推演确认仅「AA 关 + a<1」边角漏] / `DrawFocusRect`:1222 / `ToColorRef` RGB-only :671；测试面仅 DrawRect 系两条 =「从未覆盖」判断成立；ECDI 库内同样零 (0,1) 消费者——`DefaultTheme` 仅 a=0「不画」语义与 a=255 两类）。
+  ② ★★ **两处订正回写本账本**：(a) `REQ-10` 修法候选 ⓒ **与 ②（face index）耦合，非独立闭合**（已改「修法候选」行）——ⓒ 单独落地解析到对的文件但 `FT_New_Face` 恒取 face 0 ⇒ 拿到 `Microsoft YaHei` 非 UI 版，仍是「静默给错 face」的 #69 同类陷阱；真正闭合形态 = **family → (文件, faceIndex) 二元组**，②③ 一体设计；(b) `REQ-11` 的 `SetTextColor` **实为单点 `GDIBackend.cpp:746`**（`:682`/`:714` 系 ECDI Phase 34 量化统一动该文件后的行漂移，实质判读不变）。
+  ③ ★ **ECDI 侧落点**：`docs/roadmap-deferred.md` **v2.32** 新立 **#70**（登记不立项——缺陷队列顺位 ①，Phase 立项时机待拍板，不插队 Phase 32 #58；初设必答三问已钉：600/650「最近 face」两链语义 · `weight` 与族名内嵌样式优先级 · 静态 face 选择与 variable font variation 轴边界）+ **#71**（推后，触发条件已写明）+ **`Color.h` alpha 注释改写**（声明「消费方分后端」双链发散并补列 `DrawArc`/覆盖度路径——原注释只列 DrawRect/DrawRoundedRect，两个方向都不完整；**不写「祝福缺陷」的 alpha 测试**，与 `REQ-06`/O10「记为已知现状」处置同理）。⇒ §2 状态行与 §5.1 载体表已同步。
+  ④ ★ **诚实边界**：ECDI 侧**未独立复跑**墨迹比读数（1.29–1.79× / 5 族为本仓探针侧读数，ECDI 仅对码）——已如实记入 #70「未测边界」。本仓**不改代码**：`REQ-10` 过渡方案维持（拉丁用带字重族名 / 中文用字号+颜色压深代偿），`REQ-11` 维持不规避。
+  ⑤ ECDI 侧提交 = `e913b8d`（deferred v2.32 + `Color.h` 注释；doc_lint 对码后零新增缺陷）。头部 v3.1 → **v3.2**
 
 - **v3.1（2026-10-23）★ `REQ-13` 闭合：ECDI 落地 `Window::SetMinimumSize` + 本仓删绕行收敛**：
   ① **采纳 ⓐ**（公共 API **+1**），裁决理由是**换算归属**：客户区下限 → 整窗尺寸要同时知道 DPI、chrome 形态、
