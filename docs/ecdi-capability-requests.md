@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 开放（2026-10-18 新立，`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70，登记不立项）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 库外验收已过（2026-10-24，Phase 36 批三落地 + harness 验收；状态翻转待 ECDI 侧全链收口，`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -391,7 +391,7 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮取证新立；ECDI 侧**无**既有登记，`roadmap-deferred` #69 只覆盖族名反查，不含字重与 face index） |
-| 状态 | 🔄 **开放**（待 ECDI 立项排期）——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」**。★★ **2026-10-24 ECDI 侧对码核验：三条全部属实**，并登记 ECDI `roadmap-deferred` **#70**（**登记不立项**——#70 是 ECDI 缺陷队列当时唯一有真实消费者锚点的开放项，Phase 立项与否属需求决断、待拍板；初设必答三问已随登记钉出。★ 勘误：本行初版写「Phase 32 #58 与审计批余量在前」系引用 2026-10-12 旧快照——#58 实已于 2026-10-14 关闭、Phase 32 同日全链收口，见 §6 v3.4） |
+| 状态 | 🔄 **开放**（待 ECDI 立项排期）——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」**。★★ **2026-10-24 ECDI 侧对码核验：三条全部属实**，并登记 ECDI `roadmap-deferred` **#70**（**登记不立项**——#70 是 ECDI 缺陷队列当时唯一有真实消费者锚点的开放项，Phase 立项与否属需求决断、待拍板；初设必答三问已随登记钉出。★ 勘误：本行初版写「Phase 32 #58 与审计批余量在前」系引用 2026-10-12 旧快照——#58 实已于 2026-10-14 关闭、Phase 32 同日全链收口，见 §6 v3.4）。★★ **2026-10-24 Phase 36 批一~三落地**（ECDI `762c483`/`e394514`/`e163357`，MinGW 497/497；批三交付 lib 指纹 `5b0b1c51…d6ca` 已按 DELIVERY.md 逐项核对入 `third_party/ecdi`）**＋ harness 侧库外验收通过**：GL 生产 `FaceIdFor` 身份矩阵 14/14（T36-4/T36-8 断言库外复现：YaHei UI≠YaHei、ZH 请求回退默认 face、Segoe 600==700≠400、300==400、consola.ttf 直查豁免、NSimSun≠SimSun、SimSun@700==@400）；A2 五族墨迹比双链 10/10 方向 OK——GDI 原仪器读数与 REQ-10 基线**逐位相同**（507→690 1.36× 等 = A6 环境恒定锚），GL 经生产 `FontEngine::Glyph` 1.35–1.72×（批三前该链**完全画不出字重**）；A3 真字面格串宽 9/9 delta=0（SimSun@700 按 C36-4 豁免，合成差 +14px 实测）。harness 回归全绿（六夹具基线逐位、13 探针仅设计红、validate.py exit 0）。读数：ECDI 侧 `.workbuddy/spike/p36/p36h_matrix_readout.txt` + 本仓 `.scratch/req11/p36h_matrix.cpp/.txt`。**状态翻转待 ECDI 侧 Phase 36 全链收口（五处台账同步）** |
 | 归属 | **ECDI 侧**（`Core/Font.h` 只有 `size` + `family` 两个字段，`Font.h:17-18`；GDI 后端硬编码 `lfWeight = FW_NORMAL`，`GDIBackend.cpp:1384`；`FontEngine` 硬编码 face index `0`，`FontEngine.cpp:236`） |
 | 现象 ① **无字重** | `Font` 没有 `weight` 字段，且**框架内部两处硬编码 `FW_NORMAL`**（`GDIBackend.cpp:1384` · `GDITextMeasurer.cpp:63`）⇒ **任何调用方都无法请求粗体**。全源码搜 `lfWeight|FW_BOLD|FW_SEMIBOLD|FontWeight` 仅 4 处命中，**全部赋 `FW_NORMAL`**（另 2 处在 `Tests/TextMeasurerTests.cpp:81`/`:492`） |
 | 现象 ② **无 face index** | `FontEngine.cpp:236` 是 `FT_New_Face(impl.library, path.c_str(), **0**, &face)` ⇒ TTC 永远只加载 **face 0**。实测 `msyh.ttc` 的 face 0 = `Microsoft YaHei / Regular`，**face 1 = `Microsoft YaHei UI / Regular` 永远拿不到**（`msyhbd.ttc` / `msyhl.ttc` / `simsun.ttc` 同型）⇒ **「UI 版与非 UI 版」在 GL 链上根本无法表达** |
@@ -755,6 +755,7 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
   ④ ★ **诚实边界**：ECDI 侧**未独立复跑**墨迹比读数（1.29–1.79× / 5 族为本仓探针侧读数，ECDI 仅对码）——已如实记入 #70「未测边界」。本仓**不改代码**：`REQ-10` 过渡方案维持（拉丁用带字重族名 / 中文用字号+颜色压深代偿），`REQ-11` 维持不规避。
   ⑤ ECDI 侧提交 = `e913b8d`（deferred v2.32 + `Color.h` 注释；doc_lint 对码后零新增缺陷）。头部 v3.1 → **v3.2**
 
+- **v3.2（2026-10-24）★ Phase 36 批三交付接收 + `REQ-10` harness 侧库外验收通过**：批三 lib（ECDI `e163357`，SHA256 `5b0b1c51…d6ca`，11,658,056 bytes）按 ECDI 侧 DELIVERY.md 固定指纹逐项核对入 `third_party/ecdi`，harness_gui Release 重建零警告；新探针 `.scratch/req11/p36h_matrix.cpp`（链接新库）产出：GL 生产 `FaceIdFor` 身份矩阵 14/14、GDI 映射矩阵按设计、A2 五族墨迹比双链 10/10 方向 OK（GDI 读数与 REQ-10 基线逐位相同 = A6 环境恒定锚；GL 经生产 `FontEngine::Glyph` 1.35–1.72×）、A3 真字面格串宽 9/9 delta=0（SimSun@700 按 C36-4 豁免）。六夹具回归逐位 + 13 探针绿（仅设计红）+ validate.py exit 0。仪器教训：A3 首版全格共用一条 CJK+拉丁混排串，无 CJK 覆盖的族（Consolas/Segoe UI）读 0.70–0.75×——量到的是 GDI 字体链接 vs GL 无回退（N6），不是 face 保真；已按 face 覆盖改逐格选串。`REQ-10` 状态翻转待 ECDI 侧 Phase 36 全链收口。
 - **v3.1（2026-10-23）★ `REQ-13` 闭合：ECDI 落地 `Window::SetMinimumSize` + 本仓删绕行收敛**：
   ① **采纳 ⓐ**（公共 API **+1**），裁决理由是**换算归属**：客户区下限 → 整窗尺寸要同时知道 DPI、chrome 形态、
   单位口径（`WM_GETMINMAXINFO` 收**物理像素**、框架公开几何 API 全用 **DIP**），这三件事框架全知道、
