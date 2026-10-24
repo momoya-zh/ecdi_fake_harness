@@ -1,0 +1,35 @@
+{
+ "_note": "P3 真 core 读数（A8 归档）。★ 真模型读数天然浮动（网络/模型/调度），不进回归基线（docs/positioning.md §1.2）。判据只看结构不变量：seqGaps=0 / violations=0 / unknownKinds=0 / unknownTypes=0 / protocolDeclared=3；blocks/deltas/messages/usage 逐次必然不同。",
+ "_archivedAt": "2026-10-24T11:49:57.023274+00:00",
+ "_provider": {
+  "endpoint": "https://maas-api.unisound.com/v1",
+  "model": "u2-flash",
+  "note": "云知声（免费至 2026-10 月底）"
+ },
+ "_command": "harness_gui --core core/bin/ecdi-core.exe --core-args \"--base-url=... --model=u2-flash --context=160000\" --auto-prompt ... --auto-answer allow --auto-close 60000",
+ "_spec": "docs/P3-real-core-spec.md §6 A3/A4/A5/A8",
+ "summary": {
+  "fixture": "ecdi-core.exe (live)",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "",
+  "backend": "gdi",
+  "blocks": 7,
+  "deltas": 60,
+  "messages": 82,
+  "invalidations": 72,
+  "paints": 397,
+  "frameCount": 397,
+  "maxPaintUs": 0,
+  "avgPaintUs": 0,
+  "seqGaps": 0,
+  "violations": 0,
+  "unknownTypes": 0,
+  "unknownKinds": 0,
+  "protocolDeclared": 3,
+  "protocolMaxSupported": 3,
+  "protocolIncompatible": false,
+  "contextLimit": 160000,
+  "usageInput": 9151
+ }
+}

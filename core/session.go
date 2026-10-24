@@ -1,75 +1,27 @@
 ﻿package main
 
-// session.go —— 假 core 的会话状态机与出站写入。
+// session.go —— 假 core 的会话状态机（剧本逻辑）。
 //
 // 职责边界（协议 §6 / §5）：
 //   * 状态机：idle → running → (waiting) → idle / cancelled / error；
-//   * seq 分配：core→gui 方向从 0 起严格递增（I4 的量具）；
 //   * I3 自守：发出 ask 后到收到 answer 前，**不得再发任何消息**（usage 除外）；
 //   * 注入开关：drop-seq（I4 负向）、drop-block-end（I1 负向）；
 //   * v3 补：prompt.client_id 回显（§4）、workspace 租约（§3.9）。
+//
+// ★ 线层下沉（2026-10-24，P3 规格 §3）：seq 分配 / 信封字段序 / 即刷规则 /
+//   gui→core 解析 / 状态编码 / 路径规范化移入 core/internal/wire/。本文件只保留
+//   剧本与注入逻辑——emit 是 wire.Out.Emit 的一层薄包装，唯一附加行为是
+//   --drop-seq 的跳号注入（真 core 没有这个旋钮）。
 
 import (
-	"bufio"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"math/rand"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"time"
+
+	"ecdi-fake-core/internal/wire"
 )
-
-type state string
-
-const (
-	stateIdle      state = "idle"
-	stateRunning   state = "running"
-	stateWaiting   state = "waiting"
-	stateCancelled state = "cancelled"
-	stateError     state = "error"
-)
-
-// 状态码：唯一目的是让**读线程**（另一个 goroutine）能原子地取到当前状态，
-// 给每一行输入打上「到达时刻」的戳。整数编码而非直接传 state，是为了用
-// atomic.Int32 而不引入互斥锁；映射集中在 codeOf/stateOf 两处，不散落。
-const (
-	codeIdle int32 = iota
-	codeRunning
-	codeWaiting
-	codeCancelled
-	codeError
-)
-
-func codeOf(v state) int32 {
-	switch v {
-	case stateRunning:
-		return codeRunning
-	case stateWaiting:
-		return codeWaiting
-	case stateCancelled:
-		return codeCancelled
-	case stateError:
-		return codeError
-	}
-	return codeIdle
-}
-
-func stateOf(c int32) state {
-	switch c {
-	case codeRunning:
-		return stateRunning
-	case codeWaiting:
-		return stateWaiting
-	case codeCancelled:
-		return stateCancelled
-	case codeError:
-		return stateError
-	}
-	return stateIdle
-}
 
 type session struct {
 	rng   *rand.Rand
@@ -79,21 +31,20 @@ type session struct {
 	dropBlockEnd bool
 
 	// ★ --burst（2026-10-24）：关掉节奏等待，并把一轮输出攒在一次写出里。
-	//   `out` 非 nil 时 = 缓冲写（一次性大 write ⇒ 读线程一口气塞满队列）；
-	//   nil = 逐行即刷（默认，行为与改动前逐字节相同）。
+	//   缓冲本体在 wire.Out（burst=true ⇒ 256KB + 控制面必刷）；
+	//   这个布尔只管 sleep() 是否直接返回（积压要一次性到达，不是快一点）。
 	burst bool
-	out   *bufio.Writer
+	out   *wire.Out
 
-	in  <-chan stampedLine
+	in  <-chan wire.StampedLine
 	log func(string, ...any)
 
 	// 当前状态：**只经 stc 读写**（读线程要原子读它给输入打戳）。
 	// 保留 stc 之外的副本必然漂移，所以 s.st 字段已删除。
 	stc *atomic.Int32
 
-	seq   int64        // core→gui 方向的下一个 seq
-	turn  int          // 轮次计数（usage.turn）
-	since int          // 自上次注入丢号以来发出的消息数
+	turn  int // 轮次计数（usage.turn）
+	since int // 自上次注入丢号以来发出的消息数
 	blockEndSkipped bool // drop-block-end 只命中一次
 	blockNo int         // 块 id 计数器（与 seq 解耦——id 不依赖 seq 算术）
 
@@ -121,7 +72,7 @@ type pendingWorkspace struct {
 }
 
 func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
-	wsDelayMs int, burst bool, in <-chan stampedLine, stc *atomic.Int32,
+	wsDelayMs int, burst bool, in <-chan wire.StampedLine, stc *atomic.Int32,
 	log func(string, ...any)) *session {
 	s := &session{
 		rng:              rand.New(rand.NewSource(seed)),
@@ -130,19 +81,15 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 		dropBlockEnd:     dropBlockEnd,
 		workspaceDelayMs: wsDelayMs,
 		burst:            burst,
+		out:              wire.NewOut(os.Stdout, burst),
 		in:               in,
 		log:              log,
 		stc:              stc,
 	}
-	if burst {
-		// ★ 缓冲开得比一轮输出大（2000 块夹具约 400 行 / ~90KB）：一轮一次系统调用，
-		//   否则 --burst 会被「逐行 Sync」重新摊平成细水长流，积压就造不出来。
-		s.out = bufio.NewWriterSize(os.Stdout, 256*1024)
-	}
 	// 初始工作区 = core 进程自身的 cwd（与 GUI 无关：GUI 的 CreateProcess 不传 cwd，
 	// 但即使传了，v3 起工作区的唯一真相也是 core 自己记的这一个字段）。
 	if wd, err := os.Getwd(); err == nil {
-		if norm, err := normalizeWorkspace(wd); err == nil {
+		if norm, err := wire.NormalizeWorkspace(wd); err == nil {
 			s.cwd = norm
 		}
 	}
@@ -152,87 +99,29 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 
 // ── 出站 ────────────────────────────────────────────────────────
 
-// emit：给消息分配 seq + ts 后写 stdout 一行（每条即刷——流式语义）。
-// 字段序与夹具一致：t, seq, ts, ...
+// emit：wire.Out.Emit 的薄包装，唯一附加行为 = --drop-seq 的跳号注入
+// （真 core 不调 Skip；这是假 core 的 I4 负向注入旋钮）。
 func (s *session) emit(payload map[string]any) {
 	if s.dropSeqEvery > 0 {
 		s.since++
 		if s.since >= s.dropSeqEvery {
 			s.since = 0
-			old := s.seq
-			s.seq++ // 故意空号：下一个消息的 seq 直接跳 1 ⇒ GUI 侧 I4 必须显式提示
+			old := s.out.Seq()
+			s.out.Skip() // 故意空号：下一个消息的 seq 直接跳 1 ⇒ GUI 侧 I4 必须显式提示
 			s.log("INJECT drop-seq: skipping %d (I4 negative)", old)
 		}
 	}
-	payload["seq"] = s.seq
-	payload["ts"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-	s.seq++
-
-	// 稳定字段序：t, seq, ts 在前（hand-rolled，避免 map 序不确定）
-	var b strings.Builder
-	b.WriteString("{")
-	writeKV(&b, "t", payload["t"], true)
-	writeKV(&b, "seq", payload["seq"], false)
-	writeKV(&b, "ts", payload["ts"], false)
-	for k, v := range payload {
-		switch k {
-		case "t", "seq", "ts":
-			continue
-		}
-		writeKV(&b, k, v, false)
-	}
-	b.WriteString("}")
-	if s.out != nil {
-		// --burst：**内容**先攒着（这里不能无条件 flush，否则等于没缓冲）。
-		s.out.WriteString(b.String())
-		s.out.WriteByte('\n')
-		// ★ 但**控制面**消息必须立即推：`hello` / `state` / `workspace` / `error` /
-		//   `ask` / `bye` 全都是「对面正在等它」的消息，攒在缓冲里不是慢，是**死锁**。
-		//   ★ 第一版只留了 hello/bye/ask 三个显式 flush 点，漏了 `workspace` ack
-		//   ⇒ GUI 等初始工作区路径等到超时，整场只收到 1 条消息（blocks=0）。
-		//   教训同 REQ-03 的 M 系列：**"我列了三个必刷点"不等于"我列全了"**。
-		if t, ok := payload["t"].(string); ok {
-			switch t {
-			case "hello", "state", "workspace", "error", "ask", "bye":
-				s.out.Flush()
-			}
-		}
-		return
-	}
-	fmt.Fprintln(os.Stdout, b.String())
-	os.Stdout.Sync()
+	s.out.Emit(payload)
 }
 
-// flush：把 `--burst` 的缓冲推给管道（逐行即刷模式下是 no-op）。
-// ★ 三个必刷点，漏一个就是死锁而不是"慢一点"：
-//  ① hello 之后——否则 GUI 等的另一半握手永远不出现；
-//  ② **阻塞等 answer 之前**——否则 ask 留在缓冲里，GUI 不知道要回答什么；
-//  ③ 一轮结束 / 退出之前——否则最后几十行烂在缓冲里。
-func (s *session) flush() {
-	if s.out != nil {
-		s.out.Flush()
-	}
-}
-
-func writeKV(b *strings.Builder, key string, v any, first bool) {
-	if !first {
-		b.WriteString(",")
-	}
-	kb, _ := json.Marshal(key)
-	b.Write(kb)
-	b.WriteString(":")
-	vb, err := json.Marshal(v)
-	if err != nil {
-		vb = []byte("null")
-	}
-	b.Write(vb)
-}
+// flush：--burst 缓冲的推出点（逐行即刷模式下 no-op；必刷点表见 wire.Out.Flush）。
+func (s *session) flush() { s.out.Flush() }
 
 // st：当前状态（唯一真相 = 共享原子量）。
-func (s *session) st() state { return stateOf(s.stc.Load()) }
+func (s *session) st() wire.State { return wire.StateOf(s.stc.Load()) }
 
-func (s *session) setState(v state) {
-	s.stc.Store(codeOf(v))
+func (s *session) setState(v wire.State) {
+	s.stc.Store(wire.CodeOf(v))
 	s.emit(map[string]any{"t": "state", "value": string(v)})
 }
 
@@ -268,7 +157,7 @@ func (s *session) run() error {
 	s.flush()   // ★ 必刷点①：握手的第一条不能留在缓冲里
 	s.log("hello sent; waiting for gui hello")
 	for {
-		var sl stampedLine
+		var sl wire.StampedLine
 		var ok bool
 		select {
 		case sl, ok = <-s.in:
@@ -283,13 +172,13 @@ func (s *session) run() error {
 			s.completeWorkspace()
 			continue
 		}
-		msg := parseGui(sl.text)
-		arrived := stateOf(sl.st) // ★ 到达时刻的状态，不是「现在读到它时」的状态
+		msg := wire.ParseGui(sl.Text)
+		arrived := wire.StateOf(sl.St) // ★ 到达时刻的状态，不是「现在读到它时」的状态
 		switch msg.T {
 		case "hello":
 			s.log("hello received: seq=%d", msg.Seq)
 			// 协议 §3.1：hello 必须是第一条且 seq=0——校验但不阻塞。
-			if s.seq == 0 && msg.Seq != 0 {
+			if s.out.Seq() == 0 && msg.Seq != 0 {
 				s.log("WARNING: hello.seq=%d (spec requires 0)", msg.Seq)
 			}
 		case "prompt":
@@ -304,7 +193,7 @@ func (s *session) run() error {
 			//   一条被受理的 prompt 与一条被违反契约的 prompt 在界面上无法区分。
 			//   ★ 判据用 arrived（到达时刻）而不是 now：主循环在上一轮运行期间不读
 			//     channel，用 now 会把一条抢跑的 prompt 当成合法输入。
-			if arrived != stateIdle {
+			if arrived != wire.StateIdle {
 				s.rejectPrompt(msg, fmt.Sprintf("prompt 到达时状态是 %s，只接受 idle 时的 prompt", arrived))
 				continue
 			}
@@ -314,9 +203,9 @@ func (s *session) run() error {
 		case "cancel":
 			s.log("cancel received (state=%s)", s.st())
 			s.cancelRequested = true
-			if s.st() == stateRunning || s.st() == stateWaiting {
-				s.setState(stateCancelled)
-				s.setState(stateIdle)
+			if s.st() == wire.StateRunning || s.st() == wire.StateWaiting {
+				s.setState(wire.StateCancelled)
+				s.setState(wire.StateIdle)
 			}
 		case "answer":
 			s.log("answer received: id=%s choice=%s", msg.ID, msg.Choice)
@@ -345,7 +234,7 @@ func (s *session) handlePrompt(text string, clientID string) {
 	defer s.flush()
 	s.turn++
 	s.cancelRequested = false
-	s.setState(stateRunning)
+	s.setState(wire.StateRunning)
 
 	// ① 回显用户（协议 §4：转录的唯一作者仍是 core；GUI 的「发送中」气泡靠
 	//    client_id 认领这一块，所以回显**必须**带同一个 id，否则气泡永远停在发送中）。
@@ -384,8 +273,8 @@ func (s *session) handlePrompt(text string, clientID string) {
 		"t": "usage", "turn": s.turn,
 		"input": 8000 + s.turn*137, "output": 600 + s.turn*53,
 	})
-	if s.st() != stateIdle {
-		s.setState(stateIdle)
+	if s.st() != wire.StateIdle {
+		s.setState(wire.StateIdle)
 	}
 }
 
@@ -416,7 +305,7 @@ func (s *session) toolRound(index int) {
 
 	// 每第 3 轮插权限门（I3：ask 后停发，直到 answer）
 	if index%3 == 2 {
-		askID := fmt.Sprintf("q%d", s.seq)
+		askID := fmt.Sprintf("q%d", s.out.Seq())
 		s.emit(map[string]any{"t": "ask", "id": askID, "kind": "permission",
 			"question": fmt.Sprintf("允许执行 %s 吗？", tool.Name),
 			"options": []map[string]string{
@@ -425,7 +314,7 @@ func (s *session) toolRound(index int) {
 			},
 			"default": "deny"})
 		s.pendingAskID = askID
-		s.setState(stateWaiting)
+		s.setState(wire.StateWaiting)
 		s.log("waiting for answer to %s (I3: no further messages)", askID)
 
 		// I3 自守：阻塞等待（唯一允许的例外 = usage，本实现不发）
@@ -433,8 +322,8 @@ func (s *session) toolRound(index int) {
 		if s.cancelRequested {
 			return
 		}
-		if s.st() != stateRunning {
-			s.setState(stateRunning)
+		if s.st() != wire.StateRunning {
+			s.setState(wire.StateRunning)
 		}
 	}
 
@@ -466,7 +355,7 @@ func (s *session) toolRound(index int) {
 // ── v3：工作区租约 ──────────────────────────────────────────────
 
 // rejectPrompt：拒绝一条 prompt（§3.8：fatal:false 的 error，且带该 client_id）。
-func (s *session) rejectPrompt(msg guiMsg, reason string) {
+func (s *session) rejectPrompt(msg wire.GuiMsg, reason string) {
 	s.log("REJECT prompt (client_id=%q): %s", msg.ClientID, reason)
 	payload := map[string]any{"t": "error", "fatal": false, "message": reason}
 	if msg.ClientID != "" {
@@ -477,7 +366,7 @@ func (s *session) rejectPrompt(msg guiMsg, reason string) {
 }
 
 // handleWorkspace：受理一个工作区请求（§3.9：仅 idle；一次一个未决）。
-func (s *session) handleWorkspace(msg guiMsg, arrived state) {
+func (s *session) handleWorkspace(msg wire.GuiMsg, arrived wire.State) {
 	s.log("workspace request: id=%q path=%q (arrived=%s now=%s, pending=%v)",
 		msg.RequestID, msg.Path, arrived, s.st(), s.pendingWs != nil)
 
@@ -493,13 +382,13 @@ func (s *session) handleWorkspace(msg guiMsg, arrived state) {
 			"已有一个未决的工作区请求（一次只允许一个）")
 		return
 	}
-	if arrived != stateIdle {
-		// 判据 = 到达时刻（见 stampedLine 的说明）。
+	if arrived != wire.StateIdle {
+		// 判据 = 到达时刻（见 wire.StampedLine 的说明）。
 		s.nackWorkspace(msg.RequestID, msg.Path,
 			fmt.Sprintf("请求到达时状态是 %s，工作区切换只在 idle 受理", arrived))
 		return
 	}
-	resolved, err := normalizeWorkspace(msg.Path)
+	resolved, err := wire.NormalizeWorkspace(msg.Path)
 	if err != nil {
 		s.nackWorkspace(msg.RequestID, msg.Path, err.Error())
 		return
@@ -538,28 +427,6 @@ func (s *session) nackWorkspace(requestID, rawPath, reason string) {
 		"ok": false, "path": rawPath, "message": reason})
 }
 
-// normalizeWorkspace：§3.9 的路径规范化（绝对 / `/` 分隔 / 无尾随 `/` / 无 `.`·`..`）。
-// 同时校验「它真是一个可访问的目录」——否则「工作区显示与 core 实际目录一致」
-// 只能在字符串层面成立，而 core 实际并不在那个目录里。
-func normalizeWorkspace(p string) (string, error) {
-	if strings.TrimSpace(p) == "" {
-		return "", errors.New("请求缺少 path")
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", fmt.Errorf("无法解析路径：%v", err)
-	}
-	abs = filepath.Clean(abs) // 顺带消掉 `.` / `..` 段
-	info, err := os.Stat(abs)
-	if err != nil {
-		return "", fmt.Errorf("目录不可访问：%v", err)
-	}
-	if !info.IsDir() {
-		return "", errors.New("路径不是目录")
-	}
-	return strings.ReplaceAll(abs, "\\", "/"), nil
-}
-
 // waitForAnswer：阻塞读 stdin 直到 answer 或 cancel/bye。
 // 期间收到的任何东西都要正确处置（不丢消息、不死锁）。
 func (s *session) waitForAnswer() {
@@ -567,7 +434,7 @@ func (s *session) waitForAnswer() {
 	//   什么 ⇒ 双方互等 ⇒ 死锁（而 `--burst` 让这种情况从"不可能"变成"默认"）。
 	s.flush()
 	for sl := range s.in {
-		msg := parseGui(sl.text)
+		msg := wire.ParseGui(sl.Text)
 		switch msg.T {
 		case "answer":
 			if msg.ID == s.pendingAskID {

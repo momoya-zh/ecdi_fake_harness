@@ -127,6 +127,19 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 ⇒ 真造出队列积压。REQ-03 的「单回调预算」判据靠它才**可证伪**——不加时队列最多 8 行、那条
 判据恒真；加上后 `maxLinesPerCallback` 恰好顶到 **256**（去掉预算则 430）。
 
+**④b 拉起真 core**（P3：真模型 + 真工具；规格见 `docs/P3-real-core-spec.md`）
+
+```bash
+cd core && go build -o bin/ecdi-core.exe ./cmd/ecdi-core && cd ..
+harness_gui.exe --core core/bin/ecdi-core.exe \
+  --core-args "--base-url=https://…/v4 --model=glm-4.6 --key=sk-…" --auto-prompt "看看 README"
+```
+
+★ 密钥推荐走环境变量 `ECDI_CORE_KEY`（不进命令行历史）；`--key` 与环境变量都空 ⇒ 拒绝启动。
+★ 工具集第一版 = 只读三件（read_file / list_dir / grep），**默认每个调用都过 ask 门**；
+`--allow-tools=list_dir,grep` 显式豁免（运行者的配置，core 不做策略）。
+★ **OS 级隔离是运行者的前置条件**（`docs/positioning.md` §4）——只读把风险降了，没有除。
+
 **⑤ 回归门**（改完必跑；全绿才算收口）
 
 ```bash
@@ -317,9 +330,9 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 
 | 缺什么 | 状态 |
 |---|---|
-| ★ **真 agent core** | **未开始**（`core/` 只有假 core）。协议与 GUI 两侧已就绪，缺的只在 core 那一侧 ⇒ **P3 是主线**，见 `docs/positioning.md` §2 / §6 |
+| ★ **真 agent core** | **第一批已实施（2026-10-24，离线判据全过）**：`core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 + 默认全 ask）+ `core/internal/wire` 线层下沉（假 core 逐位回归 PASS）。离线 E2E（脚本化 SSE）已验协议全链；**真 API 验收（A3–A6/A8）等 BaseURL/Key**。见 `docs/P3-real-core-spec.md` §8 |
 | MCP host | 决策 **A**（harness 管配置）已于 2026-10-14 拍板，**零实现**；排在真 core 之后——没有 core，host 没有可授予的对象 |
-| 字重 / 视觉层级 | 受 `REQ-10` 阻塞（ECDI 已登记 `roadmap-deferred` #70，**登记不立项**）；当前靠字号 + 颜色 + 留白代偿，**不做伪加粗** |
+| 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
 
 ### `evals/` 的口径（★ 待定，别把它当「仍在更新」）
 
@@ -330,7 +343,12 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
-**P3 真 core → MCP host**。`REQ-03`（取数通路）已于 2026-10-24 闭合，它原本排第一个的理由不是「账本还剩一条」，而是**真 agent 突发下第一个会屈服的环节**——现在那一步已经换成「推」，且回归门里有 live A/B 守着。
+**P3 真 core（第一批已落地，2026-10-24）→ 真 API 验收 → MCP host**。
+`core/cmd/ecdi-core` 已实现（OpenAI 兼容端点 + 只读三件 + 默认全 ask），
+离线 E2E（脚本化 SSE 服务器）验过协议全链，假 core 逐位回归 PASS。
+**悬而未决的只剩真 API 判据**：拿到 BaseURL/APIKey 后跑 A3–A6 实跑并把读数
+归档 `evals/p3-*.json`（带「天然浮动，不进基线」标注）——
+见 `docs/P3-real-core-spec.md` §6 / §8.4。
 
 真 core 与 MCP host 的关系是单向的：**没有 core，host 没有可授予的对象**。
 

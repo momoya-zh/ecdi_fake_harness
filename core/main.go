@@ -19,81 +19,20 @@
 //   它存在的理由只有一个：REQ-03 的「单回调预算」判据需要一个能把队列
 //   压到 256 行以上的突发源，否则那条判据无法被证伪（负对照会"绿得"
 //   毫无意义）。默认关 ⇒ 既有行为逐字节不变。
+//
+// ★ 线层下沉（2026-10-24，P3 规格 §3）：帧读写 / 信封 / seq / 状态编码 /
+//   stdin 打戳读线程 / 路径规范化移入 core/internal/wire/（与真 core 共用
+//   同一份机械规则）。本文件只保留剧本入口与注入旋钮——**行为逐位不变**，
+//   由 P3 验收 A2（六夹具 + 13 探针逐位回归）把门。
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"flag"
-	"fmt"
 	"os"
-	"strings"
 	"sync/atomic"
+
+	"ecdi-fake-core/internal/wire"
 )
-
-// guiMsg = gui→core 消息的解析结果（协议 §4 六类：hello/prompt/cancel/answer/workspace/bye）。
-//
-// ★ v3 补三个字段（2026-10-20）：ClientID 用于回显确认临时气泡（§4），
-// RequestID/Path 用于工作区租约（§3.9）。缺了它们就得从 Raw 里再解一遍 JSON，
-// 那等于两份解析器两份真相。
-type guiMsg struct {
-	T         string
-	Seq       int64
-	Text      string
-	ID        string
-	Choice    string
-	ClientID  string
-	RequestID string
-	Path      string
-	Raw       string
-}
-
-func parseGui(line string) guiMsg {
-	var raw struct {
-		T         string `json:"t"`
-		Seq       int64  `json:"seq"`
-		Text      string `json:"text"`
-		ID        string `json:"id"`
-		Choice    string `json:"choice"`
-		ClientID  string `json:"client_id"`
-		RequestID string `json:"request_id"`
-		Path      string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(line), &raw); err != nil {
-		return guiMsg{T: "", Raw: line}
-	}
-	return guiMsg{T: raw.T, Seq: raw.Seq, Text: raw.Text, ID: raw.ID, Choice: raw.Choice,
-		ClientID: raw.ClientID, RequestID: raw.RequestID, Path: raw.Path}
-}
-
-// stampedLine = 一行输入 + **读到它的那一刻**的会话状态码。
-//
-// ★ 为什么要带状态（v3，2026-10-20）：主 goroutine 在 handlePrompt 里内联跑完整轮，
-// 期间不读 channel；等它回来读时状态已回到 idle。若不在这里打戳，一条**在 running
-// 期间**发来的 prompt 就会与一条 idle 时发来的 prompt 完全等价，§3.2/§3.9 的
-// 「只接受 idle」「交错必须拒绝」在 core 侧根本无法判定。
-type stampedLine struct {
-	text string
-	st   int32
-}
-
-// readStdin：stdin 行读线程 → 行通道（单一消费者 = 主 goroutine）。
-// 只**读** curState 给每行打戳，从不写它。
-func readStdin(lines chan<- stampedLine, curState *atomic.Int32, logf func(string, ...any)) {
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		if strings.TrimSpace(line) == "" {
-			continue // 空行忽略（分帧约定：一行一个 JSON）
-		}
-		lines <- stampedLine{text: line, st: curState.Load()}
-	}
-	if err := sc.Err(); err != nil {
-		logf("stdin read error: %v", err)
-	}
-	close(lines)
-}
 
 func main() {
 	speed := flag.Float64("speed", 1.0, "节奏缩放（>1 更快；1.0 = 真实节奏）")
@@ -107,16 +46,12 @@ func main() {
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
 	flag.Parse()
 
-	logf := func(format string, args ...any) {
-		if !*quiet {
-			fmt.Fprintf(os.Stderr, "[fake-core] "+format+"\n", args...)
-		}
-	}
+	logf := wire.NewLogger("[fake-core] ", *quiet)
 
-	lines := make(chan stampedLine, 64)
-	var curState atomic.Int32 // 初值 0 = idle（stateCode 的零值必须就是 idle）
-	curState.Store(codeIdle)
-	go readStdin(lines, &curState, logf)
+	lines := make(chan wire.StampedLine, 64)
+	var curState atomic.Int32 // 初值 0 = idle（CodeIdle 的零值必须就是 idle）
+	curState.Store(wire.CodeIdle)
+	go wire.ReadStdin(lines, &curState, logf)
 
 	s := newSession(*seed, *speed, *dropSeq, *dropBlockEnd, *wsDelay, *burst,
 		lines, &curState, logf)
