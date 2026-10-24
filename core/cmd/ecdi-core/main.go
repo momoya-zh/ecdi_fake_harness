@@ -40,8 +40,10 @@ func main() {
 
 	// 密钥：参数优先，环境变量兜底；都空 = 拒绝启动（stderr 说明）。
 	secret := *key
+	keySource := "flag"
 	if secret == "" {
 		secret = os.Getenv("ECDI_CORE_KEY")
+		keySource = "env"
 	}
 	missing := []string{}
 	if strings.TrimSpace(*baseURL) == "" {
@@ -75,6 +77,9 @@ func main() {
 	// 日志器持有密钥做**全局遮蔽**（wire.NewLogger：每条日志格式化后统一过一遍，
 	// 不靠「打日志时记得遮」的纪律——那种纪律迟早会在某个新日志点失效）。
 	logf := wire.NewLogger("[ecdi-core] ", *quiet, secret, *key)
+	// 凭据**在场性**日志（运营诊断用）：只记长度与来源，值由上面的遮蔽器兜底。
+	logf("credential: %s (len=%d, source=%s)",
+		map[bool]string{true: "present", false: "absent"}[secret != ""], len(secret), keySource)
 
 	lines := make(chan wire.StampedLine, 64)
 	var curState atomic.Int32

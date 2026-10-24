@@ -11,6 +11,7 @@
 #include "ProtocolWriter.h"
 #include "ReplaySource.h"
 #include "Transcript.h"
+#include "AppConfig.h"
 
 #include "ECDI/Application/Application.h"
 #include "ECDI/Core/Color.h"
@@ -53,6 +54,13 @@ struct CliOptions {
     std::filesystem::path corePath;       // --core <exe>：拉起假 core 走真子进程（P1.5）
     std::string coreArgs;                 // --core-args "<args>"：透传给假 core
     std::string autoPrompt;               // --auto-prompt <text>：启动后自动发一次 prompt（跑批）
+    // ★★ P3.5（规格 §8.5）：无参启动 / 设置面板 / 配置路径覆盖（2026-10-24）。
+    bool firstRun = false;                // 无 --replay/--core ⇒ 从配置直连，否则进首启引导
+    std::filesystem::path configPath;     // --config <path>：覆盖配置文件位置（探针/测试隔离）
+    bool settingsProbe = false;           // --settings-probe：设置面板 + 凭据注入判据
+    std::string settingsUrl;              // --settings-url：探针 save 相的 BaseURL（默认假地址）
+    std::string settingsKey;              // --settings-key：探针 save 相的 key（默认假 key）
+    std::string settingsModel;            // --settings-model：探针 save 相的模型名
     std::string fixtureName;              // 摘要用：replayPath 文件名
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
@@ -329,6 +337,15 @@ private:
         ECDI::Label* sessChip = nullptr;     // 顶栏：会话 id chip
         ECDI::Panel* statusDot = nullptr;    // 顶栏状态圆点（ok/dim 随 state 翻色）
         ECDI::Panel* sbDot = nullptr;        // 状态栏圆点
+        // ★★ P3.5（2026-10-24）：设置面板（首启引导 / `···` 菜单「设置」入口）。
+        //   面板占中栏 scroll 的槽位；显隐是模型侧状态 `m_settingsVisible`
+        //   （重建后按它恢复——与 `m_sidebarVisible` 同一条纪律）。
+        ECDI::Panel* settingsPanel = nullptr;    // 占 scroll 槽位的设置面板
+        ECDI::TextBox* settingsBase = nullptr;   // BaseURL（单行）
+        ECDI::TextBox* settingsKey = nullptr;    // API Key（单行 + Password 掩码）
+        ECDI::TextBox* settingsModel = nullptr;  // 模型名（单行）
+        ECDI::Label* settingsHint = nullptr;     // 状态/错误行（非敏感：不含 key）
+        ECDI::Button* settingsSave = nullptr;    // 保存并连接
         ECDI::Label* stateChip = nullptr;    // 顶栏：running / idle
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
         ECDI::Label* convTitle = nullptr;    // 中栏会话头：标题（原型 C .conversation-head）
@@ -941,6 +958,23 @@ private:
     void ToggleMoreMenu();
     void SetMoreMenuOpen(bool open);
 
+    // ── ★★ P3.5（2026-10-24）：设置面板 / 无参启动 / 凭据注入（规格 §8.5）──
+    // 显隐切换 = 瞬时 SetVisible + 父容器 Arrange（无动画，理由同 SetSidebarVisible）；
+    // 显隐**同时**作用于 scroll 与 composer（设置面板占满中栏，二者腾槽）。
+    void SetSettingsVisible(bool visible);
+    // 把模型侧显隐投到控件上（BuildUi 首帧与 RebuildUi 重建共用同一条路径——
+    // 「投影只存在于一条路径」正是 2026-10-21 起始幻影 34px 空洞的教训）。
+    void ApplySettingsVisibility();
+    // 设置面板「保存并连接」：校验 → CredWriteW → Save 配置 → 拉起 live 会话。
+    // 失败 ⇒ settingsHint 显示**非敏感**原因（不含 key），面板保持打开。
+    void OnSettingsSave();
+    // 解析 ecdi-core.exe：config.corePath 覆盖 → cwd 相对 core/bin → exe 目录变体。
+    bool ResolveCoreExecutable(std::filesystem::path& out) const;
+    // 无参启动：配置 + 凭据都可用 ⇒ 填 options.corePath/coreArgs + m_coreApiKey
+    // 返回 true（构造函数随后照常建 live 会话）；否则 false + 面板打开。
+    bool TryAutoConnectFromConfig();
+    void RunSettingsProbe();
+
     // ── ★★ Step 5（2026-10-19）：打开历史会话 ────────────────────────────
     // 历史 = 磁盘上的 `protocol/fixtures/**/*.jsonl`。点开 = **新建一个 replay 会话**
     //   并立刻抽干到末尾（用户点开历史想看的是"那次对话长什么样"，不是从头再播一遍）。
@@ -1102,6 +1136,16 @@ private:
     //     把用户的收起状态丢掉——这正是 0c 踩过的坑（视图状态只存在控件里，
     //     重建即丢失）。模型侧留一份，重建后按它恢复。
     bool m_sidebarVisible = true;
+    // ★★ P3.5（2026-10-24）：设置面板显隐是**模型侧状态**（与 m_sidebarVisible
+    //   同一条纪律：只存在于控件上的显隐会被任何重建丢掉）。首启无配置 ⇒ true。
+    bool m_settingsVisible = false;
+    // 注入 core 的 API key（env block 通道，规格 §8.5 D5）。
+    // ★ 不"用完即清"：每个新会话（＋按钮/临时会话）都要再拉一个 core，
+    //   env 注入是每次 spawn 都走同一条路。key 留在 GUI 进程内存属可接受形态
+    //   （同一信任域，positioning §4）；纪律是**绝不**进日志/摘要/转录。
+    std::string m_coreApiKey;
+    // 应用配置（非秘密 + 凭据目标名引用；文件在 %APPDATA%，结构上无密钥字段）。
+    AppConfig m_appConfig;
     // ★★ Step 4（2026-10-19）：整树重建待执行。
     //   与 `m_sidebarDirty` 完全同族、同一个理由：顶栏「主题」钮的回调跑在
     //   `Button::RaiseClick` 的栈上，而重建要 `root.RemoveChild` 掉**这个按钮自己**
@@ -1554,6 +1598,21 @@ private:
     std::vector<HudProbeRec> m_hudProbeLog;
     bool m_hudProbeDone = false;
     void RunHudProbe();
+
+    // ★★ P3.5（--settings-probe）：设置面板 + 凭据/配置/env 注入判据。
+    //   相位：first-run 可见 / save（配置+凭据+key 不进配置文件）/
+    //   session-live（保存后 live 会话拿到 hello）/ env-check（显式 env block
+    //   真把变量带给子进程，用 cmd.exe /c set 直接取证）/ cleanup。
+    struct SettingsProbeRec {
+        std::string phase;
+        bool matched = true;
+        std::string firstDivergence;
+    };
+    std::vector<SettingsProbeRec> m_settingsProbeLog;
+    bool m_settingsProbeDone = false;
+    std::string m_settingsProbeKey;   // save 相输入的 key（判据 5 用：不得出现在配置文件）
+    int m_settingsProbeStage = 0;     // 跨 tick 步进（save 点击后要等 hello 下一 tick 才到）
+    std::chrono::steady_clock::time_point m_settingsProbeNextAt;
 
     struct EnterProbeRec {
         std::string phase;        // enter-sends / shift-enter-newline /

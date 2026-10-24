@@ -140,6 +140,18 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 `--allow-tools=list_dir,grep` 显式豁免（运行者的配置，core 不做策略）。
 ★ **OS 级隔离是运行者的前置条件**（`docs/positioning.md` §4）——只读把风险降了，没有除。
 
+**④c 无参数启动**（P3.5，2026-10-24）
+
+```bash
+harness_gui.exe        # 双击即可：读 %APPDATA%\ecdi-fake-harness\config.json 直连
+```
+
+- 配置不存在 ⇒ **首启设置面板**（BaseURL / API Key / 模型三字段）；也可经中栏 `···` 菜单的
+  「设置」随时改。API Key 存 **Windows 凭据管理器**（目标名 `ECDI.FakeHarness.v1.Provider.<provider-id>`），
+  **配置文件永不携带密钥值**；key 经启动环境层（`ECDI_CORE_KEY`）注入 core——不经协议、不经命令行。
+- `--core` / `--replay` 手动模式保留（诊断与回归路径）；`--config <path>` 可覆盖配置位置（探针隔离）。
+- 决策与实施回写见 `docs/P3-real-core-spec.md` §8.5 / §8.5.5。
+
 **⑤ 回归门**（改完必跑；全绿才算收口）
 
 ```bash
@@ -343,13 +355,11 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
-**P3 真 core（已落地 + 真 API 验收收口，2026-10-24）→ GUI 设置界面与无参启动（P3.5 候选）→ MCP host**。
-`core/cmd/ecdi-core` 已实现（OpenAI 兼容端点 + 只读三件 + 默认全 ask），离线 E2E 验过协议全链，
-真 API（云知声 u2-flash）验收收口：GUI 级 `seqGaps=0/violations=0/unknownKinds=0`，A8 归档
-`evals/p3-u2flash-live-1.json`（浮动标注）。**下一批（拍板见 `docs/P3-real-core-spec.md` §8.5）**：
-无参数双击启动 + 设置对话框（BaseURL/APIKey/模型）——凭据存 Windows Credential Manager（GUI 侧读写），
-经显式 env block 注入 core；配置文件只存非秘密与凭据目标名引用。
-其后才是 MCP host：**没有 core，host 没有可授予的对象**。
+**P3 真 core + P3.5 无参启动（均已落地，2026-10-24）→ MCP host**。
+`core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 + 默认全 ask）+ GUI 设置界面与无参启动
+（Windows 凭据管理器存 key、配置文件只存引用）；云知声与 DeepSeek 官方两个真端点全链验收通过
+（A8 归档 `evals/p3-u2flash-live-1.json`、`evals/p35-deepseek-noarg-live-1.json`，浮动标注）。
+其后是 **MCP host**：**没有 core，host 没有可授予的对象**——现在有了。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 

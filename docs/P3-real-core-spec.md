@@ -4,8 +4,8 @@
 > P3 = 协议与 GUI 两侧已就绪的契约，第一次接上**真模型 + 真工具执行**。
 > ★ P3 **是主线而非可选收尾**——本项目要的是「一个能真用的 agent GUI」，
 > 见 [`positioning.md`](positioning.md) §2 / §6；假 core **原样保留**为回归仪器（§1.2）。
-> 状态：**v1.2 已实施并真 API 验收**（2026-10-24；v1.1 = 第一批实施回写 §8.1–8.4；
-> v1.2 = 真 API 验收收口 §8.3b + 密钥/无参启动决策记录 §8.5）。
+> 状态：**v1.3 P3.5 已实施**（2026-10-24；v1.1 = 第一批回写 §8.1–8.4；v1.2 = 真 API 收口
+> §8.3b + 决策记录 §8.5；v1.3 = §8.5.5 实施回写——凭据/设置界面/无参启动 + DeepSeek 全链）。
 
 ---
 
@@ -288,3 +288,33 @@ prompt(text, client_id)
 - ECDI 侧**无新需求**（普通 Widget 即可搭对话框），不触铁律。
 - 时机：**独立 GUI 功能批次（P3.5 候选）**，与 MCP host 无强耦合——修正本节早先"等 MCP host 立项"的说法；
   dsh 式 describe（只报 set/source/writable、不回显值）与多提供商目录在多提供商需求出现时再引入。
+
+#### 8.5.5 实施回写（2026-10-24 深夜，P3.5 已落地）
+
+**落地清单**：`gui/src/Credentials.{h,cpp}`（CredWriteW/CredReadW 薄封装 + 密钥零错误文本）、
+`gui/src/AppConfig.{h,cpp}`（%APPDATA%\ecdi-fake-harness\config.json；**结构体无密钥字段**——防泄漏靠类型）、
+`ChildSource::Start`（见 R-5）、设置面板（中栏视图，占 scroll+composer 槽；key 输入框用
+ECDI P1 的 `TextBox::EchoMode::Password`——显示层打点、数据层不变）、菜单「设置」入口、
+无参启动分支（`--help` 承载用法文档）、`--config <path>` 路径覆盖（探针隔离）、`--settings-probe`。
+
+**实施期发现（规格没写、实施时定案的事）**：
+
+| # | 事实 |
+|---|---|
+| R-5 | **手搓环境块废弃，改"启动环境层"**（dsh 的 launching-environment 同层）：GUI 进程 `SetEnvironmentVariableW("ECDI_CORE_KEY",…)` + `lpEnvironment=nullptr` 继承。原方案（父环境复制+覆盖+显式传入）在当前启动环境**恒报 87**（ERROR_INVALID_PARAMETER），负对照（nullptr）正常 ⇒ 缺陷确在块本身；**未决问题**：87 的精确成因（环境块规模超限的假说未验证）。保证不变：key 仍不经协议/命令行/配置文件。设置对话框只读路径同构（CredReadW → m_coreApiKey → spawn 前注入） |
+| R-6 | **探针跨 tick 推进点必须铺满所有会话形态**：--settings-probe 的派发点第一版只放在 replay settle 分支，save 之后活动会话已是 live ⇒ tick 走 live 分支提前 return，stage 1 永不推进（摘要只有 2 相）。reasoning-probe"第一版只放末尾"教训的再现——这次是"分支维度的遗漏" |
+| R-7 | **固定等待窗口对进程冷启动太紧**：session-live 首版 400ms 一锤定音，偶发 LinesReceived==0（新 exe 首启抖动）。改 5s 轮询（每 tick 回看，超时才判红） |
+| R-8 | **判据自家的 bug 让负对照不可观测**：first-run 相的 scroll 检查写成 `!bad.empty() &&`——只有先红了才查，而面板默认可见恰好让第一判通过 ⇒ M4（投影缺失）永远绿。修成独立判后 M4 立刻红。负对照"NOT-RED"先查判据、再查实现 |
+| R-9 | **真 API 的 schema 校验是离线 E2E 结构上抓不到的类（第二例）**：Go 可变参数零实参 = **nil slice** ⇒ `"required":null`，DeepSeek 严格校验 400。与 toolEnvelope 同类；curl 复测三变体全过时更说明必须 dump **实际序列化字节**对拍，不能拿手写等价物测 |
+| R-10 | **`cmdkey` + Git Bash 的 MSYS 路径转换坑**：`/generic:` `/pass:` 被转成 `C:/Program Files/Git/...`，凭据值实际只存进 "s"——而产品的日志掩码形态（`work***pace`）当场暴露了这件事。教训：写凭据走 ctypes `CredWriteW`，不过 shell |
+
+**验收**：`--settings-probe` 5 相（first-run / save / session-live / env-check / cleanup）
+**×3 连跑全绿**；负对照 `.scratch/probe_settings_negctl.py` **4/4 RED**（M1 摘注入→session-live 红
+[lines=0 exited=no]、M2 配置带 apiKey 字段→save 红[结构性泄漏]、M3 跳过 CredWrite→save 红[凭据缺失]、
+M4 投影缺失→first-run 红[scroll+composer 未腾槽]）+ clean 全绿；全量回归 **PASS**（六夹具逐位 +
+13 探针仅设计红 + REQ-03 live A/B + validate exit 0）；**DeepSeek 官方端点无参启动全链**
+（预置凭据 + 配置 → TryAutoConnectFromConfig → 真模型 → read_file 真执行 len=38702 → 结果回模型 →
+232 delta；seqGaps=0/violations=0/unknownKinds=0；usage 真值 12134）——A8 归档
+`evals/p35-deepseek-noarg-live-1.json`。密钥零泄漏复核（tracked 文件 grep = 0）。
+
+**登记未做**：`--settings-probe` 未接入 `tools/regress.py`（第 14 条探针，同前）；R-5 的 87 成因；设置界面暂不暴露 context 字段（真值纪律下 0 = 不发 hello.context，GUI 显示 —）。

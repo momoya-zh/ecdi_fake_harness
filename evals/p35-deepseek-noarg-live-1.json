@@ -1,0 +1,35 @@
+{
+ "_note": "P3.5 无参启动 + DeepSeek 官方端点全链读数（A8 归档）。★ 真模型读数天然浮动，不进回归基线（docs/positioning.md §1.2）；判据只看结构不变量（seqGaps=0/violations=0/unknownKinds=0/protocolDeclared=3）与工具真执行（core 日志 read_file ok len=38702）。",
+ "_archivedAt": "2026-10-24T13:19:18.572259+00:00",
+ "_provider": {
+  "endpoint": "https://api.deepseek.com/v1",
+  "model": "deepseek-flash",
+  "note": "DeepSeek 官方（用户付费额度）"
+ },
+ "_path": "无参数启动 → %APPDATA% 配置？否——本次经 --config 指向临时配置 + Windows 凭据管理器预置凭据（cmdkey 方案因 MSYS 路径转换失败，改 ctypes CredWriteW）→ TryAutoConnectFromConfig 直连",
+ "_spec": "docs/P3-real-core-spec.md §8.5 / §8.6",
+ "summary": {
+  "fixture": "ecdi-core.exe (live)",
+  "mode": "instant",
+  "rowMode": "autosize",
+  "ecdiCommit": "",
+  "backend": "gdi",
+  "blocks": 5,
+  "deltas": 232,
+  "messages": 250,
+  "invalidations": 13,
+  "paints": 143,
+  "frameCount": 143,
+  "maxPaintUs": 0,
+  "avgPaintUs": 0,
+  "seqGaps": 0,
+  "violations": 0,
+  "unknownTypes": 0,
+  "unknownKinds": 0,
+  "protocolDeclared": 3,
+  "protocolMaxSupported": 3,
+  "protocolIncompatible": false,
+  "contextLimit": 0,
+  "usageInput": 12134
+ }
+}

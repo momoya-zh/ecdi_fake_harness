@@ -1,4 +1,5 @@
 #include "App.h"
+#include "Credentials.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -52,6 +53,8 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <sstream>
+#include <map>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -353,6 +356,14 @@ void HarnessApplication::OnWindowResized(const ECDI::WindowResizedEvent& event) 
 
 HarnessApp::HarnessApp(CliOptions options)
     : m_options(std::move(options)) {
+    // ★★ P3.5（规格 §8.5 D7）：无参启动的解析在**建会话之前**——
+    //   配置 + 凭据都可用 ⇒ 填 corePath/coreArgs/m_coreApiKey，下面照常建 live 会话；
+    //   否则 ⇒ 首启：设置面板打开（会话为空壳，保存成功后再建 live 会话）。
+    if (m_options.firstRun) {
+        if (!TryAutoConnectFromConfig()) {
+            m_settingsVisible = true;   // 首启引导（或配置失效——hint 会说明原因）
+        }
+    }
     // ★★ 0d：构造第一个会话（源选择逻辑搬进 `CreateSessionFromOptions`，
     //   因为"新建会话"要复用同一段）。
     //   ★ 这里只**创建 + 设活动指针**，不调 `SwitchToSession`——此刻窗口还没建，
@@ -383,6 +394,19 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
     if (!m_options.corePath.empty()) {
         auto child = std::make_unique<ChildSource>();
         std::string error;
+        // ★ P3.5 D5 实施版：key 走**启动环境层**——GUI 进程
+        //   SetEnvironmentVariableW("ECDI_CORE_KEY", …)，子进程经 lpEnvironment =
+        //   nullptr 的标准继承拿到。不经协议、不经命令行、不经配置文件；
+        //   与 dsh 的 launching-environment 层同构（调研记录见当日工作日志）。
+        //   ★ 手搓环境块（父环境复制 + 覆盖 + CreateProcessW 显式传入）实测在
+        //     当前启动环境下恒报 87（ERROR_INVALID_PARAMETER），已废弃——偏差与
+        //     未决问题记在规格 §8.5.4 R-5。
+        //   ★ 保留不"用完即清"：每个新会话（＋按钮/临时会话）都要再拉一个 core。
+        //     key 留在 GUI 进程内存属可接受形态（同一信任域，positioning §4）；
+        //     纪律是**绝不**进日志/摘要/转录。
+        if (!m_coreApiKey.empty()) {
+            SetEnvironmentVariableW(L"ECDI_CORE_KEY", ECDI::UTF8ToWide(m_coreApiKey).c_str());
+        }
         if (!child->Start(m_options.corePath, m_options.coreArgs, error)) {
             ECDI::Logger::Log(ECDI::LogLevel::Error,
                               ECDI::UTF8ToWide("ChildSource: " + error));
@@ -1746,6 +1770,8 @@ void HarnessApp::RebuildUi() {
         m_hud.sidebar->SetVisible(false);
         if (ECDI::Widget* parent = m_hud.sidebar->GetParent()) parent->Arrange();
     }
+    // ⑩c P3.5：设置面板显隐同为模型侧状态 ⇒ 走唯一的投影路径对齐。
+    ApplySettingsVisibility();
     // ★★ 2026-10-20⑩b / 2026-10-21 订正：`···` 菜单条的显隐同样是模型侧状态。
     //   ★ 原文写的是「新树的菜单条是**可见**的（`BuildUi` 建完还没投影）」——
     //     那句在 2026-10-21 之后**已经不成立**：`BuildMainArea` 现在建完就按
@@ -2266,6 +2292,22 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             menu->AddChild(std::move(b));
         };
         mkMenuItem("导出", "导出转录到文件", [this] { (void)ExportTranscript(); });
+        mkMenuItem("设置", "提供商连接设置（BaseURL / API Key / 模型）", [this] {
+            // 打开时预填非秘密字段（BaseURL/模型来自配置）；key 字段**永不回填**
+            // ——凭据库里有值时 hint 说明"留空保持不变"。
+            if (m_hud.settingsBase) {
+                m_hud.settingsBase->SetText(m_appConfig.provider.baseUrl);
+                m_hud.settingsModel->SetText(m_appConfig.provider.model);
+                if (m_appConfig.provider.credentialTarget.empty()) {
+                    m_hud.settingsKey->SetText("");
+                    m_hud.settingsHint->SetText("填写提供商连接信息，保存后连接");
+                } else {
+                    m_hud.settingsHint->SetText(
+                        "已保存的密钥不回显——留空则保持不变");
+                }
+            }
+            SetSettingsVisible(true);
+        });
         mkMenuItem("归档", "归档当前会话", [this] {
             if (!m_sess) return;
             for (size_t i = 0; i < m_sessions.size(); ++i) {
@@ -2281,6 +2323,75 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         //     这里要的是「视图错乱了就重画一遍」，模型的作者不是这个按钮。
         mkMenuItem("清空视图", "从模型重画视图", [this] { RebuildTranscriptView(); });
         counting->AddChild(std::move(menu));
+    }
+
+    // ── ★★ P3.5：设置面板（占 scroll 的槽位；显隐见 ApplySettingsVisibility）──
+    //   与 scroll 互斥：settings 可见 ⇔ scroll + composer 隐藏（腾满中栏）。
+    //   显隐是模型侧状态 `m_settingsVisible`（重建后恢复，同 m_sidebarVisible 纪律）。
+    {
+        auto panel = std::make_unique<ECDI::Panel>();
+        m_hud.settingsPanel = panel.get();
+        panel->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = m_options.probeContrast ? kProbeBg : kSidebarBg});
+
+        auto addLabel = [&panel](const std::string& text) {
+            auto l = std::make_unique<ECDI::Label>(text);
+            l->SetTextColor(kDarkMuted);
+            l->SetFont(harness::SansFont(harness::kFontSmall));
+            l->SetSize(520, 18);
+            panel->AddChild(std::move(l));
+        };
+        auto addInput = [this, &panel](ECDI::TextBox** slot, bool password) {
+            auto box = std::make_unique<ECDI::TextBox>();
+            *slot = box.get();
+            (*slot)->SetSingleLine(true);       // Enter 不得在设置面板里触发换行
+            if (password) {
+                // ECDI P1 的 echo 掩码：显示层打点、数据层不变（GetText 永远真实值）
+                (*slot)->SetEchoMode(ECDI::TextBox::EchoMode::Password);
+            }
+            (*slot)->SetSize(520, 30);
+            panel->AddChild(std::move(box));
+        };
+
+        auto title = std::make_unique<ECDI::Label>("连接设置");
+        title->SetTextColor(kDarkInk);
+        title->SetFont(harness::SansFont(16.0f));
+        title->SetSize(520, 24);
+        panel->AddChild(std::move(title));
+
+        // ★ 无 placeholder：TextBox 没有 Placeholder API（ENTER-SEND 起登记的
+        //   已知缺口），字段含义由上方 Label 承担——不去发明第二套提示机制。
+        addLabel("Base URL（OpenAI 兼容端点根，如 https://api.deepseek.com/v1）");
+        addInput(&m_hud.settingsBase, false);
+        addLabel("API Key（存入 Windows 凭据管理器；不进配置文件、不经协议）");
+        addInput(&m_hud.settingsKey, true);
+        addLabel("模型名（如 deepseek-chat / glm-5.2 / u2-flash）");
+        addInput(&m_hud.settingsModel, false);
+
+        auto save = std::make_unique<ECDI::Button>("保存并连接");
+        m_hud.settingsSave = save.get();
+        save->SetTextColor(kDarkInk);
+        save->SetFont(harness::SansFont(14.0f));
+        save->SetStyle(ECDI::ButtonStyleOverride{
+            .background = kPanel2,
+            .border = kLine,
+            .borderWidth = 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kToolHeaderHover});
+        save->SetSize(140, 30);
+        save->SetOnClick([this] { OnSettingsSave(); });
+        panel->AddChild(std::move(save));
+
+        auto hint = std::make_unique<ECDI::Label>("");
+        m_hud.settingsHint = hint.get();
+        hint->SetTextColor(kDarkMuted);
+        hint->SetFont(harness::SansFont(harness::kFontSmall));
+        hint->SetSize(520, 18);
+        panel->AddChild(std::move(hint));
+
+        m_counting->AddChild(std::move(panel));
     }
 
     auto scroll = std::make_unique<ECDI::ScrollView>();
@@ -2320,6 +2431,9 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         RequestRepaint();
     });
     counting->AddChild(std::move(composer));
+
+    // ★ P3.5：设置面板的显隐投影（中栏三件都建完了，唯一投影路径此刻可用）。
+    ApplySettingsVisibility();
     main->AddChild(std::move(counting));
 
     // ── 右栏检查器（hi-fi .insp：卡片化）──
@@ -2725,6 +2839,12 @@ void HarnessApp::OnReplayTick() {
             DrainActiveLive(false);   // 非阻塞兜底（含 EOF 检测）
         }
         if (m_options.workspaceProbe && !m_workspaceProbeDone) RunWorkspaceProbe();
+        // ★★ P3.5 设置探针跨 tick 的另一半：save 之后活动会话已是 live ⇒
+        //   tick 走**本分支**（replay settle 分支走不到）——stage 0 在 save 那一 tick
+        //   已产出 first-run + save 两相，stage 1+ 只能在这里推进。
+        //   ★ 教训同 reasoning-probe 的"第一版只放末尾"：探针的跨 tick 推进点
+        //     必须铺满**所有**能让它所在的会话形态，缺一个就是永远停在那一拍。
+        if (m_options.settingsProbe && !m_settingsProbeDone) RunSettingsProbe();
         return;
     }
 
@@ -2786,6 +2906,10 @@ void HarnessApp::OnReplayTick() {
             // ★★ 2026-10-21 HUD 覆盖探针：同步跑完即 Exit，同上。
             if (m_options.hudProbe && !m_hudProbeDone) {
                 RunHudProbe();
+            }
+            // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
+            if (m_options.settingsProbe && !m_settingsProbeDone) {
+                RunSettingsProbe();
             }
             // ★★ Step 4 主题/整树重建探针：排在最后。
             //   ★ 与前五个不同，它是**跨 tick** 的（toggle 相要点真实按钮，
@@ -6257,6 +6381,248 @@ void HarnessApp::RunGrowProbe() {
 //   一个永远返回空集合的实现同样满足它。所以再跑一相：**人为把一个指针置空、
 //   再跑 `RefreshHud`**，此时集合必须**非空**且包含那个字段名。
 //   若这一相也返回空，说明判据是瞎的（`--sidebar-probe` 的逆序负对照同族）。
+// ★★ P3.5（--settings-probe）：设置面板 + 凭据/配置/env 注入判据。
+//   前置：`--config <temp>/probe-config.json`（**指向不存在的文件**）且**无**
+//   `--core`/`--replay` ⇒ 应用必然从首启分支进来（设置面板可见）。
+//   跨 tick：save 相之后 hello 要下一 tick 才从队列里出来（与 theme-probe 同因）。
+//   ★ 相位设计见规格 §8.5.4；负对照在 .scratch/probe_settings_negctl.py。
+void HarnessApp::RunSettingsProbe() {
+    auto report = [this](const char* phase, const std::string& bad) {
+        SettingsProbeRec rec;
+        rec.phase = phase;
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        m_settingsProbeLog.push_back(std::move(rec));
+    };
+    const auto now = std::chrono::steady_clock::now();
+    const auto settle = std::chrono::milliseconds(400);
+
+    switch (m_settingsProbeStage) {
+    case 0: {
+        // ① first-run：面板必须可见、scroll/composer 必须腾了槽、字段必须为空。
+        {
+            std::string bad;
+            if (!m_hud.settingsPanel || !m_hud.settingsPanel->IsVisible()) {
+                bad = "settings panel not visible on first run (config file absent)";
+            }
+            // ★ 独立判（不能写成 !bad.empty() && ——那会让"面板默认可见"的
+            //   实现连带着跳过本条，投影缺失（M4）就永远不可观测）。
+            if (m_scroll && m_scroll->IsVisible()) {
+                bad = bad.empty()
+                          ? "scroll still visible (slot not surrendered on first run)"
+                          : bad + "; scroll still visible";
+            }
+            if (m_promptBar && m_promptBar->IsVisible()) {
+                bad = bad.empty()
+                          ? "composer still visible (slot not surrendered on first run)"
+                          : bad + "; composer still visible";
+            }
+            if (bad.empty() &&
+                (!m_hud.settingsBase || !m_hud.settingsBase->GetText().empty() ||
+                 !m_hud.settingsKey || !m_hud.settingsKey->GetText().empty())) {
+                bad = "first-run fields must start empty (no prefill of secrets)";
+            }
+            report("first-run", bad);
+        }
+        // ② save：真填字段（SetText）+ 真点保存（SynthesizeClickAt 走派发链）。
+        //    探针默认值是假端点 + 假 key（offline 判据不碰真凭据）；
+        //    `--settings-url/--settings-key/--settings-model` 可覆盖（真提供商实测用）。
+        const std::string url = m_options.settingsUrl.empty()
+                                    ? "https://probe-settings.invalid/v1"
+                                    : m_options.settingsUrl;
+        m_settingsProbeKey = m_options.settingsKey.empty()
+                                 ? "sk-probe-settings-not-a-real-key"
+                                 : m_options.settingsKey;
+        const std::string model = m_options.settingsModel.empty()
+                                      ? "probe-model"
+                                      : m_options.settingsModel;
+        m_hud.settingsBase->SetText(url);
+        m_hud.settingsKey->SetText(m_settingsProbeKey);
+        m_hud.settingsModel->SetText(model);
+        const ECDI::Point abs = m_hud.settingsSave->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.settingsSave->GetWidth() / 2,
+                          static_cast<int>(abs.y) + m_hud.settingsSave->GetHeight() / 2);
+        // ③ 同 tick 内判据：配置文件落盘（含 BaseURL/模型，**不含 key**）+ 凭据库
+        //    真有值。save 回调是同步的（spawn 也在其中），此刻全都该已发生。
+        {
+            std::string bad;
+            std::ifstream in(AppConfig::DefaultPath(), std::ios::binary);
+            if (!in) {
+                bad = "config file was not written by save";
+            } else {
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                const std::string text = ss.str();
+                if (text.find(m_settingsProbeKey) != std::string::npos) {
+                    bad = "LEAK: the API key text appears in the config file";
+                }
+                if (text.find(url) == std::string::npos ||
+                    text.find(model) == std::string::npos) {
+                    bad += std::string(bad.empty() ? "" : "; ") +
+                           "config is missing baseUrl/model";
+                }
+                if (text.find("apiKey") != std::string::npos ||
+                    text.find("api_key") != std::string::npos ||
+                    text.find("secret") != std::string::npos) {
+                    bad += std::string(bad.empty() ? "" : "; ") +
+                           "config carries a secret-named field (structural leak)";
+                }
+            }
+            std::string credError;
+            std::string roundtrip;
+            const std::string target = AppConfig::CredentialTargetFor(
+                AppConfig::ProviderIdFromBaseUrl(url));
+            if (!creds::Read(ECDI::UTF8ToWide(target), roundtrip, credError)) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "credential roundtrip failed: " + credError;
+            } else if (roundtrip != m_settingsProbeKey) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "credential roundtrip value mismatch";
+            }
+            report("save", bad);
+        }
+        m_settingsProbeStage = 1;
+        m_settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 1: {
+        // ④ session-live：save 建的 live 会话在上一 tick 拉起，hello 应已入列。
+        //   ★ 轮询而非一锤定音（2026-10-24 实测：固定 400ms 窗口在新 exe 首启
+        //     偶发 LinesReceived==0 —— 进程冷启动抖动，不是产品缺陷）；
+        //     5s 宽限期内每 tick 回来看，超时才判红。
+        {
+            std::string bad;
+            // 轮询门：save 后 400ms 起判；5s 内 lines==0 ⇒ 等下一 tick（不写报告）
+            if (m_sess && m_sess->originKind == "live" && m_sess->child &&
+                m_sess->child->LinesReceived() == 0 &&
+                now < m_settingsProbeNextAt + std::chrono::seconds(5)) {
+                return;
+            }
+            if (!m_sess || m_sess->originKind != "live") {
+                bad = "active session is not live after save (sessions=" +
+                      std::to_string(m_sessions.size()) +
+                      ", hasSess=" + (m_sess ? "yes" : "no") +
+                      ", originKind=" + (m_sess ? m_sess->originKind : "<null>") +
+                      ", hint=" + (m_hud.settingsHint ? m_hud.settingsHint->GetText() : "<null>") +
+                      ")";
+            } else if (!m_sess->child || m_sess->child->LinesReceived() == 0) {
+                ChildSource* c = m_sess->child;
+                bad = "core produced no lines after save (spawn or handshake broken)";
+                if (c) {
+                    bad += " [child: lines=" + std::to_string(c->LinesReceived());
+                    bad += " exited=" + std::string(c->Exited() ? "yes" : "no");
+                    bad += " exitCode=" + std::to_string(c->ExitCode());
+                    bad += " wakePosts=" + std::to_string(c->WakePosts());
+                    bad += " writer=" + std::string(m_sess->writer ? "yes" : "no");
+                    bad += " protocolVer=" + std::to_string(m_sess->protocolVer) + "]";
+                }
+            }
+            report("session-live", bad);
+        }
+        // ⑤ env-check：**启动环境层**的正负对照——
+        //   正对照：SetEnvironmentVariableW 注入 ⇒ ecdi-core 应发出 hello（启动即发，不碰 API）；
+        //   负对照：清掉变量 ⇒ 无 key 的 core 应即退（exit 2），hello 永不到来。
+        //   ★ 两条一起才能排除两个退化情形：「变量没真的进环境」（正对照红）与
+        //     「GUI 进程环境本来就带着 key」（负对照红——跑批环境不得预置该变量）。
+        //   ★ 结束时按 m_coreApiKey 恢复现场（探针不许改产品状态）。
+        {
+            std::string bad;
+            std::filesystem::path coreExe;
+            if (!ResolveCoreExecutable(coreExe)) {
+                bad = "no ecdi-core.exe found for env-check";
+            } else {
+                const std::string coreArgs =
+                    "--base-url=https://probe-settings.invalid --model=probe-model --quiet";
+                // 正对照
+                SetEnvironmentVariableW(L"ECDI_CORE_KEY", L"probe-env-check-value");
+                {
+                    ChildSource probe;
+                    std::string err;
+                    if (probe.Start(coreExe, coreArgs, err)) {
+                        std::string line;
+                        bool gotHello = false;
+                        for (int i = 0; i < 100 && !gotHello; ++i) {
+                            if (probe.NextWithin(line, 100)) {
+                                if (line.find("\"t\":\"hello\"") != std::string::npos) {
+                                    gotHello = true;
+                                }
+                            } else if (probe.Eof()) {
+                                break;
+                            }
+                        }
+                        probe.Stop(800);
+                        if (!gotHello) {
+                            bad = "core spawned with injected key but no hello arrived";
+                        }
+                    } else {
+                        bad = "env-check spawn failed: " + err;
+                    }
+                }
+                // 负对照
+                SetEnvironmentVariableW(L"ECDI_CORE_KEY", nullptr);
+                {
+                    ChildSource probe;
+                    std::string err;
+                    if (probe.Start(coreExe, coreArgs, err)) {
+                        std::string line;
+                        bool gotHello = false;
+                        for (int i = 0; i < 100 && !gotHello; ++i) {
+                            if (probe.NextWithin(line, 100)) {
+                                if (line.find("\"t\":\"hello\"") != std::string::npos) {
+                                    gotHello = true;
+                                }
+                            } else if (probe.Eof()) {
+                                break;
+                            }
+                        }
+                        probe.Stop(800);
+                        if (gotHello) {
+                            bad += std::string(bad.empty() ? "" : "; ") +
+                                   "negative control: hello arrived WITHOUT the injected "
+                                   "variable (parent environment leaks ECDI_CORE_KEY?)";
+                        }
+                    } else {
+                        bad += std::string(bad.empty() ? "" : "; ") +
+                               "negative-control spawn failed: " + err;
+                    }
+                }
+                // 恢复现场
+                if (!m_coreApiKey.empty()) {
+                    SetEnvironmentVariableW(L"ECDI_CORE_KEY",
+                                            ECDI::UTF8ToWide(m_coreApiKey).c_str());
+                } else {
+                    SetEnvironmentVariableW(L"ECDI_CORE_KEY", nullptr);
+                }
+            }
+            report("env-check", bad);
+        }
+        // ⑥ cleanup：删探针建的凭据与配置文件（幂等）。
+        {
+            std::string bad;
+            const std::string target = AppConfig::CredentialTargetFor(
+                AppConfig::ProviderIdFromBaseUrl(
+                    m_options.settingsUrl.empty()
+                        ? "https://probe-settings.invalid/v1"
+                        : m_options.settingsUrl));
+            std::string credError;
+            if (!creds::Delete(ECDI::UTF8ToWide(target), credError)) {
+                bad = "credential cleanup failed: " + credError;
+            }
+            std::error_code ec;
+            std::filesystem::remove(AppConfig::DefaultPath(), ec);
+            report("cleanup", bad);
+        }
+        m_settingsProbeDone = true;
+            if (m_application) m_application->Exit();   // 同步探针收尾即退（同 enter/hud 探针惯例）
+        return;
+    }
+    default:
+        m_settingsProbeDone = true;
+            if (m_application) m_application->Exit();
+        return;
+    }
+}
+
 void HarnessApp::RunHudProbe() {
     if (!m_sess || !m_window) { m_hudProbeDone = true; return; }
 
@@ -7562,6 +7928,175 @@ void HarnessApp::SetMoreMenuOpen(bool open) {
         Relayout();
         RequestRepaint();
     }
+}
+
+// ── ★★ P3.5：设置面板 / 无参启动 / 凭据注入（规格 §8.5 D4–D7）────────
+
+void HarnessApp::ApplySettingsVisibility() {
+    // 唯一的投影路径：BuildUi 首帧与 RebuildUi 重建都走这里——
+    // 「投影只存在于一条路径」是 2026-10-21 起始幻影（34px 空洞）的教训。
+    if (!m_hud.settingsPanel) return;
+    m_hud.settingsPanel->SetVisible(m_settingsVisible);
+    if (m_scroll) m_scroll->SetVisible(!m_settingsVisible);
+    if (m_promptBar) m_promptBar->SetVisible(!m_settingsVisible);
+    if (ECDI::Widget* parent = m_hud.settingsPanel->GetParent()) parent->Arrange();
+}
+
+void HarnessApp::SetSettingsVisible(bool visible) {
+    if (m_settingsVisible == visible &&
+        (!m_hud.settingsPanel || m_hud.settingsPanel->IsVisible() == visible)) {
+        return;   // 幂等（同 SetSidebarVisible）
+    }
+    m_settingsVisible = visible;   // ① 模型侧先落
+    ApplySettingsVisibility();     // ② 再投影
+    Relayout();
+    RequestRepaint();
+}
+
+bool HarnessApp::ResolveCoreExecutable(std::filesystem::path& out) const {
+    namespace fs = std::filesystem;
+    // ① 配置覆盖（保存时把解析结果写回配置 ⇒ 后续启动不再依赖 cwd）
+    if (!m_appConfig.corePath.empty()) {
+        if (fs::exists(m_appConfig.corePath)) {
+            out = m_appConfig.corePath;
+            return true;
+        }
+        return false;
+    }
+    // ② 开发布局：仓库根跑 GUI ⇒ core/bin/ecdi-core.exe 相对 cwd
+    // ③ 安装布局：exe 同目录 / 同目录下的 core/bin/
+    const fs::path candidates[] = {
+        fs::path("core/bin/ecdi-core.exe"),
+    };
+    for (const auto& c : candidates) {
+        std::error_code ec;
+        if (fs::exists(c, ec)) {
+            out = fs::weakly_canonical(c, ec);
+            return !ec && fs::exists(out);
+        }
+    }
+    wchar_t exeDirBuf[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, exeDirBuf, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        const fs::path exeDir = fs::path(exeDirBuf).parent_path();
+        for (const fs::path& c : {exeDir / L"ecdi-core.exe",
+                                  exeDir / L"core/bin/ecdi-core.exe"}) {
+            std::error_code ec;
+            if (fs::exists(c, ec)) {
+                out = c;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool HarnessApp::TryAutoConnectFromConfig() {
+    std::string error;
+    if (!m_appConfig.Load(error)) {
+        // 文件不存在 = 干净首启；存在但坏 = 要说清楚（非敏感）
+        ECDI::Logger::Log(ECDI::LogLevel::Warning, ECDI::UTF8ToWide("AppConfig: " + error));
+        return false;
+    }
+    if (m_appConfig.provider.credentialTarget.empty()) return false;
+    std::string key;
+    std::string credError;
+    if (!creds::Read(ECDI::UTF8ToWide(m_appConfig.provider.credentialTarget),
+                     key, credError)) {
+        ECDI::Logger::Log(ECDI::LogLevel::Warning, ECDI::UTF8ToWide("creds: " + credError));
+        return false;
+    }
+    std::filesystem::path coreExe;
+    if (!ResolveCoreExecutable(coreExe)) {
+        ECDI::Logger::Log(ECDI::LogLevel::Warning,
+                          ECDI::UTF8ToWide("ecdi-core.exe not found (config/core|exe dir)"));
+        return false;
+    }
+    // 把解析结果回写配置（下次启动不依赖 cwd）；失败不致命——本次仍可连。
+    m_appConfig.corePath = coreExe.generic_string();
+    std::string saveError;
+    if (!m_appConfig.Save(saveError)) {
+        ECDI::Logger::Log(ECDI::LogLevel::Warning, ECDI::UTF8ToWide("AppConfig save: " + saveError));
+    }
+    m_coreApiKey = key;
+    m_options.corePath = coreExe;
+    m_options.coreArgs = "--base-url=" + m_appConfig.provider.baseUrl +
+                         " --model=" + m_appConfig.provider.model;
+    if (m_appConfig.provider.context > 0) {
+        m_options.coreArgs += " --context=" + std::to_string(m_appConfig.provider.context);
+    }
+    m_options.fixtureName = m_appConfig.provider.model + " (live)";
+    return true;
+}
+
+void HarnessApp::OnSettingsSave() {
+    if (!m_hud.settingsBase || !m_hud.settingsKey || !m_hud.settingsModel ||
+        !m_hud.settingsHint) {
+        return;
+    }
+    const auto setHint = [this](const std::string& text, const ECDI::Color& color) {
+        m_hud.settingsHint->SetText(text);
+        m_hud.settingsHint->SetTextColor(color);
+        RequestRepaint();
+    };
+    const std::string baseUrl = m_hud.settingsBase->GetText();
+    const std::string key = m_hud.settingsKey->GetText();
+    const std::string model = m_hud.settingsModel->GetText();
+    if (baseUrl.empty() || model.empty()) {
+        setHint("BaseURL 和模型名不能为空", kErrorDark);
+        return;
+    }
+    const std::string providerId = AppConfig::ProviderIdFromBaseUrl(baseUrl);
+    const std::string target = AppConfig::CredentialTargetFor(providerId);
+
+    // ① 凭据：key 非空 → 覆盖写；key 为空且已有 → 保持不变（轮换语义）。
+    if (!key.empty()) {
+        std::string credError;
+        if (!creds::Write(ECDI::UTF8ToWide(target), key, credError)) {
+            setHint("凭据写入失败：" + credError, kErrorDark);
+            return;
+        }
+    } else if (!creds::Exists(ECDI::UTF8ToWide(target))) {
+        setHint("API Key 为空（凭据库中也没有该提供商的记录）", kErrorDark);
+        return;
+    }
+
+    // ② 解析 core 可执行文件（结果写进配置 ⇒ 下次无参启动不依赖 cwd）。
+    std::filesystem::path coreExe;
+    if (!ResolveCoreExecutable(coreExe)) {
+        setHint("找不到 ecdi-core.exe（先构建：go build -o core/bin/ecdi-core.exe ./cmd/ecdi-core）",
+                kErrorDark);
+        return;
+    }
+
+    // ③ 写配置（结构上无密钥字段——见 AppConfig.h 的防泄漏注释）。
+    AppConfig cfg;
+    cfg.provider.id = providerId;
+    cfg.provider.baseUrl = baseUrl;
+    cfg.provider.model = model;
+    cfg.provider.credentialTarget = target;
+    cfg.corePath = coreExe.generic_string();
+    std::string saveError;
+    if (!cfg.Save(saveError)) {
+        setHint("配置写入失败：" + saveError, kErrorDark);
+        return;
+    }
+    m_appConfig = cfg;
+
+    // ④ 建 live 会话（env 注入走 CreateSessionFromOptions 的统一路径）。
+    //   `--auto-prompt` 机制是 per-session 的（MaybeSendAutoPrompt 由 tick 驱动、
+    //   按 `m_sess->autoPromptSent` 自守），这里新建的会话自动受益，无需额外接线。
+    m_coreApiKey = key;
+    m_options.corePath = coreExe;
+    m_options.coreArgs = "--base-url=" + baseUrl + " --model=" + model;
+    Session* live = CreateSessionFromOptions();
+    if (!live) {
+        setHint("core 启动失败（见 core-stderr 日志）", kErrorDark);
+        return;
+    }
+    SwitchToSessionByPtr(live);
+    setHint("已保存并连接：" + providerId + " / " + model, kDarkMuted);
+    SetSettingsVisible(false);
 }
 
 void HarnessApp::MaterializePendingPrompts() {
@@ -9182,6 +9717,41 @@ void HarnessApp::WriteSummary() {
         }
         json += "],\n";
     }
+    // ★★ P3.5（--settings-probe）：设置面板 + 凭据/配置/env 注入判据。
+    //   判据：全部相 matched == true（first-run / save / session-live /
+    //   env-check / cleanup）。★ 默认关闭 ⇒ 摘要里连 settingsProbe 键都不出现。
+    if (m_options.settingsProbe && !m_settingsProbeLog.empty()) {
+        json += "  \"settingsProbe\": [";
+        auto escS = [](const std::string& in) {
+            std::string out;
+            out.reserve(in.size() + 8);
+            for (unsigned char c : in) {
+                switch (c) {
+                    case '"': out += "\""; break;
+                    case '\\': out += "\\\\"; break;
+                    case '\n': out += "\\n"; break;
+                    case '\r': out += "\\r"; break;
+                    case '\t': out += "\\t"; break;
+                    default: out += static_cast<char>(c);
+                }
+            }
+            return out;
+        };
+        for (size_t i = 0; i < m_settingsProbeLog.size(); ++i) {
+            const SettingsProbeRec& r = m_settingsProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"matched\": %s, "
+                          "\"firstDivergence\": \"%s\"}",
+                          r.phase.c_str(),
+                          r.matched ? "true" : "false",
+                          escS(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+
     // ★★ 2026-10-21：Enter 发送的机读证据（--enter-probe）。
     //   判据（跑批脚本执行，见 `RunEnterProbe` 头注）：
     //     · enter-sends.matched          == true（真发出去了且框被清空）

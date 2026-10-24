@@ -42,7 +42,8 @@ add_executable(harness_gui WIN32 ${HARNESS_SOURCES})
 target_include_directories(harness_gui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # shell32/ole32：文件夹选择对话框（SHBrowseForFolderW / CoTaskMemFree）；
 # comdlg32：保存文件对话框（GetSaveFileNameW）——2026-10-20 中栏 `↗` 导出转录用。
-target_link_libraries(harness_gui PRIVATE ECDI::ECDI shell32 ole32 comdlg32)
+# advapi32：Windows Credential Manager（CredWriteW/CredReadW）——P3.5 凭据存储。
+target_link_libraries(harness_gui PRIVATE ECDI::ECDI shell32 ole32 comdlg32 advapi32)
 
 target_compile_definitions(harness_gui PRIVATE UNICODE _UNICODE)
 if(MSVC)

@@ -38,6 +38,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     CliOptions options;
     bool haveReplay = false;
+    bool showUsage = false;
     for (int i = 1; argv && i < argc; ++i) {
         const std::wstring arg = argv[i];
         auto next = [&]() -> std::wstring { return (i + 1 < argc) ? argv[++i] : L""; };
@@ -112,12 +113,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.asyncProbe = true;      // ★ REQ-03：投递 vs 轮询的机读 A/B 读数
         } else if (arg == L"--legacy-poll") {
             options.legacyPoll = true;      // ★ REQ-03 对照世界：每 tick 等 8ms（改动前形状）
+        } else if (arg == L"--settings-probe") {
+            options.settingsProbe = true;   // ★ P3.5：设置面板 + 凭据/配置/env 注入判据
+        } else if (arg == L"--config") {
+            options.configPath = next();    // ★ P3.5：配置文件路径覆盖（探针/测试隔离）
+            AppConfig::SetPathForTesting(options.configPath);
+        } else if (arg == L"--settings-url") {
+            options.settingsUrl = Utf8FromWide(next());
+        } else if (arg == L"--settings-key") {
+            options.settingsKey = Utf8FromWide(next());
+        } else if (arg == L"--settings-model") {
+            options.settingsModel = Utf8FromWide(next());
+        } else if (arg == L"--help" || arg == L"-h") {
+            showUsage = true;
         }
     }
     if (argv) LocalFree(argv);
 
+    // ★★ P3.5（规格 §8.5 D7）：无参 = 正常入口——配置可用 ⇒ 直连默认提供商；
+    //   否则首启引导（设置面板）。用法文档只挂在 --help 上。
     const bool haveSource = haveReplay || !options.corePath.empty();
-    if (!haveSource) {
+    if (!haveSource && !showUsage) {
+        options.firstRun = true;
+    }
+    if (showUsage) {
         MessageBoxW(nullptr,
                     L"用法: harness_gui (--replay <file.jsonl> | --core <exe>)\n"
                     L"  --instant|--timed                回放模式（--replay 用）\n"

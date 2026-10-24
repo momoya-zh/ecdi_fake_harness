@@ -31,6 +31,10 @@ public:
     ChildSource& operator=(const ChildSource&) = delete;
 
     // 启动子进程；false + error = 失败（路径无效 / CreateProcess / 管道创建失败）
+    // ★ P3.5（规格 §8.5 D5 实施版）：key 不经本类——GUI 侧在启动前
+    //   SetEnvironmentVariableW("ECDI_CORE_KEY", …)，这里 lpEnvironment 传 nullptr
+    //   走**启动环境继承**（dsh 的 launching-environment 同层）。
+    //   手搓环境块（父环境复制 + 覆盖）实测在当前启动环境下恒报 87，已废弃。
     bool Start(const std::filesystem::path& exePath,
                const std::string& args, std::string& error);
 

@@ -64,6 +64,12 @@ func toolDefs() []toolDef {
 				"description": "Go 正则表达式（RE2 语法）",
 			},
 		}
+		// ★ 零实参的可变参数是 **nil slice** ⇒ json.Marshal 出 `"required":null`，
+		//   DeepSeek 严格 schema 校验直接 400（"null is not of type array"）。
+		//   必须归一成空数组。
+		if required == nil {
+			required = []string{}
+		}
 		return map[string]any{
 			"type":       "object",
 			"properties": props,
