@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v3.5**（2026-10-24；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v3.6**（2026-10-24；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 库外验收已过（2026-10-24，Phase 36 批三落地 + harness 验收；状态翻转待 ECDI 侧全链收口，`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -391,7 +391,7 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮取证新立；ECDI 侧**无**既有登记，`roadmap-deferred` #69 只覆盖族名反查，不含字重与 face index） |
-| 状态 | 🔄 **开放**（待 ECDI 立项排期）——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」**。★★ **2026-10-24 ECDI 侧对码核验：三条全部属实**，并登记 ECDI `roadmap-deferred` **#70**（**登记不立项**——#70 是 ECDI 缺陷队列当时唯一有真实消费者锚点的开放项，Phase 立项与否属需求决断、待拍板；初设必答三问已随登记钉出。★ 勘误：本行初版写「Phase 32 #58 与审计批余量在前」系引用 2026-10-12 旧快照——#58 实已于 2026-10-14 关闭、Phase 32 同日全链收口，见 §6 v3.4）。★★ **2026-10-24 Phase 36 批一~三落地**（ECDI `762c483`/`e394514`/`e163357`，MinGW 497/497；批三交付 lib 指纹 `5b0b1c51…d6ca` 已按 DELIVERY.md 逐项核对入 `third_party/ecdi`）**＋ harness 侧库外验收通过**：GL 生产 `FaceIdFor` 身份矩阵 14/14（T36-4/T36-8 断言库外复现：YaHei UI≠YaHei、ZH 请求回退默认 face、Segoe 600==700≠400、300==400、consola.ttf 直查豁免、NSimSun≠SimSun、SimSun@700==@400）；A2 五族墨迹比双链 10/10 方向 OK——GDI 原仪器读数与 REQ-10 基线**逐位相同**（507→690 1.36× 等 = A6 环境恒定锚），GL 经生产 `FontEngine::Glyph` 1.35–1.72×（批三前该链**完全画不出字重**）；A3 真字面格串宽 9/9 delta=0（SimSun@700 按 C36-4 豁免，合成差 +14px 实测）。harness 回归全绿（六夹具基线逐位、13 探针仅设计红、validate.py exit 0）。读数：ECDI 侧 `.workbuddy/spike/p36/p36h_matrix_readout.txt` + 本仓 `.scratch/req11/p36h_matrix.cpp/.txt`。**状态翻转待 ECDI 侧 Phase 36 全链收口（五处台账同步）** |
+| 状态 | ✅ **已闭合（2026-10-24）**——原「开放」备注保留于下：——三条子缺陷同源：**`Font` 无法表达「同族不同 style / 不同 face」**。★★ **2026-10-24 ECDI 侧对码核验：三条全部属实**，并登记 ECDI `roadmap-deferred` **#70**（**登记不立项**——#70 是 ECDI 缺陷队列当时唯一有真实消费者锚点的开放项，Phase 立项与否属需求决断、待拍板；初设必答三问已随登记钉出。★ 勘误：本行初版写「Phase 32 #58 与审计批余量在前」系引用 2026-10-12 旧快照——#58 实已于 2026-10-14 关闭、Phase 32 同日全链收口，见 §6 v3.4）。★★ **2026-10-24 Phase 36 批一~三落地**（ECDI `762c483`/`e394514`/`e163357`，MinGW 497/497；批三交付 lib 指纹 `5b0b1c51…d6ca` 已按 DELIVERY.md 逐项核对入 `third_party/ecdi`）**＋ harness 侧库外验收通过**：GL 生产 `FaceIdFor` 身份矩阵 14/14（T36-4/T36-8 断言库外复现：YaHei UI≠YaHei、ZH 请求回退默认 face、Segoe 600==700≠400、300==400、consola.ttf 直查豁免、NSimSun≠SimSun、SimSun@700==@400）；A2 五族墨迹比双链 10/10 方向 OK——GDI 原仪器读数与 REQ-10 基线**逐位相同**（507→690 1.36× 等 = A6 环境恒定锚），GL 经生产 `FontEngine::Glyph` 1.35–1.72×（批三前该链**完全画不出字重**）；A3 真字面格串宽 9/9 delta=0（SimSun@700 按 C36-4 豁免，合成差 +14px 实测）。harness 回归全绿（六夹具基线逐位、13 探针仅设计红、validate.py exit 0）。读数：ECDI 侧 `.workbuddy/spike/p36/p36h_matrix_readout.txt` + 本仓 `.scratch/req11/p36h_matrix.cpp/.txt`。★★ **✅ 已闭合（2026-10-24，ECDI 侧全链收口完成）**——ECDI 三批 `762c483`/`e394514`/`e163357` + **五链 497/497**（MinGW / Clang / ClangCL / MSVC Debug / MSVC Release）+ 五处台账同步（ECDI deferred **v2.40** #70 关闭 / README 行 / docs 索引 / 详设 v1.3 §9 收口 / 本条本行）；harness 复跑读数即本行上文的库外验收。头部 v3.5 → **v3.6** |
 | 归属 | **ECDI 侧**（`Core/Font.h` 只有 `size` + `family` 两个字段，`Font.h:17-18`；GDI 后端硬编码 `lfWeight = FW_NORMAL`，`GDIBackend.cpp:1384`；`FontEngine` 硬编码 face index `0`，`FontEngine.cpp:236`） |
 | 现象 ① **无字重** | `Font` 没有 `weight` 字段，且**框架内部两处硬编码 `FW_NORMAL`**（`GDIBackend.cpp:1384` · `GDITextMeasurer.cpp:63`）⇒ **任何调用方都无法请求粗体**。全源码搜 `lfWeight|FW_BOLD|FW_SEMIBOLD|FontWeight` 仅 4 处命中，**全部赋 `FW_NORMAL`**（另 2 处在 `Tests/TextMeasurerTests.cpp:81`/`:492`） |
 | 现象 ② **无 face index** | `FontEngine.cpp:236` 是 `FT_New_Face(impl.library, path.c_str(), **0**, &face)` ⇒ TTC 永远只加载 **face 0**。实测 `msyh.ttc` 的 face 0 = `Microsoft YaHei / Regular`，**face 1 = `Microsoft YaHei UI / Regular` 永远拿不到**（`msyhbd.ttc` / `msyhl.ttc` / `simsun.ttc` 同型）⇒ **「UI 版与非 UI 版」在 GL 链上根本无法表达** |
@@ -727,6 +727,12 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v3.6（2026-10-24）★ `REQ-10` 闭合翻转：ECDI 侧 Phase 36 全链收口完成**：
+  ① **ECDI 侧收口提交 = `b1a32b5`**（deferred **v2.40** #70 关闭 + README Phase 36 行收口语 + docs/README 三行 + 详设 **v1.3** §9 收口记录）。
+  ② **全链数字 = 五链 497/497**（MinGW / Clang / ClangCL / MSVC Debug / MSVC Release；MSVC 双配置与 ClangCL 本日重建补齐批三 T36-7）。
+  ③ 本条「状态」行由 🔄 开放翻转为 ✅ 闭合（读数即上文的库外验收 14/14 · 10/10 · 9/9）；**待做区清空动作完成**——ECDI 缺陷队列现存仅 #71（推后）。
+  ④ 头部 v3.5 → **v3.6**
+
 
 - **v3.5（2026-10-24）假 core 补 `--burst` ⇒ M3 转 RED（`REQ-03` 的判据链补齐）**：
   ① **动机**：只测边界不给造边界的手段 ⇒ `C3`（单回调 ≤256 行）在 `--speed=8` 下**恒真而未被触碰**（实测 `maxCB` 只有 6–8），M3 变异**不可判别**（v3.3 已如实记为 INCONCLUSIVE，未调阈值）。
