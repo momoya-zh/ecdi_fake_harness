@@ -137,9 +137,15 @@ void ChildSource::ReaderMain() {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_cv.wait(lock, [this] { return m_queue.size() < kQueueLimit; });
             m_queue.push_back(std::move(line));
+            // ★ REQ-03 探针：入队时刻（默认关闭 ⇒ 这条队列恒空，不改变任何可见行为）
+            if (m_stampEnabled) m_stamps.push_back(std::chrono::steady_clock::now());
             ++m_lineCount;
             lock.unlock();
             m_cv.notify_all();
+            // ★★ REQ-03：**先入队、再投递**。反过来的话，UI 线程可能先被唤醒、
+            //   进来却取到空队列 ⇒ 该行要等到下一个 33ms tick 才被发现
+            //   （"唤醒到了但无事可做"，延迟一点没省）。
+            NotifyDataArrived();
         }
         pending.erase(0, start);
     }
@@ -149,15 +155,115 @@ void ChildSource::ReaderMain() {
     if (!pending.empty()) {
         std::unique_lock<std::mutex> lock(m_mutex);
         m_queue.push_back(pending + "\n[truncated]");
+        if (m_stampEnabled) m_stamps.push_back(std::chrono::steady_clock::now());
         ++m_lineCount;
         lock.unlock();
         m_cv.notify_all();
+        NotifyDataArrived();
     }
 
     std::unique_lock<std::mutex> lock(m_mutex);
     m_eof = true;
     lock.unlock();
     m_cv.notify_all();
+    // ★ REQ-03：断连也要立刻通知——否则「core 退了」这件事要等下一个 tick 才被看见，
+    //   而那时 UI 还显示着"发送中"。tick 兜底仍在，这只是把它从 33ms 缩到 ~0。
+    NotifyDataArrived();
+}
+
+// ── ★★ REQ-03：唤醒通路 ────────────────────────────────────────────
+
+void ChildSource::NotifyDataArrived() {
+    // ★ 合并点：exchange 返回 true ⇒ 已有在途唤醒，本次什么都不做。
+    //   没有这一行，一次突发会变成「每行一个 std::function 入队」。
+    if (m_wakeArmed.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    std::function<bool()> handler;
+    {
+        // ★ 拷出来再调用：持锁跑用户代码既会和 UI 线程的 `SetWakeHandler` 抢锁，
+        //   也与 `PostToUi` 自己的入队锁构成嵌套（锁序问题）。
+        std::lock_guard<std::mutex> lock(m_mutex);
+        handler = m_wakeHandler;
+    }
+
+    if (!handler) {
+        // 未装唤醒（回放 / `--legacy-poll` 世界）⇒ 复位并交给 33ms tick 拉取，
+        // 与改动前的行为完全一致。
+        m_wakeArmed.store(false, std::memory_order_release);
+        return;
+    }
+
+    bool posted = false;
+    try {
+        posted = handler();
+    } catch (...) {
+        posted = false;   // 用户回调不该抛；真抛了也不能让读线程带着异常退出
+    }
+
+    if (posted) {
+        m_wakePosts.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        // ★ 投递失败（关闭中 / 唤醒失败 / bad_alloc —— `Application.h:83` 明写框架
+        //   **不吞** bad_alloc，所以这里必须自己吞掉并降级）。复位后**下一行**会再试；
+        //   期间 tick 兜底取数，不丢行。★ 不复位就是永久卡死：之后每一行都看到
+        //   armed==true 而跳过投递，谁也不会再来取。
+        m_wakeArmed.store(false, std::memory_order_release);
+    }
+}
+
+void ChildSource::SetWakeHandler(std::function<bool()> handler) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_wakeHandler = std::move(handler);
+}
+
+void ChildSource::RearmWake() {
+    m_wakeArmed.store(false, std::memory_order_release);
+    bool hasData = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        hasData = !m_queue.empty();
+    }
+    // 这次 drain 有预算（见 App 侧），取剩的部分要自己再投一次——不能指望
+    // 下一行到达来顺带唤醒（数据可能早就全到了，不会有"下一行"）。
+    if (hasData) NotifyDataArrived();
+}
+
+bool ChildSource::HasPending() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return !m_queue.empty();
+}
+
+void ChildSource::EnableLineStamps(bool on) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_stampEnabled = on;
+    if (!on) m_stamps.clear();
+}
+
+bool ChildSource::NextWithinStamped(std::string& line, int timeoutMs,
+                                    std::chrono::steady_clock::time_point& stamp) {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (m_queue.empty() && !m_eof && timeoutMs > 0) {
+        m_cv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+                      [this] { return !m_queue.empty() || m_eof; });
+    }
+    if (m_queue.empty()) {
+        return false;
+    }
+    line = std::move(m_queue.front());
+    m_queue.pop_front();
+    // ★ 无戳（探针没开 / 该行在开戳之前入队）⇒ 返回 0 计数的 time_point，
+    //   由调用方判 `time_since_epoch().count() == 0`。**绝不**用 now() 顶替——
+    //   那是伪造一个"零延迟"读数。
+    stamp = std::chrono::steady_clock::time_point{};
+    if (!m_stamps.empty()) {
+        stamp = m_stamps.front();
+        m_stamps.pop_front();
+    }
+    lock.unlock();
+    m_cv.notify_all();
+    return true;
 }
 
 bool ChildSource::Next(std::string& line) {
@@ -168,6 +274,7 @@ bool ChildSource::Next(std::string& line) {
     }
     line = std::move(m_queue.front());
     m_queue.pop_front();
+    if (!m_stamps.empty()) m_stamps.pop_front();   // 探针队列与行队列同步出队
     lock.unlock();
     m_cv.notify_all();   // 唤醒可能阻塞的读线程（队列上限）
     return true;
@@ -184,6 +291,7 @@ bool ChildSource::NextWithin(std::string& line, int timeoutMs) {
     }
     line = std::move(m_queue.front());
     m_queue.pop_front();
+    if (!m_stamps.empty()) m_stamps.pop_front();   // 探针队列与行队列同步出队
     lock.unlock();
     m_cv.notify_all();
     return true;

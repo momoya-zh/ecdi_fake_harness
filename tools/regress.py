@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 # ============================================================
-# 全量回归验证套件：6 夹具基线 + 13 探针 + 协议校验
+# 全量回归验证套件：6 夹具基线 + 13 探针 + REQ-03 live A/B + 协议校验
 # ------------------------------------------------------------
 # 判据说明（本仓纪律）：
 #   * 夹具基线只看 blocks/deltas/messages —— paints/frames 会随字体与实现变化，
 #     收敛动作不改渲染，但也不该把它们当不变量钉死。
 #   * 探针的 `negative` 相是设计上就该红的，单独列出而不是混进失败。
+#   * 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 SKIP，**不是 PASS**
+#     —— 跳过必须显式说出来，否则"没测"看起来和"绿了"一模一样。
 # ============================================================
 import json
 import pathlib
@@ -40,6 +42,76 @@ PROBES = [
     ("--hud-probe", "hudProbe"),
     ("--grow-probe", "growProbe"),
 ]
+
+
+def run_live(core, speed, auto_close_ms, extra, out_name):
+    """跑一次 live（真子进程）；返回摘要 dict 或 None。"""
+    out = OUT / out_name
+    out.unlink(missing_ok=True)
+    subprocess.run([str(EXE), "--core", str(core), "--core-args", f"--speed={speed}",
+                    "--auto-prompt", "hello", "--async-probe",
+                    "--auto-close", str(auto_close_ms), "--out", str(out)] + extra,
+                   cwd=ROOT, capture_output=True)
+    if not out.exists():
+        return None
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def check_async_delivery(core):
+    """REQ-03：`Application::PostToUi` 投递 vs 每 tick 8ms 轮询的受控对照。
+
+    ★ 自变量只有一个：唤醒机制（`--legacy-poll` 与否）。同一个二进制、同一份
+      core、同一组参数、同一套仪器（入队时间戳两侧都开）。
+    ★ 三跑的分工：
+        · 两跑在 `--speed=8`：流能在窗口内跑完 ⇒ `blocks/deltas/messages` 可以**直接比**
+          （跑不完的两跑会在不同位置截断，那样比计数是假的）。
+        · 第三跑 `--speed=1`：只为"送达有多快"。它跑不完不要紧——延迟与是否跑完无关。
+    """
+    fail = 0
+
+    def check(label, ok, detail):
+        nonlocal fail
+        fail += 0 if ok else 1
+        print(f"  {label:42s} {'OK' if ok else 'FAILED':6s}  {detail}")
+
+    legacy = run_live(core, 8, 15000, ["--legacy-poll"], "_reg_async-legacy.json")
+    pushed = run_live(core, 8, 15000, [], "_reg_async-async.json")
+    paced = run_live(core, 1, 12000, [], "_reg_async-paced.json")
+    for name, d in (("legacy", legacy), ("async", pushed), ("paced", paced)):
+        if d is None:
+            print(f"  {name:8s} FAILED TO PRODUCE OUTPUT")
+            return fail + 1
+
+    la = legacy["asyncProbe"]
+    pa = pushed["asyncProbe"]
+    ka = paced["asyncProbe"]
+
+    lc = (legacy["blocks"], legacy["deltas"], legacy["messages"])
+    pc = (pushed["blocks"], pushed["deltas"], pushed["messages"])
+    check("C4 功能等价（流跑完，计数逐项相同）", lc == pc and lc[1] > 0,
+          f"legacy={lc} async={pc}")
+
+    check("C1a 对照世界确实在阻塞", la["avgBlockedUs"] >= 1000,
+          f"avgBlockedUs={la['avgBlockedUs']}µs max={la['maxBlockedUs']}µs "
+          f"({la['blockedTicks']}/{la['ticks']} ticks)")
+    check("C1b 推的世界零阻塞", pa["avgBlockedUs"] == 0 and pa["blockedTicks"] == 0,
+          f"avgBlockedUs={pa['avgBlockedUs']}µs blockedTicks={pa['blockedTicks']}")
+
+    total = pa["linesViaWake"] + pa["linesViaTick"]
+    share = (pa["linesViaWake"] / total) if total else 0.0
+    check("C2 数据确实走唤醒通路（≥95%）", share >= 0.95,
+          f"{pa['linesViaWake']}/{total} = {share:.1%}（tick 兜底 {pa['linesViaTick']} 行）")
+
+    check("C3 单回调预算生效（≤256 行）", pa["maxLinesPerCallback"] <= 256,
+          f"maxLinesPerCallback={pa['maxLinesPerCallback']} callbacks={pa['callbacks']} "
+          f"posts={pa['posts']}")
+
+    check("C5 节奏化流下单行送达中位数 ≤1ms",
+          ka["latencySamples"] > 0 and ka["latencyP50Us"] <= 1000,
+          f"p50={ka['latencyP50Us']}µs p99={ka['latencyP99Us']}µs "
+          f"(同口径 legacy p50={la['latencyP50Us']}µs)")
+
+    return fail
 
 
 def main():
@@ -93,6 +165,14 @@ def main():
         tag = "OK" if not unexpected else "UNEXPECTED-RED"
         print(f"  {flag:18s} {len(rows)-len(red)}/{len(rows)} green  "
               f"designed-red={designed or '-'}  {tag}")
+
+    print("\n== 2b. REQ-03 异步投递 (live A/B) ==")
+    core = ROOT / "core" / "bin" / "fake-core.exe"
+    if not core.exists():
+        print("  SKIP: core/bin/fake-core.exe 不存在"
+              "（cd core && go build -o bin/fake-core.exe .）")
+    else:
+        fail += check_async_delivery(core)
 
     print("\n== 3. 协议与格式验证 (protocol/validate.py) ==")
     r = subprocess.run([sys.executable, str(ROOT / "protocol" / "validate.py")],

@@ -423,6 +423,9 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
     if (s.label.empty()) s.label = "会话 " + std::to_string(m_sessions.size() + 1);
 
     m_sessions.push_back(std::move(session));
+    // ★★ REQ-03：运行期新建的 live 会话也要接上唤醒。构造期 `m_application` 还是空
+    //   ⇒ 本调用在那里是 no-op，由 `Run()` 的 `InstallWakeHandlers()` 统一补装。
+    InstallWakeHandler(*m_sessions.back());
     return m_sessions.back().get();
 }
 
@@ -1581,6 +1584,17 @@ int HarnessApp::Run() {
         win.SetFocusedWidget(m_promptBar->input());   // 打开即可打字（验收 A2）
     }
 
+    // ★★ REQ-03：装唤醒**必须在这里**——UI 树已经建好（`BuildUi` + `Show` 之后），
+    //   否则第一个唤醒回调里的 `HandleLine` 会去碰还不存在的控件行。
+    //   此刻消息循环尚未进入，投递只会在队列里等着，天然没有竞态。
+    InstallWakeHandlers();
+    // ★ 对照世界（`--legacy-poll`）也要开戳：否则「推更快」只剩结构论证，
+    //   没有同口径读数可对。`InstallWakeHandler` 里已经给默认世界开过（幂等）。
+    if (m_options.asyncProbe) {
+        for (auto& session : m_sessions) {
+            if (session->child) session->child->EnableLineStamps(true);
+        }
+    }
     win.GetPlatformWindow().StartTimer(kReplayTimer, 33);
     if (m_options.timed) {
         // ★ 0d：timed 锚点逐会话（协议 §8.2：ts 是唯一真相源）。
@@ -2499,6 +2513,115 @@ void HarnessApp::BuildBottom(ECDI::Widget& root) {
     root.AddChild(std::move(status));
 }
 
+// ── ★★ REQ-03（2026-10-24）：把「UI 线程轮询」换成「读线程投递唤醒」────────
+//
+// 为什么要改：`NextWithin(line, 8)` 在**没有数据**时会把 UI 线程挂在条件变量上
+// 整整 8ms，而 tick 周期是 33ms ⇒ 约 24% 的 UI 线程时间花在**等数据**上；
+// 同一段阻塞期间 WM_PAINT 出不来 ⇒ 帧延迟最多 +8ms（打字/滚动的手感就丢在这）。
+// 送入延迟则是 `0..33ms`(等 tick) + `0..8ms`(等队列)。
+//
+// ★ 关键的决定：投递的是**信号**，不是数据。行仍留在 `ChildSource` 的队列里，
+//   由 UI 线程自己取。理由不是"实现简单"，而是**所有权**：
+//   `Session` 是可被删除的（侧栏 × / 归档），把行搬进一个跨线程回调，
+//   就得让那个回调知道目标会话是否还活着；而队列跟着 `Session` 一起死，
+//   天然没有这个问题。⇒ 闭包只捕获 `this`（HarnessApp），执行时**枚举**会话。
+
+void HarnessApp::MarkLiveEof() {
+    m_sess->liveEof = true;   // core 退出（stdin EOF 或 bye 收尾）
+    FailPendingOperations("core EOF / 断连");
+    m_hudDirty = true;
+    RefreshHud();
+}
+
+void HarnessApp::InstallWakeHandler(Session& session) {
+    if (!session.child || !m_application) return;
+    // ★ 值捕获 `app`：读线程不该去读 `m_application` 这个由 UI 线程写的裸指针
+    //   （没有同步、语义上就是 data race）。这次读发生在**本函数**（UI 线程）、
+    //   只读一次，之后这个指针由 lambda 自己持有。
+    ECDI::Application* const app = m_application;
+    session.child->SetWakeHandler([this, app]() -> bool {
+        // ★ 本 lambda 跑在**读线程**上：除了 `PostToUi`，这里不许碰任何 UI 状态。
+        try {
+            return app->PostToUi([this] { DrainActiveLive(true); });
+        } catch (...) {
+            // `Application.h:83` 明写：入队分配失败会**抛** `bad_alloc`（框架不吞）。
+            // 这里吞掉并返回 false ⇒ `ChildSource` 复位在途标志、下一行再试，
+            // 期间 tick 兜底取数 ⇒ 最坏是 33ms 延迟，而不是把读线程炸掉。
+            return false;
+        }
+    });
+    if (m_options.asyncProbe) session.child->EnableLineStamps(true);
+}
+
+void HarnessApp::InstallWakeHandlers() {
+    if (m_options.legacyPoll) return;   // 对照世界：不装唤醒，逐字保留 8ms 拉取
+    for (auto& session : m_sessions) InstallWakeHandler(*session);
+}
+
+void HarnessApp::DrainActiveLive(bool fromWake) {
+    if (!m_sess || !m_sess->child) return;
+
+    // ★ 预算 = **行数与时间谁先到**。行数防「2000 块一次抽干」（那会冻住一整帧），
+    //   时间防慢机（同样的行数在低端机上可能要几十 ms，帧预算就没了）。
+    //   ★ 没取完的部分由 `RearmWake()` **立刻再投一次**——不能指望"下一行到达"
+    //     顺带唤醒：数据可能早就全在队列里了，不会有下一行。
+    static constexpr size_t kMaxLinesPerCallback = 256;
+    static constexpr uint64_t kBudgetUs = 4000;
+
+    const auto drainStart = std::chrono::steady_clock::now();
+    size_t handled = 0;
+    std::string line;
+    while (handled < kMaxLinesPerCallback) {
+        if (handled > 0 &&
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now() - drainStart)
+                                      .count()) >= kBudgetUs) {
+            break;
+        }
+        std::chrono::steady_clock::time_point stamp;
+        if (!m_sess->child->NextWithinStamped(line, 0, stamp)) break;
+        if (m_options.asyncProbe && stamp.time_since_epoch().count() != 0) {
+            // 入队 → 现在。0 计数的 stamp = 该行没有戳（探针没开 / 戳之前入队），
+            // **跳过而不是补 now()**——补 now() 会伪造一个"零延迟"读数。
+            m_apLatencyUs.push_back(static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - stamp)
+                    .count()));
+        }
+        ++m_sess->liveLines;
+        HandleLine(line);
+        ++handled;
+    }
+
+    if (m_options.asyncProbe) {
+        if (fromWake) {
+            m_apLinesWake += handled;
+            ++m_apCallbacks;
+            if (handled > m_apMaxLinesPerCallback) m_apMaxLinesPerCallback = handled;
+        } else {
+            m_apLinesTick += handled;
+        }
+    }
+
+    // ★ 复位**所有** live 源的唤醒标志，不只是活动会话的那个：
+    //   被切走的会话（冻结中）不 drain，但它的读线程可能已经 arm 过了；
+    //   不复位 ⇒ 它切回活动时标志恒 true ⇒ 永不投递 ⇒ 只能靠 33ms 兜底，
+    //   而这个后果**没有任何读数会报**（探针只看活动会话）。
+    for (auto& session : m_sessions) {
+        if (session->child) session->child->RearmWake();
+    }
+
+    if (handled > 0) {
+        Relayout();
+        FollowTailIfPinned();
+        CacheEvalMetrics();
+        RefreshHud();
+        RequestRepaint();
+    } else if (m_sess->child->Eof() && !m_sess->liveEof) {
+        MarkLiveEof();
+    }
+}
+
 // ── 回放拉取（~30Hz 单定时器驱动，规格 §6.1）───────────────────
 
 void HarnessApp::OnReplayTick() {
@@ -2547,28 +2670,59 @@ void HarnessApp::OnReplayTick() {
         return;
     }
     if (m_sess->source->IsLive()) {
-        // ── live（子进程）：本 tick 内带超时批量拉取，把时间还给消息循环 ──
-        // （v1 定案：UI 线程仍做拉取，但**不无限阻塞**——每 tick 8ms 预算，
-        //   否则 WM_PAINT 饿死、窗口全黑；P2 改用 PostToUi 异步投递）
-        bool gotAny = false;
-        const int budgetMs = 8;
-        std::string line;
-        while (m_sess->child->NextWithin(line, gotAny ? 0 : budgetMs)) {
-            ++m_sess->liveLines;
-            HandleLine(line);
-            gotAny = true;
-        }
-        if (gotAny) {
-            Relayout();
-            FollowTailIfPinned();
-            CacheEvalMetrics();
-            RefreshHud();
-            RequestRepaint();
-        } else if (m_sess->child->Eof() && !m_sess->liveEof) {
-            m_sess->liveEof = true;   // core 退出（stdin EOF 或 bye 收尾）
-            FailPendingOperations("core EOF / 断连");
-            m_hudDirty = true;
-            RefreshHud();
+        // ── ★★ REQ-03（2026-10-24）：两条通路，只有一条是本次工作的对象 ──
+        //   · `--legacy-poll` = **拉**：逐字保留改动前的形状（每 tick 首行等 8ms）。
+        //     它是对照世界，也是回滚开关。没有它，「推更快」这句话就没有对照物。
+        //   · 默认 = **推**：读线程已经用 `Application::PostToUi` 投递了唤醒，
+        //     数据由 `DrainActiveLive(true)` 在消息循环里取；tick 这边只做
+        //     **非阻塞**兜底——投递可能失败（关闭中 / 唤醒失败 / `bad_alloc`），
+        //     兜底保证最坏情况退化成「33ms 内取到」，而不是永远不取。
+        if (m_options.asyncProbe) ++m_apTicks;
+        if (m_options.legacyPoll) {
+            bool gotAny = false;
+            const int budgetMs = 8;
+            std::string line;
+            for (;;) {
+                const auto waitStart = std::chrono::steady_clock::now();
+                std::chrono::steady_clock::time_point stamp;
+                const bool got = m_sess->child->NextWithinStamped(
+                    line, gotAny ? 0 : budgetMs, stamp);
+                if (got && m_options.asyncProbe && stamp.time_since_epoch().count() != 0) {
+                    // ★ 对照世界也用**同一套仪器**：只改唤醒机制这一个自变量，
+                    //   不能连"怎么量"都换了——那会让两组读数不可比。
+                    m_apLatencyUs.push_back(static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - stamp)
+                            .count()));
+                }
+                // ★ 只把**带超时**的那次等待计入「阻塞」：`gotAny` 之后的 0ms 调用
+                //   根本不等，把它算进来会把代价记成 0（自欺）。
+                if (!gotAny && m_options.asyncProbe) {
+                    const uint64_t us = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - waitStart)
+                            .count());
+                    ++m_apBlockedTicks;
+                    m_apBlockedUs += us;
+                    if (us > m_apMaxBlockedUs) m_apMaxBlockedUs = us;
+                }
+                if (!got) break;
+                ++m_sess->liveLines;
+                if (m_options.asyncProbe) ++m_apLinesTick;
+                HandleLine(line);
+                gotAny = true;
+            }
+            if (gotAny) {
+                Relayout();
+                FollowTailIfPinned();
+                CacheEvalMetrics();
+                RefreshHud();
+                RequestRepaint();
+            } else if (m_sess->child->Eof() && !m_sess->liveEof) {
+                MarkLiveEof();   // core 退出（stdin EOF 或 bye 收尾）
+            }
+        } else {
+            DrainActiveLive(false);   // 非阻塞兜底（含 EOF 检测）
         }
         if (m_options.workspaceProbe && !m_workspaceProbeDone) RunWorkspaceProbe();
         return;
@@ -9379,6 +9533,66 @@ void HarnessApp::WriteSummary() {
         json += "  \"workspaceProbe\": " + records.Dump() + ",\n";
         json += std::string("  \"workspaceProbePassed\": ") +
                 (probePassed ? "true,\n" : "false,\n");
+    }
+    // ★★ REQ-03 机读读数（2026-10-24）。判据在跑批脚本里，见 `.scratch/probe_async_negctl.py`：
+    //   · `--legacy-poll` 世界：`avgBlockedUs` ≈ 8000（空闲 tick 把 8ms 等满）
+    //   · 默认（推）世界：`avgBlockedUs` ≈ 0，且 `linesViaWake` 占绝对多数
+    //   · `maxLinesPerCallback` ≤ 256（预算生效；去掉预算这个数会跳到数千）
+    //   · `latencyP99Us` 与 tick 周期（33000µs）脱钩——延迟不再由渲染节奏决定
+    //   ★ 默认关闭 ⇒ 摘要里连 `asyncProbe` 键都不出现（本仓铁律）。
+    if (m_options.asyncProbe) {
+        uint64_t p50 = 0;
+        uint64_t p99 = 0;
+        if (!m_apLatencyUs.empty()) {
+            std::vector<uint64_t> sorted = m_apLatencyUs;
+            std::sort(sorted.begin(), sorted.end());
+            p50 = sorted[sorted.size() / 2];
+            p99 = sorted[std::min(sorted.size() - 1, sorted.size() * 99 / 100)];
+        }
+        const size_t total = m_apLinesWake + m_apLinesTick;
+        const uint64_t avgBlockedUs =
+            m_apBlockedTicks ? (m_apBlockedUs / m_apBlockedTicks) : 0;
+        // ★ 延迟分布桶：P99 单看一个数会被尾部样本带偏，而"尾巴是偶发还是系统性的"
+        //   决定它是不是缺陷。桶边界取 1ms / 5ms / 33ms(=tick 周期)——
+        //   ★ 超过 33ms 的样本说明延迟**仍由 tick 决定**（= 推这条路没生效）。
+        uint64_t latMax = 0;
+        size_t le1ms = 0;
+        size_t le5ms = 0;
+        size_t le33ms = 0;
+        size_t gt33ms = 0;
+        for (uint64_t us : m_apLatencyUs) {
+            if (us > latMax) latMax = us;
+            if (us <= 1000) ++le1ms;
+            else if (us <= 5000) ++le5ms;
+            else if (us <= 33000) ++le33ms;
+            else ++gt33ms;
+        }
+        json += std::string("  \"asyncProbe\": {\"mode\": \"") +
+                (m_options.legacyPoll ? "legacy" : "async") + "\"";
+        json += ", \"ticks\": " + std::to_string(m_apTicks);
+        json += ", \"blockedTicks\": " + std::to_string(m_apBlockedTicks);
+        json += ", \"avgBlockedUs\": " + std::to_string(avgBlockedUs);
+        json += ", \"maxBlockedUs\": " + std::to_string(m_apMaxBlockedUs);
+        json += ", \"linesTotal\": " + std::to_string(total);
+        json += ", \"linesViaWake\": " + std::to_string(m_apLinesWake);
+        json += ", \"linesViaTick\": " + std::to_string(m_apLinesTick);
+        json += ", \"callbacks\": " + std::to_string(m_apCallbacks);
+        // ★ 投递次数必须问**源本身**（`ChildSource::WakePosts()`，只统计成功投递）。
+        //   第一版这里打印的是 App 自己的一个原子量，而它从来没被加过 ⇒ 恒为 0，
+        //   看上去像"一次都没投递"——那正是 `--hud-probe` 抓的「读了但没写」同族。
+        json += ", \"posts\": " +
+                std::to_string(m_sess->child ? m_sess->child->WakePosts() : 0);
+        json += ", \"maxLinesPerCallback\": " + std::to_string(m_apMaxLinesPerCallback);
+        json += ", \"latencySamples\": " + std::to_string(m_apLatencyUs.size());
+        json += ", \"latencyP50Us\": " + std::to_string(p50);
+        json += ", \"latencyP99Us\": " + std::to_string(p99);
+        json += ", \"latencyMaxUs\": " + std::to_string(latMax);
+        json += ", \"latLe1ms\": " + std::to_string(le1ms);
+        json += ", \"latLe5ms\": " + std::to_string(le5ms);
+        json += ", \"latLe33ms\": " + std::to_string(le33ms);
+        json += ", \"latGt33ms\": " + std::to_string(gt33ms);
+        json += ", \"eofSeen\": " + std::string(m_sess->liveEof ? "true" : "false");
+        json += "},\n";
     }
     // ★ 上下文占用读数（分子/分母都如实输出，便于复核百分比是否算对）
     std::snprintf(buf, sizeof(buf), "  \"usageInput\": %lld\n",

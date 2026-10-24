@@ -2,12 +2,16 @@
 
 > **一个能真用的 agent GUI，外加对 ECDI 的评估数据。** 本项目是 [ECDI](https://github.com/momoya-zh/ECDI)
 > 的**外部消费者**：GUI 是**协议的渲染器**，对着手写/录制的 JSONL 就能跑完整个界面
-> （**不需要**真模型），也能接上**真 agent** 干活。
+> （**不需要**真模型）。
 >
 > ★ **两个目的都是第一等的**：① 对 ECDI 的**评估数据 + 能力需求账本**；
 > ② **一个真正能用的 agent GUI**。
 > ② 不是 ① 的副产品——**只做展示的话，本项目就该待在 ECDI 的 `examples/` 里，不该单独成仓**。
 > 详见 [`docs/positioning.md`](docs/positioning.md)（定位与信任模型）。
+>
+> ★★ **现状（2026-10-24 核对）**：协议、假 core、GUI 三侧**都已到 v3 并收口**，界面可以拿回放夹具
+> 跑完整流程、也能真起子进程。但 **`core/` 里只有假 core**——**接真 agent（P3）尚未开始**，
+> 所以「能拿它干活」目前还只是设计方案而非既成事实。P3 是本项目的主线（`positioning.md` §2/§6）。
 
 ---
 
@@ -17,7 +21,7 @@
 |---|---|
 | ECDI 的**外部消费者**：`find_package(ECDI CONFIG REQUIRED)` + `ECDI::ECDI` | 不是 ECDI 的一部分，不随框架一起构建 |
 | **协议先于两侧实现**：`protocol/` 是唯一契约，GUI 只看它就能跑 | 不是「先写实现、事后补协议」 |
-| **假 core**（Go，零第三方）：真子进程 + 双向管道，但不调模型 | 不是真 agent；不接任何 LLM |
+| **假 core**（Go，零第三方）：真子进程 + 双向管道，但不调模型 | 不是真 agent；不接任何 LLM（真 core = **P3**，会用另一个程序替换它，协议不变） |
 | **评估数据**的产线：`evals/` 下机器可读读数 | 不是「为展示而存在」——**展示品不该单独成仓** |
 | **一个能真用的 agent GUI**：接上真 agent 后能拿它干活 | 不是**商业产品**（无 roadmap / 无支持承诺 / 无工期） |
 
@@ -31,10 +35,11 @@
 | 目录 | 职责 |
 |---|---|
 | `protocol/` | **唯一契约**。`PROTOCOL.md`（**v3**）+ `fixtures/`（**9 份夹具**）+ `validate.py`（**可执行规格**） |
-| `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。25 个源文件 / ~9.7k 行（`App.cpp` 一直是大头） |
-| `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / ~0.6k 行 |
-| `evals/` | 机器可读评估读数（JSON）——评估产出的落点 |
-| `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · GUI 原型（单文件 HTML） |
+| `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。**25 个源文件 / 14,178 行**（`App.cpp` 一直是大头，~0.5 MB） |
+| `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
+| `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
+| `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · **variant-c 落地对照**（`variant-c-ecdi-mapping.md`）· GUI 原型（单文件 HTML） |
+| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门） |
 
 ## 协议要点
 
@@ -54,6 +59,10 @@
   未决期间 GUI **必须禁用发送**，core 也**必须拒绝**交错的 `prompt` / 第二个 `workspace`。
   成功后 GUI 只认 core 回的**实际路径**（规范化：绝对 / `/` 分隔 / 无尾随 `/` / 无 `.`·`..`）。
 - **回放两模式**：`instant`（一次性灌入，测稳态渲染）/ `timed`（按 `ts` 真实间隔，测流式刷新）。
+- **版本门的三个不对称**（`App.cpp:150` `kProtocolMaxSupported = 3`）：① core 声明的主版本**高于**上限才拒连，
+  且拒连 = **停止消费**（`--instant` 下不 break 就会「边抱怨边照做」）；② **低于**上限从不拒连；
+  ③ 缺 `caps["workspace"]` **不是**拒连条件，只隐藏工作区交互（v3 §3.1）——早前版本把 ① 和 ③ 混成一个条件，
+  导致两份 hostile 夹具的 `hello` 一行都没被解析，I1/I4/I5 的负对照全部空转。
 - ★ **`ask` 权限门是合作性契约，不是安全边界**（详见 `docs/positioning.md` §4.2）。
 
 ## 怎么跑
@@ -115,10 +124,43 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 ★ **live 用例必须带 `--auto-prompt`**：假 core 是被动的，只回应用户输入——不给 prompt 时双方
 握手后即静默，读数是 `blocks=0`（看起来像「core 挂了」，实为没喂输入）。
 
-常用开关：`--cull-probe`（命令分类 / 帧时 / 测量成本）· `--state-probe`（回读按钮使能）·
-`--hit-probe`（命中门控受控对照，REQ-04 边界）· `--reasoning-probe`（思维链折叠行为取证）·
-`--probe-contrast`（探针专用白底黑字）· `--row-mode autosize|listlayout`（布局 A/B 对照）。
-★ 三个 `*-probe` **默认关闭**（既有路径逐位不变）。
+**⑤ 回归门**（改完必跑；全绿才算收口）
+
+```bash
+python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（REQ-03）+ validate.py
+```
+
+读数落 `.scratch/`（gitignored）。★ 判据口径：夹具基线只钉 `blocks/deltas/messages`，
+不钉 `paints/frames`（后者随字体与实现变化，钉死它会把一次合法收敛判成回归）。
+★ 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
+
+### 探针（**18 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
+
+| 探针 | 读什么 |
+|---|---|
+| `--cull-probe` | 命令分类 / 帧时 / 测量成本 |
+| `--state-probe` | 回读按钮使能位（REQ-04） |
+| `--hit-probe` | 命中门控受控对照（REQ-04 **边界**：禁用 ⇒ 点击不达） |
+| `--order-probe` | 块**到达序**可从模型恢复（step 0a） |
+| `--rebuild-probe` | 运行期整树重建（换主题的唯一诚实做法） |
+| `--session-probe` | 多会话：创建 / 切换 / 冻结时钟 |
+| `--sidebar-probe` | 侧栏会话列表与折叠 |
+| `--answer-probe` | `ask` 的决定**入模型**（否则重建后答案丢失） |
+| `--theme-probe` | 双主题令牌 |
+| `--history-probe` | 磁盘文件作会话（replay 到末尾） |
+| `--workspace-probe` | 工作区租约 + 目录列表（含 `bubbleShapeOk` 负对照） |
+| `--menu-probe` | `···` 内联菜单（ECDI 无浮层，挂进 `VerticalLayout` 排位） |
+| `--resize-probe` | 尺寸链：root / scroll / 中栏 / caption 逐相同步 |
+| `--enter-probe` | Enter 发送 / Shift+Enter 换行 |
+| `--hud-probe` | HUD 字段**读写配对**（抓「只读不写」的死分支） |
+| `--grow-probe` | Composer 自动长高 7 相（含 `shrink` 与 `max-clamp`） |
+| `--reasoning-probe` | 思维链折叠行为取证 |
+| `--async-probe` | **REQ-03**：投递 vs 轮询的 A/B（**live**）——`blockedUs` / 唤醒承载占比 / 单回调预算 / 送达延迟分位 |
+
+另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
+`--probe-contrast`（探针专用白底黑字）· `--row-mode autosize|listlayout`（布局 A/B）·
+`--scroll-sweep`。★ **`--reasoning-probe` / `--order-probe` / `--workspace-probe` 尚未接入
+`tools/regress.py` 的探针循环**——它们跑过，但还不是门（`--async-probe` 走的是 §2b 的 live 段，不在循环里）。
 
 ## 交付物在哪
 
@@ -126,7 +168,7 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 |---|---|
 | ★ **定位与信任模型** | `docs/positioning.md`（**两个目的** · 协议不是安全边界 · MCP 决策） |
 | **ECDI 能力需求 / 缺陷登记** | `docs/ecdi-capability-requests.md`（**唯一账本**） |
-| **评估读数**（机器可读 JSON） | `evals/` |
+| **评估读数**（机器可读 JSON） | `evals/`（口径见 §当前状态）· 工作读数在 `.scratch/`（gitignored） |
 | **协议契约** | `protocol/PROTOCOL.md`（v3） |
 | 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` |
 | GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
@@ -137,13 +179,22 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 |---|---|---|
 | `REQ-01` | 含 `\n` 的短文本丢换行 | ✅ 闭合（**归属反转**：harness 侧 `needWrap` 只看宽度） |
 | `REQ-02` | `tool_call` 的 `summary` 被吞 | ✅ 闭合（harness 侧） |
-| `REQ-03` | `PostToUi` 能力已具备，harness 从未走异步投递路径 | 📋 已登记（P2 立项理由） |
+| `REQ-03` | `PostToUi` 能力已具备，harness 从未走异步投递路径（每 tick **8ms 预算**拉队列） | ✅ **已闭合（2026-10-24）**：改成「读线程投递唤醒 + tick 非阻塞兜底」，`PostToUi` 第一次有**框架外真实消费者**。实测 legacy `avgBlockedUs` **11599** → **0**、wake 承载 **99.8%** 的行、`--speed=1` 下送达 p50 **49µs vs 14774µs**。★ 顺带发现「8ms 预算」实测是 **8.8–11.8ms / max 23.9ms**（`cv.wait_for` 受时钟粒度约束） |
 | `REQ-04` | 按钮使能缺 API | ✅ 闭合（**归属反转**）；**边界**（禁用 ⇒ 点击不达）亦已取证 |
 | `REQ-05` | GDI / GL 的 `LineHeight` 不一致（14px vs 16px） | ✅ 闭合（**真 ECDI 缺陷**，Phase 31 已修）——账本**首条走完「登记 → 修复 → 跨仓库验证 → 回写」闭环**的需求 |
 | `REQ-06` | 跨后端基线偏移（原登记「拉丁 +1 · CJK +2」） | ✅ **已裁决结案（2026-10-17，③ 记为已知现状）**；★ 读数订正：112 格实测 Δ∈[−13,+3] 且符号翻转，**+1/+2 只是 SimSun@14 单点** |
 | `REQ-07` | （候选）折叠面板仍测量隐藏内容 | ❌ **复核否决**（ECDI 的 Layout 已跳过不可见子节点）——归属 harness 侧 |
 | `REQ-08` | 环形进度条需**圆弧原语**（`DrawArc` 不存在） | ✅ **闭合（2026-10-16）**：ECDI **Phase 33** 落地 `DrawArc` + `RingProgressBar`，本项目作为**首个真实消费者**兑现（右栏上下文环，`commandMix.arc > 0` 机读证据） |
 | `REQ-09` | `Font::family` **双链语义矛盾**（GDI=族名 / GL=文件名） | ✅ **已闭合（2026-10-17）**：ECDI `Win32FontSource` 补族名反查（禁子串匹配、文件名直查保留且优先）；验收 8 族名 **8/8 两链同 face**，`ecdi_tests` **465/465**。⇒ 我方 `kMonoFamily="Consolas"` **无需改动即恢复等宽** |
+| `REQ-10` | `Font` **表达力**不足——字重 / face index / 复合族名第二项**三者皆不可达** | 🔄 **开放（等 ECDI 立项排期）**：`Font` 只有 `size`+`family`，两处硬编码 `FW_NORMAL`，`FT_New_Face(..., 0, ...)` 恒取 face 0。实测 `lfWeight=FW_BOLD` 在 GDI 侧对 5 个真实族全部 ≥1.29× 墨迹，但 **GL 无字段**；CJK 加粗**两链无公共解** ⇒ 当前唯一同时可用的是「不加粗」。★ **2026-10-24 ECDI 对码核验三条全部属实**，登记 `roadmap-deferred` **#70**（登记不立项） |
+| `REQ-11` | `Color.a` **双链覆盖面不对等**（GDI 的 `DrawText` / `DrawFocusRect` 恒丢 alpha）+ 无虚线 | 📋 **已登记推后**：**当前零消费者**（`Theme.h` 全表 alpha=255）；实测 GDI 侧四档 alpha（255/128/64/16）输出**逐位相同**。★ **2026-10-24 ECDI 核验属实**，登记 `roadmap-deferred` **#71**，并改写 `Color.h` 的 alpha 注释声明双链发散 |
+| `REQ-12` | 多行 `TextBox` 的 `GetPreferredSize` 返回**当前尺寸**（与 `TextWidget` 的 wrap 分支自相矛盾） | ✅ **已闭合（2026-10-21）**：ECDI 采纳「订正语义」而非「加查询」⇒ `TextBox::MultilinePreferred` 落地；本仓组合实现**同日收敛回框架**，`--grow-probe` 七相读数逐位不变。★ 负对照 4 条变异全 RED |
+| `REQ-13` | 窗口**最小尺寸**约束（无 API，只能事后钳制 ⇒ 可见回弹） | ✅ **已闭合（2026-10-23）**：ECDI 落地 `Window::SetMinimumSize`（`WM_GETMINMAXINFO` + `WM_WINDOWPOSCHANGING` 两路拦截，客户区 DIP 口径）；本仓删除 `ClampToMinimum` 绕行。★ ECDI 测试 487 → **490** |
+
+★ 三条路径值得对照着读：`REQ-12` 是「**同一框架两条规则矛盾**」（修答案即可），`REQ-13` 是
+「**框架根本没有这条能力**」（只能加 API），`REQ-11` 是「**两后端行为发散**」（零消费者，先记账）。
+判别方法随之不同：分别是**分支对读** · **公开 API 全表核对** · **逐原语 alpha 覆盖扫描**。
+★ **harness 侧待办**（`F7` 夹具真缺口 / `F8` 数据处理卫生）不在本表，见账本 §4。
 
 ### 思维链：协议 v2 已闭合（原「协议空白」）
 
@@ -195,14 +246,17 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 
 ### 轴二：BOM —— 按文件，且必须与该文件在 HEAD 中的字节一致
 
-实测 139 个文本文件里 **37 个带 BOM、102 个不带**，与扩展名无关：
+实测 **146 个**受版本控制的文件里 **37 个带 BOM、109 个不带**（2026-10-24 按 `HEAD` 重数），与扩展名无关：
 
 | 带 BOM（UTF-8 `EF BB BF`） | 不带 BOM |
 |---|---|
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
-| `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（5 个中 4 个） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/prototype/harness-hifi-variant-a.html` |
+| `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**6 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/prototype/harness-hifi-variant-a.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` · 三个 `gen_*.py` | **全部 `*.jsonl`**（九份夹具）· 全部 `evals/*.json` |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（九份夹具）· 全部 `evals/*.json`（82 份） |
+
+★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
+② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
 
 ★ **BOM 在本仓库不是编译正确性问题，别把它说成问题。** `gui/CMakeLists.txt:20` 给
 `harness_gui` 传了 `/utf-8`（自初始提交 `f243579` 起），MSVC 不看 BOM 也知道源文件是 UTF-8——
@@ -235,16 +289,49 @@ PY
 
 ## 当前状态
 
-- **P1（GUI 骨架）与 P1.5（子进程真路径）均已收口**；ECDI 库指纹 `a1f843f`（MSVC Release）。
-- ECDI 自带套件 Debug 与 Release **各 445/445**；回放冒烟 `seqGaps 0 / violations 0`；
-  I4 负向注入**每处 `seq` 缺口都产出显式提示**；无僵尸进程。
-- **协议 v2 已落地**（思维链一等公民 + I8 + `hello.context` + `block_end.tokens`）。
-- **协议 v3 的契约层已收口**（`client_id` 确认 + `workspace` 租约 + `error.client_id` + I9/I10 +
-  三份新 hostile 用例）：文档、验证器、九份夹具、三个生成器已一致，`validate.py` 退出码 0。
-  ★ **v3 尚未在 core / GUI 落地**——两侧实现还在 v2，且 GUI 会在 `hello.protocol > 2` 时
-  **拒绝连接**；这正是 §9 要求的「不支持就明确拒绝，不静默降级」。
-- ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
-- `status.txt` 是逐轮进度摘要（机器向）；本 README 是人向入口。
+> 时点：**2026-10-24**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
+
+### 已收口
+
+| 项 | 读数 / 依据 |
+|---|---|
+| P1（GUI 骨架）· P1.5（子进程真路径，含反向通道） | 已收口 |
+| **协议 v3 三侧落地** | 契约层（`PROTOCOL.md` + `validate.py` + **9 份夹具** + 3 个生成器）· core（`hello protocol:3`，`caps=[tools,ask,workspace]`）· GUI（`kProtocolMaxSupported = 3`）。九份夹具全部声明 `protocol:3`，`validate.py` 退出码 **0** |
+| ECDI 消费前缀 | **`0.1.0` MSVC Release 静态**，安装于 2026-10-23 21:09；对应 ECDI 仓 **`096991b`**（含 `REQ-13` 的 `Window::SetMinimumSize`）；`ECDI.lib` **11,063,564 B** / sha256 `68247cd0…` |
+| ECDI 自带套件 | `490 passed / 0 failed`（`REQ-13` 闭合时点；早期 `445/445` 见 `status.txt`） |
+| 回归门 | `python tools/regress.py` = 6 夹具结构基线 + 13 探针 + **2b live A/B（REQ-03）** + `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
+| **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
+
+### 现在能做什么（都有探针与负对照）
+
+回放 `instant` / `timed` 两种节奏 · 真子进程（`ChildSource`，双向管道）· 双主题运行期切换
+（**整树重建**，不是换色）· 多会话（创建 / 切换 / 冻结时钟 / 删除）· 工作区**租约** + 真实目录列表 +
+临时会话 · 会话归档 · 转录导出 · `···` 内联菜单 · 窗口缩放 + **最小尺寸 880×460**（框架拦，不回弹）·
+Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶后内部滚动）·
+思维链默认折叠 · 上下文用量环 · I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
+
+### **还**不能做什么（★ 这是下一步的输入）
+
+| 缺什么 | 状态 |
+|---|---|
+| ★ **真 agent core** | **未开始**（`core/` 只有假 core）。协议与 GUI 两侧已就绪，缺的只在 core 那一侧 ⇒ **P3 是主线**，见 `docs/positioning.md` §2 / §6 |
+| MCP host | 决策 **A**（harness 管配置）已于 2026-10-14 拍板，**零实现**；排在真 core 之后——没有 core，host 没有可授予的对象 |
+| 字重 / 视觉层级 | 受 `REQ-10` 阻塞（ECDI 已登记 `roadmap-deferred` #70，**登记不立项**）；当前靠字号 + 颜色 + 留白代偿，**不做伪加粗** |
+
+### `evals/` 的口径（★ 待定，别把它当「仍在更新」）
+
+`evals/` 现有 82 份读数，**最新一份是 2026-10-16**（`p33-b4-cullprobe.json`）。
+2026-10-17 起的读数（DPI 矩阵、`REQ-12`/`REQ-13` 的探针）都落在 `.scratch/`（**gitignored**）。
+⇒ 两种口径必居其一，目前**两边都没写**，所以它看起来像停摆：① `evals/` 是**钉住的发布基线**，
+`.scratch/` 是工作读数；② `evals/` 就是全部读数，那就该把新读数补进去。**待拍板。**
+
+### 下一步（按依赖顺序，不按诱人程度）
+
+**P3 真 core → MCP host**。`REQ-03`（取数通路）已于 2026-10-24 闭合，它原本排第一个的理由不是「账本还剩一条」，而是**真 agent 突发下第一个会屈服的环节**——现在那一步已经换成「推」，且回归门里有 live A/B 守着。
+
+真 core 与 MCP host 的关系是单向的：**没有 core，host 没有可授予的对象**。
+
+★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
 ## 许可证
 

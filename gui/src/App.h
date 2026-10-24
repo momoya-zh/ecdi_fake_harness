@@ -252,6 +252,19 @@ struct CliOptions {
     //   ★ 判据：被读过但从未赋值的字段集合必须为空；负对照把那集合造非空。
     //   ★ 默认 false ⇒ 摘要逐字节不变。
     bool hudProbe = false;             // --hud-probe：HUD 指针"读了但没建"判据
+    // ★★ REQ-03（2026-10-24）：UI 线程的取数方式。
+    //   · 默认（`legacyPoll == false`）＝ **推**：读线程经 `Application::PostToUi`
+    //     投递一个「唤醒」，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。
+    //   · `--legacy-poll` ＝ **拉**：逐字保留改动前的形状（每 tick 首行等 8ms）。
+    //   ★ 为什么留这个开关，而不是"改完就删旧的"：A/B 必须是**单一自变量**——
+    //     同夹具、同 core 参数、同一个二进制，只差这一个布尔。否则「新路径更好」
+    //     这句话没有对照物，只是把改动前的读数忘了。
+    bool legacyPoll = false;           // --legacy-poll：REQ-03 对照世界（8ms 轮询）
+    // ★★ REQ-03 探针（默认关 ⇒ 摘要逐字节不变）：
+    //   `blockedUs` 只统计**带超时**的那次等待（= UI 线程真正被挂在 cv 上的时间），
+    //   这是「拉」的代价；`linesViaWake` / `linesViaTick` 是两条通路各自吃了多少行；
+    //   `latencyP50/P99` 是「读线程入队 → HandleLine」的墙钟差（需要开戳）。
+    bool asyncProbe = false;           // --async-probe：REQ-03 机读读数
 };
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
@@ -1588,6 +1601,29 @@ private:
     std::vector<GrowProbeRec> m_growProbeLog;
     bool m_growProbeDone = false;
     void RunGrowProbe();
+
+    // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
+    //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），
+    //    也就是 UI 线程真正挂在条件变量上的时间。这正是「拉」的代价，也是
+    //    「推」要消掉的东西。★ 不统计 `timeoutMs == 0` 的调用——那不等，不是代价。
+    size_t m_apTicks = 0;              // 经过 live 分支的 tick 次数
+    size_t m_apBlockedTicks = 0;       // 其中真的阻塞过（等了 >0 µs）的 tick 数
+    uint64_t m_apBlockedUs = 0;        // 累计阻塞 µs
+    uint64_t m_apMaxBlockedUs = 0;     // 单次最长阻塞 µs
+    size_t m_apLinesWake = 0;          // 由**唤醒回调**处理的行数
+    size_t m_apLinesTick = 0;          // 由 tick 兜底处理的行数
+    size_t m_apMaxLinesPerCallback = 0;  // 单次回调最多处理了多少行（预算是否生效）
+    size_t m_apCallbacks = 0;          // 唤醒回调执行次数
+    std::vector<uint64_t> m_apLatencyUs;  // 入队 → HandleLine 的墙钟差（开戳时才有）
+    bool m_apEofSeen = false;
+    // 安装唤醒时**值捕获**的 Application 指针（见 `InstallWakeHandler` 的注释）。
+    void InstallWakeHandlers();
+    void InstallWakeHandler(Session& session);
+    // 唯一 drain 点（tick 兜底与唤醒回调共用；`fromWake` 只影响探针分类）。
+    void DrainActiveLive(bool fromWake);
+    // core 退出（EOF / bye 收尾）的统一处置——「拉」与「推」两条路径共用一份，
+    // 否则两份迟早漂移（而这类漂移不会有任何读数报出来）。
+    void MarkLiveEof();
 
     // 评估读数（每 tick 缓存一份——窗口销毁后 CountingPanel 不可再读）
     size_t m_evalPaints = 0;

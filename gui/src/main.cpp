@@ -108,6 +108,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.hudProbe = true;        // ★ 2026-10-21：HUD 指针"读了但没建"判据
         } else if (arg == L"--grow-probe") {
             options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
+        } else if (arg == L"--async-probe") {
+            options.asyncProbe = true;      // ★ REQ-03：投递 vs 轮询的机读 A/B 读数
+        } else if (arg == L"--legacy-poll") {
+            options.legacyPoll = true;      // ★ REQ-03 对照世界：每 tick 等 8ms（改动前形状）
         }
     }
     if (argv) LocalFree(argv);
@@ -142,6 +146,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --enter-probe                    Enter 发送 / Shift+Enter 换行判据\n"
                     L"  --hud-probe                      HUD 指针“读了但没建”判据\n"
                     L"  --grow-probe                     输入框多行自动长高判据\n"
+                    L"  --async-probe                    REQ-03：PostToUi 投递 vs 8ms 轮询的读数\n"
+                    L"  --legacy-poll                    REQ-03 对照世界：恢复每 tick 等 8ms 的旧路径\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",
                     L"harness_gui", MB_ICONINFORMATION);
         return 2;
