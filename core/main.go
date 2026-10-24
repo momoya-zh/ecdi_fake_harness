@@ -7,11 +7,18 @@
 // 用法（由 harness_gui 拉起；也可手工对管道调试）：
 //
 //	fake-core [--speed 1.0] [--seed 20261007] [--drop-seq N] [--drop-block-end]
-//	          [--workspace-delay-ms N] [--quiet]
+//	          [--workspace-delay-ms N] [--burst] [--quiet]
 //
 // stdin  = gui→core 消息（JSONL，一行一条）
-// stdout = core→gui 消息（JSONL，一行一条，每条即刷）
+// stdout = core→gui 消息（JSONL，一行一条，每条即刷；`--burst` 例外，见下）
 // stderr = 日志（harness 侧重定向到 core-stderr.log）
+//
+// ★ `--burst`（2026-10-24）：**负载旋钮**，不是剧本模式。
+//   关掉节奏等待并把一轮的所有行攒进一个缓冲、一次写出 ⇒ 读线程会在
+//   UI 线程来不及 drain 之前把几百行塞进队列，从而**真的造出积压**。
+//   它存在的理由只有一个：REQ-03 的「单回调预算」判据需要一个能把队列
+//   压到 256 行以上的突发源，否则那条判据无法被证伪（负对照会"绿得"
+//   毫无意义）。默认关 ⇒ 既有行为逐字节不变。
 package main
 
 import (
@@ -95,6 +102,8 @@ func main() {
 	dropBlockEnd := flag.Bool("drop-block-end", false, "故意漏一个 block_end（I1 负向注入）")
 	wsDelay := flag.Int("workspace-delay-ms", 0,
 		"工作区请求的应答延迟（毫秒；>0 时产生真实的「未决」窗口，用于验证交错拒绝）")
+	burst := flag.Bool("burst", false,
+		"负载旋钮：关掉节奏等待并把一轮攒成一次写出（造队列积压；默认关 ⇒ 行为不变）")
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
 	flag.Parse()
 
@@ -109,7 +118,8 @@ func main() {
 	curState.Store(codeIdle)
 	go readStdin(lines, &curState, logf)
 
-	s := newSession(*seed, *speed, *dropSeq, *dropBlockEnd, *wsDelay, lines, &curState, logf)
+	s := newSession(*seed, *speed, *dropSeq, *dropBlockEnd, *wsDelay, *burst,
+		lines, &curState, logf)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)
 		os.Exit(1)

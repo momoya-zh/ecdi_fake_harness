@@ -10,6 +10,7 @@
 //   * v3 补：prompt.client_id 回显（§4）、workspace 租约（§3.9）。
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,12 @@ type session struct {
 	dropSeqEvery int
 	dropBlockEnd bool
 
+	// ★ --burst（2026-10-24）：关掉节奏等待，并把一轮输出攒在一次写出里。
+	//   `out` 非 nil 时 = 缓冲写（一次性大 write ⇒ 读线程一口气塞满队列）；
+	//   nil = 逐行即刷（默认，行为与改动前逐字节相同）。
+	burst bool
+	out   *bufio.Writer
+
 	in  <-chan stampedLine
 	log func(string, ...any)
 
@@ -114,7 +121,7 @@ type pendingWorkspace struct {
 }
 
 func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
-	wsDelayMs int, in <-chan stampedLine, stc *atomic.Int32,
+	wsDelayMs int, burst bool, in <-chan stampedLine, stc *atomic.Int32,
 	log func(string, ...any)) *session {
 	s := &session{
 		rng:              rand.New(rand.NewSource(seed)),
@@ -122,9 +129,15 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 		dropSeqEvery:     dropSeq,
 		dropBlockEnd:     dropBlockEnd,
 		workspaceDelayMs: wsDelayMs,
+		burst:            burst,
 		in:               in,
 		log:              log,
 		stc:              stc,
+	}
+	if burst {
+		// ★ 缓冲开得比一轮输出大（2000 块夹具约 400 行 / ~90KB）：一轮一次系统调用，
+		//   否则 --burst 会被「逐行 Sync」重新摊平成细水长流，积压就造不出来。
+		s.out = bufio.NewWriterSize(os.Stdout, 256*1024)
 	}
 	// 初始工作区 = core 进程自身的 cwd（与 GUI 无关：GUI 的 CreateProcess 不传 cwd，
 	// 但即使传了，v3 起工作区的唯一真相也是 core 自己记的这一个字段）。
@@ -169,8 +182,36 @@ func (s *session) emit(payload map[string]any) {
 		writeKV(&b, k, v, false)
 	}
 	b.WriteString("}")
+	if s.out != nil {
+		// --burst：**内容**先攒着（这里不能无条件 flush，否则等于没缓冲）。
+		s.out.WriteString(b.String())
+		s.out.WriteByte('\n')
+		// ★ 但**控制面**消息必须立即推：`hello` / `state` / `workspace` / `error` /
+		//   `ask` / `bye` 全都是「对面正在等它」的消息，攒在缓冲里不是慢，是**死锁**。
+		//   ★ 第一版只留了 hello/bye/ask 三个显式 flush 点，漏了 `workspace` ack
+		//   ⇒ GUI 等初始工作区路径等到超时，整场只收到 1 条消息（blocks=0）。
+		//   教训同 REQ-03 的 M 系列：**"我列了三个必刷点"不等于"我列全了"**。
+		if t, ok := payload["t"].(string); ok {
+			switch t {
+			case "hello", "state", "workspace", "error", "ask", "bye":
+				s.out.Flush()
+			}
+		}
+		return
+	}
 	fmt.Fprintln(os.Stdout, b.String())
 	os.Stdout.Sync()
+}
+
+// flush：把 `--burst` 的缓冲推给管道（逐行即刷模式下是 no-op）。
+// ★ 三个必刷点，漏一个就是死锁而不是"慢一点"：
+//  ① hello 之后——否则 GUI 等的另一半握手永远不出现；
+//  ② **阻塞等 answer 之前**——否则 ask 留在缓冲里，GUI 不知道要回答什么；
+//  ③ 一轮结束 / 退出之前——否则最后几十行烂在缓冲里。
+func (s *session) flush() {
+	if s.out != nil {
+		s.out.Flush()
+	}
 }
 
 func writeKV(b *strings.Builder, key string, v any, first bool) {
@@ -204,7 +245,12 @@ func (s *session) nextBlockID() string {
 // ── 节奏 ────────────────────────────────────────────────────────
 
 // sleep：按 speed 缩放的等待（流式节奏的真相源）。
+// ★ `--burst` 下直接返回：积压要的是「一次性到达」，不是「快一点」——
+//   逐行加快只会让 reader 一行一行地塞，队列永远厚不起来。
 func (s *session) sleep(ms float64) {
+	if s.burst {
+		return
+	}
 	d := time.Duration(ms/s.speed) * time.Millisecond
 	if d <= 0 {
 		return
@@ -219,6 +265,7 @@ func (s *session) run() error {
 	// ★ v3：protocol 升到 3，并声明 workspace 能力（§3.1：未声明 ⇒ GUI 不得显示选择器）。
 	s.emit(map[string]any{"t": "hello", "protocol": 3, "core": "0.2.0",
 		"session": "s-live-1", "caps": []string{"tools", "ask", "workspace"}})
+	s.flush()   // ★ 必刷点①：握手的第一条不能留在缓冲里
 	s.log("hello sent; waiting for gui hello")
 	for {
 		var sl stampedLine
@@ -227,6 +274,7 @@ func (s *session) run() error {
 		case sl, ok = <-s.in:
 			if !ok {
 				s.log("stdin EOF — exiting")
+				s.flush()   // ★ 必刷点③：退出前把最后一批推出去
 				return nil
 			}
 		case <-s.wsTimer:
@@ -280,6 +328,7 @@ func (s *session) run() error {
 		case "bye":
 			s.log("bye received — exiting")
 			s.emit(map[string]any{"t": "bye", "reason": "eof", "code": 0})
+			s.flush()   // ★ 必刷点③
 			return nil
 		default:
 			s.log("ignoring unknown gui message type %q (I5)", msg.T)
@@ -290,6 +339,10 @@ func (s *session) run() error {
 // ── 一轮交互 ────────────────────────────────────────────────────
 
 func (s *session) handlePrompt(text string, clientID string) {
+	// ★ `--burst`：一轮的输出在函数出口一次性推出（所有 return 路径都覆盖）。
+	//   放在这里而不是每个 return 前，是因为 cancel 有两条提前返回的路径——
+	//   那种地方最容易漏，而漏了就是"最后几十行烂在缓冲里"。
+	defer s.flush()
 	s.turn++
 	s.cancelRequested = false
 	s.setState(stateRunning)
@@ -510,6 +563,9 @@ func normalizeWorkspace(p string) (string, error) {
 // waitForAnswer：阻塞读 stdin 直到 answer 或 cancel/bye。
 // 期间收到的任何东西都要正确处置（不丢消息、不死锁）。
 func (s *session) waitForAnswer() {
+	// ★ 必刷点②：再往下就是**阻塞**等 answer。ask 若还在缓冲里，GUI 不知道要回答
+	//   什么 ⇒ 双方互等 ⇒ 死锁（而 `--burst` 让这种情况从"不可能"变成"默认"）。
+	s.flush()
 	for sl := range s.in {
 		msg := parseGui(sl.text)
 		switch msg.T {

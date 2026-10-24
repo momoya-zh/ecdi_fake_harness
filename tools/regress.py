@@ -44,11 +44,13 @@ PROBES = [
 ]
 
 
-def run_live(core, speed, auto_close_ms, extra, out_name):
-    """跑一次 live（真子进程）；返回摘要 dict 或 None。"""
+def run_live(core, core_args, auto_close_ms, extra, out_name):
+    """跑一次 live（真子进程）；返回摘要 dict 或 None。
+    `core_args` 是假 core 的参数串（`--speed=N` 或 `--burst`）——注意它只能有
+    一个 token：`--core-args` 的值按空格切分，带空格就变成两个参数。"""
     out = OUT / out_name
     out.unlink(missing_ok=True)
-    subprocess.run([str(EXE), "--core", str(core), "--core-args", f"--speed={speed}",
+    subprocess.run([str(EXE), "--core", str(core), "--core-args", core_args,
                     "--auto-prompt", "hello", "--async-probe",
                     "--auto-close", str(auto_close_ms), "--out", str(out)] + extra,
                    cwd=ROOT, capture_output=True)
@@ -74,10 +76,15 @@ def check_async_delivery(core):
         fail += 0 if ok else 1
         print(f"  {label:42s} {'OK' if ok else 'FAILED':6s}  {detail}")
 
-    legacy = run_live(core, 8, 15000, ["--legacy-poll"], "_reg_async-legacy.json")
-    pushed = run_live(core, 8, 15000, [], "_reg_async-async.json")
-    paced = run_live(core, 1, 12000, [], "_reg_async-paced.json")
-    for name, d in (("legacy", legacy), ("async", pushed), ("paced", paced)):
+    legacy = run_live(core, "--speed=8", 15000, ["--legacy-poll"], "_reg_async-legacy.json")
+    pushed = run_live(core, "--speed=8", 15000, [], "_reg_async-async.json")
+    paced = run_live(core, "--speed=1", 12000, [], "_reg_async-paced.json")
+    # ★ 第四跑用 `--burst`：它把一轮攒成一次写出 ⇒ 队列真的厚到 400+ 行。
+    #   没有这一跑，C3 的「单回调 ≤256」在 `--speed=8` 下**恒真而未被触碰**
+    #   （实测 maxCB 只有 6~8），等于一条永不失败的判据。
+    burst = run_live(core, "--burst", 8000, [], "_reg_async-burst.json")
+    for name, d in (("legacy", legacy), ("async", pushed), ("paced", paced),
+                    ("burst", burst)):
         if d is None:
             print(f"  {name:8s} FAILED TO PRODUCE OUTPUT")
             return fail + 1
@@ -102,9 +109,17 @@ def check_async_delivery(core):
     check("C2 数据确实走唤醒通路（≥95%）", share >= 0.95,
           f"{pa['linesViaWake']}/{total} = {share:.1%}（tick 兜底 {pa['linesViaTick']} 行）")
 
-    check("C3 单回调预算生效（≤256 行）", pa["maxLinesPerCallback"] <= 256,
-          f"maxLinesPerCallback={pa['maxLinesPerCallback']} callbacks={pa['callbacks']} "
-          f"posts={pa['posts']}")
+    ba = burst["asyncProbe"]
+    check("C3 单回调预算生效（≤256 行）", ba["maxLinesPerCallback"] <= 256,
+          f"burst 下 maxLinesPerCallback={ba['maxLinesPerCallback']} "
+          f"callbacks={ba['callbacks']} posts={ba['posts']}")
+
+    bc = (burst["blocks"], burst["deltas"], burst["messages"])
+    check("C4b burst 不改变内容（只改到达节奏）", bc == lc and bc[1] > 0,
+          f"burst={bc} legacy={lc}")
+    check("C3b 预算被真的顶到（burst 下应恰好 256）",
+          ba["maxLinesPerCallback"] == 256 and pa["maxLinesPerCallback"] <= 256,
+          f"burst={ba['maxLinesPerCallback']}（无 burst 时 {pa['maxLinesPerCallback']}）")
 
     check("C5 节奏化流下单行送达中位数 ≤1ms",
           ka["latencySamples"] > 0 and ka["latencyP50Us"] <= 1000,

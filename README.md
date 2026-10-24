@@ -123,6 +123,9 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 `--out` 摘要**只在正常退出后写** ⇒ 跑批用 `--auto-close <ms>` 让 app 自己退，别 kill。
 ★ **live 用例必须带 `--auto-prompt`**：假 core 是被动的，只回应用户输入——不给 prompt 时双方
 握手后即静默，读数是 `blocks=0`（看起来像「core 挂了」，实为没喂输入）。
+★ **负载旋钮 `--burst`**（`--core-args --burst`）：关掉节奏等待 + 把一轮输出攒成**一次写出**
+⇒ 真造出队列积压。REQ-03 的「单回调预算」判据靠它才**可证伪**——不加时队列最多 8 行、那条
+判据恒真；加上后 `maxLinesPerCallback` 恰好顶到 **256**（去掉预算则 430）。
 
 **⑤ 回归门**（改完必跑；全绿才算收口）
 
@@ -300,7 +303,7 @@ PY
 | ECDI 消费前缀 | **`0.1.0` MSVC Release 静态**，安装于 2026-10-23 21:09；对应 ECDI 仓 **`096991b`**（含 `REQ-13` 的 `Window::SetMinimumSize`）；`ECDI.lib` **11,063,564 B** / sha256 `68247cd0…` |
 | ECDI 自带套件 | `490 passed / 0 failed`（`REQ-13` 闭合时点；早期 `445/445` 见 `status.txt`） |
 | 回归门 | `python tools/regress.py` = 6 夹具结构基线 + 13 探针 + **2b live A/B（REQ-03）** + `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
-| **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
+| **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
 
 ### 现在能做什么（都有探针与负对照）
 
