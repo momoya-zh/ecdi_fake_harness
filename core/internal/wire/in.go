@@ -24,6 +24,10 @@ type GuiMsg struct {
 	ClientID  string
 	RequestID string
 	Path      string
+	// ★ v4（P3.6）：model 切换请求的载荷（协议 §4）。
+	Provider  string
+	Context   int64
+	MaxOutput int64
 	Raw       string
 }
 
@@ -40,12 +44,16 @@ func ParseGui(line string) GuiMsg {
 		ClientID  string `json:"client_id"`
 		RequestID string `json:"request_id"`
 		Path      string `json:"path"`
+		Provider  string `json:"provider"`
+		Context   int64  `json:"context"`
+		MaxOutput int64  `json:"maxOutput"`
 	}
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return GuiMsg{T: "", Raw: line}
 	}
 	return GuiMsg{T: raw.T, Seq: raw.Seq, Text: raw.Text, ID: raw.ID, Choice: raw.Choice,
-		ClientID: raw.ClientID, RequestID: raw.RequestID, Path: raw.Path}
+		ClientID: raw.ClientID, RequestID: raw.RequestID, Path: raw.Path,
+		Provider: raw.Provider, Context: raw.Context, MaxOutput: raw.MaxOutput}
 }
 
 // StampedLine = 一行输入 + **读到它的那一刻**的会话状态码。

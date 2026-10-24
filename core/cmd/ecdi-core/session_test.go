@@ -98,7 +98,7 @@ func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*sessio
 
 	sess := newSession(
 		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
-		strings.Split(allowTools, ","), 0, lines, &stc,
+		strings.Split(allowTools, ","), nil, lines, &stc,
 		func(string, ...any) {}, col)
 	return sess, col, lines, &stc
 }
@@ -299,7 +299,7 @@ func TestLoopE2E_FullChain(t *testing.T) {
 	// 握手
 	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":3,"gui":"test"}`)
 	hello := waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
-	if hello["protocol"].(float64) != 3 {
+	if hello["protocol"].(float64) != 4 {
 		t.Fatalf("hello.protocol = %v", hello["protocol"])
 	}
 	if hello["context"] != nil {

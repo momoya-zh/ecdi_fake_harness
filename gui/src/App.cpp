@@ -150,7 +150,7 @@ constexpr int kSidebarGroupH = 18;   // 标题行高（分隔的高度，不带"
 // ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
 //   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 `RouteLastMessage`）。
 //   ★ 改这一处 = 声明支持新的主版本——与 `protocol/PROTOCOL.md` §9 的表格**必须同步**。
-constexpr int kProtocolMaxSupported = 3;
+constexpr int kProtocolMaxSupported = 4;   // v4（P3.6）：model 热切换 + usage.context
 
 using harness::kDarkInk;
 using harness::kDarkMuted;
@@ -404,6 +404,24 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         //   ★ 保留不"用完即清"：每个新会话（＋按钮/临时会话）都要再拉一个 core。
         //     key 留在 GUI 进程内存属可接受形态（同一信任域，positioning §4）；
         //     纪律是**绝不**进日志/摘要/转录。
+        // ★ P3.6：为**每一家**提供商注入 ECDI_PROVIDER_<SAN>_{ID,URL,KEY}
+        //   （core 按同一 sanitize 规则对齐；model 切换按 id 寻址）。
+        //   ECDI_CORE_KEY 仍指向初始提供商（独立调试兼容）。
+        CacheProviderKeys();
+        for (const auto& pc : m_appConfig.providers) {
+            const auto keyIt = m_providerKeys.find(pc.id);
+            if (keyIt == m_providerKeys.end()) continue;
+            const std::string san = EnvSanitizeProviderId(pc.id);
+            SetEnvironmentVariableW(
+                ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_ID").c_str(),
+                ECDI::UTF8ToWide(pc.id).c_str());
+            SetEnvironmentVariableW(
+                ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_URL").c_str(),
+                ECDI::UTF8ToWide(pc.baseUrl).c_str());
+            SetEnvironmentVariableW(
+                ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_KEY").c_str(),
+                ECDI::UTF8ToWide(keyIt->second).c_str());
+        }
         if (!m_coreApiKey.empty()) {
             SetEnvironmentVariableW(L"ECDI_CORE_KEY", ECDI::UTF8ToWide(m_coreApiKey).c_str());
         }
@@ -2296,12 +2314,28 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             // 打开时预填非秘密字段（BaseURL/模型来自配置）；key 字段**永不回填**
             // ——凭据库里有值时 hint 说明"留空保持不变"。
             if (m_hud.settingsBase) {
-                m_hud.settingsBase->SetText(m_appConfig.provider.baseUrl);
-                m_hud.settingsModel->SetText(m_appConfig.provider.model);
-                if (m_appConfig.provider.credentialTarget.empty()) {
+                const ProviderConfig* edit =
+                    m_appConfig.Find(m_editingProviderId);
+                if (!edit) edit = m_appConfig.DefaultProvider();
+                if (edit) {
+                    m_editingProviderId = edit->id;
+                    m_hud.settingsBase->SetText(edit->baseUrl);
+                    m_hud.settingsModel->SetText(edit->model);
+                    if (m_hud.settingsContext) {
+                        m_hud.settingsContext->SetText(
+                            edit->context > 0 ? std::to_string(edit->context) : "");
+                    }
+                    if (m_hud.settingsMaxOut) {
+                        m_hud.settingsMaxOut->SetText(
+                            edit->maxOutput > 0 ? std::to_string(edit->maxOutput) : "");
+                    }
+                    RebuildSettingsProviderList();
+                }
+                if (m_providerKeys.empty()) {
                     m_hud.settingsKey->SetText("");
                     m_hud.settingsHint->SetText("填写提供商连接信息，保存后连接");
                 } else {
+                    m_hud.settingsKey->SetText("");
                     m_hud.settingsHint->SetText(
                         "已保存的密钥不回显——留空则保持不变");
                 }
@@ -2331,92 +2365,234 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     {
         auto panel = std::make_unique<ECDI::Panel>();
         m_hud.settingsPanel = panel.get();
-        panel->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        panel->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 14));
+        // ★ P3.6 观感：卡片底色 + 描边，与周边（kSidebarBg）明显区隔；
+        //   显式尺寸（F2/D9 布局契约：不 SetSize = 0x0，R-12 的教训）。
+        panel->SetSize(560, 620);
         panel->SetStyle(ECDI::PanelStyleOverride{
-            .background = m_options.probeContrast ? kProbeBg : kSidebarBg});
-        // ★ 显式尺寸——布局契约 F2/D9 是"只管摆位不管尺寸"，VerticalLayout
-        //   (fillCrossAxis=false) 不给子控件拉伸 ⇒ 不 SetSize 的面板 = 0×0，
-        //   IsVisible()==true 但画不出任何东西（用户看到的中栏空白）。几何必须
-        //   由创建者给定；探针的 first-run 相现在同时回读 GetWidth/GetHeight。
-        panel->SetSize(560, 400);
+            .background = m_options.probeContrast ? kProbeBg : kCardBg,
+            .cornerRadius = kRadiusBtn,
+            .borderWidth = 1.0f,
+            .borderColor = m_options.probeContrast ? kProbeBg : kCardBorder});
+
+        auto title = std::make_unique<ECDI::Label>("连接设置");
+        title->SetTextColor(kDarkInk);
+        title->SetFont(harness::SansFont(16.0f));
+        title->SetSize(520, 26);
+        panel->AddChild(std::move(title));
 
         auto addLabel = [&panel](const std::string& text) {
             auto l = std::make_unique<ECDI::Label>(text);
             l->SetTextColor(kDarkMuted);
             l->SetFont(harness::SansFont(harness::kFontSmall));
-            l->SetSize(520, 18);
+            l->SetSize(520, 20);
             panel->AddChild(std::move(l));
         };
         auto addInput = [this, &panel](ECDI::TextBox** slot, bool password) {
             auto box = std::make_unique<ECDI::TextBox>();
             *slot = box.get();
-            (*slot)->SetSingleLine(true);       // Enter 不得在设置面板里触发换行
+            (*slot)->SetSingleLine(true);
             if (password) {
-                // ECDI P1 的 echo 掩码：显示层打点、数据层不变（GetText 永远真实值）
                 (*slot)->SetEchoMode(ECDI::TextBox::EchoMode::Password);
             }
             (*slot)->SetSize(520, 30);
             panel->AddChild(std::move(box));
         };
+        auto mkSmallButton = [&panel](const char* text, int w, int h,
+                                      std::function<void()> fn) {
+            auto b = std::make_unique<ECDI::Button>(text);
+            b->SetTextColor(kDarkInk);
+            b->SetFont(harness::SansFont(harness::kFontSmall));
+            b->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b->SetSize(w, h);
+            b->SetOnClick(std::move(fn));
+            panel->AddChild(std::move(b));
+        };
+        auto addPresetRow = [this, &panel, &mkSmallButton](
+                                const std::string& label, ECDI::TextBox** slot,
+                                std::initializer_list<const char*> presets) {
+            auto cap = std::make_unique<ECDI::Label>(label);
+            cap->SetTextColor(kDarkMuted);
+            cap->SetFont(harness::SansFont(harness::kFontSmall));
+            cap->SetSize(520, 20);
+            panel->AddChild(std::move(cap));
+            auto row = std::make_unique<ECDI::Panel>();
+            row->SetSize(520, 26);
+            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
+            auto box = std::make_unique<ECDI::TextBox>();
+            *slot = box.get();
+            (*slot)->SetSingleLine(true);
+            (*slot)->SetSize(120, 26);
+            row->AddChild(std::move(box));
+            for (const char* p : presets) {
+                auto b = std::make_unique<ECDI::Button>(p);
+                b->SetTextColor(kDarkInk);
+                b->SetFont(harness::SansFont(harness::kFontSmall));
+                b->SetStyle(ECDI::ButtonStyleOverride{
+                    .background = kPanel2,
+                    .border = kLine,
+                    .borderWidth = 1.0f,
+                    .cornerRadius = kRadiusBtn,
+                    .pressedBackground = kToolHeaderPressed,
+                    .hoverBackground = kToolHeaderHover});
+                b->SetSize(56, 26);
+                ECDI::TextBox* target = *slot;
+                b->SetOnClick([this, target, text = std::string(p)] {
+                    if (target) target->SetText(text);
+                });
+                row->AddChild(std::move(b));
+            }
+            panel->AddChild(std::move(row));
+        };
 
-        auto title = std::make_unique<ECDI::Label>("连接设置");
-        title->SetTextColor(kDarkInk);
-        title->SetFont(harness::SansFont(16.0f));
-        title->SetSize(520, 24);
-        panel->AddChild(std::move(title));
+        auto listCap = std::make_unique<ECDI::Label>(
+            "提供商（点击选择编辑；● = 当前连接）");
+        listCap->SetTextColor(kDarkMuted);
+        listCap->SetFont(harness::SansFont(harness::kFontSmall));
+        listCap->SetSize(520, 20);
+        panel->AddChild(std::move(listCap));
+        {
+            auto list = std::make_unique<ECDI::Panel>();
+            m_hud.settingsProviderList = list.get();
+            list->SetSize(520, 108);
+            list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+            panel->AddChild(std::move(list));
+        }
+        {
+            auto row = std::make_unique<ECDI::Panel>();
+            row->SetSize(520, 26);
+            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
+            auto b1 = std::make_unique<ECDI::Button>("新增提供商");
+            b1->SetTextColor(kDarkInk);
+            b1->SetFont(harness::SansFont(harness::kFontSmall));
+            b1->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b1->SetSize(110, 26);
+            b1->SetOnClick([this] {
+                m_editingProviderId.clear();
+                if (m_hud.settingsBase) {
+                    m_hud.settingsBase->SetText("");
+                    m_hud.settingsModel->SetText("");
+                    if (m_hud.settingsContext) m_hud.settingsContext->SetText("");
+                    if (m_hud.settingsMaxOut) m_hud.settingsMaxOut->SetText("");
+                    m_hud.settingsKey->SetText("");
+                    m_hud.settingsHint->SetText("填写新提供商信息，保存后加入列表");
+                }
+            });
+            row->AddChild(std::move(b1));
+            auto b2 = std::make_unique<ECDI::Button>("删除所选");
+            b2->SetTextColor(kDarkInk);
+            b2->SetFont(harness::SansFont(harness::kFontSmall));
+            b2->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b2->SetSize(110, 26);
+            b2->SetOnClick([this] {
+                const ProviderConfig* cur = m_appConfig.Find(m_editingProviderId);
+                if (!cur) {
+                    m_hud.settingsHint->SetText("先在列表中选择要删除的提供商");
+                    return;
+                }
+                if (m_appConfig.providers.size() <= 1) {
+                    m_hud.settingsHint->SetText("至少保留一个提供商");
+                    return;
+                }
+                std::vector<ProviderConfig> next;
+                for (const auto& pc : m_appConfig.providers) {
+                    if (pc.id != m_editingProviderId) next.push_back(pc);
+                }
+                m_appConfig.providers = std::move(next);
+                if (m_appConfig.defaultProviderId == m_editingProviderId) {
+                    m_appConfig.defaultProviderId = m_appConfig.providers[0].id;
+                }
+                std::string saveError;
+                if (!m_appConfig.Save(saveError)) {
+                    m_hud.settingsHint->SetText("配置写入失败：" + saveError);
+                    return;
+                }
+                m_editingProviderId = m_appConfig.defaultProviderId;
+                RebuildSettingsProviderList();
+                m_modelListDirty = true;
+                m_hud.settingsHint->SetText("已删除");
+            });
+            row->AddChild(std::move(b2));
+            panel->AddChild(std::move(row));
+        }
 
         // ★ 无 placeholder：TextBox 没有 Placeholder API（ENTER-SEND 起登记的
         //   已知缺口），字段含义由上方 Label 承担——不去发明第二套提示机制。
         addLabel("Base URL（OpenAI 兼容端点根，如 https://api.deepseek.com/v1）");
         addInput(&m_hud.settingsBase, false);
+        addLabel("模型名（如 deepseek-flash / glm-5.2 / u2-flash）");
+        addInput(&m_hud.settingsModel, false);
+        addPresetRow("上下文容量挡位（token）", &m_hud.settingsContext,
+                     {"200000", "500000", "1000000"});
+        addPresetRow("输出上限挡位（max_tokens）", &m_hud.settingsMaxOut,
+                     {"4096", "8192", "16384", "32768", "65536"});
         addLabel("API Key（存入 Windows 凭据管理器；不进配置文件、不经协议）");
         addInput(&m_hud.settingsKey, true);
-        addLabel("模型名（如 deepseek-chat / glm-5.2 / u2-flash）");
-        addInput(&m_hud.settingsModel, false);
 
-        auto save = std::make_unique<ECDI::Button>("保存并连接");
-        m_hud.settingsSave = save.get();
-        save->SetTextColor(kDarkInk);
-        save->SetFont(harness::SansFont(14.0f));
-        save->SetStyle(ECDI::ButtonStyleOverride{
-            .background = kPanel2,
-            .border = kLine,
-            .borderWidth = 1.0f,
-            .cornerRadius = kRadiusBtn,
-            .pressedBackground = kToolHeaderPressed,
-            .hoverBackground = kToolHeaderHover});
-        save->SetSize(140, 30);
-        save->SetOnClick([this] { OnSettingsSave(); });
-        panel->AddChild(std::move(save));
+        {
+            auto row = std::make_unique<ECDI::Panel>();
+            row->SetSize(520, 30);
+            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
+            auto save = std::make_unique<ECDI::Button>("保存并连接");
+            m_hud.settingsSave = save.get();
+            save->SetTextColor(kDarkInk);
+            save->SetFont(harness::SansFont(14.0f));
+            save->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            save->SetSize(140, 30);
+            save->SetOnClick([this] { OnSettingsSave(); });
+            row->AddChild(std::move(save));
 
-        // 「关闭」：允许不看就退出设置面板（比如只是想看一眼）。
-        // ★ 死胡同防护：关闭时若**没有任何 live 会话**，转录区补一条引导通知
-        //   ——composer 会回来，发送得到「只记录」的诚实降级，而不是无声空白。
-        auto closeBtn = std::make_unique<ECDI::Button>("关闭");
-        closeBtn->SetTextColor(kDarkInk);
-        closeBtn->SetFont(harness::SansFont(14.0f));
-        closeBtn->SetStyle(ECDI::ButtonStyleOverride{
-            .background = kPanel2,
-            .border = kLine,
-            .borderWidth = 1.0f,
-            .cornerRadius = kRadiusBtn,
-            .pressedBackground = kToolHeaderPressed,
-            .hoverBackground = kToolHeaderHover});
-        closeBtn->SetSize(140, 30);
-        closeBtn->SetOnClick([this] {
-            SetSettingsVisible(false);
-            bool anyLive = false;
-            for (const auto& sp : m_sessions) {
-                if (sp->originKind == "live") { anyLive = true; break; }
-            }
-            if (!anyLive && m_sess) {
-                AddNoticeRow("[未连接提供商：用 ··· 菜单的「设置」填写连接信息]",
-                             kDarkMuted);
-                Relayout();
-                RequestRepaint();
-            }
-        });
-        panel->AddChild(std::move(closeBtn));
+            auto closeBtn = std::make_unique<ECDI::Button>("关闭");
+            closeBtn->SetTextColor(kDarkInk);
+            closeBtn->SetFont(harness::SansFont(14.0f));
+            closeBtn->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            closeBtn->SetSize(140, 30);
+            closeBtn->SetOnClick([this] {
+                SetSettingsVisible(false);
+                bool anyLive = false;
+                for (const auto& sp : m_sessions) {
+                    if (sp->originKind == "live") { anyLive = true; break; }
+                }
+                if (!anyLive && m_sess) {
+                    AddNoticeRow("[未连接提供商：用 ··· 菜单的「设置」填写连接信息]",
+                                 kDarkMuted);
+                    Relayout();
+                    RequestRepaint();
+                }
+            });
+            row->AddChild(std::move(closeBtn));
+            panel->AddChild(std::move(row));
+        }
 
         auto hint = std::make_unique<ECDI::Label>("");
         m_hud.settingsHint = hint.get();
@@ -2468,6 +2644,8 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     // ★ P3.5：设置面板的显隐投影（中栏三件都建完了，唯一投影路径此刻可用）。
     ApplySettingsVisibility();
+    // ★ P3.6：模型列表首帧/重建后置脏（tick 里统一重建——列表行是动态的）。
+    m_modelListDirty = true;
     main->AddChild(std::move(counting));
 
     // ── 右栏检查器（hi-fi .insp：卡片化）──
@@ -2509,6 +2687,24 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         kvRow(*card, "重绘", &m_hud.evalPaints);
         kvRow(*card, "命令/帧", &m_hud.probeCmds);
         kvRow(*card, "执行", &m_hud.probeExec);
+        insp->AddChild(std::move(card));
+    }
+
+    {
+        // 标题收进白卡，与原型 C 的卡片层级一致。上下文环仍保留为评估读数。
+        //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
+        auto card = makeCard(140);
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        cardTitle(*card, "模型");
+        {
+            // ★ P3.6：提供商切换列表（行由 RebuildModelList 重建；
+            //   点击 = RequestModelSwitch，running 时排队——I11 语义）。
+            auto list = std::make_unique<ECDI::Panel>();
+            m_hud.modelList = list.get();
+            list->SetSize(190, 110);
+            list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+            card->AddChild(std::move(list));
+        }
         insp->AddChild(std::move(card));
     }
 
@@ -2802,6 +2998,12 @@ void HarnessApp::OnReplayTick() {
         m_historyDirty = false;
         RebuildHistoryList();
         RequestRepaint();
+    }
+    // ★ P3.6：检查器模型列表重建（同族派发栈纪律；守卫之前 ⇒ 空会话也能刷新）。
+    if (m_modelListDirty) {
+        m_modelListDirty = false;
+        RebuildModelList();
+        RebuildSettingsProviderList();
     }
     // ★★ Step 5：打开历史会话（延迟到此：派发栈已退，拆树/抽干都安全）。
     if (!m_historyOpenPending.empty()) {
@@ -3300,8 +3502,24 @@ void HarnessApp::RouteLastMessage() {
                 if (cap.text == "workspace") hasWorkspace = true;
             }
         }
+        bool hasModelCap = false;
+        if (capsValid) {
+            for (const auto& cap : caps->array) {
+                if (cap.text == "model") hasModelCap = true;
+            }
+        }
         m_sess->capsStr = capsValid ? joined : std::string();
         m_sess->workspaceCap = capsValid && hasWorkspace;
+        m_sess->hasModelCap = capsValid && hasModelCap;
+        // spawn 时 GUI 已知道初始提供商（--provider-id 与配置一致）
+        if (m_sess->providerId.empty()) {
+            if (const auto* def = m_appConfig.DefaultProvider()) {
+                m_sess->providerId = def->id;
+            }
+        }
+        if (m_sess->ctxCapacity == 0) {
+            m_sess->ctxCapacity = static_cast<int>(m_sess->contextLimit);
+        }
         // ★★ 协议 §9：只有 core 声明的主版本**高于**本 GUI 上限才拒连（不做降级猜测）。
         //   缺字段按 v1 宽容；**低于**上限从来不是拒绝理由（§9 无此条）。
         if (m_sess->protocolVer > kProtocolMaxSupported) {
@@ -3342,7 +3560,10 @@ void HarnessApp::RouteLastMessage() {
     if (t == "state") {
         m_sess->coreState = msg.GetString("value");
         m_hudDirty = true;
-        if (m_sess->coreState == "idle") MaybeStartWorkspaceSync();
+        if (m_sess->coreState == "idle") {
+            MaybeStartWorkspaceSync();
+            SendPendingModelSwitchIfIdle();   // ★ P3.6：排队的模型切换在 idle 兑现
+        }
         MaybeSendAutoPrompt();
         return;
     }
@@ -3414,6 +3635,42 @@ void HarnessApp::RouteLastMessage() {
         m_sess->usageTurn = static_cast<int>(msg.GetNumber("turn"));
         m_sess->usageIn = static_cast<long long>(msg.GetNumber("input"));
         m_sess->usageOut = static_cast<long long>(msg.GetNumber("output"));
+        // ★ v4 §3.7：可选 context = 当下分母（按轮覆盖 hello.context）。
+        if (const json::Value* c = msg.Find("context");
+            c && c->IsNumber() && c->number > 0) {
+            m_sess->ctxCapacity = static_cast<int>(c->number);
+            m_sess->contextLimit = static_cast<long long>(c->number);
+        }
+        m_hudDirty = true;
+        return;
+    }
+    if (t == "model") {
+        // ★ v4 §3.11：model 确认（I10 同族：id 匹配 + ok 布尔 + ok:false 带 message）
+        const std::string ackId = msg.GetString("id");
+        if (m_sess->pendingModelId.empty() || ackId != m_sess->pendingModelId) {
+            AddNoticeRow("[model ack 不匹配] " + ackId, kErrorDark);
+            return;
+        }
+        m_sess->pendingModelId.clear();
+        const json::Value* ok = msg.Find("ok");
+        if (!ok || !ok->IsBool()) {
+            AddNoticeRow("[model ack 无效：ok 必须是 boolean]", kErrorDark);
+            return;
+        }
+        if (!ok->boolean) {
+            AddNoticeRow("[模型切换失败] " + msg.GetString("message", "（无原因）"),
+                         kErrorDark);
+        } else {
+            m_sess->providerId = msg.GetString("provider", m_sess->providerId);
+            if (const json::Value* c = msg.Find("context");
+                c && c->IsNumber() && c->number > 0) {
+                m_sess->ctxCapacity = static_cast<int>(c->number);
+                m_sess->contextLimit = static_cast<long long>(c->number);
+            }
+            AddNoticeRow("[已切换] " + m_sess->providerId + " / " +
+                             msg.GetString("model", "?"), kDarkMuted);
+            m_modelListDirty = true;
+        }
         m_hudDirty = true;
         return;
     }
@@ -6642,6 +6899,51 @@ void HarnessApp::RunSettingsProbe() {
             }
             report("env-check", bad);
         }
+        // ⑤b switch-ok：向**当前**提供商发 model 切换（同 id）⇒ ack ok:true，
+        //    providerId 不变。验收的是 v4 消息回环（请求→core→ack→GUI 状态）。
+        {
+            std::string bad;
+            if (!m_sess || !m_sess->hasModelCap) {
+                bad = "live session lacks model cap (protocol 4 handshake broken)";
+            } else {
+                SendModelSwitch(m_sess->providerId);
+            }
+            report("switch-ok", bad);
+        }
+        m_settingsProbeStage = 2;
+        m_settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 2: {
+        // ⑤c switch-ok 的确认判定（5s 宽限轮询，同 session-live）+
+        //    switch-bad（未知提供商 ⇒ core 应回 ok:false）。
+        {
+            std::string bad;
+            if (!m_sess->pendingModelId.empty()) {
+                if (now < m_settingsProbeNextAt + std::chrono::seconds(5)) {
+                    return;
+                }
+                bad = "model ack never arrived for same-provider switch";
+            }
+            report("switch-ok", bad);
+        }
+        SendModelSwitch("unknown-host.invalid");
+        m_settingsProbeStage = 3;
+        m_settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 3: {
+        // ⑤d switch-bad 判定：ok:false ⇒ 通知「模型切换失败」；在途 id 已清。
+        {
+            std::string bad;
+            if (!m_sess->pendingModelId.empty()) {
+                if (now < m_settingsProbeNextAt + std::chrono::seconds(5)) {
+                    return;
+                }
+                bad = "model ack never arrived for unknown-provider switch";
+            }
+            report("switch-bad", bad);
+        }
         // ⑥ cleanup：删探针建的凭据与配置文件（幂等）。
         {
             std::string bad;
@@ -6659,7 +6961,7 @@ void HarnessApp::RunSettingsProbe() {
             report("cleanup", bad);
         }
         m_settingsProbeDone = true;
-            if (m_application) m_application->Exit();   // 同步探针收尾即退（同 enter/hud 探针惯例）
+        if (m_application) m_application->Exit();
         return;
     }
     default:
@@ -8056,18 +8358,20 @@ bool HarnessApp::TryAutoConnectFromConfig() {
         ECDI::Logger::Log(ECDI::LogLevel::Warning, ECDI::UTF8ToWide("AppConfig: " + error));
         return false;
     }
-    if (m_appConfig.provider.credentialTarget.empty()) return false;
-    std::string key;
-    std::string credError;
-    if (!creds::Read(ECDI::UTF8ToWide(m_appConfig.provider.credentialTarget),
-                     key, credError)) {
-        ECDI::Logger::Log(ECDI::LogLevel::Warning, ECDI::UTF8ToWide("creds: " + credError));
+    CacheProviderKeys();
+    // 默认提供商 = defaultProviderId（v2）/ 迁移后的唯一提供商（v1）。
+    const ProviderConfig* def = m_appConfig.DefaultProvider();
+    if (!def) return false;
+    auto keyIt = m_providerKeys.find(def->id);
+    if (keyIt == m_providerKeys.end()) {
+        ECDI::Logger::Log(ECDI::LogLevel::Warning,
+                          ECDI::UTF8ToWide("no credential for default provider " + def->id));
         return false;
     }
     std::filesystem::path coreExe;
     if (!ResolveCoreExecutable(coreExe)) {
         ECDI::Logger::Log(ECDI::LogLevel::Warning,
-                          ECDI::UTF8ToWide("ecdi-core.exe not found (config/core|exe dir)"));
+                          ECDI::UTF8ToWide("ecdi-core.exe not found (config/cwd/exe ancestors)"));
         return false;
     }
     // 把解析结果回写配置（下次启动不依赖 cwd）；失败不致命——本次仍可连。
@@ -8076,14 +8380,18 @@ bool HarnessApp::TryAutoConnectFromConfig() {
     if (!m_appConfig.Save(saveError)) {
         ECDI::Logger::Log(ECDI::LogLevel::Warning, ECDI::UTF8ToWide("AppConfig save: " + saveError));
     }
-    m_coreApiKey = key;
+    m_coreApiKey = keyIt->second;
     m_options.corePath = coreExe;
-    m_options.coreArgs = "--base-url=" + m_appConfig.provider.baseUrl +
-                         " --model=" + m_appConfig.provider.model;
-    if (m_appConfig.provider.context > 0) {
-        m_options.coreArgs += " --context=" + std::to_string(m_appConfig.provider.context);
+    m_options.coreArgs = "--base-url=" + def->baseUrl +
+                         " --model=" + def->model +
+                         " --provider-id=" + def->id;
+    if (def->context > 0) {
+        m_options.coreArgs += " --context=" + std::to_string(def->context);
     }
-    m_options.fixtureName = m_appConfig.provider.model + " (live)";
+    if (def->maxOutput > 0) {
+        m_options.coreArgs += " --max-output=" + std::to_string(def->maxOutput);
+    }
+    m_options.fixtureName = def->model + " (live)";
     return true;
 }
 
@@ -8100,10 +8408,16 @@ void HarnessApp::OnSettingsSave() {
     const std::string baseUrl = m_hud.settingsBase->GetText();
     const std::string key = m_hud.settingsKey->GetText();
     const std::string model = m_hud.settingsModel->GetText();
+    const std::string contextText = m_hud.settingsContext ? m_hud.settingsContext->GetText() : "";
+    const std::string maxOutText = m_hud.settingsMaxOut ? m_hud.settingsMaxOut->GetText() : "";
     if (baseUrl.empty() || model.empty()) {
         setHint("BaseURL 和模型名不能为空", kErrorDark);
         return;
     }
+    int context = 0;
+    if (!contextText.empty()) context = std::atoi(contextText.c_str());
+    int maxOutput = 0;
+    if (!maxOutText.empty()) maxOutput = std::atoi(maxOutText.c_str());
     const std::string providerId = AppConfig::ProviderIdFromBaseUrl(baseUrl);
     const std::string target = AppConfig::CredentialTargetFor(providerId);
 
@@ -8127,34 +8441,224 @@ void HarnessApp::OnSettingsSave() {
         return;
     }
 
-    // ③ 写配置（结构上无密钥字段——见 AppConfig.h 的防泄漏注释）。
-    AppConfig cfg;
-    cfg.provider.id = providerId;
-    cfg.provider.baseUrl = baseUrl;
-    cfg.provider.model = model;
-    cfg.provider.credentialTarget = target;
-    cfg.corePath = coreExe.generic_string();
+    // ③ 写配置（v2 多提供商 Upsert；结构上无密钥字段——AppConfig.h 防泄漏注释）。
+    ProviderConfig pc;
+    pc.id = providerId;
+    pc.baseUrl = baseUrl;
+    pc.model = model;
+    pc.context = context;
+    pc.maxOutput = maxOutput;
+    pc.credentialTarget = target;
+    m_appConfig.Upsert(pc);
+    m_appConfig.defaultProviderId = providerId;
+    if (!m_coreApiKey.empty() && m_providerKeys.find(providerId) == m_providerKeys.end()) {
+        // 旧配置迁移路径：m_coreApiKey 属于原默认提供商时不得张冠李戴
+    }
+    if (!key.empty()) m_providerKeys[providerId] = key;
+    m_appConfig.corePath = coreExe.generic_string();
     std::string saveError;
-    if (!cfg.Save(saveError)) {
+    if (!m_appConfig.Save(saveError)) {
         setHint("配置写入失败：" + saveError, kErrorDark);
         return;
     }
-    m_appConfig = cfg;
+    m_editingProviderId = providerId;
 
-    // ④ 建 live 会话（env 注入走 CreateSessionFromOptions 的统一路径）。
-    //   `--auto-prompt` 机制是 per-session 的（MaybeSendAutoPrompt 由 tick 驱动、
-    //   按 `m_sess->autoPromptSent` 自守），这里新建的会话自动受益，无需额外接线。
-    m_coreApiKey = key;
-    m_options.corePath = coreExe;
-    m_options.coreArgs = "--base-url=" + baseUrl + " --model=" + model;
-    Session* live = CreateSessionFromOptions();
-    if (!live) {
-        setHint("core 启动失败（见 core-stderr 日志）", kErrorDark);
+    // ④ 连接：无 live 会话 ⇒ 新建（env 注入走统一路径）；已有支持热切换的
+    //    live 会话 ⇒ 发 model 切换请求（I11：排队语义由 RequestModelSwitch 处理）。
+    const bool hasLive = m_sess && m_sess->originKind == "live" && m_sess->writer;
+    if (hasLive && m_sess->hasModelCap) {
+        auto keyIt = m_providerKeys.find(providerId);
+        if (keyIt != m_providerKeys.end()) {
+            m_coreApiKey = keyIt->second;   // 新 provider 成为默认 ⇒ ECDI_CORE_KEY 跟随
+        }
+        setHint("已保存；正在切换到 " + providerId + " / " + model, kDarkMuted);
+        SetSettingsVisible(false);
+        RequestModelSwitch(providerId);
         return;
     }
-    SwitchToSessionByPtr(live);
+    if (hasLive && !m_sess->hasModelCap) {
+        setHint("已保存；当前 core 不支持热切换（cap 未声明），重启会话后生效", kDarkMuted);
+        SetSettingsVisible(false);
+        return;
+    }
+    {
+        auto keyIt = m_providerKeys.find(providerId);
+        if (keyIt != m_providerKeys.end()) m_coreApiKey = keyIt->second;
+        m_options.corePath = coreExe;
+        m_options.coreArgs = "--base-url=" + baseUrl + " --model=" + model +
+                             " --provider-id=" + providerId;
+        if (context > 0) m_options.coreArgs += " --context=" + std::to_string(context);
+        if (maxOutput > 0) m_options.coreArgs += " --max-output=" + std::to_string(maxOutput);
+        Session* live = CreateSessionFromOptions();
+        if (!live) {
+            setHint("core 启动失败（见 core-stderr 日志）", kErrorDark);
+            return;
+        }
+        SwitchToSessionByPtr(live);
+    }
     setHint("已保存并连接：" + providerId + " / " + model, kDarkMuted);
     SetSettingsVisible(false);
+    m_modelListDirty = true;
+}
+
+// ── ★★ P3.6（协议 v4）：模型热切换 ───────────────────────────────
+
+std::string HarnessApp::EnvSanitizeProviderId(const std::string& id) {
+    // 与 core 的 sanitizeProviderID 同一条规则（非字母数字 → '_'，大写）。
+    // 两份实现是必须的（环境变量名不能带 '.'），规则只此一条，注释互指。
+    std::string out;
+    out.reserve(id.size());
+    for (char c : id) {
+        const bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                        (c >= '0' && c <= '9');
+        out.push_back(ok ? static_cast<char>(c >= 'a' && c <= 'z' ? c - 32 : c) : '_');
+    }
+    return out;
+}
+
+void HarnessApp::CacheProviderKeys() {
+    // 凭据库 → m_providerKeys（已有缓存的不覆盖——设置面板刚写入的值更新）。
+    for (const auto& pc : m_appConfig.providers) {
+        if (m_providerKeys.count(pc.id)) continue;
+        std::string key;
+        std::string err;
+        if (creds::Read(ECDI::UTF8ToWide(pc.credentialTarget), key, err)) {
+            m_providerKeys[pc.id] = key;
+        }
+    }
+}
+
+void HarnessApp::RebuildModelList() {
+    if (!m_hud.modelList) return;
+    while (m_hud.modelList->GetChildCount() > 0) {
+        m_hud.modelList->RemoveChild(m_hud.modelList->GetChildAt(0));
+    }
+    const std::string active = m_sess ? m_sess->providerId : std::string();
+    for (const auto& pc : m_appConfig.providers) {
+        auto row = std::make_unique<ECDI::Button>(
+            (pc.id == active ? "● " : "○ ") + pc.id + " · " + pc.model);
+        row->SetTextColor(kDarkInk);
+        row->SetFont(harness::SansFont(harness::kFontSmall));
+        row->SetStyle(ECDI::ButtonStyleOverride{
+            .background = kPanel2,
+            .border = kLine,
+            .borderWidth = 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kToolHeaderHover});
+        row->SetSize(200, 24);
+        const std::string pid = pc.id;
+        row->SetOnClick([this, pid] { RequestModelSwitch(pid); });
+        m_hud.modelList->AddChild(std::move(row));
+    }
+    if (m_appConfig.providers.empty()) {
+        auto l = std::make_unique<ECDI::Label>("（无提供商——用设置添加）");
+        l->SetTextColor(kDarkMuted);
+        l->SetFont(harness::SansFont(harness::kFontSmall));
+        l->SetSize(200, 20);
+        m_hud.modelList->AddChild(std::move(l));
+    }
+    if (ECDI::Widget* parent = m_hud.modelList->GetParent()) parent->Arrange();
+    RequestRepaint();
+}
+
+void HarnessApp::RebuildSettingsProviderList() {
+    if (!m_hud.settingsProviderList) return;
+    while (m_hud.settingsProviderList->GetChildCount() > 0) {
+        m_hud.settingsProviderList->RemoveChild(m_hud.settingsProviderList->GetChildAt(0));
+    }
+    const std::string liveId = m_sess ? m_sess->providerId : std::string();
+    for (const auto& pc : m_appConfig.providers) {
+        std::string marker = "○ ";
+        if (pc.id == m_sess->providerId) marker = "● ";
+        if (pc.id == m_editingProviderId) marker += "[编辑中] ";
+        auto row = std::make_unique<ECDI::Button>(
+            marker + pc.id + " · " + pc.model);
+        row->SetTextColor(kDarkInk);
+        row->SetFont(harness::SansFont(harness::kFontSmall));
+        row->SetStyle(ECDI::ButtonStyleOverride{
+            .background = kPanel2,
+            .border = kLine,
+            .borderWidth = 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kToolHeaderHover});
+        row->SetSize(500, 24);
+        const std::string pid = pc.id;
+        row->SetOnClick([this, pid] {
+            m_editingProviderId = pid;
+            if (const ProviderConfig* sel = m_appConfig.Find(pid)) {
+                if (m_hud.settingsBase) {
+                    m_hud.settingsBase->SetText(sel->baseUrl);
+                    m_hud.settingsModel->SetText(sel->model);
+                    if (m_hud.settingsContext) {
+                        m_hud.settingsContext->SetText(
+                            sel->context > 0 ? std::to_string(sel->context) : "");
+                    }
+                    if (m_hud.settingsMaxOut) {
+                        m_hud.settingsMaxOut->SetText(
+                            sel->maxOutput > 0 ? std::to_string(sel->maxOutput) : "");
+                    }
+                    if (m_hud.settingsKey) m_hud.settingsKey->SetText("");
+                    if (m_hud.settingsHint) {
+                        m_hud.settingsHint->SetText(
+                            "编辑 " + pid + "——key 留空保持已存凭据不变");
+                    }
+                }
+            }
+            RebuildSettingsProviderList();
+        });
+        m_hud.settingsProviderList->AddChild(std::move(row));
+    }
+    if (ECDI::Widget* parent = m_hud.settingsProviderList->GetParent()) {
+        parent->Arrange();
+    }
+}
+
+void HarnessApp::RequestModelSwitch(const std::string& providerId) {
+    if (!m_sess || !m_sess->writer) {
+        AddNoticeRow("[当前会话不是 live——先连接提供商]", kDarkMuted);
+        return;
+    }
+    if (!m_sess->hasModelCap) {
+        AddNoticeRow("[当前 core 未声明 model 能力，不能热切换]", kDarkMuted);
+        return;
+    }
+    if (m_sess->providerId == providerId && m_sess->pendingModelId.empty()) {
+        AddNoticeRow("[已是当前模型] " + providerId, kDarkMuted);
+        return;
+    }
+    if (m_sess->coreState != "idle" || !m_sess->pendingWorkspaceId.empty()) {
+        // ★ I11 排队语义：running/waiting 时**不发**——等上一个模型完整输出完。
+        m_sess->queuedModelProvider = providerId;
+        AddNoticeRow("[模型切换已排队：" + providerId + "（本轮结束后生效）]", kDarkMuted);
+        return;
+    }
+    SendModelSwitch(providerId);
+}
+
+void HarnessApp::SendModelSwitch(const std::string& providerId) {
+    const ProviderConfig* pc = m_appConfig.Find(providerId);
+    if (!pc) {
+        AddNoticeRow("[切换目标不在配置中] " + providerId, kErrorDark);
+        return;
+    }
+    const std::string id = "m" + std::to_string(m_sess->writer->LastSeqSent() + 1);
+    m_sess->pendingModelId = id;
+    if (!m_sess->writer->Model(id, providerId, pc->context, pc->maxOutput)) {
+        m_sess->pendingModelId.clear();
+        AddNoticeRow("[切换请求发送失败]", kErrorDark);
+        return;
+    }
+    AddNoticeRow("[切换请求已发送] " + providerId + " / " + pc->model, kDarkMuted);
+}
+
+void HarnessApp::SendPendingModelSwitchIfIdle() {
+    if (!m_sess || !m_sess->writer || m_sess->queuedModelProvider.empty()) return;
+    if (m_sess->coreState != "idle" || !m_sess->pendingWorkspaceId.empty()) return;
+    const std::string provider = m_sess->queuedModelProvider;
+    m_sess->queuedModelProvider.clear();
+    SendModelSwitch(provider);
 }
 
 void HarnessApp::MaterializePendingPrompts() {

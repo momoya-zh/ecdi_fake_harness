@@ -216,7 +216,12 @@
 
 ```json
 {"t":"usage","seq":40,"ts":"...","turn":3,"input":18422,"output":913}
+{"t":"usage","seq":40,"ts":"...","turn":3,"input":18422,"output":913,"context":200000}
 ```
+
+| 字段 | 说明 |
+|---|---|
+| `context` | ★ **v4 新增（可选）**：当下的上下文容量分母（token 数）。**按轮覆盖** `hello.context`（§3.1 的「未定」项就此定案：模型热切换会改变容量，分母经 `usage` 逐轮下发）。GUI 取**最近一次** `usage.context`；缺省时退回 `hello.context`；两者皆无 ⇒ 显示 `—`（分母未知，不猜） |
 
 ### 3.8 `error`
 
@@ -288,6 +293,30 @@ core 退出前的**最后一条**。
 
 ---
 
+### 3.11 `model`（core → gui，确认）
+
+`model` 切换请求的确认，形态与 `workspace`（§3.9）同族。**仅在 `idle` 受理**（§4）：
+切模型发生在对话轮之间——「等上一个模型完整输出完再切」的责任在 **GUI 侧排队**
+（running/waiting 时不得发出，state 回 `idle` 后才发）；core 对非 idle 到达的请求
+回 `ok:false` + `message`（与交错拒绝同规则）。
+
+```json
+{"t":"model","seq":43,"ts":"...","id":"m1","ok":true,"provider":"api.deepseek.com","model":"deepseek-flash","context":200000,"maxOutput":32000}
+{"t":"model","seq":44,"ts":"...","id":"m2","ok":false,"provider":"bad.host","message":"未知提供商（启动时未注入该提供商的凭据）"}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `id` | ✅ | 对应请求的 id，一份流内互不相同（**I11**） |
+| `ok` | ✅ | 布尔 |
+| `provider` | ✅ | 提供商 id（成功 = 已采用；失败 = 被拒绝的请求原文） |
+| `model` | `ok:true` 时必填 | 切换后的模型名 |
+| `context` / `maxOutput` | `ok:true` 时必填 | 已采用的容量分母与输出上限（请求未带 ⇒ 回显 core 现值） |
+| `message` | `ok:false` 时必填 | 可直接显示的原因 |
+
+★ 切换**不改 `state`**（控制面操作，同 §3.9）；**不丢对话历史**——agent loop 的
+messages 原样带给新模型，这正是热切换的意义。
+
 ## 4. gui → core 消息
 
 | `t` | 载荷 | 何时发 |
@@ -297,6 +326,7 @@ core 退出前的**最后一条**。
 | `cancel` | — | 用户点停止（`running` 时合法；`waiting` 时应改发 `answer`） |
 | `answer` | `id`、`choice` | 回答一个未决 `ask` |
 | `workspace` | `request_id`、`path` | 请求切换工作区（仅 `idle` 时合法） |
+| `model` | `id`、`provider`、`context?`、`maxOutput?` | ★ **v4**：请求切换提供商/模型（仅 `idle` 时合法；GUI 在 running/waiting 时**排队**，`idle` 后才发——「等上一个完整输出完」在 GUI 侧兑现）。`provider` = 提供商 id；`context`/`maxOutput` 可选（省略 = 维持现值）。**cap：core 必须声明 `"model"`**，未声明的 core 收到此消息按 I5 忽略并记录 |
 | `bye` | — | GUI 即将关闭，请 core 退出 |
 
 ```json
@@ -336,6 +366,8 @@ core 退出前的**最后一条**。
 | **I8** | 未知 `kind`（含**缺失** `kind`）必须**中性渲染 + 显式提示**：① 不得伪装成有语义的形态（工具卡 / 权限门）；② 正文**不得丢弃**；③ 必须计入读数。★ `reasoning` **不在**本条管辖内——它是 §3.3 的已知值，有专门的渲染形态（§7） | 思维链被当成「正在等的工具结果」，或未知内容被静默吞掉 |
 | **I9** | ★ **v3**：`kind:"user"` 的 `block_start` 必须带**非空 `client_id`**，且一份流内所有 `client_id` **互不相同**（GUI 临时气泡按它原位确认；重复 ⇒ 气泡归属歧义） | 气泡重复插入 / 确认错位 |
 | **I10** | ★ **v3**：`workspace` 响应必须带 **`request_id`**、布尔 `ok`、`path`；`ok:false` 时必须带 **`message`**；一份流内 `request_id` 必须**互不相同**（一次一个未决，§3.9） | 失败切换被误当成成功 / 响应与请求错位 |
+
+| **I11** | ★ **v4**：`model` 请求（gui→core）与确认（core→gui）的 `id` 一份流内**互不相同**；请求**仅 `idle` 合法**（GUI 排队兑现「等上一个完整输出完」）；确认 `ok:false` 必带 `message`；成功确认的 `provider`/`model`/`context`/`maxOutput` 是 core **实际采用**的值（不是请求原文的回显） | 切换错位 / 悄悄换错模型 / 半途掐断正在输出的轮 |
 
 > ★ **I9 / I10 的适用范围**：只约束 `hello.protocol >= 3` 的流。v1/v2 夹具**早于** `client_id` / `workspace`
 > 存在，对它们施加这两条就是把历史记录判成违规。`validate.py` 按 `hello.protocol` 分流，不是按文件名。
@@ -548,7 +580,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 ## 9. 版本与兼容
 
-**当前版本 = `3`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 3**。
+**当前版本 = `4`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 4**。
 
 - `protocol` 是**主版本**。core 的 `protocol` > GUI 支持的上限 ⇒ **GUI 拒绝连接并显示原因**，不做降级猜测。
   ★ **`hello` 不携带 `protocol` 字段时按 v1 处理**（v1 时代该字段是必填，但宽容比拒连更安全——
@@ -558,6 +590,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
+| **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案） | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |
 | **2** | 2026-10-14 | §3.3 加 `reasoning` · §5 加 **I8** · §7 加 `reasoning` 渲染形态 · §3.1 加 `hello.context` · §3.5 加 `block_end.tokens` | **v1 GUI 不崩、不丢内容**——`reasoning` 落进「未知 `kind`」的中性渲染路径（可见气泡 + 显式提示），只是**不折叠**；`context`/`tokens` 是未知字段，按 I5 忽略（百分比显示 `—`）。这正是 I5/I8 的用途 |
 | 1 | 2026-10-03 | 初版 | — |

@@ -25,11 +25,16 @@ import (
 	"time"
 )
 
-// llmConfig = 端点三参数（P3 规格 §4.1；不绑定厂商）。
+// llmConfig = 端点参数（P3 规格 §4.1；不绑定厂商）。
+// ★ v4（P3.6）：ProviderID/Context/MaxOutput 支持热切换——`model` 消息
+//   （协议 §4）在轮间整体替换这份配置；Context 是 usage 分母（§3.7 按轮覆盖）。
 type llmConfig struct {
-	BaseURL string // 如 https://open.bigmodel.cn/api/paas/v4（不含 /chat/completions）
-	Model   string
-	Key     string
+	BaseURL    string // 如 https://open.bigmodel.cn/api/paas/v4（不含 /chat/completions）
+	Model      string
+	Key        string
+	ProviderID string // 提供商 id（model 消息按它寻址；与 GUI 配置文件同一命名）
+	Context    int    // 上下文容量分母；0 = usage 不带 context（GUI 显示 —）
+	MaxOutput  int    // 请求体 max_tokens；0 = 不发（端点默认）
 }
 
 type llmClient struct {
@@ -130,13 +135,16 @@ func (c *llmClient) Stream(ctx context.Context, msgs []chatMessage, tools []tool
 	body := map[string]any{
 		"model":    c.cfg.Model,
 		"messages": msgs,
-		"tools":    enveloped,
-		// 模型自己决定是否用工具（P3 纪律：core 不做策略）
-		"tool_choice": "auto",
-		"stream":      true,
-		"stream_options": map[string]any{
-			"include_usage": true, // 末尾块带 usage（真值纪律：不用就不用，不估）
-		},
+	}
+	if c.cfg.MaxOutput > 0 {
+		body["max_tokens"] = c.cfg.MaxOutput
+	}
+	body["tools"] = enveloped
+	// 模型自己决定是否用工具（P3 纪律：core 不做策略）
+	body["tool_choice"] = "auto"
+	body["stream"] = true
+	body["stream_options"] = map[string]any{
+		"include_usage": true, // 末尾块带 usage（真值纪律：不用就不用，不估）
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

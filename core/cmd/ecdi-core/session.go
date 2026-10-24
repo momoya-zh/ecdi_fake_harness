@@ -42,6 +42,16 @@ type session struct {
 	allowTools map[string]bool // --allow-tools 豁免名单（运行者配置，非启发式）
 	history    []chatMessage   // 完整对话历史（跨轮累积；系统消息每请求现建，§4.5 切工作区即时生效）
 	lastUsage  *chatUsage      // 最近一轮 API 返回的真值 usage（§1.1 条 7：不估算）
+
+	// ── P3.6（协议 v4）：提供商注册表与热切换 ───────────────────
+	// providers = 启动时经环境注入的全部提供商（GUI 为配置里的每一家
+	// 注入 ECDI_PROVIDER_<SAN>_URL / _KEY；初始提供商额外走
+	// --base-url/--model/--key/--provider-id 并注册进同一张表 ⇒ 切走再切回可用）。
+	providers map[string]llmConfig
+	// ctxCapacity = 当下分母（model 消息可覆盖；usage.context 逐轮下发，§3.7）。
+	// maxOutput 同理（请求体 max_tokens）。
+	ctxCapacity int
+	maxOutput   int
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求（与假 core 同构）。
@@ -51,18 +61,31 @@ type pendingWorkspace struct {
 	resolved   string
 }
 
-func newSession(cfg llmConfig, allowTools []string, contextTokens int,
+func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmConfig,
 	in <-chan wire.StampedLine, stc *atomic.Int32, log func(string, ...any),
 	outW io.Writer) *session {
 
 	s := &session{
-		in:         in,
-		out:        wire.NewOut(outW, false),
-		log:        log,
-		stc:        stc,
-		llm:        newLLMClient(cfg, log),
-		allowTools: map[string]bool{},
+		in:          in,
+		out:         wire.NewOut(outW, false),
+		log:         log,
+		stc:         stc,
+		llm:         newLLMClient(cfg, log),
+		allowTools:  map[string]bool{},
+		providers:   map[string]llmConfig{},
+		ctxCapacity: cfg.Context,
+		maxOutput:   cfg.MaxOutput,
 	}
+	// 初始提供商注册进同一张表（切走再切回可用）；环境注入的其余提供商随后并入。
+	if cfg.ProviderID != "" {
+		s.providers[cfg.ProviderID] = cfg
+	}
+	for id, pc := range providerEnv {
+		if _, dup := s.providers[id]; !dup {
+			s.providers[id] = pc
+		}
+	}
+	s.log("providers registered: %d (initial=%q)", len(s.providers), cfg.ProviderID)
 	for _, t := range allowTools {
 		if t = strings.TrimSpace(t); t != "" {
 			s.allowTools[t] = true
@@ -76,10 +99,11 @@ func newSession(cfg llmConfig, allowTools []string, contextTokens int,
 
 	// hello（协议 §3.1）：seq 0、caps 声明 tools/ask/workspace；
 	// context 按 D1 真值纪律——运行者没声明就**不发**（GUI 显示 —），不猜。
-	hello := map[string]any{"t": "hello", "protocol": 3, "core": "0.3.0",
-		"session": "s-real-1", "caps": []string{"tools", "ask", "workspace"}}
-	if contextTokens > 0 {
-		hello["context"] = contextTokens
+	hello := map[string]any{"t": "hello", "protocol": 4, "core": "0.4.0",
+		"session": "s-real-1",
+		"caps":    []string{"tools", "ask", "workspace", "model"}}
+	if s.ctxCapacity > 0 {
+		hello["context"] = s.ctxCapacity
 	}
 	s.emit(hello)
 	s.log("hello sent; initial workspace: %s; model=%s", s.cwd, cfg.Model)
@@ -139,6 +163,8 @@ func (s *session) processLine(sl wire.StampedLine) bool {
 		s.handlePrompt(msg.Text, msg.ClientID)
 	case "workspace":
 		s.handleWorkspace(msg, arrived)
+	case "model":
+		s.handleModelSwitch(msg, arrived)
 	case "cancel":
 		s.log("cancel received between turns (state=%s) — ignored", s.st())
 	case "answer":
@@ -197,10 +223,16 @@ func (s *session) handlePrompt(text, clientID string) {
 		s.processLine(sl)
 	}
 
-	// ④ usage（API 真值；API 没给就**不发**——估算 = 编造读数）
+	// ④ usage（API 真值；API 没给就**不发**——估算 = 编造读数）。
+	//   ★ v4：带 context 分母（§3.7 按轮覆盖——热切换改变容量后 GUI 的
+	//     百分比环靠它跟上）。
 	if s.lastUsage != nil {
-		s.emit(map[string]any{"t": "usage", "turn": s.turn,
-			"input": s.lastUsage.PromptTokens, "output": s.lastUsage.CompletionTokens})
+		u := map[string]any{"t": "usage", "turn": s.turn,
+			"input": s.lastUsage.PromptTokens, "output": s.lastUsage.CompletionTokens}
+		if s.ctxCapacity > 0 {
+			u["context"] = s.ctxCapacity
+		}
+		s.emit(u)
 	}
 
 	// ⑤ 状态收尾（cancel 路径与假 core 同形：cancelled → idle）
@@ -509,6 +541,78 @@ func summarizeArgs(raw string) string {
 		raw = string(runes[:200]) + "…"
 	}
 	return raw
+}
+
+// ── P3.6（协议 v4）：model 热切换 ────────────────────────────────
+
+// sanitizeProviderID：提供商 id → 环境变量片段（非字母数字 → '_'，大写）。
+// GUI 注入 ECDI_PROVIDER_<SAN>_URL / _KEY / _ID；core 按同一函数对齐——
+// 两端各写一份是必须的（环境变量名不能带 '.'），但**映射规则只有这一条**。
+func sanitizeProviderID(id string) string {
+	out := make([]rune, 0, len(id))
+	for _, r := range strings.ToUpper(id) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			out = append(out, r)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
+// handleModelSwitch：`model` 请求（协议 §4 / I11）。
+// 仅 idle 受理（GUI 在 running/waiting 时排队，idle 后才发——「等上一个完整
+// 输出完」在 GUI 侧兑现；非 idle 到达 = 回 ok:false，与交错拒绝同规则）。
+// 切换不改 state、不丢 history——agent loop 的 messages 原样带给新模型。
+func (s *session) handleModelSwitch(msg wire.GuiMsg, arrived wire.State) {
+	s.log("model switch request: id=%q provider=%q context=%d maxOutput=%d (arrived=%s)",
+		msg.ID, msg.Provider, msg.Context, msg.MaxOutput, arrived)
+
+	ack := map[string]any{"t": "model", "id": msg.ID, "ok": false,
+		"provider": msg.Provider}
+	if msg.ID == "" {
+		ack["message"] = "model 缺少 id（I11）"
+		s.emit(ack)
+		return
+	}
+	if arrived != wire.StateIdle {
+		ack["message"] = fmt.Sprintf("请求到达时状态是 %s，模型切换只在 idle 受理", arrived)
+		s.emit(ack)
+		return
+	}
+	san := sanitizeProviderID(msg.Provider)
+	pc, ok := s.providers[msg.Provider]
+	if !ok {
+		for id, cand := range s.providers {
+			if sanitizeProviderID(id) == san {
+				pc, ok = cand, true
+				break
+			}
+		}
+	}
+	if !ok {
+		ack["message"] = "未知提供商（启动时未注入该提供商的凭据）"
+		s.emit(ack)
+		return
+	}
+	if msg.Context > 0 {
+		s.ctxCapacity = int(msg.Context)
+	}
+	if msg.MaxOutput > 0 {
+		s.maxOutput = int(msg.MaxOutput)
+	}
+	pc.Context = s.ctxCapacity
+	pc.MaxOutput = s.maxOutput
+	s.providers[msg.Provider] = pc
+	s.llm = newLLMClient(pc, s.log)
+
+	ack["ok"] = true
+	ack["model"] = pc.Model
+	ack["context"] = s.ctxCapacity
+	ack["maxOutput"] = s.maxOutput
+	s.emit(ack)
+	s.log("model switched: provider=%q model=%q context=%d maxOutput=%d (history kept)",
+		msg.Provider, pc.Model, s.ctxCapacity, s.maxOutput)
 }
 
 // ── v3：工作区租约（与假 core 同构；注释从简，语义见 wire/session 原始出处）──

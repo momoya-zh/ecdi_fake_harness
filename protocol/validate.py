@@ -33,6 +33,7 @@ KNOWN_TYPES = {
     "hello", "state", "block_start", "delta", "block_end", "ask", "usage",
     "error", "bye",                       # core -> gui
     "prompt", "cancel", "answer", "workspace", # gui -> core; workspace also core -> gui ack
+    "model",                              # v4: gui -> core request; also core -> gui ack
 }
 CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
               "usage", "error", "bye"}
@@ -54,7 +55,7 @@ KNOWN_KINDS = {"user", "assistant", "reasoning", "tool_call", "tool_result",
 # higher one (no downgrade guessing).  v2 (2026-10-14) added `reasoning` + I8.
 # Fixtures declaring <= this are fine; anything above is a hard failure here,
 # because such a stream is one the GUI would refuse to connect to at all.
-SUPPORTED_PROTOCOL_MAX = 3
+SUPPORTED_PROTOCOL_MAX = 4
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURES = os.path.join(HERE, "fixtures")

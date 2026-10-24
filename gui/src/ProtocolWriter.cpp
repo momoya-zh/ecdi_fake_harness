@@ -80,6 +80,29 @@ bool ProtocolWriter::Workspace(const std::string& requestId, const std::string& 
     return SendWith(std::move(msg));
 }
 
+bool ProtocolWriter::Model(const std::string& requestId, const std::string& provider,
+                           int context, int maxOutput) {
+    json::Value msg;
+    msg.type = json::Value::Type::Object;
+    json::Value t; t.type = json::Value::Type::String; t.text = "model";
+    json::Value id; id.type = json::Value::Type::String; id.text = requestId;
+    json::Value p; p.type = json::Value::Type::String; p.text = provider;
+    msg.object["t"] = t;
+    msg.object["id"] = id;
+    msg.object["provider"] = p;
+    if (context > 0) {
+        json::Value c; c.type = json::Value::Type::Number;
+        c.number = static_cast<double>(context);
+        msg.object["context"] = c;
+    }
+    if (maxOutput > 0) {
+        json::Value m; m.type = json::Value::Type::Number;
+        m.number = static_cast<double>(maxOutput);
+        msg.object["maxOutput"] = m;
+    }
+    return SendWith(std::move(msg));
+}
+
 bool ProtocolWriter::Cancel() {
     json::Value msg;
     msg.type = json::Value::Type::Object;

@@ -151,6 +151,11 @@ harness_gui.exe        # 双击即可：读 %APPDATA%\ecdi-fake-harness\config.j
   **配置文件永不携带密钥值**；key 经启动环境层（`ECDI_CORE_KEY`）注入 core——不经协议、不经命令行。
 - `--core` / `--replay` 手动模式保留（诊断与回归路径）；`--config <path>` 可覆盖配置位置（探针隔离）。
 - 决策与实施回写见 `docs/P3-real-core-spec.md` §8.5 / §8.5.5。
+- ★ **P3.6（2026-10-25，协议 v4）**：多提供商 + 模型热切换。设置面板支持保存多家
+  baseURL/APIKey（凭据库按 `ECDI.FakeHarness.v1.Provider.<id>` 分家存），并带
+  上下文挡位（200K/500K/1M）与输出上限挡位（4K~64K）；检查器新增「模型」卡片，
+  点行即切——**正在输出时排队**，本轮完整结束后才切换（协议 §4 排队语义，历史不丢）。
+  v4 详情见 `protocol/PROTOCOL.md` §9 版本表与 `docs/P3-real-core-spec.md` §9。
 
 **⑤ 回归门**（改完必跑；全绿才算收口）
 
@@ -355,7 +360,7 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
-**P3 真 core + P3.5 无参启动（均已落地，2026-10-24）→ MCP host**。
+**P3 真 core + P3.5 无参启动 + P3.6 多提供商热切换（均已落地）→ MCP host**。
 `core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 + 默认全 ask）+ GUI 设置界面与无参启动
 （Windows 凭据管理器存 key、配置文件只存引用）；云知声与 DeepSeek 官方两个真端点全链验收通过
 （A8 归档 `evals/p3-u2flash-live-1.json`、`evals/p35-deepseek-noarg-live-1.json`，浮动标注）。

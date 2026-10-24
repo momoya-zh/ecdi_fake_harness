@@ -344,8 +344,14 @@ private:
         ECDI::TextBox* settingsBase = nullptr;   // BaseURL（单行）
         ECDI::TextBox* settingsKey = nullptr;    // API Key（单行 + Password 掩码）
         ECDI::TextBox* settingsModel = nullptr;  // 模型名（单行）
+        // ★ P3.6：容量挡位（上下文 200K/500K/1M；输出 4K/8K/16K/32K/64K）+ 提供商列表。
+        ECDI::TextBox* settingsContext = nullptr;  // 上下文容量（token，数字）
+        ECDI::TextBox* settingsMaxOut = nullptr;   // 输出上限 max_tokens（数字）
+        ECDI::Panel* settingsProviderList = nullptr; // 提供商行容器（RebuildSettingsProviderList）
         ECDI::Label* settingsHint = nullptr;     // 状态/错误行（非敏感：不含 key）
         ECDI::Button* settingsSave = nullptr;    // 保存并连接
+        // ★ P3.6：检查器「模型」卡片（提供商列表 + 切换）。
+        ECDI::Panel* modelList = nullptr;        // 行容器（children 由 RebuildModelList 重建）
         ECDI::Label* stateChip = nullptr;    // 顶栏：running / idle
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
         ECDI::Label* convTitle = nullptr;    // 中栏会话头：标题（原型 C .conversation-head）
@@ -664,6 +670,12 @@ private:
         //   ★ 这正是本轮之前那两根用量条的问题：分母取 `max(input, output)`，
         //     即**拿输入跟输出比**——两个不同量纲的东西相除，读数无意义。
         long long contextLimit = 0;
+        // ★ P3.6（协议 v4）：提供商/模型热切换。
+        std::string providerId;          // 当前提供商（spawn 的 --provider-id；model ack 更新）
+        bool hasModelCap = false;        // hello.caps 声明了 "model"
+        int ctxCapacity = 0;             // 当下分母：hello.context ⇒ usage.context ⇒ model ack 逐级覆盖
+        std::string pendingModelId;      // 已发出未确认的切换请求 id（I11 在途）
+        std::string queuedModelProvider; // running/waiting 时排队；state 回 idle 后发出
 
         // ── 权限询问历史（右栏三行）──
         std::deque<std::pair<std::string, std::string>> askHist;   // {choice, question}
@@ -974,6 +986,14 @@ private:
     // 返回 true（构造函数随后照常建 live 会话）；否则 false + 面板打开。
     bool TryAutoConnectFromConfig();
     void RunSettingsProbe();
+    // ── ★★ P3.6（协议 v4）：模型热切换 ─────────────────────────
+    void RebuildModelList();            // 检查器模型卡片行重建（tick 执行）
+    void RebuildSettingsProviderList(); // 设置面板提供商行重建（编辑目标选择）
+    void RequestModelSwitch(const std::string& providerId);
+    void SendModelSwitch(const std::string& providerId);   // 立即发（调用方保证 idle）
+    void SendPendingModelSwitchIfIdle();                   // state=idle 时的排队兑现点
+    void CacheProviderKeys();           // 凭据库 → m_providerKeys（全部提供商）
+    static std::string EnvSanitizeProviderId(const std::string& id);
 
     // ── ★★ Step 5（2026-10-19）：打开历史会话 ────────────────────────────
     // 历史 = 磁盘上的 `protocol/fixtures/**/*.jsonl`。点开 = **新建一个 replay 会话**
@@ -1146,6 +1166,10 @@ private:
     std::string m_coreApiKey;
     // 应用配置（非秘密 + 凭据目标名引用；文件在 %APPDATA%，结构上无密钥字段）。
     AppConfig m_appConfig;
+    // 提供商 id → key（凭据库的本次进程缓存；spawn 注入 env 用。绝不进日志/摘要）。
+    std::map<std::string, std::string> m_providerKeys;
+    bool m_modelListDirty = false;   // 检查器模型列表重建（tick 执行，同 m_sidebarDirty 族）
+    std::string m_editingProviderId; // 设置面板当前编辑的提供商（空 = 新增）
     // ★★ Step 4（2026-10-19）：整树重建待执行。
     //   与 `m_sidebarDirty` 完全同族、同一个理由：顶栏「主题」钮的回调跑在
     //   `Button::RaiseClick` 的栈上，而重建要 `root.RemoveChild` 掉**这个按钮自己**

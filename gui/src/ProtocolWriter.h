@@ -16,6 +16,10 @@ public:
     bool Hello(const std::string& guiVersion);                     // seq 0（收到 core hello 后）
     bool Prompt(const std::string& text, const std::string& clientId); // 仅 idle
     bool Workspace(const std::string& requestId, const std::string& path); // 仅 idle
+    // ★ v4（P3.6）：model 切换请求（仅 idle；排队语义在 App）。context/maxOutput
+    //   为 0 时省略字段（core 维持现值，§4）。
+    bool Model(const std::string& requestId, const std::string& provider,
+               int context, int maxOutput);
     bool Cancel();                                                 // running
     bool Answer(const std::string& askId, const std::string& choice);  // waiting
     bool Bye();                                                    // 关窗收尾

@@ -33,6 +33,8 @@ func main() {
 	model := flag.String("model", "", "模型名；必填")
 	key := flag.String("key", "", "API 密钥；缺省读环境变量 ECDI_CORE_KEY")
 	contextTokens := flag.Int("context", 0, "上下文窗口容量（token）；0 = 不发 hello.context（GUI 显示 —）")
+	maxOutput := flag.Int("max-output", 0, "请求体 max_tokens；0 = 不发（端点默认）")
+	providerID := flag.String("provider-id", "", "初始提供商 id（model 切换按它寻址；切走再切回靠它注册）")
 	allowTools := flag.String("allow-tools", "", "免 ask 工具名单（逗号分隔）；空 = 全部 ask（默认）")
 	workspace := flag.String("workspace", "", "初始工作区；缺省 = 进程 cwd")
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
@@ -81,13 +83,44 @@ func main() {
 	logf("credential: %s (len=%d, source=%s)",
 		map[bool]string{true: "present", false: "absent"}[secret != ""], len(secret), keySource)
 
+	// ★ P3.6：多提供商注册表——GUI 为配置里每一家注入
+	//   ECDI_PROVIDER_<SAN>_URL / _KEY / _ID（SAN = sanitizeProviderID）。
+	//   密钥仍走启动环境层（D5）：不经协议、不经命令行、不经文件。
+	providerEnv := map[string]llmConfig{}
+	for _, kv := range os.Environ() {
+		// ★ 后缀判断必须对**名字**做，不对整行做——整行是 "NAME=value"，
+		//   它的尾部是 value（首个版本在这里查 "_URL"，永远查不到，注册表恒空）。
+		const prefix = "ECDI_PROVIDER_"
+		const urlSuffix = "_URL"
+		eq := strings.Index(kv, "=")
+		if eq < 0 || !strings.HasPrefix(kv[:eq], prefix) ||
+			!strings.HasSuffix(kv[:eq], urlSuffix) {
+			continue
+		}
+		san := kv[len(prefix) : eq-len(urlSuffix)]
+		id := os.Getenv(prefix + san + "_ID")
+		if id == "" {
+			id = strings.ToLower(san)
+		}
+		base := os.Getenv(prefix + san + "_URL")
+		key := os.Getenv(prefix + san + "_KEY")
+		if base == "" || key == "" {
+			continue
+		}
+		providerEnv[id] = llmConfig{BaseURL: base, Model: "", Key: key}
+	}
+	logf("provider registry from environment: %d entr%s", len(providerEnv),
+		map[bool]string{true: "y", false: "ies"}[len(providerEnv) == 1])
+
 	lines := make(chan wire.StampedLine, 64)
 	var curState atomic.Int32
 	curState.Store(wire.CodeIdle)
 	go wire.ReadStdin(lines, &curState, logf)
 
-	s := newSession(llmConfig{BaseURL: *baseURL, Model: *model, Key: secret},
-		strings.Split(*allowTools, ","), *contextTokens, lines, &curState, logf,
+	s := newSession(
+		llmConfig{BaseURL: *baseURL, Model: *model, Key: secret,
+			ProviderID: *providerID, Context: *contextTokens, MaxOutput: *maxOutput},
+		strings.Split(*allowTools, ","), providerEnv, lines, &curState, logf,
 		os.Stdout)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)

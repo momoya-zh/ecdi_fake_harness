@@ -68,6 +68,31 @@ std::string AppConfig::CredentialTargetFor(const std::string& providerId) {
     return "ECDI.FakeHarness.v1.Provider." + providerId;
 }
 
+const ProviderConfig* AppConfig::DefaultProvider() const {
+    if (providers.empty()) return nullptr;
+    for (const auto& pc : providers) {
+        if (pc.id == defaultProviderId) return &pc;
+    }
+    return &providers[0];
+}
+
+const ProviderConfig* AppConfig::Find(const std::string& id) const {
+    for (const auto& pc : providers) {
+        if (pc.id == id) return &pc;
+    }
+    return nullptr;
+}
+
+void AppConfig::Upsert(const ProviderConfig& pc) {
+    for (auto& existing : providers) {
+        if (existing.id == pc.id) {
+            existing = pc;
+            return;
+        }
+    }
+    providers.push_back(pc);
+}
+
 bool AppConfig::Load(std::string& error) {
     const auto path = DefaultPath();
     std::ifstream in(path, std::ios::binary);
@@ -86,38 +111,81 @@ bool AppConfig::Load(std::string& error) {
         return false;
     }
     const auto* ver = root.Find("version");
-    if (!ver || !ver->IsNumber() || static_cast<int>(ver->number) != 1) {
-        error = "config version missing or unsupported";
+    if (!ver || !ver->IsNumber()) {
+        error = "config version missing";
         return false;
     }
-    const auto* prov = root.Find("provider");
-    if (!prov || !prov->IsObject()) {
-        error = "config has no provider object";
+    const int fileVersion = static_cast<int>(ver->number);
+    if (fileVersion != 1 && fileVersion != 2) {
+        error = "config version unsupported: " + std::to_string(fileVersion);
         return false;
     }
-    const auto getStr = [prov](const char* k, std::string& out) {
-        const auto* v = prov->Find(k);
-        if (v && v->IsString()) out = v->text;
-    };
-    getStr("id", provider.id);
-    getStr("baseUrl", provider.baseUrl);
-    getStr("model", provider.model);
-    getStr("credentialTarget", provider.credentialTarget);
-    const auto* ctx = prov->Find("context");
-    if (ctx && ctx->IsNumber()) provider.context = static_cast<int>(ctx->number);
     if (const auto* core = root.Find("corePath"); core && core->IsString()) {
         corePath = core->text;
     }
-    // credentialTarget 不存在时按当前命名空间规则**重建**（派生字段不是真相，
-    // 真相是 baseUrl；这样旧配置在命名空间演进后仍能自愈）。
-    if (provider.credentialTarget.empty()) {
-        provider.id = ProviderIdFromBaseUrl(provider.baseUrl);
-        provider.credentialTarget = CredentialTargetFor(provider.id);
+
+    // 单提供商的载入/自愈逻辑 v1 与 v2 共用（"credentialTarget 缺失 ⇒ 从
+    // baseUrl 重建"——派生字段不是真相，真相是 baseUrl；命名空间演进后自愈）。
+    auto fillProvider = [](const json::Value& prov, ProviderConfig& pc) {
+        const auto getStr = [&prov](const char* k, std::string& out) {
+            const auto* v = prov.Find(k);
+            if (v && v->IsString()) out = v->text;
+        };
+        getStr("id", pc.id);
+        getStr("baseUrl", pc.baseUrl);
+        getStr("model", pc.model);
+        getStr("credentialTarget", pc.credentialTarget);
+        if (const auto* ctx = prov.Find("context"); ctx && ctx->IsNumber()) {
+            pc.context = static_cast<int>(ctx->number);
+        }
+        if (const auto* mo = prov.Find("maxOutput"); mo && mo->IsNumber()) {
+            pc.maxOutput = static_cast<int>(mo->number);
+        }
+        if (pc.credentialTarget.empty()) {
+            pc.id = ProviderIdFromBaseUrl(pc.baseUrl);
+            pc.credentialTarget = CredentialTargetFor(pc.id);
+        }
+    };
+
+    // v1 单提供商 ⇒ 迁移成 providers[0]（原文件不动，保存时升级为 v2）。
+    if (fileVersion == 1) {
+        const auto* prov = root.Find("provider");
+        if (!prov || !prov->IsObject()) {
+            error = "config has no provider object";
+            return false;
+        }
+        ProviderConfig pc;
+        fillProvider(*prov, pc);
+        if (pc.baseUrl.empty() || pc.model.empty()) {
+            error = "config provider is missing baseUrl or model";
+            return false;
+        }
+        providers.push_back(pc);
+        defaultProviderId = pc.id;
+        return true;
     }
-    if (provider.baseUrl.empty() || provider.model.empty()) {
-        error = "config provider is missing baseUrl or model";
+
+    // v2：providers 数组 + defaultProviderId。坏行跳过（不否决整份配置）。
+    const auto* arr = root.Find("providers");
+    if (!arr || !arr->IsArray() || arr->array.empty()) {
+        error = "config has no providers array";
         return false;
     }
+    for (const auto& prov : arr->array) {
+        if (!prov.IsObject()) continue;
+        ProviderConfig pc;
+        fillProvider(prov, pc);
+        if (pc.baseUrl.empty() || pc.model.empty()) continue;
+        providers.push_back(pc);
+    }
+    if (providers.empty()) {
+        error = "config providers array has no usable entry";
+        return false;
+    }
+    if (const auto* def = root.Find("defaultProviderId"); def && def->IsString()) {
+        defaultProviderId = def->text;
+    }
+    if (defaultProviderId.empty()) defaultProviderId = providers[0].id;
     return true;
 }
 
@@ -140,26 +208,38 @@ bool AppConfig::Save(std::string& error) const {
         v.number = static_cast<double>(version);
         root.object["version"] = std::move(v);
     }
-    json::Value prov;
-    prov.type = json::Value::Type::Object;
-    auto putStr = [&prov](const char* k, const std::string& s) {
+    json::Value arr;
+    arr.type = json::Value::Type::Array;
+    for (const auto& pc : providers) {
+        json::Value prov;
+        prov.type = json::Value::Type::Object;
+        auto putStr = [&prov](const char* k, const std::string& sv) {
+            json::Value v;
+            v.type = json::Value::Type::String;
+            v.text = sv;
+            prov.object[k] = std::move(v);
+        };
+        auto putNum = [&prov](const char* k, int n) {
+            json::Value v;
+            v.type = json::Value::Type::Number;
+            v.number = static_cast<double>(n);
+            prov.object[k] = std::move(v);
+        };
+        putStr("id", pc.id);
+        putStr("baseUrl", pc.baseUrl);
+        putStr("model", pc.model);
+        putNum("context", pc.context);
+        putNum("maxOutput", pc.maxOutput);
+        putStr("credentialTarget", pc.credentialTarget);
+        arr.array.push_back(std::move(prov));
+    }
+    root.object["providers"] = std::move(arr);
+    {
         json::Value v;
         v.type = json::Value::Type::String;
-        v.text = s;
-        prov.object[k] = std::move(v);
-    };
-    auto putNum = [&prov](const char* k, int n) {
-        json::Value v;
-        v.type = json::Value::Type::Number;
-        v.number = static_cast<double>(n);
-        prov.object[k] = std::move(v);
-    };
-    putStr("id", provider.id);
-    putStr("baseUrl", provider.baseUrl);
-    putStr("model", provider.model);
-    putNum("context", provider.context);
-    putStr("credentialTarget", provider.credentialTarget);
-    root.object["provider"] = std::move(prov);
+        v.text = defaultProviderId;
+        root.object["defaultProviderId"] = std::move(v);
+    }
     if (!corePath.empty()) {
         json::Value v;
         v.type = json::Value::Type::String;

@@ -4,8 +4,8 @@
 > P3 = 协议与 GUI 两侧已就绪的契约，第一次接上**真模型 + 真工具执行**。
 > ★ P3 **是主线而非可选收尾**——本项目要的是「一个能真用的 agent GUI」，
 > 见 [`positioning.md`](positioning.md) §2 / §6；假 core **原样保留**为回归仪器（§1.2）。
-> 状态：**v1.3 P3.5 已实施**（2026-10-24；v1.1 = 第一批回写 §8.1–8.4；v1.2 = 真 API 收口
-> §8.3b + 决策记录 §8.5；v1.3 = §8.5.5 实施回写——凭据/设置界面/无参启动 + DeepSeek 全链）。
+> 状态：**v1.4 P3.6 已实施**（2026-10-25；v1.1–v1.3 见 §8；v1.4 = §9——协议 v4 多提供商
+> 模型热切换 + usage.context + 容量挡位 + 设置面板/检查器改版）。
 
 ---
 
@@ -322,3 +322,47 @@ M4 投影缺失→first-run 红[scroll+composer 未腾槽]）+ clean 全绿；�
 **R-12（用户实测抓到，同日修）**：设置面板**从未 SetSize** ——布局契约 F2/D9"只管摆位不管尺寸" + VerticalLayout(fillCrossAxis=false) 不拉伸 ⇒ 面板 0×0，`IsVisible()==true` 但画不出任何东西。用户看到的"点击设置没浮窗"和更早的"首启没有输入框"是**同一个缺陷的两面**（中栏：scroll/composer 藏了、面板零尺寸 ⇒ 一片空白）。修法 = 显式 `SetSize(560, 400)`；探针 first-run 相增加**几何判据**（GetWidth/GetHeight 回读，<400×<300 判红）——`IsVisible()` 只是标志，看不见像素。截图实证后 probe 5 相全绿、全量回归 PASS。★ 教训是 0c/STEP2 那条老账的第三次出现：模型侧回读（IsVisible/GetText）看不见几何，**面板类 UI 的首秀必须截图**。
 
 **登记未做**：`--settings-probe` 未接入 `tools/regress.py`（第 14 条探针，同前）；R-5 的 87 成因；设置界面暂不暴露 context 字段（真值纪律下 0 = 不发 hello.context，GUI 显示 —）。
+
+---
+
+## §9 P3.6：多提供商 + 模型热切换（2026-10-25 实施，协议 v4）
+
+> 用户需求四连：① 浮窗观感（底色/文字排版）；② 多 baseURL+APIKey；③ 类似发送框/检查器的
+> 模型切换器，**等上一个模型完整输出完再切**；④ 上下文/输出长度挡位（200K/500K/1M；4K~64K）。
+> ③ 需要 core 在不丢对话历史的前提下热切换 ⇒ 协议增量（v4，只增不改，`PROTOCOL.md` §9 已更新）。
+
+### 9.1 协议 v4 增量（§9 版本表同步）
+
+| 项 | 内容 |
+|---|---|
+| gui→core `model` | `{t,id,provider,context?,maxOutput?}`——**仅 idle 合法**；排队语义在 GUI（running/waiting 时入 `queuedModelProvider`，state=idle 时兑现）。「等上一个完整输出完」由此兑现，core 侧对非 idle 到达回 ok:false |
+| core→gui `model` ack | I10 同族：id 匹配 + ok 布尔 + ok:false 带 message；成功回**实际采用**的 provider/model/context/maxOutput（**I11**） |
+| `usage.context`（可选） | §3.1 的「按轮覆盖」未定项定案：分母经 usage 逐轮下发，GUI 取最近一次 |
+| hello | `protocol:4`；caps 增 `"model"`（GUI 无此 cap ⇒ 隐藏切换器，I5 路径照旧） |
+| fake-core | **停在 protocol 3**（回归基线不动；GUI 接受 ≤4） |
+
+### 9.2 多提供商凭据（仍不进协议）
+
+GUI 为配置里**每一家**注入 `ECDI_PROVIDER_<SAN>_{ID,URL,KEY}`（SAN = 双端同规则的
+非字母数字→'_'大写；core 端 `sanitizeProviderID` 与 GUI 端 `EnvSanitizeProviderId` 注释互指）；
+`ECDI_CORE_KEY` 仍指初始提供商。core 启动扫环境建注册表，`model` 消息按 id 寻址——
+**切走再切回**靠 `--provider-id` 把初始提供商也注册进表。
+
+### 9.3 实施期发现
+
+| # | 事实 |
+|---|---|
+| R-13 | **环境变量后缀判断必须对"名字"做**：首版对整行（"NAME=value"）做 `HasSuffix("_URL")`——尾部是 value，注册表**恒空**。cmd 纯环境直测立刻定位。教训同 MSYS 路径转换那类：环境解析的判据对象是名字，不是行 |
+| R-14 | 检查器「模型」卡片 + 设置面板提供商列表 = 两个动态行容器，都走 `*Dirty → tick 重建`（同 sidebar 族）；面板列表点击 = 选编辑目标（● = 当前连接、[编辑中] = 编辑目标） |
+| R-15 | 热切换**不丢 history**——agent loop 的 messages 原样带给新模型（这是热切换与"重开会话"的全部区别）；`model` 切换不改 state（控制面，同 workspace） |
+
+### 9.4 验收
+
+`--settings-probe` 扩到 **8 相**（新增 switch-ok：向当前提供商发切换 → ack ok:true 回环；
+switch-bad：未知提供商 → ok:false + 通知）×全绿；双提供商无参启动 → core 注册表
+`2 entries (initial="api.deepseek.com")`（stderr 实证）；全量回归 **PASS**（fake-core 基线不动）；
+`validate.py` 认识 v4 后 9 夹具全绿。**诚实边界**：双**真**提供商的会话中切换（DeepSeek ⇄ 云知声）
+需要真凭据在环+交互点击，本轮以离线回环（同提供商 ok / 未知 ok:false）+ 注册表实证覆盖，
+真切换留给用户交互验证（检查器「模型」卡片点行即切）。
+
+**登记未做**：真双提供商交互切换的截图实证；`--settings-probe` 接入 regress.py（第 14 条）；R-5 的 87 成因。
