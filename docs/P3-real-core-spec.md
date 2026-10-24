@@ -4,8 +4,8 @@
 > P3 = 协议与 GUI 两侧已就绪的契约，第一次接上**真模型 + 真工具执行**。
 > ★ P3 **是主线而非可选收尾**——本项目要的是「一个能真用的 agent GUI」，
 > 见 [`positioning.md`](positioning.md) §2 / §6；假 core **原样保留**为回归仪器（§1.2）。
-> 状态：**v1.1 第一批已实施**（2026-10-24；v1.1 = 实施回写，见 §8。
-> 离线判据（A1/A2 + A3/A4/A6 的离线前身 + A9）全过；**真 API 判据（A3–A6/A8）待密钥**）。
+> 状态：**v1.2 已实施并真 API 验收**（2026-10-24；v1.1 = 第一批实施回写 §8.1–8.4；
+> v1.2 = 真 API 验收收口 §8.3b + 密钥/无参启动决策记录 §8.5）。
 
 ---
 
@@ -242,12 +242,49 @@ prompt(text, client_id)
 3. E2E 接入 `tools/regress.py` 的 `go test ./...` 步骤（当前假 core 回归门不含真 core 测试——登记待办）；
 4. A6 cancel 的 GUI 级实跑与 workspace 切换的 GUI 级实跑（离线前身均已过）。
 
-### 8.5 密钥保存（2026-10-24 讨论，未实施）
+### 8.5 密钥保存与无参启动（2026-10-24 用户拍板，**决策记录，未实施**）
 
-用户问「要不要配置文件保存 + 哈希加密」。**哈希不可行**（用户自己纠正）：哈希不可逆，
-只能验证输入、不能取回去调 API——那是口令校验的语义，不是凭据存储的语义。
-可逆的机密保护在 Windows 上的标准答案是 **DPAPI**（`CryptProtectData`，绑定当前用户，
-无需管理密钥）。**本批不做**：单用户单提供商阶段，环境变量 `ECDI_CORE_KEY`（推荐）
-或 `--key` 参数已够；`~/.credentials` 式引用文件（DeepSeek Harness 方案，调研记录见
-当日工作日志）等 MCP host / 多提供商立项时再设计——届时它多提供商、分层优先级
-（存储 > 进程环境 > .env）、describe 不回显值的形态值得整体照抄，而不是现在只抄一半。
+> 背景讨论三方参与：用户（提出配置文件 + 哈希的想法并自我纠正）、外部评审（GPT，建议
+> Credential Manager 由 core 自读）、本仓（修正前提后给推荐）。**用户拍板采纳修正版**。
+
+#### 8.5.1 事实前提（讨论中核实，防止方案建立在错误图景上）
+
+- **key 从来不走协议管道**：stdin 六类消息（hello/prompt/cancel/answer/workspace/bye）无任何秘密。
+  key 到达 core 的路径是**进程环境继承**——GUI `CreateProcessW` 不传显式 env block，子进程继承父环境。
+- **core 侧恰有一条摄入路径**：`--key` > `ECDI_CORE_KEY`，皆空拒启（exit 2）；core 无凭据缓存、无配置文件。
+- **GUI 侧零凭据代码**；"两边各造一套"的风险不存在（只有一个读取点）。
+- ⇒ 真正的决策点是**谁解析凭据**，不是"走不走管道"。
+
+#### 8.5.2 拍板结论（D4–D7）
+
+| # | 决策 |
+|---|---|
+| **D4** | 凭据存储 = **Windows Credential Manager**（`CredWriteW/CredReadW`），读写**都在 GUI 侧**。core **不接触**凭据 API——保住"零第三方"（Go 标准库与 `x/sys/windows` 均无 `CredRead` 绑定，core 自读要么引依赖要么手写 syscall，且把 core 绑死 Windows）。目标名命名空间：`ECDI.FakeHarness.v1.Provider.<provider-id>`（多提供商 = 多目标名） |
+| **D5** | 传递 = `CreateProcessW` **显式 `lpEnvironment` 注入** `ECDI_CORE_KEY`——不经协议、不经命令行、不经任何文件。core 侧 `--key/ECDI_CORE_KEY` 接缝**保持不变**（继续服务于手工管道调试的独立运行场景） |
+| **D6** | 非秘密配置（base-url / model / provider-id / **凭据目标名引用**）持久化在本地 JSON 配置文件；**配置文件永不携带密钥值**（dsh 的 refs 模式：存名字不存值） |
+| **D7** | 目标体验 = **无参数双击启动**：有配置 → 直连默认提供商；无配置 → **首次运行设置对话框**（三个字段：BaseURL、APIKey、模型）。BaseURL/模型进配置文件，APIKey 进 Credential Manager |
+
+#### 8.5.3 外部评审约束清单 → 现状对照
+
+| GPT 约束 | 现状 |
+|---|---|
+| key 不进日志/转录/错误详情 | ✅ **已满足且更严**：wire 层 `NewLogger` 全局遮蔽 + A9 单测（stderr 管道真捕获）；实施后需把 A9 **扩展到 GUI 侧**（GUI 自己的日志/摘要同样不得含 key） |
+| 读取失败 → 明确非敏感错误 | ✅ 已满足：缺 key = exit 2 带说明 |
+| 连接测试失败不自动删 key、不判无效 | ✅ 已满足：API 错误走 `error(fatal:false)` 显式显示 |
+| 稳定命名空间 | ⬜ 随 D4 实施（采纳 `ECDI.FakeHarness.v1.Provider.<provider-id>`） |
+| 清理输入缓冲区 | ⬜ 随设置对话框实施（C++ 侧小事） |
+| core 保留独立凭据存储接口（跨平台） | ✅ 天然满足：core 只认环境变量，本身就是那个接口 |
+
+**诚实边界**（GPT 与 positioning §4 同一句话）：Credential Manager 防的是**静态文件读取**；
+同一 Windows 用户上下文的程序仍可枚举凭据、检查进程内存——这不是安全边界，是 at-rest 卫生。
+
+#### 8.5.4 实施注意（登记，实施时逐条核）
+
+- `ChildSource::Start` 需新增显式 env block 参数（当前继承父环境）。取舍：**显式 block**（干净、
+  不污染 GUI 全进程环境）vs GUI 进程 `SetEnvironmentVariable` 后靠继承（简单但全进程可见）——倾向前者，实施时定。
+- key 在 GUI 侧的内存生命周期：CredReadW → 注入 env block → **尽早释放**；不落 GUI 可读字符串的长期持有物。
+- 配置文件位置：用户目录（不进仓库、不进安装目录），具体路径实施时定（%APPDATA% 或本地 home 目录，参考 dsh 的 HOME 形态）。
+- 无配置的首启降级：`--core`/`--replay` 手动模式**保持可用**（诊断与回归路径）；设置对话框只做"无参数时"的默认入口。
+- ECDI 侧**无新需求**（普通 Widget 即可搭对话框），不触铁律。
+- 时机：**独立 GUI 功能批次（P3.5 候选）**，与 MCP host 无强耦合——修正本节早先"等 MCP host 立项"的说法；
+  dsh 式 describe（只报 set/source/writable、不回显值）与多提供商目录在多提供商需求出现时再引入。

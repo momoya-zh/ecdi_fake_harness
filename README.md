@@ -343,14 +343,13 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
-**P3 真 core（第一批已落地，2026-10-24）→ 真 API 验收 → MCP host**。
-`core/cmd/ecdi-core` 已实现（OpenAI 兼容端点 + 只读三件 + 默认全 ask），
-离线 E2E（脚本化 SSE 服务器）验过协议全链，假 core 逐位回归 PASS。
-**悬而未决的只剩真 API 判据**：拿到 BaseURL/APIKey 后跑 A3–A6 实跑并把读数
-归档 `evals/p3-*.json`（带「天然浮动，不进基线」标注）——
-见 `docs/P3-real-core-spec.md` §6 / §8.4。
-
-真 core 与 MCP host 的关系是单向的：**没有 core，host 没有可授予的对象**。
+**P3 真 core（已落地 + 真 API 验收收口，2026-10-24）→ GUI 设置界面与无参启动（P3.5 候选）→ MCP host**。
+`core/cmd/ecdi-core` 已实现（OpenAI 兼容端点 + 只读三件 + 默认全 ask），离线 E2E 验过协议全链，
+真 API（云知声 u2-flash）验收收口：GUI 级 `seqGaps=0/violations=0/unknownKinds=0`，A8 归档
+`evals/p3-u2flash-live-1.json`（浮动标注）。**下一批（拍板见 `docs/P3-real-core-spec.md` §8.5）**：
+无参数双击启动 + 设置对话框（BaseURL/APIKey/模型）——凭据存 Windows Credential Manager（GUI 侧读写），
+经显式 env block 注入 core；配置文件只存非秘密与凭据目标名引用。
+其后才是 MCP host：**没有 core，host 没有可授予的对象**。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
