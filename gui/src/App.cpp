@@ -2384,6 +2384,35 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         save->SetOnClick([this] { OnSettingsSave(); });
         panel->AddChild(std::move(save));
 
+        // 「关闭」：允许不看就退出设置面板（比如只是想看一眼）。
+        // ★ 死胡同防护：关闭时若**没有任何 live 会话**，转录区补一条引导通知
+        //   ——composer 会回来，发送得到「只记录」的诚实降级，而不是无声空白。
+        auto closeBtn = std::make_unique<ECDI::Button>("关闭");
+        closeBtn->SetTextColor(kDarkInk);
+        closeBtn->SetFont(harness::SansFont(14.0f));
+        closeBtn->SetStyle(ECDI::ButtonStyleOverride{
+            .background = kPanel2,
+            .border = kLine,
+            .borderWidth = 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kToolHeaderHover});
+        closeBtn->SetSize(140, 30);
+        closeBtn->SetOnClick([this] {
+            SetSettingsVisible(false);
+            bool anyLive = false;
+            for (const auto& sp : m_sessions) {
+                if (sp->originKind == "live") { anyLive = true; break; }
+            }
+            if (!anyLive && m_sess) {
+                AddNoticeRow("[未连接提供商：用 ··· 菜单的「设置」填写连接信息]",
+                             kDarkMuted);
+                Relayout();
+                RequestRepaint();
+            }
+        });
+        panel->AddChild(std::move(closeBtn));
+
         auto hint = std::make_unique<ECDI::Label>("");
         m_hud.settingsHint = hint.get();
         hint->SetTextColor(kDarkMuted);
@@ -7963,29 +7992,41 @@ bool HarnessApp::ResolveCoreExecutable(std::filesystem::path& out) const {
         }
         return false;
     }
-    // ② 开发布局：仓库根跑 GUI ⇒ core/bin/ecdi-core.exe 相对 cwd
-    // ③ 安装布局：exe 同目录 / 同目录下的 core/bin/
-    const fs::path candidates[] = {
-        fs::path("core/bin/ecdi-core.exe"),
-    };
-    for (const auto& c : candidates) {
-        std::error_code ec;
-        if (fs::exists(c, ec)) {
-            out = fs::weakly_canonical(c, ec);
-            return !ec && fs::exists(out);
+    // ②③ 从 cwd 与 exe 目录**向上找祖先**：core/bin/ecdi-core.exe。
+    //   ★ 为什么必须向上走（2026-10-24 用户实测抓到）：双击 exe 的默认 cwd =
+    //     exe 所在目录（gui/build/Release），仓库根布局的 core/bin/ 在**三级之上**
+    //     ⇒ 只查 cwd 和 exeDir 两个固定点，双击场景永远找不到 ⇒ 自动连接失败、
+    //     首启面板里保存也失败（同一函数）⇒ "会话没有输入框"的死胡同。
+    //     祖先上溯（≤6 级）同时覆盖：仓库根跑 / Release 目录双击 / 安装布局平铺。
+    auto findUpward = [](const fs::path& start) -> std::filesystem::path {
+        fs::path dir = fs::absolute(start);
+        for (int i = 0; i < 6 && !dir.empty(); ++i) {
+            const fs::path cand = dir / "core" / "bin" / "ecdi-core.exe";
+            std::error_code ec;
+            if (fs::exists(cand, ec) && !fs::is_directory(cand, ec)) {
+                return fs::weakly_canonical(cand, ec);
+            }
+            const fs::path flat = dir / "ecdi-core.exe";
+            if (fs::exists(flat, ec) && !fs::is_directory(flat, ec)) {
+                return fs::weakly_canonical(flat, ec);
+            }
+            const fs::path parent = dir.parent_path();
+            if (parent == dir) break;
+            dir = parent;
         }
+        return {};
+    };
+    if (std::filesystem::path found = findUpward("."); !found.empty()) {
+        out = found;
+        return true;
     }
     wchar_t exeDirBuf[MAX_PATH];
     const DWORD n = GetModuleFileNameW(nullptr, exeDirBuf, MAX_PATH);
     if (n > 0 && n < MAX_PATH) {
-        const fs::path exeDir = fs::path(exeDirBuf).parent_path();
-        for (const fs::path& c : {exeDir / L"ecdi-core.exe",
-                                  exeDir / L"core/bin/ecdi-core.exe"}) {
-            std::error_code ec;
-            if (fs::exists(c, ec)) {
-                out = c;
-                return true;
-            }
+        if (std::filesystem::path found = findUpward(fs::path(exeDirBuf).parent_path());
+            !found.empty()) {
+            out = found;
+            return true;
         }
     }
     return false;

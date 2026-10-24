@@ -317,4 +317,6 @@ M4 投影缺失→first-run 红[scroll+composer 未腾槽]）+ clean 全绿；�
 232 delta；seqGaps=0/violations=0/unknownKinds=0；usage 真值 12134）——A8 归档
 `evals/p35-deepseek-noarg-live-1.json`。密钥零泄漏复核（tracked 文件 grep = 0）。
 
+**R-11（用户实测抓到，同日修）**：双击 exe 的默认 cwd = `gui/build/Release`，`ResolveCoreExecutable` 只查 cwd 和 exe 目录两个固定点 ⇒ 找不到仓库根布局的 `core/bin/ecdi-core.exe` ⇒ 自动连接失败、首启面板里保存也失败（同一函数）⇒ **"会话没有输入框"的死胡同**（设置面板占满中栏、保存又永远失败）。修法 = 从 cwd 与 exe 目录**向上找祖先**（≤6 级，同时覆盖仓库根跑 / Release 目录双击 / 平铺安装布局），已用"无 corePath 的配置 + Release 目录启动"的截图实测连通；面板另加「关闭」按钮（无 live 会话时补引导通知，composer 回归、发送得到诚实的「只记录」降级——不是无声空白）。★ 教训：无参启动的**验收截图全在仓库根 cwd 下跑的**，双击场景（exe 目录 cwd）一次都没拍过——"能跑"的路径覆盖 ≠ 用户实际路径覆盖。
+
 **登记未做**：`--settings-probe` 未接入 `tools/regress.py`（第 14 条探针，同前）；R-5 的 87 成因；设置界面暂不暴露 context 字段（真值纪律下 0 = 不发 hello.context，GUI 显示 —）。
