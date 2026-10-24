@@ -319,4 +319,6 @@ M4 投影缺失→first-run 红[scroll+composer 未腾槽]）+ clean 全绿；�
 
 **R-11（用户实测抓到，同日修）**：双击 exe 的默认 cwd = `gui/build/Release`，`ResolveCoreExecutable` 只查 cwd 和 exe 目录两个固定点 ⇒ 找不到仓库根布局的 `core/bin/ecdi-core.exe` ⇒ 自动连接失败、首启面板里保存也失败（同一函数）⇒ **"会话没有输入框"的死胡同**（设置面板占满中栏、保存又永远失败）。修法 = 从 cwd 与 exe 目录**向上找祖先**（≤6 级，同时覆盖仓库根跑 / Release 目录双击 / 平铺安装布局），已用"无 corePath 的配置 + Release 目录启动"的截图实测连通；面板另加「关闭」按钮（无 live 会话时补引导通知，composer 回归、发送得到诚实的「只记录」降级——不是无声空白）。★ 教训：无参启动的**验收截图全在仓库根 cwd 下跑的**，双击场景（exe 目录 cwd）一次都没拍过——"能跑"的路径覆盖 ≠ 用户实际路径覆盖。
 
+**R-12（用户实测抓到，同日修）**：设置面板**从未 SetSize** ——布局契约 F2/D9"只管摆位不管尺寸" + VerticalLayout(fillCrossAxis=false) 不拉伸 ⇒ 面板 0×0，`IsVisible()==true` 但画不出任何东西。用户看到的"点击设置没浮窗"和更早的"首启没有输入框"是**同一个缺陷的两面**（中栏：scroll/composer 藏了、面板零尺寸 ⇒ 一片空白）。修法 = 显式 `SetSize(560, 400)`；探针 first-run 相增加**几何判据**（GetWidth/GetHeight 回读，<400×<300 判红）——`IsVisible()` 只是标志，看不见像素。截图实证后 probe 5 相全绿、全量回归 PASS。★ 教训是 0c/STEP2 那条老账的第三次出现：模型侧回读（IsVisible/GetText）看不见几何，**面板类 UI 的首秀必须截图**。
+
 **登记未做**：`--settings-probe` 未接入 `tools/regress.py`（第 14 条探针，同前）；R-5 的 87 成因；设置界面暂不暴露 context 字段（真值纪律下 0 = 不发 hello.context，GUI 显示 —）。

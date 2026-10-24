@@ -2334,6 +2334,11 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         panel->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
         panel->SetStyle(ECDI::PanelStyleOverride{
             .background = m_options.probeContrast ? kProbeBg : kSidebarBg});
+        // ★ 显式尺寸——布局契约 F2/D9 是"只管摆位不管尺寸"，VerticalLayout
+        //   (fillCrossAxis=false) 不给子控件拉伸 ⇒ 不 SetSize 的面板 = 0×0，
+        //   IsVisible()==true 但画不出任何东西（用户看到的中栏空白）。几何必须
+        //   由创建者给定；探针的 first-run 相现在同时回读 GetWidth/GetHeight。
+        panel->SetSize(560, 400);
 
         auto addLabel = [&panel](const std::string& text) {
             auto l = std::make_unique<ECDI::Label>(text);
@@ -6433,6 +6438,18 @@ void HarnessApp::RunSettingsProbe() {
             std::string bad;
             if (!m_hud.settingsPanel || !m_hud.settingsPanel->IsVisible()) {
                 bad = "settings panel not visible on first run (config file absent)";
+            }
+            // ★ 几何判据：IsVisible() 只是标志——0×0 的面板"可见"但画不出任何东西
+            //   （2026-10-25 用户实测：首启中栏全空白）。宽度/高度必须同时回读。
+            if (m_hud.settingsPanel &&
+                (m_hud.settingsPanel->GetWidth() < 400 ||
+                 m_hud.settingsPanel->GetHeight() < 300)) {
+                bad = bad.empty()
+                          ? "settings panel has degenerate geometry (" +
+                                std::to_string(m_hud.settingsPanel->GetWidth()) + "x" +
+                                std::to_string(m_hud.settingsPanel->GetHeight()) +
+                                ") -- invisible despite IsVisible()"
+                          : bad + "; panel degenerate geometry";
             }
             // ★ 独立判（不能写成 !bad.empty() && ——那会让"面板默认可见"的
             //   实现连带着跳过本条，投影缺失（M4）就永远不可观测）。
