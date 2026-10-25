@@ -51,6 +51,8 @@
 #include "ECDI/Window/CaptionBar.h"
 
 #include "Theme.h"
+#include "ThemeUsing.h"    // ★ 2026-10-25：主题令牌短名收口（原文件级 52 条 using）
+#include "AppInternal.h"   // ★ 2026-10-25：跨 TU 共享的路径转换与几何常量
 #include "UiKit.h"
 #include "ThemedCaptionBar.h"
 
@@ -67,33 +69,13 @@
 
 namespace {
 
-std::string Utf8FromWidePath(const std::wstring& value) {
-    if (value.empty()) return {};
-    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
-                                         static_cast<int>(value.size()), nullptr, 0,
-                                         nullptr, nullptr);
-    if (size <= 0) return {};
-    std::string out(static_cast<size_t>(size), '\0');
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
-                            static_cast<int>(value.size()), out.data(), size,
-                            nullptr, nullptr) != size) return {};
-    return out;
-}
-
-std::wstring WideFromUtf8Path(const std::string& value) {
-    if (value.empty()) return {};
-    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                                         static_cast<int>(value.size()), nullptr, 0);
-    if (size <= 0) return {};
-    std::wstring out(static_cast<size_t>(size), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
-                            static_cast<int>(value.size()), out.data(), size) != size) return {};
-    return out;
-}
-
-std::string PathToUtf8(const std::filesystem::path& value) {
-    return Utf8FromWidePath(value.native());
-}
+// ★★ 2026-10-25：路径转换三兄弟搬到 `PathUtil.cpp`（`harness::internal`）。
+//   为什么必须搬：它们原本是这个 TU 的**内部链接** helper，而拆分后
+//   Probe*.cpp 也要转路径（RunWorkspaceProbe / RunMenuProbe / RunHistoryProbe）。
+//   这里只留短名 ⇒ App.cpp 里 200+ 个调用点一个字都不用改。
+using harness::internal::Utf8FromWidePath;
+using harness::internal::WideFromUtf8Path;
+using harness::internal::PathToUtf8;
 
 // ★★ 2026-10-20：路径的**中间**省略（保留头与尾）。
 //   为什么必须保留尾部：`ECDI::Label` 对超宽文本是**尾部丢弃**（单行 DrawText 裁剪），
@@ -137,7 +119,8 @@ constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C �
 // ★★ P4 Phase A（2026-10-25）：转录贴底判定阈值。此前是 FollowTailIfPinned 里的
 //   内联 60；「跳到最新」按钮的显隐与贴底跟随共用同一条语义（离开底部多少算
 //   "翻上去了"），抽成常量避免两处各写一个数日后漂移。
-constexpr int kPinThreshold = 60;    // 距底 ≤ 此值 = 贴底（跟随新行 / 按钮隐藏）
+//   ★ 2026-10-25：定义移到 `AppInternal.h`（探针 TU 也要用同一条阈值），此处只留短名。
+using harness::internal::kPinThreshold;
 // 「跳到最新」按钮尺寸（视口右下角浮层；原型 F 条）。
 constexpr int kJumpBtnW = 104;
 constexpr int kJumpBtnH = 30;
@@ -154,14 +137,16 @@ const ECDI::Color kTooltipInk = ECDI::Color::FromRGBA8(240, 241, 245);
 //   ★ 行高 28 与原型 C 的 navitem 同高；行间距 4（比正文的 10 紧，列表才有"一列"的感觉）。
 constexpr int kSidebarListW = 172;
 constexpr int kSidebarRowW = 158;
-constexpr int kSidebarRowH = 28;
+// ★ 2026-10-25：行高与标题行高移到 `AppInternal.h`（--sidebar-probe 要量这两条），此处留短名。
+using harness::internal::kSidebarRowH;
 constexpr int kSidebarRowGap = 4;
 constexpr int kSidebarNameW = 106;   // 22(dot 右缘) → 128，给右侧 18px 删除钮留 6px 间隙
 constexpr int kSidebarMaxRows = 4;
 // ★★ 2026-10-20：工作区分组标题行的高度。
 //   比会话行（28）矮得多：它是**分隔**，不是条目。若与行同高，列表中“工作区”与
 //   “会话”就会长得一样高，用户无法从尺寸上区分两层结构。
-constexpr int kSidebarGroupH = 18;   // 标题行高（分隔的高度，不带"条目"语义）
+// ★ 2026-10-25：定义移到 `AppInternal.h`（探针与产品侧共用同一条行高）。
+using harness::internal::kSidebarGroupH;   // 标题行高（分隔的高度，不带"条目"语义）
 
 // 视觉令牌唯一来源 = Theme.h（2026-10-06 v6：对齐用户高保真模型）
 // ★★ 本 GUI 支持的协议主版本上限（协议 §9；2026-10-14 v2 落地）。
@@ -169,58 +154,8 @@ constexpr int kSidebarGroupH = 18;   // 标题行高（分隔的高度，不带"
 //   ★ 改这一处 = 声明支持新的主版本——与 `protocol/PROTOCOL.md` §9 的表格**必须同步**。
 constexpr int kProtocolMaxSupported = 4;   // v4（P3.6）：model 热切换 + usage.context
 
-using harness::kDarkInk;
-using harness::kDarkMuted;
-using harness::kDarkAccent;
-using harness::kAccentInk;
-using harness::kOkDark;
-using harness::kRunDark;
-using harness::kErrorDark;
-using harness::kWarn;
-using harness::kWarnInk;
-using harness::kSidebarBg;
-using harness::kContentBg;
-using harness::kInspBg;
-using harness::kPanel2;
-using harness::kLine;
-using harness::kUserBg;
-using harness::kUserBorder;
-using harness::kUserInk;
-using harness::kToolBg;
-using harness::kToolBorder;
-using harness::kToolHeaderBg;
-using harness::kToolHeaderHover;
-using harness::kToolHeaderPressed;
-using harness::kToolHeaderBorder;
-using harness::kReasoningBg;
-using harness::kReasoningBorder;
-using harness::kReasoningHeaderBg;
-using harness::kReasoningHover;
-using harness::kReasoningInk;
-using harness::kAskBg;
-using harness::kAskBorder;
-using harness::kAskQInk;
-using harness::kDenyInk;
-using harness::kDenyHover;
-using harness::kAllowHover;
-using harness::kCardBg;
-using harness::kCardBorder;
-using harness::kBtnPrimary;
-using harness::kBtnPrimaryHover;
-using harness::kBtnPrimaryPressed;
-using harness::kBtnPrimaryInk;
-using harness::kBtnNeutralBg;
-using harness::kBtnNeutralBorder;
-using harness::kBtnDenyBg;
-using harness::kTrackBg;
-using harness::kRingTrack;
-using harness::kDarkPillBg;
-using harness::kRadiusCard;
-using harness::kRadiusTool;
-using harness::kRadiusCard2;
-using harness::kRadiusBtn;
-using harness::kRadiusPill;
-using harness::kMonoFamily;
+// ★ 2026-10-25：主题令牌短名（52 条 using）已收口到 `ThemeUsing.h`——
+//   拆分后每个新 TU 都要这组短名，复制 5 遍迟早漂移。见该头文件的说明。
 
 // ══════════════════════════════════════════════════════════════════
 // ★ 探针专用高对比配色（2026-10-08）——--probe-contrast
