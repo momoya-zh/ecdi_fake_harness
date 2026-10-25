@@ -138,6 +138,10 @@ constexpr int kPinThreshold = 60;    // 距底 ≤ 此值 = 贴底（跟随新�
 // 「跳到最新」按钮尺寸（视口右下角浮层；原型 F 条）。
 constexpr int kJumpBtnW = 104;
 constexpr int kJumpBtnH = 30;
+// ★★ P4 E：tooltip 配色（深底浅字——两主题通用，不进 g_theme：它是浮层
+//   系统的固定视觉，不是随主题走的表面色）。
+constexpr int kTooltipDelayMs = 400;
+const ECDI::Color kTooltipInk = ECDI::Color::FromRGBA8(240, 241, 245);
 
 // ★★ Step 1（2026-10-19）：侧栏会话列表的几何。
 //   ★ 为什么行宽是 158 而不是容器的 172：`ScrollView` 的垂直条一旦出现，
@@ -340,6 +344,10 @@ void HarnessApplication::OnTimer(const ECDI::TimerEvent& event) {
         //   offset 没变就返回）。拖滚动条滑块没有事件回调，靠 caret 闪烁定时器
         //   的节拍兜底是唯一覆盖口——故放在定时器 id 分流**之前**。
         m_owner->DirtyRefreshJumpButton();
+        if (event.GetTimerId() == HarnessApp::kTooltipTimer) {
+            m_owner->OnTooltipFire();   // ★ P4 E：400ms 到点，显示 tooltip
+            return;
+        }
         if (event.GetTimerId() == HarnessApp::kReplayTimer) {
             m_owner->OnReplayTick();
             return;
@@ -1951,7 +1959,10 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     //     的默认），而 Button 的水平位置由 `ButtonStyle.textAlignment` 驱动、主题
     //     缺省是 **Center**（ButtonStyle.h:36 的 C30-3）——所以这里显式写 Left，
     //     否则字形会从 22px 宽的左边缘挪到中间，与改前的截图对不上。
-    auto menu = std::make_unique<ECDI::Button>("≡");
+    auto menu = std::make_unique<uikit::TipButton>(
+        "≡", "侧栏显隐（Ctrl+B）",
+        [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+        [this](uikit::TipButton*) { HideTooltip(); });
     menu->SetTextColor(kDarkMuted);
     // ★ 不调 SetFont：原 `Label("≡")` 用的是**主题默认字体**（TextWidget 的
     //   TextStyle 缺省），Button 的 `ApplyTheme` 同样先走 `TextWidget::ApplyTheme`
@@ -2078,7 +2089,10 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     //   【为什么这里可以调 SetFont 而 `≡` 不行】`≡` 的 bug 是"用了与主题缺省不同
     //   的 family 导致字形漂移"；本钮显式指定 `SansFont`，两侧（深/浅）都按同一
     //   规则现算，不存在"和谁不一样"的问题。
-    auto themeBtn = std::make_unique<ECDI::Button>("主题");
+    auto themeBtn = std::make_unique<uikit::TipButton>(
+        "主题", "深色 / 浅色切换",
+        [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+        [this](uikit::TipButton*) { HideTooltip(); });
     m_hud.themeToggle = themeBtn.get();
     themeBtn->SetTextColor(kDarkInk);
     themeBtn->SetStyle(ECDI::ButtonStyleOverride{
@@ -2329,7 +2343,12 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         enum class HeadAct { Export, Inspector, Menu };
         auto mkAct = [&head, this](const std::string& text, const std::string& tip,
                                    HeadAct act) {
-            auto b = std::make_unique<ECDI::Button>(text);
+            // ★★ P4 E：tip 参数终于有了去处（此前 `(void)tip` 闲置——ECDI 无
+            //   tooltip 控件，mkAct 一直带着它等今天）。
+            auto b = std::make_unique<uikit::TipButton>(
+                text, tip,
+                [this](uikit::TipButton* tb) { ShowTooltipFor(tb, tb->tip()); },
+                [this](uikit::TipButton*) { HideTooltip(); });
             b->SetTextColor(kDarkMuted);
             b->SetFont(harness::SansFont(harness::kFontSmall));
             // ★ 指示符顺序必须照抄 `ButtonStyleOverride` 的成员声明顺序
@@ -2788,6 +2807,25 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     if (settingsSheetOwned) {
         m_hud.settingsPanel->SetVisible(false);   // 显隐统一走 ApplySettingsVisibility
         scroll->AddChild(std::move(settingsSheetOwned));
+    }
+    // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层——最后子 = 最上层（盖过
+    //   jump/遮罩/sheet）。隐藏态常驻，TipButton enter 起 400ms 定时器后显示。
+    {
+        auto tip = std::make_unique<ECDI::Panel>();
+        m_hud.tooltip = tip.get();
+        tip->SetVisible(false);
+        tip->SetStyle(ECDI::PanelStyleOverride{
+            .background = kDarkInk,
+            .cornerRadius = kRadiusBtn,
+            .borderWidth = 0.0f});
+        auto txt = std::make_unique<ECDI::Label>();
+        m_hud.tooltipText = txt.get();
+        txt->SetTextColor(kTooltipInk);
+        txt->SetFont(harness::SansFont(harness::kFontSmall));
+        txt->SetSize(400, 16);
+        txt->SetPosition(8, 5);
+        tip->AddChild(std::move(txt));
+        scroll->AddChild(std::move(tip));
     }
     m_counting->AddChild(std::move(scroll));
 
@@ -10063,6 +10101,50 @@ void HarnessApp::RefreshJumpButton() {
 void HarnessApp::DirtyRefreshJumpButton() {
     if (!m_scroll || !m_hud.jumpLatest) return;
     if (m_scroll->GetScrollOffsetY() != m_jumpLastOffsetY) RefreshJumpButton();
+}
+
+// ── ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层 ─────────────────────
+// ECDI 无 Tooltip 原语（源码仓核实：TrayIcon szTip 是唯一同名物）——harness 拼：
+// TipButton（UiKit）回调 enter/leave，这里管单例浮层 + 400ms 延迟定时器。
+// ★ 定位纪律：锚点坐标一律 GetAbsolutePosition（不手算父链，App.cpp:4274 同款）；
+//   顶栏/中栏头按钮在视口上方 ⇒ y 钳到 0（浮层挂 m_scroll，负 y 会被视口裁剪）。
+void HarnessApp::ShowTooltipFor(const ECDI::Widget* anchor, const std::string& text) {
+    if (!anchor || !m_window) return;
+    m_tooltipAnchor = anchor;
+    m_tooltipPending = text;
+    m_window->GetPlatformWindow().StartTimer(kTooltipTimer, kTooltipDelayMs);
+}
+
+void HarnessApp::HideTooltip() {
+    if (m_window) m_window->GetPlatformWindow().StopTimer(kTooltipTimer);
+    m_tooltipAnchor = nullptr;
+    m_tooltipPending.clear();
+    if (m_hud.tooltip) m_hud.tooltip->SetVisible(false);
+}
+
+void HarnessApp::OnTooltipFire() {
+    if (!m_hud.tooltip || !m_hud.tooltipText || !m_tooltipAnchor || !m_scroll) {
+        return;
+    }
+    if (m_window) m_window->GetPlatformWindow().StopTimer(kTooltipTimer);
+    // 定时器期间锚点可能已脱树（整树重建）——IsInTree 没有公开口，用宽度/父链
+    // 兜底：GetParent 为空的根除外……直接按绝对坐标定位，锚点已析构的情况由
+    // HideTooltip（leave 先于析构）与重建路径（BuildUi 后浮层隐藏）兜住。
+    const ECDI::Point a = m_tooltipAnchor->GetAbsolutePosition();
+    const ECDI::Point s = m_scroll->GetAbsolutePosition();
+    m_hud.tooltipText->SetText(m_tooltipPending);
+    const int w = std::clamp<int>(static_cast<int>(m_tooltipPending.size()) * 7 + 20,
+                                  48, m_scroll->GetWidth());
+    const int h = 26;
+    int x = static_cast<int>(a.x) - static_cast<int>(s.x);
+    int y = static_cast<int>(a.y) + m_tooltipAnchor->GetHeight() + 6 -
+            static_cast<int>(s.y);
+    x = std::clamp(x, 0, std::max(0, m_scroll->GetWidth() - w));
+    y = std::clamp(y, 0, std::max(0, m_scroll->GetHeight() - h));
+    m_hud.tooltipText->SetSize(w - 16, 16);
+    m_hud.tooltip->SetSize(w, h);
+    m_hud.tooltip->SetPosition(x, y);
+    m_hud.tooltip->SetVisible(true);
 }
 
 void HarnessApp::RequestRepaint() {

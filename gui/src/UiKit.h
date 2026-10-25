@@ -20,7 +20,11 @@
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/Panel.h"
+// ★ P4 E：TipButton 需要 Button 完整类型 + 合成鼠标事件（override 形参）。
+#include "ECDI/Widget/Button.h"
+#include "ECDI/EventSystem/Input/Mouse/MouseButtonDownEvent.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -144,5 +148,42 @@ inline void WarnZeroSized(const ECDI::Widget& w, const std::string& path = "root
         WarnZeroSized(*w.GetChildAt(i), path + "/" + std::to_string(i));
     }
 }
+
+// ★★ P4 Phase E（2026-10-25）：带 tooltip 的按钮。
+//   ECDI 无 Tooltip 原语（源码仓核实：只有 TrayIcon 的 szTip），OnMouseEnter/
+//   OnMouseLeave 是 protected virtual ⇒ 挂提示只能子类化。enter/leave/点击经
+//   std::function 回调宿主（App 的单例浮层 + 延迟定时器），UiKit 不依赖 App。
+//   ★ 框架侧 REQ（组件级 Tooltip）已评估待登记——harness 拼 ≈ 80 行，其中
+//   大半在管"单例浮层 + 定时器"，那正是框架该收走的部分。
+class TipButton : public ECDI::Button {
+public:
+    TipButton(const std::string& text, std::string tip,
+              std::function<void(TipButton*)> onEnter,
+              std::function<void(TipButton*)> onLeave)
+        : ECDI::Button(text), m_tip(std::move(tip)),
+          m_onEnter(std::move(onEnter)), m_onLeave(std::move(onLeave)) {}
+
+    const std::string& tip() const noexcept { return m_tip; }
+
+protected:
+    void OnMouseEnter() override {
+        ECDI::Button::OnMouseEnter();
+        if (m_onEnter) m_onEnter(this);
+    }
+    void OnMouseLeave() override {
+        ECDI::Button::OnMouseLeave();
+        if (m_onLeave) m_onLeave(this);
+    }
+    // 点击即隐藏（提示的使命到点击为止；进入按下态后提示会挡住反馈）。
+    void OnMouseButtonDown(const ECDI::MouseButtonDownEvent& event) override {
+        if (m_onLeave) m_onLeave(this);
+        ECDI::Button::OnMouseButtonDown(event);
+    }
+
+private:
+    std::string m_tip;
+    std::function<void(TipButton*)> m_onEnter;
+    std::function<void(TipButton*)> m_onLeave;
+};
 
 } // namespace uikit

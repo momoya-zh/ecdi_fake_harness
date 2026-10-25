@@ -361,10 +361,18 @@ public:
     // ★★ P4 Phase B：检视栏显隐的唯一入口（中栏头 `≡` 按钮与 Ctrl+I 共用；
     //   抽出前逻辑内联在按钮回调里，全局键没有可复用的路径）。
     void ToggleInspector();
+    // ★★ P4 Phase E：tooltip 单例浮层。ShowTooltipFor 记锚点 + 起 400ms 定时器
+    //   （kTooltipTimer 到点才显示——TipButton::OnMouseEnter 调）；leave/点击
+    //   即 HideTooltip。浮层挂 m_scroll（最后子 = 最上层）。
+    void ShowTooltipFor(const ECDI::Widget* anchor, const std::string& text);
+    void HideTooltip();
+    // kTooltipTimer 到点：若锚点仍在（未 leave），定位并显示浮层。
+    void OnTooltipFire();
 
     static constexpr int kReplayTimer = 100;   // ~30Hz（33ms）
     static constexpr int kCloseTimer = 101;    // --auto-close
     static constexpr int kSweepTimer = 102;   // --scroll-sweep 步进
+    static constexpr int kTooltipTimer = 103; // ★ P4 E：tooltip 400ms 延迟
 
 private:
     // 顶栏 / 侧栏 / 检查器 / 状态栏里的动态文本（非拥有——Widget 树所有）
@@ -480,6 +488,10 @@ private:
         //     moreMenu 的注释，那里记了为什么不能用浮层）。ScrollView 内部
         //     恰好是「无布局、手动定位」的口子，正好承载浮层。
         ECDI::Button* jumpLatest = nullptr;   // 视口右下角浮层（显隐 = 离开贴底态）
+        // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层（Panel+Label 挂 m_scroll
+        //   最后子 = 最上层；ECDI 无 Tooltip 原语，harness 拼——见 UiKit::TipButton）。
+        ECDI::Panel* tooltip = nullptr;           // 浮层壳（隐藏态常驻）
+        ECDI::Label* tooltipText = nullptr;       // 提示文本（SetText 换文案）
         // ★★ P4 Phase C（2026-10-25）：空状态引导卡（挂 m_content 顶部）。
         //   ★ 空转录（rows 0 且无 pending 气泡）⇒ 显示；任何行/pending 到达即拆。
         //   ★ 修的死胡同：首启（firstRun）关掉设置面板后屏幕全空（App.cpp 原注释
@@ -1847,6 +1859,9 @@ private:
     std::vector<EmptyProbeRec> m_emptyProbeLog;
     bool m_emptyProbeDone = false;
     void RunEmptyProbe();
+    // ★★ P4 E：tooltip 延迟态（定时器在飞 = armed；到点显示）。
+    const ECDI::Widget* m_tooltipAnchor = nullptr;   // 待显示锚点（TipButton）
+    std::string m_tooltipPending;                    // 待显示文案
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
     //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），
