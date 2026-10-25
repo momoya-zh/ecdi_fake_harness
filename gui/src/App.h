@@ -46,6 +46,7 @@
 
 // ★ 2026-10-25（Stage 3 刀①）：命令行选项已搬到 `CliOptions.h`（逐字节未改）。
 #include "CliOptions.h"
+#include "ProbeTypes.h"
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
 
@@ -1087,12 +1088,6 @@ private:
     //   {send 使能, stop 使能, send 标题} 时记一行 ⇒ 摘要里是一份**状态翻转轨迹**。
     //   ★ 只在**变化时**记录（否则 30Hz 下会记几千行相同内容，摘要不可读）。
     //   ★ 与 core 的 `state` 并排输出 ⇒ 可逐行核对「state:X ⇒ 按钮使能应为 Y」。
-    struct StateProbeRec {
-        std::string coreState;   // 本次观察时的 core state（来自活动会话）
-        bool sendEnabled = true;
-        bool stopEnabled = false;
-        std::string sendTitle;   // Button::GetText()——标题文本直接回读，不靠像素
-    };
     std::vector<StateProbeRec> m_stateProbeLog;
     bool m_stateProbeLastValid = false;            // 是否已有「上次」可比
     bool m_stateProbeLastSend = true;
@@ -1103,18 +1098,6 @@ private:
     //   两者是 REQ-04 的**两个不同断言**——前者为真**推不出**后者（命中门控是另一段代码，
     //   `Widget.cpp:188/195`），故必须单独取证。
     //   ★ 每条 = {场景, 坐标, 使能, 命中者是否==发送按钮, 命中者类型, 点击是否达}。
-    struct HitProbeRec {
-        std::string scene;           // as-is / off-point / forced-enabled / forced-disabled
-        int px = 0;                  // 本场景的客户区坐标（可复核）
-        int py = 0;
-        bool sendEnabled = false;    // 本场景下发送按钮的真实 IsEnabled()
-        bool hitIsSend = false;      // HitTest 返回的是否**正是**发送按钮
-        bool hitIsNull = false;      // HitTest 是否返回 nullptr
-        bool hitIsRoot = false;      // 命中者是否**就是 RootWidget**（禁用后被跳过的典型落点）
-        bool hitConsumes = false;    // 命中者是否 `ConsumesMouseInput()`（D9：可交互判据）
-        std::string hitClass;        // 命中者类型名（"(null)" / Widget / Button / …）
-        bool clickReached = false;   // 合成 Down+Up 后 SendPrompt 是否被进入
-    };
     std::vector<HitProbeRec> m_hitProbeLog;
     int m_hitProbeSendCalls = 0;      // SendPrompt 进入次数（探针期间唯一观测通道）
     bool m_hitProbeActive = false;    // 探针执行中：SendPrompt 只计数、零副作用
@@ -1129,13 +1112,6 @@ private:
     //   不能证明"点一下真的翻了、再点一下真的回去了"。故沿用 `--hit-probe` 的做法：
     //   合成点击走真实派发链，把**状态轨迹**写成机读读数。
     //   ★ 每条 = {阶段, 标题文本, 折叠体是否展开, 内容是否可见, 行高}。
-    struct ReasoningProbeRec {
-        std::string phase;        // default / after-click-1 / after-click-2
-        std::string headerText;   // Button::GetText()——箭头与两态文本都在里面
-        bool expanded = false;    // CollapsiblePanel::IsExpanded()
-        bool contentVisible = false;  // 折叠体内容容器 IsVisible()
-        int panelH = 0;           // 行高（展开应显著变大）
-    };
     std::vector<ReasoningProbeRec> m_reasoningProbeLog;
     // ★ 跨 tick 推进的状态机（不能在一个 tick 内做完——见 RunReasoningProbe 注释）
     int m_reasoningProbeStep = 0;
@@ -1159,17 +1135,6 @@ private:
     //     ③ noticeLoss —— 若模型只存块、不存通知，重建会丢几行（这一项用「模型里实际
     //        记下的通知条数」直接给出，说明第 ② 组之外**还有**一类损失，非零才证明
     //        通知进模型这件事是承重的）。
-    struct RebuildProbeRec {
-        std::string phase;                 // forward / lexicographic / forward-restore
-        size_t rowCount = 0;               // 重建后行数
-        size_t beforeCount = 0;            // 重建前行数（两者不等 ⇒ 丢了/多了行）
-        size_t timelineCount = 0;          // 模型条目数
-        size_t mismatches = 0;             // 与重建前快照不同的行数（含长度差）
-        size_t orderMismatches = 0;        // 其中属于**次序/条目**不同的行数
-        std::string firstDivergence;       // 首个分歧的可复读写形（空 = 无分歧）
-        int scrollOffset = 0;              // 重建后恢复到的滚动偏移
-        int maxScrollOffset = 0;
-    };
     std::vector<RebuildProbeRec> m_rebuildProbeLog;
     // 重建前快照（一行一条，`\x1f` 分隔字段——比对用，不进摘要原文）
     std::vector<std::string> m_rebuildProbeBefore;
@@ -1210,13 +1175,6 @@ private:
     //     ③ back     —— 切回会话 0，行数必须回到 baseline（**往返无损**）。
     //   ★ 只在**回放**模式跑：live 模式新建会话会真拉一个 core 子进程，
     //     探针不该在测量里制造真进程（仪器污染实验，条 57③）。
-    struct SessionProbeRec {
-        std::string phase;        // baseline / new / back
-        size_t sessionCount = 0;  // 当时的会话总数
-        size_t activeIndex = 0;   // 当时的活动会话下标
-        size_t rowCount = 0;      // 视图行数（含通知行）
-        size_t blockRowCount = 0; // 其中**块行**数 —— 负对照的关键：新会话必须为 0
-    };
     std::vector<SessionProbeRec> m_sessionProbeLog;
     bool m_sessionProbeDone = false;
     void RunSessionProbe();
@@ -1226,45 +1184,12 @@ private:
     //   不涉及动画、不涉及折叠，没有"要等 400ms settle"的东西。
     //   ★ 唯一需要等待的是 `NewSession()`：回放模式下它会 `AddNoticeRow` + `Relayout`，
     //     但这些全是同步的，故整条探针可以一轮跑完。
-    struct SidebarProbeRec {
-        std::string phase;          // baseline / rebuild / rebuild-again / negative /
-                                    // new / deleted
-        size_t rowCount = 0;        // 列表里的行数（控件侧）
-        size_t sessionCount = 0;    // 模型侧会话数
-        size_t activeIndex = 0;     // 模型侧活动下标
-        size_t selectedRows = 0;    // 行里选中态为真的个数（invariant：0 或 1）
-        size_t selectedIndex = 0;   // 选中的那一行的下标（无选中 = (size_t)-1）
-        size_t transcriptRows = 0;  // 活动会话的转录行数（删除判据的负对照）
-        // ★ Step 2：收起/展开臂的两个读数。
-        //   midWidth 是**中栏**宽度：侧栏 200px 固定，收起后中栏必须宽出正好 200。
-        //   它是"收起真的发生了"在布局层的唯一机读证据——只看 IsVisible() 会被
-        //   "隐藏了但没重新 Arrange、中栏没吃到那 200px"骗过（那就是 0c 的
-        //   "重建了但没重排"同族缺陷）。
-        int midWidth = 0;           // 中栏（CountingPanel）宽度
-        bool sidebarVisible = true; // 侧栏可见性
-        bool matched = true;        // 与对照快照逐行一致（仅 rebuild 类 phase 有意义）
-        std::string firstDivergence; // 第一处差异的行摘要（匹配时为空）
-    };
     std::vector<SidebarProbeRec> m_sidebarProbeLog;
     bool m_sidebarProbeDone = false;
     void RunSidebarProbe();
 
     // ★★ Step 3（2026-10-19）：ask 答案内容（`answer`）进模型的取证。
     //   形状同 `RunSessionProbe`：同步跑完即 Exit，不需要跨 tick（无动画参与）。
-    struct AnswerProbeRec {
-        std::string phase;          // baseline / answered / reclick / forward / negative / restored
-        size_t askRows = 0;         // 屏幕上的权限门行数
-        size_t answeredRows = 0;    // 其中已答的（RowRec::answered）
-        size_t modelAnswers = 0;    // 模型里 `answer` 非空的条目数
-        std::string answerModel;    // 模型侧此刻的答案（"allow"/"deny"/空）
-        // ★ 控件侧独立读数：**从两个钮的文字色反推**答案（不查模型）。
-        //   这是本探针非循环的关键——模型说 allow、屏幕也说 allow，才叫"答的结论
-        //   真的到了用户眼前"。ECDI 无 style getter，`GetTextColor()` 是唯一出口。
-        std::string answerOnScreen; // allow / deny / unknown / (空 = 两钮都在常态)
-        bool buttonsDisabled = false;  // 已答行的两个钮是否都置灰（不可再点）
-        bool matched = true;           // 行快照 A==B（仅 forward/negative/restored 有意义）
-        std::string firstDivergence;
-    };
     std::vector<AnswerProbeRec> m_answerProbeLog;
     bool m_answerProbeDone = false;
     void RunAnswerProbe();
@@ -1282,43 +1207,11 @@ private:
     //     相等才是对的——重建期间不该有任何重绘（拆树不画、建树不画、只有末尾
     //     `RequestRepaint` 那一帧才画）。若变小 ⇒ 计数器被清零（`SeedCounters` 没接）；
     //     若变大 ⇒ 有东西在测量窗口里偷偷重绘了（比如折叠动画、或 HUD 每 tick 刷）。
-    struct ThemeProbeRec {
-        std::string phase;       // baseline / rebuild / rebuild-again / toggle /
-                                 // toggle-back / negative / restored
-        bool light = false;      // 当前主题是否浅色（重建必须真的换色才算"换过"）
-        size_t uiRebuilds = 0;   // 累计整树重建次数（每次 +1，是"重建真的发生了"的读数）
-        // 评估计数器（重建前后必须**逐位相等**）
-        size_t paints = 0;
-        size_t frames = 0;
-        size_t frameUsTotal = 0; // frameDurationsUs 的长度——续接口是否真的把历史搬回来了
-        // 四路比对的合并结果（仅 rebuild 类 phase 有意义）
-        bool matched = true;
-        std::string firstDivergence;
-        // 分路读数，方便失败时定位是哪一路断的（不为 0 表示该路比对失败）
-        int sidebarRows = 0;
-        int transcriptRows = 0;
-        std::string inputText;
-        bool sidebarVisible = true;
-        size_t activeIndex = 0;
-        size_t sessionCount = 0;
-    };
     std::vector<ThemeProbeRec> m_themeProbeLog;
     bool m_themeProbeDone = false;
 
     // ★ 整树重建的比对面：一次 snapshot 抓齐四路。结构独立于 `ThemeProbeRec`，
     //   因为 baseline 与每次重建后都要抓，且**同一个量具**两侧共用。
-    struct UiSnapshot {
-        std::vector<std::string> sidebar;   // SnapshotSessionList()
-        std::vector<std::string> transcript;// SnapshotRows()
-        std::string inputText;              // 输入框文本
-        bool sidebarVisible = true;
-        bool light = false;
-        size_t activeIndex = 0;
-        size_t sessionCount = 0;
-        size_t paints = 0;
-        size_t frames = 0;
-        size_t frameUsTotal = 0;
-    };
     UiSnapshot SnapshotUi() const;
     // 返回四路比对的合并结果；`firstDivergence` 带**路名前缀**
     //（`sidebar:` / `transcript:` / `input:` / `state:`），失败时一眼看出断在哪。
@@ -1341,27 +1234,6 @@ private:
     // ★★ Step 5（2026-10-19）：打开历史会话的取证（--history-probe）。
     //   形状同 `RunThemeProbe`（跨 tick）：`open` 相要点真实的历史行按钮，
     //   而打开被延迟到下一个 tick（派发栈 UAF），故不能在一步里做完。
-    struct HistoryProbeRec {
-        std::string phase;          // list / open / content / at-end /
-                                    // sidecar-missing / sidecar-write / sidecar-roundtrip
-        size_t filesOnDisk = 0;     // 磁盘上真实文件数（探针自己扫一遍，不只信 UI）
-        size_t rowsOnScreen = 0;    // 历史区行数（控件侧）
-        std::string openedLabel;    // 打开后的 `Session::label`
-        std::string originKind;     // 打开后的 `Session::originKind`
-        size_t blocks = 0;          // 打开后活动会话的块数
-        size_t deltas = 0;
-        size_t messages = 0;
-        bool atEnd = false;         // `replay->Empty()`（真的跳到末尾了）
-        size_t askRows = 0;         // 屏幕上的权限门行数
-        size_t answeredRows = 0;    // 其中已答的
-        size_t modelAnswers = 0;    // 模型里 answer 非空的条目数
-        // ── sidecar 三态（缺失 / 写入 / 读回）──
-        bool sidecarExisted = false;   // 探针开始前磁盘上是否已有该 sidecar
-        bool sidecarWritten = false;   // 写侧真的落盘了吗
-        bool sidecarRemoved = false;   // 收尾是否把探针造的文件删掉（不留脏工作区）
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<HistoryProbeRec> m_historyProbeLog;
     bool m_historyProbeDone = false;
     void RunHistoryProbe();
@@ -1370,12 +1242,6 @@ private:
     //     这是 `content` 相"两条独立路径喂同一文件、读数必须一致"的一半。
     //   ★ 另一半是打开后的活动会话读数：两者都用 `Transcript::OnLine` 消费，
     //     若"打开"这条路径偷偷漏行/重放行，此处立刻不等。
-    struct ReplayDigest {
-        bool loaded = false;
-        size_t blocks = 0;
-        size_t deltas = 0;
-        size_t messages = 0;
-    };
     ReplayDigest DigestReplayFile(const std::filesystem::path& file) const;
     // 跨 tick 状态机的步号与下次允许时刻（同 `RunThemeProbe` 的形状）。
     int m_historyProbeStep = 0;
@@ -1385,19 +1251,6 @@ private:
     // 探针自己算出的真值（`content` 相的双路比对用）：
     ReplayDigest m_historyProbeDigest;
 
-    struct WorkspaceProbeRec {
-        std::string phase;
-        std::string clientId;
-        std::string path;
-        std::string pendingId;
-        size_t canonicalMatches = 0;
-        bool sendEnabled = false;
-        bool matched = true;
-        bool expectedMismatch = false;
-        // ★ §7 判据的读数：控件上的实际文案，以及「去掉后缀 == 正文且无换行」是否成立。
-        std::string bubbleText;
-        bool bubbleShapeOk = false;
-    };
     std::vector<WorkspaceProbeRec> m_workspaceProbeLog;
     // ★ 当前帧的 §7 读数（snap 时拷入 rec；只用于探针）
     std::string m_workspaceProbeBubbleText;
@@ -1414,28 +1267,6 @@ private:
 
     // ★★ 2026-10-21：中栏头 `↗`/`···` 的取证（--menu-probe）。
     //   形状照抄 `RunSidebarProbe`：同步跑完即 Exit（无动画、无跨 tick 等待）。
-    struct MenuProbeRec {
-        std::string phase;         // baseline / menu-open / menu-toggle-back /
-                                   // menu-clear / menu-clear-negative /
-                                   // export-text / export-file / export-negative
-        bool modelOpen = false;    // `m_moreMenuOpen`（模型侧）
-        bool widgetVisible = false;// `Hud::moreMenu->IsVisible()`（控件侧）
-        int headBottom = 0;        // 会话头底边（绝对坐标）
-        int scrollTop = 0;         // 转录区顶边（绝对坐标）——判"有没有占槽"就看它
-        int gap = 0;               // scrollTop - headBottom（0=菜单关 / 34=菜单开）
-        int midWidth = 0;          // 中栏宽（负对照：开关菜单不该改宽度）
-        size_t transcriptRows = 0; // `m_sess->rows.size()`
-        size_t timelineLen = 0;    // `m_sess->timeline.size()`
-        size_t exportLines = 0;    // 导出文本里以 `[` 开头的行数
-        size_t modelBlockLines = 0;// `Transcript::Blocks()`——负对照的比对面
-        size_t noticeRows = 0;     // 模型里 Notice 条目数（导出必须含有它们）
-        bool exportHasNotice = false; // 导出正文里真的出现了某条通知的原文
-        bool exportWrote = false;  // 文件真的落盘了吗
-        size_t exportBytes = 0;
-        bool exportLfOnly = false;// 行尾是 LF 而非 CRLF
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<MenuProbeRec> m_menuProbeLog;
     bool m_menuProbeDone = false;
     void RunMenuProbe();
@@ -1445,21 +1276,6 @@ private:
     //   同步跑完即 Exit。★ 它**会真的改窗口尺寸**（`SetBounds`），因此必须在
     //   `--out` 落盘之前跑完，且跑完要恢复原尺寸——否则摘要里的 paints/frames
     //   会带上探针自己制造的重排成本。
-    struct ResizeProbeRec {
-        std::string phase;        // baseline / grow / shrink / roundtrip / negative
-        int rootW = 0;            // `root` 的宽度（模型侧）
-        int rootH = 0;
-        int scrollW = 0;          // 转录视口宽
-        int scrollH = 0;          // 转录视口高（被 composer 挤压的读数就是它）
-        int captionW = 0;         // 标题栏宽（必须 == rootW）
-        int midW = 0;             // 中栏宽
-        int maxOffsetX = 0;       // > 0 ⇒ 出现横向滚动条（行比视口宽）
-        int rowWMin = 0;          // 行宽的**最小值/最大值**：所有行必须一起变宽
-        int rowWMax = 0;
-        size_t rows = 0;
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<ResizeProbeRec> m_resizeProbeLog;
     bool m_resizeProbeDone = false;
     void RunResizeProbe();
@@ -1501,14 +1317,6 @@ private:
     std::vector<std::string> m_hudTouched;      // 读过的字段名（去重不必要，逐次记）
 
     // ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。同步跑完即 Exit。
-    struct HudProbeRec {
-        std::string phase;              // hud-built / hud-built-negative
-        size_t touched = 0;             // RefreshHud 读过多少个 Hud 字段
-        size_t unbuilt = 0;             // 其中多少"从未被赋值"
-        std::string unbuiltNames;       // 逗号分隔的字段名（空 = 全覆盖）
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<HudProbeRec> m_hudProbeLog;
     bool m_hudProbeDone = false;
     void RunHudProbe();
@@ -1517,27 +1325,12 @@ private:
     //   相位：first-run 可见 / save（配置+凭据+key 不进配置文件）/
     //   session-live（保存后 live 会话拿到 hello）/ env-check（显式 env block
     //   真把变量带给子进程，用 cmd.exe /c set 直接取证）/ cleanup。
-    struct SettingsProbeRec {
-        std::string phase;
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<SettingsProbeRec> m_settingsProbeLog;
     bool m_settingsProbeDone = false;
     std::string m_settingsProbeKey;   // save 相输入的 key（判据 5 用：不得出现在配置文件）
     int m_settingsProbeStage = 0;     // 跨 tick 步进（save 点击后要等 hello 下一 tick 才到）
     std::chrono::steady_clock::time_point m_settingsProbeNextAt;
 
-    struct EnterProbeRec {
-        std::string phase;        // enter-sends / shift-enter-newline /
-                                  // enter-empty / enter-whitespace / enter-unfocused
-        size_t promptCount = 0;   // `Session::timeline` 里 user 块数量
-        std::string inputText;    // 合成按键之后输入框里的文本（"清空了吗"就是读它）
-        size_t noticeRows = 0;    // Notice 条目数（发送会追加 receipt 行）
-        bool sent = false;        // 这一相判断"发出去了"
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<EnterProbeRec> m_enterProbeLog;
     bool m_enterProbeDone = false;
     void RunEnterProbe();
@@ -1559,19 +1352,6 @@ private:
     //   **不溢出时恒等于视口高** ⇒ 框只会变高、永远缩不回来（删掉换行也不变矮）。
     //   这种实现在"长高"相里是**全绿**的，只有在"变矮"相才会红。故 `shrink` 相不是补充，
     //   它是这个功能唯一的负对照方向。
-    struct GrowProbeRec {
-        std::string phase;     // baseline / type-newline / grow / max-clamp /
-                               // resize-adapt / resize-return / send-reset / shrink / exact-fit
-        int rootH = 0;         // 当前 root 客户区高度
-        int maxInputH = 0;     // 产品按当前窗口计算的自适应上限
-        int inputH = 0;        // 输入框高（产品路径写进去的那个值）
-        int barH = 0;          // `PromptBar` 自身高
-        int lines = 0;         // 文本里的行数（`\n` 数 + 1）
-        int hintY = 0;         // 提示行 Y——判"有没有被输入框压住"
-        int buttonY = 0;       // 发送按钮 Y（同上）
-        bool matched = true;
-        std::string firstDivergence;
-    };
     std::vector<GrowProbeRec> m_growProbeLog;
     bool m_growProbeDone = false;
     void RunGrowProbe();
@@ -1587,15 +1367,6 @@ private:
     //     · after-click-again —— 再点 ⇒ 回底 ∧ 隐藏（往返闭环）。
     //     · skipped-short-fixture —— 内容装不满视口时如实记跳过（matched=false，
     //       由跑批判据豁免；不许静默绿）。
-    struct JumpProbeRec {
-        std::string phase;        // initial-consistency / after-click-tail /
-                                  // after-wheel-up / after-click-again / skipped
-        bool visible = false;     // 按钮此刻 IsVisible()
-        int offset = 0;
-        int maxOffset = 0;
-        bool matched = true;
-        std::string note;         // 判据失败原因（ASCII——省 JSON 转义）
-    };
     std::vector<JumpProbeRec> m_jumpProbeLog;
     bool m_jumpProbeDone = false;
     void RunJumpProbe();
@@ -1613,20 +1384,6 @@ private:
     //     · ctrl-n —— 会话数 +1；
     //     · passthrough —— 焦点在输入框合成 Backspace ⇒ 文本真的少一字符
     //       （负对照：拦截器若吞掉未列键，编辑路径必红）。
-    struct KeyProbeRec {
-        std::string phase;          // ctrl-b-focused / ctrl-b-unfocused / ctrl-comma /
-                                    // esc-settings / esc-priority / ctrl-n / passthrough
-        bool sidebarVisible = false;   // m_sidebarVisible（模型位）
-        bool sidebarShown = false;     // m_hud.sidebar->IsVisible()（控件位）
-        bool settingsVisible = false;
-        bool settingsShown = false;
-        bool menuOpen = false;         // m_moreMenuOpen（模型位）
-        bool menuShown = false;        // m_hud.moreMenu->IsVisible()
-        size_t sessionCount = 0;
-        std::string inputText;         // passthrough 相的输入框回读
-        bool matched = true;
-        std::string note;
-    };
     std::vector<KeyProbeRec> m_keyProbeLog;
     bool m_keyProbeDone = false;
     void RunKeyProbe();
@@ -1642,15 +1399,6 @@ private:
     //     · click-reopens —— 合成点击引导上的「打开设置」⇒ 设置重开（接线判据）；
     //     · dismiss-on-notice —— AddNoticeRow（notice 渲染唯一入口；合成协议
     //       notice 需要真 core，firstRun 场景没有）⇒ 引导被拆。
-    struct EmptyProbeRec {
-        std::string phase;
-        bool settingsVisible = false;
-        bool guideExists = false;      // m_hud.emptyGuide != nullptr
-        bool guideVisible = false;     // 控件自身位 ∧ scroll 可见（父链语义）
-        size_t rowCount = 0;
-        bool matched = true;
-        std::string note;
-    };
     std::vector<EmptyProbeRec> m_emptyProbeLog;
     bool m_emptyProbeDone = false;
     void RunEmptyProbe();
@@ -1669,26 +1417,11 @@ private:
     //     · click-row —— 合成点击一行 ⇒ 浮窗关 ∧ 「不是 live」notice（回放会话
     //       writer==null，RequestModelSwitch 如实拒绝——排队语义由 settings-probe
     //       的 switch-ok 相在 live 下验证）。
-    struct ModelProbeRec {
-        std::string phase;
-        bool popupVisible = false;
-        size_t listRows = 0;
-        bool ctxKnown = false;
-        std::string chipText;
-        std::string note;
-        bool matched = true;
-    };
     std::vector<ModelProbeRec> m_modelProbeLog;
     bool m_modelProbeDone = false;
     void RunModelProbe();
 
     // ★★ P4 Phase G（--select-probe）：选中复制判据。形状同 RunJumpProbe。
-    struct SelectProbeRec {
-        std::string phase;        // select-and-copy / negative-focus-elsewhere
-        std::string clipText;     // 回读的剪贴板（截断到 60 字节进摘要）
-        bool matched = true;
-        std::string note;
-    };
     std::vector<SelectProbeRec> m_selectProbeLog;
     bool m_selectProbeDone = false;
     void RunSelectProbe();
@@ -1696,14 +1429,6 @@ private:
     // ★★ P4（--delprov-probe）：删除所选判据。三路：
     //   dedup-load（同 id 8 份 ⇒ Load 去重剩 1）/ delete-one（2 家删所选剩 1，
     //   逐实例语义）/ keep-last（仅 1 家时拒绝删除且不崩）。
-    struct DelProvProbeRec {
-        std::string phase;
-        size_t providersBefore = 0;
-        size_t providersAfter = 0;
-        std::string hint;
-        bool matched = true;
-        std::string note;
-    };
     std::vector<DelProvProbeRec> m_delProvProbeLog;
     bool m_delProvProbeDone = false;
     void RunDelProvProbe();

@@ -133,7 +133,7 @@ std::vector<std::string> HarnessApp::SnapshotRows() const {
 //   ★ 为什么必须四路并联：整树重建的风险不是"某一处画错了"，而是"某处状态没被搬过去"。
 //     只查侧栏会漏掉转录的展开态；只查转录会漏掉输入框里的草稿；只查控件会漏掉
 //     `m_sidebarVisible` 这种只存在于模型里的状态（它没有对应的"控件属性"可读）。
-HarnessApp::UiSnapshot HarnessApp::SnapshotUi() const {
+UiSnapshot HarnessApp::SnapshotUi() const {
     UiSnapshot snap;
     snap.sidebar = SnapshotSessionList();
     snap.transcript = SnapshotRows();
@@ -208,7 +208,7 @@ HarnessApp::SidebarCompare HarnessApp::CompareUi(const UiSnapshot& before,
     return SidebarCompare{};
 }
 
-HarnessApp::RebuildProbeRec HarnessApp::CompareRows(const char* phase,
+RebuildProbeRec HarnessApp::CompareRows(const char* phase,
                                                     const std::vector<std::string>& before,
                                                     const std::vector<std::string>& after,
                                                     bool blockOnly) const {
@@ -310,7 +310,7 @@ HarnessApp::RebuildProbeRec HarnessApp::CompareRows(const char* phase,
 }
 
 // 直接回放某个文件到末尾，返回读数（**不**动活动会话、不建行、不碰 UI）。
-HarnessApp::ReplayDigest HarnessApp::DigestReplayFile(
+ReplayDigest HarnessApp::DigestReplayFile(
     const std::filesystem::path& file) const {
     ReplayDigest d;
     if (file.empty()) return d;
