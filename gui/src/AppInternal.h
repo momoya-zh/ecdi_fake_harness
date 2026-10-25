@@ -34,5 +34,11 @@ inline constexpr int kPinThreshold = 60;   // 距底 ≤ 此值 = 贴底（跟�
 inline constexpr int kSidebarRowH = 28;
 inline constexpr int kSidebarGroupH = 18;  // 分组标题行高（分隔的高度，不带"条目"语义）
 
+// ── 协议版本上限（协议 §9）──
+//   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 RouteLastMessage）。
+//   ★ 改这一处 = 声明支持新的主版本——与 `protocol/PROTOCOL.md` §9 的表格**必须同步**。
+//   ★ 两个 TU 读它：App.cpp（RouteLastMessage 判版本）+ AppSummary.cpp（摘要里记上限）。
+inline constexpr int kProtocolMaxSupported = 4;   // v4（P3.6）：model 热切换 + usage.context
+
 }  // namespace internal
 }  // namespace harness

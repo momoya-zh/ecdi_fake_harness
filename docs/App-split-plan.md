@@ -218,7 +218,6 @@ done
 | 门 4 摘要 | 6 夹具 + GL 全部 IDENTICAL（见下方 invalidations 的例外说明） |
 
 **执行中遇到的三个真问题（后续 1b–1e 会再遇到，先记下）**：
-
 1. **`ECDI::PlatformWindow` 是不完整类型**。探针要 `m_window->GetPlatformWindow().StartTimer(...)`，
    而 `Window.h` 只前置声明 `PlatformWindow`。App.cpp 原先靠 `Platform.h` 间接带入，
    新 TU 必须显式 `#include "ECDI/Platform/PlatformWindow.h"`。
@@ -228,6 +227,24 @@ done
    （`ContentWidth`/`Pick`/`HarnessRootLayout` 那几处命中都在产品函数或注释里，不在探针体内）。
 3. **`ThemeUsing.h` 是必需品，不是洁癖**：6 个新 TU 全部要用主题令牌短名，
    若各抄 52 条 `using`，加一个令牌就要改 7 处。§5 里 Zcode 提的那条风险由此消解。
+
+#### 1b 已完成（2026-10-25）——`WriteSummary` 独立成 `AppSummary.cpp`
+
+| 项 | 结果 |
+|---|---|
+| App.cpp | 7790 → **6709 行** |
+| 新文件 | `AppSummary.cpp` 1110 行（1082 行函数 + include/文件头） |
+| 门 2 | PASS：279 一致 / 0 变 / 0 丢 |
+| 门 3 | PASS（regress 全绿 + GL 抽测） |
+| 门 4 | 7 份摘要（6 夹具 + GL）**逐字节相同，含字段顺序** |
+
+**1b 的额外依赖（1c 之后还会遇到，都属"常量/工具上提"这一类）**：
+- `kProtocolMaxSupported` 也是跨 TU 的（`RouteLastMessage` 判版本 + 摘要里记上限）⇒ 与 1a 的三个几何常量同处理，进 `AppInternal.h`。
+- `ECDI::Logger::Log` 需要显式 `#include "ECDI/Core/Logger.h"`（App.cpp 原先靠别的头间接带入）。
+
+★ 门 4 在 1b 用的是**逐字节 + 字段顺序**比对（不是只比 key）：`WriteSummary` 就是产生这份
+摘要的函数，字段顺序是 84 份 evals 基线的一部分。比对方法：两边都剔除 4 个 volatile 键后
+按原顺序 re-dump 再比字符串——顺序变了就会被抓到。
 
 ### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）
 
