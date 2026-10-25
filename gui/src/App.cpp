@@ -31,6 +31,7 @@
 #include "ECDI/EventSystem/Input/Mouse/MouseButton.h"
 #include "ECDI/EventSystem/Input/Mouse/MouseButtonDownEvent.h"
 #include "ECDI/EventSystem/Input/Mouse/MouseButtonUpEvent.h"
+#include "ECDI/EventSystem/Input/Mouse/MouseWheelEvent.h"   // ★ P4 A：合成滚轮（--jump-probe）
 // ★★ 2026-10-21：Enter 发送探针要合成真按键（`SynthesizeKey`）⇒ 完整类型。
 #include "ECDI/EventSystem/Input/KeyBoard/KeyDownEvent.h"
 #include "ECDI/EventSystem/Window/TimerEvent.h"
@@ -128,6 +129,14 @@ constexpr int kRowPadX = 10;
 //   紧凑窗口（1120）下取 16，既留出呼吸感又不白吃掉横向空间。
 constexpr int kCanvasPadX = 16;
 constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C 的 39px
+
+// ★★ P4 Phase A（2026-10-25）：转录贴底判定阈值。此前是 FollowTailIfPinned 里的
+//   内联 60；「跳到最新」按钮的显隐与贴底跟随共用同一条语义（离开底部多少算
+//   "翻上去了"），抽成常量避免两处各写一个数日后漂移。
+constexpr int kPinThreshold = 60;    // 距底 ≤ 此值 = 贴底（跟随新行 / 按钮隐藏）
+// 「跳到最新」按钮尺寸（视口右下角浮层；原型 F 条）。
+constexpr int kJumpBtnW = 104;
+constexpr int kJumpBtnH = 30;
 
 // ★★ Step 1（2026-10-19）：侧栏会话列表的几何。
 //   ★ 为什么行宽是 158 而不是容器的 172：`ScrollView` 的垂直条一旦出现，
@@ -326,6 +335,10 @@ ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
 
 void HarnessApplication::OnTimer(const ECDI::TimerEvent& event) {
     if (m_owner) {
+        // ★★ P4 Phase A：任何定时器节拍先做一次「跳到最新」脏检查（int 比较，
+        //   offset 没变就返回）。拖滚动条滑块没有事件回调，靠 caret 闪烁定时器
+        //   的节拍兜底是唯一覆盖口——故放在定时器 id 分流**之前**。
+        m_owner->DirtyRefreshJumpButton();
         if (event.GetTimerId() == HarnessApp::kReplayTimer) {
             m_owner->OnReplayTick();
             return;
@@ -350,6 +363,40 @@ void HarnessApplication::OnTimer(const ECDI::TimerEvent& event) {
 void HarnessApplication::OnWindowResized(const ECDI::WindowResizedEvent& event) {
     ECDI::Application::OnWindowResized(event);   // ① root 尺寸同步（必须在重排之前）
     if (m_owner) m_owner->OnWindowResized(event.GetWidth(), event.GetHeight());
+}
+
+// ★★ P4 Phase A（2026-10-25）：滚轮 → 基类先把事件派给 ScrollView（滚动真的
+//   发生），**再**刷新「跳到最新」按钮。顺序不可换：反了的话 RefreshJumpButton
+//   读到的是滚动前的 offset，按钮显隐滞后一拍。
+void HarnessApplication::OnMouseWheel(const ECDI::MouseWheelEvent& event) {
+    ECDI::Application::OnMouseWheel(event);
+    if (m_owner) m_owner->RefreshJumpButton();
+}
+
+// ★★ P4 Phase A：键盘单收件人（Application::OnKeyDown 只派给焦点控件），
+//   导航键可能经 TextBox 的滚动（多行输入）间接改变转录状态——这里在派发
+//   **之后**补一次按钮刷新。转录本身暂无键盘滚动路径（焦点在输入框时
+//   PageUp/Home 等全被 TextBox 吃掉）。
+// ★★ P4 Phase B：**之前**先判全局快捷键（顺序 = 拦截 → 未命中转基类派发 →
+//   派发后补按钮刷新）。命中即 SetHandled 并 return——不调基类，焦点控件
+//   （含输入框）不会再见到这个键，Ctrl+B 在打字中途也成立。
+void HarnessApplication::OnKeyDown(const ECDI::KeyDownEvent& event) {
+    if (m_owner && m_owner->HandleGlobalKeyDown(event)) {
+        event.SetHandled();
+        return;
+    }
+    ECDI::Application::OnKeyDown(event);
+    if (!m_owner) return;
+    switch (event.GetKeyCode()) {
+        case ECDI::KeyCode::PageUp:
+        case ECDI::KeyCode::PageDown:
+        case ECDI::KeyCode::Home:
+        case ECDI::KeyCode::End:
+            m_owner->RefreshJumpButton();
+            break;
+        default:
+            break;
+    }
 }
 
 // ── 构造 / 运行 ────────────────────────────────────────────────
@@ -1523,6 +1570,56 @@ void HarnessApp::SetSidebarVisible(bool visible) {
     RequestRepaint();
 }
 
+// ★★ P4 Phase B（2026-10-25）：检视栏显隐的唯一入口（中栏头 `≡` 按钮与 Ctrl+I
+//   共用）。抽出前逻辑内联在按钮回调里——全局快捷键没有可复用的路径，两份
+//   实现迟早漂移（SetSidebarVisible 的"唯一入口"纪律）。
+void HarnessApp::ToggleInspector() {
+    if (!m_hud.inspector) return;
+    m_inspectorVisible = !m_inspectorVisible;
+    m_hud.inspector->SetVisible(m_inspectorVisible);
+    if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
+    Relayout();
+    RequestRepaint();
+}
+
+// ★★ P4 Phase B（2026-10-25）：全局快捷键分派（HarnessApplication::OnKeyDown
+//   在转基类**之前**调用；命中返回 true ⇒ 事件到此为止，不派给焦点控件）。
+//   ★ 刻意不拦 Ctrl+A/C/X/V/Z（TextBox 编辑语义）与 Enter（PromptBar 发送）。
+bool HarnessApp::HandleGlobalKeyDown(const ECDI::KeyDownEvent& event) {
+    const ECDI::KeyCode key = event.GetKeyCode();
+    if (key == ECDI::KeyCode::Escape) {
+        // 逐层关：设置 > （Phase H 模型浮窗届时插这层）> ···菜单。
+        // 无层可关 ⇒ 返回 false 让事件照常派发（Esc 不悬空拦截）。
+        if (m_settingsVisible) {
+            SetSettingsVisible(false);
+            return true;
+        }
+        if (m_moreMenuOpen) {
+            SetMoreMenuOpen(false);
+            return true;
+        }
+        return false;
+    }
+    if (!event.IsCtrlDown()) return false;
+    switch (key) {
+        case ECDI::KeyCode::B:
+            SetSidebarVisible(!m_sidebarVisible);
+            return true;
+        case ECDI::KeyCode::I:
+            ToggleInspector();
+            return true;
+        case ECDI::KeyCode::Comma:
+            SetSettingsVisible(!m_settingsVisible);
+            return true;
+        case ECDI::KeyCode::N:
+            NewSession();
+            return true;
+        // Ctrl+M：模型浮窗（Phase H）——浮窗存在后在此接入。
+        default:
+            return false;
+    }
+}
+
 // 冻结活动会话的 timed 锚点：记下暂停时刻（幂等——已暂停则不动）。
 void HarnessApp::PauseActiveTimedClock() {
     if (!m_sess || !m_options.timed) return;
@@ -2242,12 +2339,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                 case HeadAct::Inspector:
                     break;
                 }
-                if (!m_hud.inspector) return;
-                m_inspectorVisible = !m_inspectorVisible;
-                m_hud.inspector->SetVisible(m_inspectorVisible);
-                if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
-                Relayout();
-                RequestRepaint();
+                ToggleInspector();   // ★ P4 B：唯一入口（原内联逻辑抽出，Ctrl+I 共用）
             });
             head->AddChild(std::move(b));
         };
@@ -2613,6 +2705,33 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         // listlayout 模式：固定行高、不测量（规格 §5.3 的 B 组）
         m_content->SetLayout(std::make_unique<ECDI::ListLayout>(kListRowHeight, 2));
     }
+    // ★★ P4 Phase A（2026-10-25）：「↓ 跳到最新」按钮——浮在视口右下角。
+    //   ★ 挂法依据 ScrollView.h 的树结构注释：「装饰与交互子节点必须待在偏移层
+    //     之外」——滚动条就是这么挂的（直接子节点、固定视口、不随内容滚）。
+    //     ScrollView 不接管 Arrange、ApplyLayout 只定位条与内容节点 ⇒ 没有任何
+    //     布局会动它；HitTest 逆序遍历子节点 ⇒ 后加的它在最上层、优先命中。
+    //   ★ 几何/显隐的唯一刷新口 = RefreshJumpButton（贴底态 = 隐藏）。
+    auto jump = std::make_unique<ECDI::Button>("↓ 跳到最新");
+    m_hud.jumpLatest = jump.get();
+    jump->SetVisible(false);   // 初始不可见；加载/重排后由 RefreshJumpButton 按贴底态刷新
+    jump->SetTextColor(kDarkInk);
+    jump->SetFont(harness::SansFont(harness::kFontSmall));
+    jump->SetStyle(ECDI::ButtonStyleOverride{
+        .background = kPanel2,
+        .border = kLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = harness::kRadiusBtn,
+        .pressedBackground = kToolHeaderPressed,
+        .hoverBackground = kToolHeaderHover});
+    jump->SetSize(kJumpBtnW, kJumpBtnH);
+    jump->SetOnClick([this] {
+        // 点击 = 显式回底：offset 到底即自然恢复 pinned（跟随语义不变，本按钮只补
+        // "看得见、点得回"）。RefreshJumpButton 会随即把它藏起来。
+        if (!m_scroll) return;
+        m_scroll->SetContentOffset(0, m_scroll->GetMaxOffsetY());
+        RefreshJumpButton();
+    });
+    scroll->AddChild(std::move(jump));   // ScrollView 的最后子节点 = 最上层
     m_counting->AddChild(std::move(scroll));
 
     // Composer 收进中栏（hi-fi .composer 在 .mid 内）
@@ -3142,6 +3261,14 @@ void HarnessApp::OnReplayTick() {
             // ★★ 2026-10-21 HUD 覆盖探针：同步跑完即 Exit，同上。
             if (m_options.hudProbe && !m_hudProbeDone) {
                 RunHudProbe();
+            }
+            // ★★ P4 Phase A 跳到最新探针：同步跑完即 Exit，同上。
+            if (m_options.jumpProbe && !m_jumpProbeDone) {
+                RunJumpProbe();
+            }
+            // ★★ P4 Phase B 全局快捷键探针：同步跑完即 Exit，同上。
+            if (m_options.keyProbe && !m_keyProbeDone) {
+                RunKeyProbe();
             }
             // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
             if (m_options.settingsProbe && !m_settingsProbeDone) {
@@ -4258,10 +4385,12 @@ void HarnessApp::SynthesizeClickAt(int x, int y) {
 //     那正是要检验的命题（回调接没接上与函数对不对是两件事）。
 //   ★ 键盘是**单收件人**语义（`Application::OnKeyDown` 的注释：不冒泡），
 //     所以这里合成的事件只会交给当前焦点控件 ⇒ 焦点在哪就是自变量。
-void HarnessApp::SynthesizeKey(ECDI::KeyCode code, bool shift) {
+void HarnessApp::SynthesizeKey(ECDI::KeyCode code, bool shift,
+                               ECDI::KeyModifier extra) {
     if (!m_window || !m_application) return;
-    const ECDI::KeyModifier mod =
-        shift ? ECDI::KeyModifier::Shift : ECDI::KeyModifier::None;
+    ECDI::KeyModifier mod = extra;
+    if (shift) mod = static_cast<ECDI::KeyModifier>(
+        static_cast<int>(mod) | static_cast<int>(ECDI::KeyModifier::Shift));
     ECDI::KeyDownEvent down(m_window, code, mod);
     m_application->OnEvent(down);
 }
@@ -6651,6 +6780,242 @@ void HarnessApp::RunGrowProbe() {
     if (m_window) m_window->SetFocusedWidget(focusBefore);
 
     m_growProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ P4 Phase A（--jump-probe，2026-10-25）：「跳到最新」按钮判据。
+//
+// 【它要回答什么】① 按钮显隐与贴底态**恒一致**（不变量）；② 点击**真的回底**；
+//   ③ 上翻后按钮**真的出现**（滚轮路径接上了刷新）。
+// ★ 全部走**真实派发链**（OnEvent 合成滚轮 / SynthesizeClickAt 合成点击），
+//     不直接调 SetContentOffset/RefreshJumpButton——直接调会把"事件真的会触发
+//     按钮刷新吗"整个绕过（同 SynthesizeKey 的纪律）。
+// 【为什么不假设"加载完 = 贴底"】instant 装载大夹具是**一个 tick 填满全部行**，
+//   填之前 offset=0 不在底部 ⇒ FollowTailIfPinned 判非 pinned、不跟随——这是
+//   既有行为（也正因如此大夹具加载后停在顶部，需要本按钮"点得回"）。
+//   故探针以「点击到尾」为起点造出贴底态，再验上翻/回打的往返闭环。
+void HarnessApp::RunJumpProbe() {
+    if (!m_sess || !m_sess->replay || !m_scroll || !m_hud.jumpLatest) {
+        m_jumpProbeDone = true;
+        return;
+    }
+    auto snap = [&](const char* phase) {
+        JumpProbeRec rec;
+        rec.phase = phase;
+        rec.offset = m_scroll->GetScrollOffsetY();
+        rec.maxOffset = m_scroll->GetMaxOffsetY();
+        rec.visible = m_hud.jumpLatest->IsVisible();
+        // 不变量：显隐 == 离开贴底带 ∧ 有可滚内容。
+        const bool pinned = rec.offset >= rec.maxOffset - kPinThreshold;
+        rec.matched = (rec.visible == (!pinned && rec.maxOffset > 0));
+        if (!rec.matched) rec.note = "visibility diverges from pinned state";
+        m_jumpProbeLog.push_back(std::move(rec));
+        return m_jumpProbeLog.back().matched;
+    };
+    auto clickJumpButton = [&]() {
+        ECDI::Button* const btn = m_hud.jumpLatest;
+        const ECDI::Point bAbs = btn->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(bAbs.x) + btn->GetWidth() / 2,
+                          static_cast<int>(bAbs.y) + btn->GetHeight() / 2);
+    };
+    // 焦点复原同 RunHitProbe 的收尾纪律（点击把焦点挪到按钮 ⇒ caret 闪烁停 ⇒
+    // paints 相位扰动）。
+    ECDI::Widget* const focusBefore =
+        m_window ? m_window->GetFocusedWidget() : nullptr;
+
+    const int maxY0 = m_scroll->GetMaxOffsetY();
+    if (maxY0 <= kPinThreshold + 2 * m_scroll->GetScrollStep()) {
+        // 夹具内容装不满视口（或差一两滚就没滚动范围）⇒ 往返闭环造不出区分力，
+        // 如实记 skipped（不许静默绿——那是"探针没跑"伪装成"判据通过"）。
+        JumpProbeRec rec;
+        rec.phase = "skipped-short-fixture";
+        rec.offset = m_scroll->GetScrollOffsetY();
+        rec.maxOffset = maxY0;
+        rec.visible = m_hud.jumpLatest->IsVisible();
+        rec.matched = false;
+        rec.note = "fixture content fits viewport; no scroll range to probe";
+        m_jumpProbeLog.push_back(std::move(rec));
+        m_jumpProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+
+    // ① 初始一致性（无论停在顶部还是尾部，显隐必须与贴底态一致）。
+    snap("initial-consistency");
+
+    // ② 点击回底：从任何状态点按钮 ⇒ offset 到底 ∧ 按钮隐藏。
+    clickJumpButton();
+    if (snap("after-click-tail")) {
+        JumpProbeRec& r = m_jumpProbeLog.back();
+        if (r.offset != r.maxOffset) {
+            r.matched = false;
+            r.note = "click did not jump to tail";
+        }
+    }
+
+    // ③ 合成两次向上滚轮（各 40px，共 80 > kPinThreshold=60）⇒ 按钮出现 ∧
+    //   离开贴底带。滚轮走 OnEvent——HarnessApplication::OnMouseWheel 先让基类
+    //   滚、再刷新按钮，这正是被测路径。
+    const ECDI::Point abs = m_scroll->GetAbsolutePosition();
+    const int cx = static_cast<int>(abs.x) + m_scroll->GetWidth() / 2;
+    const int cy = static_cast<int>(abs.y) + m_scroll->GetHeight() / 2;
+    for (int i = 0; i < 2; ++i) {
+        ECDI::MouseWheelEvent wheel(m_window, cx, cy, +120);
+        m_application->OnEvent(wheel);
+    }
+    if (snap("after-wheel-up")) {
+        JumpProbeRec& r = m_jumpProbeLog.back();
+        if (r.offset >= r.maxOffset - kPinThreshold) {
+            r.matched = false;
+            r.note = "wheel did not move offset away from tail";
+        }
+    }
+
+    // ④ 再点一次：往返闭环（回底 ∧ 隐藏）。
+    clickJumpButton();
+    if (snap("after-click-again")) {
+        JumpProbeRec& r = m_jumpProbeLog.back();
+        if (r.offset != r.maxOffset) {
+            r.matched = false;
+            r.note = "click did not jump to tail";
+        }
+    }
+
+    if (m_window && focusBefore) m_window->SetFocusedWidget(focusBefore);
+    m_jumpProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ P4 Phase B（--key-probe，2026-10-25）：全局快捷键判据。
+//
+// 【它要回答什么】① Ctrl 组合在焦点控件（输入框）手里时**仍然生效**——
+//   拦截发生在 Application::OnKeyDown 派发之前；② 模型位与控件位 A==B；
+//   ③ Esc 按优先级逐层关；④ 未列入全局表的键照常到达焦点控件（不悬空拦截）。
+// ★ 全部走 SynthesizeKey（真实派发链，拦截器在链上被真实穿过）。
+void HarnessApp::RunKeyProbe() {
+    if (!m_sess || !m_sess->replay) { m_keyProbeDone = true; return; }
+    auto snap = [&](const char* phase) -> KeyProbeRec& {
+        KeyProbeRec rec;
+        rec.phase = phase;
+        rec.sidebarVisible = m_sidebarVisible;
+        rec.sidebarShown = m_hud.sidebar ? m_hud.sidebar->IsVisible() : false;
+        rec.settingsVisible = m_settingsVisible;
+        rec.settingsShown = m_hud.settingsPanel ? m_hud.settingsPanel->IsVisible() : false;
+        rec.menuOpen = m_moreMenuOpen;
+        rec.menuShown = m_hud.moreMenu ? m_hud.moreMenu->IsVisible() : false;
+        rec.sessionCount = m_sessions.size();
+        m_keyProbeLog.push_back(std::move(rec));
+        return m_keyProbeLog.back();
+    };
+
+    // 前置：任何按键之前，三对模型位/控件位必须已经一致——否则后面的 A==B 全免谈。
+    {
+        KeyProbeRec& r = snap("baseline-consistency");
+        r.matched = (r.sidebarVisible == r.sidebarShown) &&
+                    (r.settingsVisible == r.settingsShown) &&
+                    (r.menuOpen == r.menuShown);
+        if (!r.matched) r.note = "model/widget visibility diverge before any key";
+    }
+    const bool sidebarAtStart = m_sidebarVisible;
+    const size_t sessionsAtStart = m_sessions.size();
+    ECDI::TextBox* const input = m_promptBar ? m_promptBar->input() : nullptr;
+    ECDI::Widget* const focusBefore =
+        m_window ? m_window->GetFocusedWidget() : nullptr;
+
+    // ① Ctrl+B 两态往返（焦点在输入框 / 在别处）。
+    if (m_window && input) m_window->SetFocusedWidget(input);
+    SynthesizeKey(ECDI::KeyCode::B, false, ECDI::KeyModifier::Ctrl);
+    {
+        KeyProbeRec& r = snap("ctrl-b-focused");
+        r.matched = (m_sidebarVisible != sidebarAtStart) &&
+                    (r.sidebarVisible == r.sidebarShown);
+        if (!r.matched) r.note = "sidebar did not toggle (or A!=B) while input focused";
+    }
+    SynthesizeKey(ECDI::KeyCode::B, false, ECDI::KeyModifier::Ctrl);
+    {
+        KeyProbeRec& r = snap("ctrl-b-focused-back");
+        r.matched = (m_sidebarVisible == sidebarAtStart) &&
+                    (r.sidebarVisible == r.sidebarShown);
+        if (!r.matched) r.note = "sidebar did not toggle back";
+    }
+    // 焦点移出输入框（顶栏按钮——Button 可聚焦、且不在转录子树里）。
+    if (m_window && m_hud.sidebarToggle) m_window->SetFocusedWidget(m_hud.sidebarToggle);
+    SynthesizeKey(ECDI::KeyCode::B, false, ECDI::KeyModifier::Ctrl);
+    {
+        KeyProbeRec& r = snap("ctrl-b-unfocused");
+        r.matched = (m_sidebarVisible != sidebarAtStart) &&
+                    (r.sidebarVisible == r.sidebarShown);
+        if (!r.matched) r.note = "sidebar did not toggle with focus outside input";
+    }
+    SynthesizeKey(ECDI::KeyCode::B, false, ECDI::KeyModifier::Ctrl);
+    {
+        KeyProbeRec& r = snap("ctrl-b-unfocused-back");
+        r.matched = (m_sidebarVisible == sidebarAtStart) &&
+                    (r.sidebarVisible == r.sidebarShown);
+        if (!r.matched) r.note = "sidebar did not toggle back (unfocused)";
+    }
+
+    // ② Ctrl+, 开设置 → Esc 关（A==B 双向）。
+    SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
+    {
+        KeyProbeRec& r = snap("ctrl-comma");
+        r.matched = m_settingsVisible && (r.settingsVisible == r.settingsShown);
+        if (!r.matched) r.note = "Ctrl+Comma did not open settings (or A!=B)";
+    }
+    SynthesizeKey(ECDI::KeyCode::Escape);
+    {
+        KeyProbeRec& r = snap("esc-settings");
+        r.matched = !m_settingsVisible && (r.settingsVisible == r.settingsShown);
+        if (!r.matched) r.note = "Esc did not close settings (or A!=B)";
+    }
+
+    // ③ Esc 优先级：设置+菜单同开 ⇒ 第一次 Esc 只关设置（负对照：无分层时
+    //   这两相读数区分不出"一次全关"）⇒ 第二次关菜单。
+    SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
+    SetMoreMenuOpen(true);
+    SynthesizeKey(ECDI::KeyCode::Escape);
+    {
+        KeyProbeRec& r = snap("esc-priority-1");
+        r.matched = !m_settingsVisible && m_moreMenuOpen &&
+                    (r.menuOpen == r.menuShown);
+        if (!r.matched) r.note = "first Esc should close settings but keep menu";
+    }
+    SynthesizeKey(ECDI::KeyCode::Escape);
+    {
+        KeyProbeRec& r = snap("esc-priority-2");
+        r.matched = !m_moreMenuOpen && !m_settingsVisible &&
+                    (r.menuOpen == r.menuShown);
+        if (!r.matched) r.note = "second Esc should close menu";
+    }
+
+    // ④ Ctrl+N：新建会话（回放模式 = 空会话，不拉真进程）⇒ 会话数 +1。
+    SynthesizeKey(ECDI::KeyCode::N, false, ECDI::KeyModifier::Ctrl);
+    {
+        KeyProbeRec& r = snap("ctrl-n");
+        r.matched = (m_sessions.size() == sessionsAtStart + 1);
+        if (!r.matched) r.note = "Ctrl+N did not create a session";
+    }
+
+    // ⑤ passthrough 负对照：焦点回输入框填字后按 Backspace ⇒ 文本真的少一字符
+    //   ——证明未列入全局表的键照常派给焦点控件（拦截器不悬空）。
+    if (input) {
+        if (m_window) m_window->SetFocusedWidget(input);
+        input->SetText("ab");
+        input->MoveCaretToEnd();
+        SynthesizeKey(ECDI::KeyCode::Backspace);
+        KeyProbeRec& r = snap("passthrough");
+        r.inputText = input->GetText();
+        r.matched = (r.inputText == "a");
+        if (!r.matched) r.note = "Backspace did not reach the TextBox";
+        input->SetText("");
+    }
+
+    // 收尾：还原所有被探针改过的全局态（侧栏/设置/菜单/焦点）。
+    SetSettingsVisible(false);
+    SetMoreMenuOpen(false);
+    SetSidebarVisible(sidebarAtStart);
+    if (m_window && focusBefore) m_window->SetFocusedWidget(focusBefore);
+    m_keyProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -9338,13 +9703,53 @@ void HarnessApp::Relayout() {
         y += rowH + kRowGap;
     }
     m_scroll->SetContentExtent(contentW, std::max(0, y - kRowGap));
+    // ★★ P4 Phase A：内容范围变了 ⇒ maxOffset/滚动条可见性都可能变——
+    //   「跳到最新」的几何与显隐跟着刷新一次（Relayout 覆盖 resize/侧栏/菜单/
+    //   设置切换等全部几何路径）。
+    RefreshJumpButton();
 }
 
 void HarnessApp::FollowTailIfPinned() {
     if (!m_scroll) return;
     const int maxY = m_scroll->GetMaxOffsetY();
-    const bool pinned = m_scroll->GetScrollOffsetY() >= maxY - 60;   // 用户上翻 > 60px 则不跟随
+    const bool pinned = m_scroll->GetScrollOffsetY() >= maxY - kPinThreshold;
     if (pinned) m_scroll->SetContentOffset(0, maxY);
+    // ★★ P4 Phase A：填行/重排后顺手刷新「跳到最新」——本函数的调用点天然
+    //   覆盖所有内容增长路径（tick 填行 / Relayout / 切会话重建），无需另铺。
+    RefreshJumpButton();
+}
+
+// ★★ P4 Phase A（2026-10-25）：刷新「跳到最新」按钮的几何与显隐（唯一刷新口）。
+//   ★ 调用时点：滚轮/导航键后（HarnessApplication override）、填行后
+//     （FollowTailIfPinned 尾部）、重排后（Relayout 尾部）、tick 脏检查
+//     （DirtyRefreshJumpButton——拖滚动条滑块没有事件回调，靠定时器节拍兜底）。
+//   ★ 全部是只读查询 + 几何 setter + 同值守卫的 SetVisible（M9：同值不
+//     Invalidate）⇒ 高频调用零重绘代价，不打扰 CountingPanel 读数。
+void HarnessApp::RefreshJumpButton() {
+    if (!m_hud.jumpLatest || !m_scroll) return;
+    const int maxY = m_scroll->GetMaxOffsetY();
+    const int offset = m_scroll->GetScrollOffsetY();
+    m_jumpLastOffsetY = offset;   // 脏检查基准同步更新
+    // 几何：视口右下角、贴滚动条一侧（原型 F 条）。条厚不猜——垂直条可见时按
+    // 其实际宽度让位（kSidebarListW 注释里的 BarFootprint=14 是侧栏的观测值，
+    // 这里直接读控件，条隐藏/显示切换时几何自然跟随）。
+    int barW = 0;
+    if (ECDI::ScrollBar* bar = m_scroll->GetVerticalScrollBar()) {
+        if (bar->IsVisible()) barW = bar->GetWidth() + 6;
+    }
+    m_hud.jumpLatest->SetSize(kJumpBtnW, kJumpBtnH);
+    m_hud.jumpLatest->SetPosition(m_scroll->GetWidth() - barW - kJumpBtnW - 16,
+                                  m_scroll->GetHeight() - kJumpBtnH - 10);
+    const bool pinned = offset >= maxY - kPinThreshold;
+    // 显隐 = 离开贴底带 ∧ 有可滚内容 ∧ 转录可见（设置面板占槽时 scroll 不可见）。
+    m_hud.jumpLatest->SetVisible(!pinned && maxY > 0 && m_scroll->IsVisible());
+}
+
+// ★★ P4 Phase A：tick 脏检查——offset 与缓存不等才真正刷新（禁止无条件刷新/
+//   Invalidate，CountingPanel 读数纪律）。
+void HarnessApp::DirtyRefreshJumpButton() {
+    if (!m_scroll || !m_hud.jumpLatest) return;
+    if (m_scroll->GetScrollOffsetY() != m_jumpLastOffsetY) RefreshJumpButton();
 }
 
 void HarnessApp::RequestRepaint() {
@@ -10239,6 +10644,52 @@ void HarnessApp::WriteSummary() {
                           r.exportLfOnly ? "true" : "false",
                           r.matched ? "true" : "false",
                           escM(r.firstDivergence).c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ P4 Phase A（--jump-probe）：「跳到最新」按钮判据。
+    //   判据：三相连跑 matched == true（贴底隐藏 / 上翻可见且离开贴底带 / 点击回底隐藏）。
+    if (m_options.jumpProbe && !m_jumpProbeLog.empty()) {
+        json += "  \"jumpProbe\": [";
+        for (size_t i = 0; i < m_jumpProbeLog.size(); ++i) {
+            const JumpProbeRec& r = m_jumpProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"visible\": %s, \"offset\": %d, "
+                          "\"maxOffset\": %d, \"matched\": %s, \"note\": \"%s\"}",
+                          r.phase.c_str(), r.visible ? "true" : "false",
+                          r.offset, r.maxOffset,
+                          r.matched ? "true" : "false", r.note.c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ P4 Phase B（--key-probe）：全局快捷键判据。
+    //   判据：全部相位 matched == true（两态 Ctrl+B 往返 / Esc 双向 / 优先级分层 /
+    //   Ctrl+N / passthrough 负对照）。
+    if (m_options.keyProbe && !m_keyProbeLog.empty()) {
+        json += "  \"keyProbe\": [";
+        for (size_t i = 0; i < m_keyProbeLog.size(); ++i) {
+            const KeyProbeRec& r = m_keyProbeLog[i];
+            json += (i ? ", " : "");
+            char b[640];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"sidebarVisible\": %s, "
+                          "\"sidebarShown\": %s, \"settingsVisible\": %s, "
+                          "\"settingsShown\": %s, \"menuOpen\": %s, "
+                          "\"menuShown\": %s, \"sessionCount\": %zu, "
+                          "\"inputText\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                          r.phase.c_str(),
+                          r.sidebarVisible ? "true" : "false",
+                          r.sidebarShown ? "true" : "false",
+                          r.settingsVisible ? "true" : "false",
+                          r.settingsShown ? "true" : "false",
+                          r.menuOpen ? "true" : "false",
+                          r.menuShown ? "true" : "false",
+                          r.sessionCount, r.inputText.c_str(),
+                          r.matched ? "true" : "false", r.note.c_str());
             json += b;
         }
         json += "],\n";

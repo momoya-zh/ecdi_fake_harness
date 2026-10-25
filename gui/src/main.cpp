@@ -107,6 +107,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.enterProbe = true;      // ★ 2026-10-21：Enter 发送 / Shift+Enter 换行
         } else if (arg == L"--hud-probe") {
             options.hudProbe = true;        // ★ 2026-10-21：HUD 指针"读了但没建"判据
+        } else if (arg == L"--jump-probe") {
+            options.jumpProbe = true;       // ★ P4 Phase A：跳到最新按钮显隐+回底判据
+        } else if (arg == L"--key-probe") {
+            options.keyProbe = true;        // ★ P4 Phase B：全局快捷键判据
         } else if (arg == L"--grow-probe") {
             options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
         } else if (arg == L"--async-probe") {
@@ -164,6 +168,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --resize-probe                   窗口拉伸：行宽/标题栏/无横滚条判据\n"
                     L"  --enter-probe                    Enter 发送 / Shift+Enter 换行判据\n"
                     L"  --hud-probe                      HUD 指针“读了但没建”判据\n"
+                    L"  --jump-probe                     跳到最新按钮：显隐状态机+点击回底判据\n"
+                    L"  --key-probe                      全局快捷键：Ctrl+B/I/,/N + Esc 逐层判据\n"
                     L"  --grow-probe                     输入框多行自动长高判据\n"
                     L"  --async-probe                    REQ-03：PostToUi 投递 vs 8ms 轮询的读数\n"
                     L"  --legacy-poll                    REQ-03 对照世界：恢复每 tick 等 8ms 的旧路径\n"

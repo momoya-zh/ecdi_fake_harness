@@ -23,12 +23,18 @@
 // ★★ 2026-10-21：`SynthesizeKey(ECDI::KeyCode, bool)` 的形参需要完整枚举，
 //   而按值传参**不能**用前置声明（枚举无法前置声明）⇒ 必须包这个头。
 #include "ECDI/EventSystem/Input/KeyBoard/KeyCode.h"
+// ★ P4 Phase B：SynthesizeKey 第三参（KeyModifier 按值）与 HandleGlobalKeyDown
+//   的形参都需要完整枚举定义。
+#include "ECDI/EventSystem/Input/KeyBoard/KeyModifier.h"
 #include "ECDI/Widget/Button.h"
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/ProgressBar.h"
 #include "ECDI/Widget/RingProgressBar.h"
 #include "ECDI/Widget/ScrollView.h"
+// ★ P4 Phase A（2026-10-25）：RefreshJumpButton 要读垂直条实际宽度让位，
+//   GetVerticalScrollBar() 只回前置声明——调用其成员必须有完整类型。
+#include "ECDI/Widget/ScrollBar.h"
 
 #include <chrono>
 #include <deque>
@@ -62,6 +68,12 @@ struct CliOptions {
     std::string settingsKey;              // --settings-key：探针 save 相的 key（默认假 key）
     std::string settingsModel;            // --settings-model：探针 save 相的模型名
     std::string fixtureName;              // 摘要用：replayPath 文件名
+    // ★★ P4 Phase A（2026-10-25）：「跳到最新」按钮取证（显隐状态机 + 合成点击回底）。
+    //   默认 false ⇒ 零行为变化、摘要逐字节不变。
+    bool jumpProbe = false;               // --jump-probe：回放 settle 后同步跑完即 Exit
+    // ★★ P4 Phase B（2026-10-25）：全局快捷键取证（Ctrl+B/I/,/N、Esc 逐层关，
+    //   两态对照 = 焦点在输入框内/外）。默认 false ⇒ 零行为变化。
+    bool keyProbe = false;                // --key-probe：快捷键模型位/控件位 A==B 判据
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
@@ -295,6 +307,13 @@ public:
 protected:
     void OnTimer(const ECDI::TimerEvent& event) override;
     void OnWindowResized(const ECDI::WindowResizedEvent& event) override;
+    // ★★ P4 Phase A（2026-10-25）：滚轮/键盘在基类派发**之后**刷新「跳到最新」
+    //   （顺序 = 滚动先真发生，再读 offset 算显隐）。
+    // ★★ P4 Phase B：OnKeyDown 在转基类**之前**先判全局快捷键（基类是派发器，
+    //   单收件人语义下焦点控件会先吃掉 Ctrl 组合）——命中即 SetHandled 返回，
+    //   不再派给焦点控件；未命中原样转基类再做 Phase A 的导航键刷新。
+    void OnMouseWheel(const ECDI::MouseWheelEvent& event) override;
+    void OnKeyDown(const ECDI::KeyDownEvent& event) override;
 
 private:
     HarnessApp* m_owner = nullptr;
@@ -323,6 +342,22 @@ public:
     //     而且会把滚动位置和展开态再跑一遍（`Relayout` 已足够）。
     void OnWindowResized(int width, int height);
     void SendPrompt(const std::string& text);     // P1.5：发送路径（按钮与自动发共用）
+    // ★★ P4 Phase A（2026-10-25）：「跳到最新」按钮刷新（HarnessApplication 的
+    //   滚轮/键盘 override 在基类派发完之后调）。全部只读查询 + 同值守卫的
+    //   SetVisible（M9：同值不 Invalidate）⇒ 高频调用零重绘代价。
+    void RefreshJumpButton();
+    // tick 脏检查：offset 与缓存不等才真正刷新（拖滚动条滑块没有事件回调，
+    //   靠 caret 闪烁定时器的节拍兜底——禁止无条件刷新，CountingPanel 读数纪律）。
+    void DirtyRefreshJumpButton();
+    // ★★ P4 Phase B（2026-10-25）：全局快捷键分派（HarnessApplication::OnKeyDown
+    //   在转基类**之前**调用）。命中返回 true ⇒ 调用方 SetHandled 且不派给焦点控件。
+    //   表：Ctrl+B 侧栏 · Ctrl+I 检视栏 · Ctrl+, 设置 · Ctrl+N 新建会话 ·
+    //   Esc 按 设置 > ···菜单 优先级逐层关（模型浮窗 Phase H 接入后插中间层）。
+    //   ★ 刻意不拦 Ctrl+A/C/X/V/Z（TextBox 编辑语义）与 Enter（PromptBar 发送）。
+    bool HandleGlobalKeyDown(const ECDI::KeyDownEvent& event);
+    // ★★ P4 Phase B：检视栏显隐的唯一入口（中栏头 `≡` 按钮与 Ctrl+I 共用；
+    //   抽出前逻辑内联在按钮回调里，全局键没有可复用的路径）。
+    void ToggleInspector();
 
     static constexpr int kReplayTimer = 100;   // ~30Hz（33ms）
     static constexpr int kCloseTimer = 101;    // --auto-close
@@ -425,6 +460,17 @@ private:
         //     而侧栏是定宽定高的列（同 `sessList` 的理由）。
         ECDI::ScrollView* historyList = nullptr;  // 左栏：历史会话列表滚动容器
         ECDI::Label* historyCount = nullptr;      // 左栏：历史计数 `3 个历史文件`
+        // ★★ P4 Phase A（2026-10-25）：「↓ 跳到最新」浮层按钮。
+        //   ★ 挂在 **ScrollView 的直接子节点**（不是 ScrollContent）：ScrollView.h
+        //     树结构注释明写「装饰与交互子节点必须待在偏移层之外」——滚动条就是
+        //     这么挂的（固定视口、不随内容滚）。ScrollView 不接管 Arrange、
+        //     ApplyLayout 只定位条与内容节点 ⇒ 没有布局会动它；HitTest 逆序
+        //     遍历子节点 ⇒ 后加的它在最上层、优先命中。
+        //   ★ 不挂 CountingPanel：counting 是 VerticalLayout，挂上去会被布局
+        //     接管成占槽兄弟（设置面板/菜单条是「槽位」不是「浮层」——见上方
+        //     moreMenu 的注释，那里记了为什么不能用浮层）。ScrollView 内部
+        //     恰好是「无布局、手动定位」的口子，正好承载浮层。
+        ECDI::Button* jumpLatest = nullptr;   // 视口右下角浮层（显隐 = 离开贴底态）
         // ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容。
         //   数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
         //   回放会话没有工作区 ⇒ 此段显示「无工作区」。
@@ -1654,7 +1700,8 @@ private:
     // 合成一次真实按键：走 `Application::OnEvent`，与系统消息到达后同源。
     //   ★ 与 `SynthesizeClickAt` 同一纪律：不直接调 `PromptBar::Submit()`，
     //     否则"事件真的派给了输入框吗"这个命题被整个绕过。
-    void SynthesizeKey(ECDI::KeyCode code, bool shift);
+    void SynthesizeKey(ECDI::KeyCode code, bool shift = false,
+                       ECDI::KeyModifier extra = ECDI::KeyModifier::None);
 
     // ★★ 2026-10-21：输入框自动长高探针（--grow-probe）。
     //
@@ -1684,6 +1731,61 @@ private:
     std::vector<GrowProbeRec> m_growProbeLog;
     bool m_growProbeDone = false;
     void RunGrowProbe();
+
+    // ★★ P4 Phase A（--jump-probe，2026-10-25）：「跳到最新」按钮判据。
+    //   形状同 RunGrowProbe：同步跑完即 Exit。
+    //   ★ 判据（每条都能变红；不假设"加载完=贴底"——instant 大夹具填满时
+    //     FollowTailIfPinned 判非 pinned 不跟随，属既有行为）：
+    //     · initial-consistency —— 显隐 == 离开贴底带（不变量，任何初始态）；
+    //     · after-click-tail —— 点击 ⇒ offset==max ∧ 隐藏；
+    //     · after-wheel-up —— 合成两次上滚（80px > 60 阈值）⇒ 可见 ∧ 离开贴底带
+    //       （负对照：滚轮没滚则"可见"是常显假绿）；
+    //     · after-click-again —— 再点 ⇒ 回底 ∧ 隐藏（往返闭环）。
+    //     · skipped-short-fixture —— 内容装不满视口时如实记跳过（matched=false，
+    //       由跑批判据豁免；不许静默绿）。
+    struct JumpProbeRec {
+        std::string phase;        // initial-consistency / after-click-tail /
+                                  // after-wheel-up / after-click-again / skipped
+        bool visible = false;     // 按钮此刻 IsVisible()
+        int offset = 0;
+        int maxOffset = 0;
+        bool matched = true;
+        std::string note;         // 判据失败原因（ASCII——省 JSON 转义）
+    };
+    std::vector<JumpProbeRec> m_jumpProbeLog;
+    bool m_jumpProbeDone = false;
+    void RunJumpProbe();
+    // 脏检查缓存：上次刷新时的 offset（DirtyRefreshJumpButton 用）。
+    int m_jumpLastOffsetY = -1;
+
+    // ★★ P4 Phase B（--key-probe，2026-10-25）：全局快捷键判据。
+    //   形状同 RunJumpProbe：同步跑完即 Exit。
+    //   ★ 判据（每条都能变红）：
+    //     · ctrl-b（focused/unfocused 两态）—— 模型位翻转 ∧ 控件 IsVisible 跟随
+    //       （A==B）∧ 再按翻回（往返）；
+    //     · ctrl-comma / esc-settings —— Ctrl+, 开设置 ⇒ A==B；Esc ⇒ 关（A==B）；
+    //     · esc-priority —— 设置+菜单同开 ⇒ 第一次 Esc 只关设置（优先级取证，
+    //       负对照：若 Esc 无分层，这一相读数区分不出"全关了"）⇒ 第二次关菜单；
+    //     · ctrl-n —— 会话数 +1；
+    //     · passthrough —— 焦点在输入框合成 Backspace ⇒ 文本真的少一字符
+    //       （负对照：拦截器若吞掉未列键，编辑路径必红）。
+    struct KeyProbeRec {
+        std::string phase;          // ctrl-b-focused / ctrl-b-unfocused / ctrl-comma /
+                                    // esc-settings / esc-priority / ctrl-n / passthrough
+        bool sidebarVisible = false;   // m_sidebarVisible（模型位）
+        bool sidebarShown = false;     // m_hud.sidebar->IsVisible()（控件位）
+        bool settingsVisible = false;
+        bool settingsShown = false;
+        bool menuOpen = false;         // m_moreMenuOpen（模型位）
+        bool menuShown = false;        // m_hud.moreMenu->IsVisible()
+        size_t sessionCount = 0;
+        std::string inputText;         // passthrough 相的输入框回读
+        bool matched = true;
+        std::string note;
+    };
+    std::vector<KeyProbeRec> m_keyProbeLog;
+    bool m_keyProbeDone = false;
+    void RunKeyProbe();
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
     //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），
