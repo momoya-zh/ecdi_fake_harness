@@ -10,14 +10,16 @@
 
 | 项 | 值 |
 |---|---|
-| HEAD | `2fbe612`（Stage 2），工作区**干净** |
+| HEAD | `f775a5e`（Stage 3 刀②），工作区**干净** |
 | `App.cpp` | 12,269 → **869 行**（-93%），只剩 10 个应用接线函数 |
-| `App.h` | **2,009 行，还没动** ← 这是接手后第一件事（Stage 3） |
+| `App.h` | 2,009 → **1,477 行**（刀① `CliOptions` 259 行 + 刀② 探针结构体 276 行）；刀③ 未做 |
 | 最大的文件 | `ProbeSidebar.cpp` 1233 / `AppSummary.cpp` 1114 / `AppUiMain.cpp` 1089 |
-| 四条验收门 | 全绿；Stage 1 每一步都是 **279/279 函数指纹一致** |
+| 四条验收门 | 全绿；门 2 基线已换成 `fp-stage3.json`（286/286，见 §3） |
 | Stage 2 | `BuildMainArea` 980 行 → 36 行装配 + 7 个 builder，树序 83 条 / 句柄写入 34 条校验一致 |
 
-**一句话**：产品代码和仪器代码已经物理分开，单函数过大问题已解，**只剩头文件没瘦身**。
+**一句话**：产品代码和仪器代码已经物理分开，单函数过大问题已解，头文件瘦身完成两刀（`CliOptions` + 探针结构体已出），**只剩刀③（控件前置声明）**。
+**★ 但「目标 ≈900 行」靠刀③ 达不到**：实测剩余体积大半是探针的「为什么必须有」注释块 +
+`m_xxxProbeLog` 成员声明（85 行），那属 Stage 4，见 §7.5。
 
 ---
 
@@ -55,7 +57,9 @@
 
 | 文件 | 行 | 说明 |
 |---|---|---|
-| `App.h` | 2009 | **待瘦身（Stage 3）** |
+| `App.h` | 1477 | 应用组装声明；刀①② 之后不含 `CliOptions` 与探针结构体 |
+| `CliOptions.h` | 273 | **Stage 3 刀①**：命令行选项 47 字段（含 26 个探针开关），逐字节从 `App.h` 搬出 |
+| `ProbeTypes.h` | 318 | **Stage 3 刀②**：24 个探针读数结构体（命名空间作用域） |
 | `AppInternal.h` | 119 | 跨 TU 共享声明：路径工具、几何常量、探针色、`Pick()`、5 个 UI 助手 |
 | `UiCommon.cpp` | 127 | `ContentWidth` / `ConversationTitle` / `ConversationSubtitle` / `UnknownKindText` / `ReasoningTitle` / `AddLine` |
 | `ThemeUsing.h` | 66 | 52 个主题短名 `using harness::kXxx;` |
@@ -75,6 +79,9 @@
 | `d2a0863` | **1d** 会话/转录/流式/HUD → 4 文件（59 函数） | 四门全绿 |
 | `a8c1792` | **1e** UI 构建 → `AppUiChrome` + `AppUiMain`，Stage 1 收尾 | 四门全绿 + GL 抽测 |
 | `2fbe612` | **Stage 2** `BuildMainArea` 切 7 个 builder | 门 1+3+4 + `build_order_check` |
+| `b705a7e` | 本文档（交接） | — |
+| `ac9b4c9` | **Stage 3 刀①** `CliOptions` → `CliOptions.h` | 门 1+2+3+4（结构体不进函数指纹，天然安全） |
+| `f775a5e` | **Stage 3 刀②** 24 个探针结构体 → `ProbeTypes.h` | 门 1+3+4 + 逐行等价 + 3 行 diff（门 2 报 3 条返回类型 MISMATCH，归一后全等） |
 
 > 历史 commit message 与 `docs/P4*.md` 里的**行号引用已全部漂移**，这是接受的副作用
 > （见 plan §8），不要去建映射表。定位代码一律用「文件名 + 函数名」。
@@ -96,11 +103,17 @@ cmake --build gui/build --config Release
 ### 门 2 — 函数体指纹（纯搬运的唯一硬证明）
 
 ```bash
-python tools/split_verify.py --save .scratch/split-baseline/fp-before.json   # 拆前
-python tools/split_verify.py --check .scratch/split-baseline/fp-before.json  # 拆后
+python tools/split_verify.py --save .scratch/split-baseline/fp-stage2.json   # 拆前
+python tools/split_verify.py --check .scratch/split-baseline/fp-stage2.json  # 拆后
 ```
 判据：`MISMATCH` / `MISSING` 判红；**新增函数名只提示不判红**（Stage 2 会新增 builder）。
 指纹 = 定义首行到配对右花括号的**原文**（含注释、含缩进），所以「只搬不改」连注释都要求一字不动。
+
+> ★ 2026-10-25：基线已换 `fp-stage3.json`（286 个函数，刀② 之后重建）。
+> **基线是「当前状态的锚」，不是历史档案**——每落一刀就 `--save` 一次，下次才有可比对象。
+> 旧的 `fp-before.json` 是 **Stage 2 之前**存的，用它跑必然报
+> `BuildMainArea 980 → 36 MISMATCH` + 7 个 NEW —— 那是 Stage 2 的既定成果，不是回归。
+> **别拿旧基线判红，也别去"修"那个 MISMATCH。**
 
 **只在纯搬运时有效。** 一旦动函数体（Stage 2 那种），门 2 失效，换 `build_order_check.py`。
 
@@ -213,9 +226,14 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 
 ---
 
-## 7. Stage 3：头文件瘦身（下一步，行号已实测）
+## 7. Stage 3：头文件瘦身（刀①② 已完成，只剩刀③）
 
-`App.h` 2009 行，其中 **约 1100 行是仪器声明**。目标 ≈900 行。
+`App.h` 2009 行 → **1477 行**（刀① -259 / 刀② -276）。
+
+> ★ **「约 1100 行是仪器声明」这个估算偏高，别再拿它当目标依据**：把探针的 struct body
+> 全部搬走只砍了 276 行。剩下的大头是每条探针上方的「为什么必须有」注释块 +
+> `m_xxxProbeLog` 成员声明 + `Run*Probe()` 声明 —— 那些属 Stage 4（§8），不在 Stage 3。
+> **所以「目标 ≈900 行」靠刀①②③ 达不到，1477 → 约 1150 就是 Stage 3 的真实天花板。**
 
 ### 7.1 实测行号地图
 
@@ -238,18 +256,32 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 
 ### 7.2 三刀，按这个顺序
 
-**① `CliOptions.h`** —— 把 47–305 整段搬出去，`App.h` 只 `#include "CliOptions.h"`。
+**① `CliOptions.h`** —— ✅ **已完成（`ac9b4c9`）**：47–305 整段搬出，`App.h` 只 `#include "CliOptions.h"`。
 - 依赖只有 `<string>` `<filesystem>`，干净。
-- `main.cpp` 目前 `#include "App.h"` 就为了拿 `CliOptions`；改后仍可只包 `App.h`（它会传递包含），
-  但更诚实的是显式加 `#include "CliOptions.h"`。
-- 收益最大的一刀：`main.cpp` 不再因为 `HarnessApp` 的私有成员变化而重编。
+- 搬法：**脚本切片不手抄**（`.scratch/cut1_clioptions.py`），struct 体 sha256 前后同为
+  `42056bb5e22d8725` ⇒ 259 行连同注释逐字节一致。
+- `main.cpp` 已显式加 `#include "CliOptions.h"`，不再靠传递包含。
+- ★ **原计划里「收益最大的一刀」这句话不成立，别照抄**：`main.cpp` 仍要
+  `HarnessApp app(...)` 因而仍包 `App.h`，19 个 TU 一个没少。本刀的真实收益是
+  `App.h` 少 259 行 + `CliOptions` 的 47 个字段不必先拿到 1670 行的类定义才能读。
+  **重编收益要等刀③（控件前置声明）才可能兑现。**
+- 门 2 对本刀天然安全：结构体不进函数指纹，指纹数仍是 286 且逐项不变。
 
-**② `ProbeTypes.h`** —— 24 个结构体从**类作用域**提到**命名空间作用域**。
-- 这是唯一有真实机械风险的一步：类内 `struct X` 提到外面后，类内引用要改成 `X`（同名可见），
-  但**类外**的 `HarnessApp::X` 引用要全改成 `X`。
-- 搬法：先 `grep -rn "HarnessApp::\w*ProbeRec\|HarnessApp::UiSnapshot\|HarnessApp::ReplayDigest"` 摸清外部引用点。
-- 搬完门 2 不适用（跨作用域），改用：门 1 + 门 3 全量回归（探针本身就在 regress 的 13 项里，
-  结构体搬错必然红）。**这一步别贪快，一次只搬 5~6 个结构体。**
+**② `ProbeTypes.h`** —— ✅ **已完成（`f775a5e`）**：24 个结构体搬到命名空间作用域，`App.h` 1752 → 1477。
+- 这是唯一有真实机械风险的一步：类内 `struct X` 提到外面后，类内引用同名可见不用改，
+  但**类外**的 `HarnessApp::X` 引用必须改。实测外部引用只有 **5 处**，其中 2 处是
+  `SidebarCompare`（不在本刀范围），真正要改的只有 3 处，全在 `ProbeSupport.cpp`：
+  `SnapshotUi` / `CompareRows` / `DigestReplayFile` 的**返回类型**。
+- 搬法：脚本切片（`.scratch/cut2_probetypes.py`），一趟逆序删除（§5.3）。
+- **门 2 会报 3 条 MISMATCH，那是预期的**：改的是列 0 函数定义行的返回类型限定符。
+  判据换成「归一化后 sha256 全等」——把 `HarnessApp::(UiSnapshot|RebuildProbeRec|ReplayDigest)`
+  换成裸名再比，三个函数体全等；`git diff ProbeSupport.cpp` 也恰好只有 3 行。
+- 另两条判据：逐行 lstrip 全等（只允许少 4 空格缩进）+ 门 4 摘要 `IDENTICAL`
+  （摘要键序 = 字段声明序，字段搬乱必红）。
+- ★ **没有分 4 批搬**：原文「一次只搬 5~6 个」是按「结构体很大」估的，实测这 24 个
+  body 合计只有 276 行、平均 11.5 行纯数据。分批只缩小出错半径，而逐行等价证明
+  + 一次全量回归给出的是更强的证据（也省下 3 次 6 分钟）。
+  **如果下次要搬的是带成员函数/带相互引用的类型，就回到分批。**
 
 **③ 成员指针类型前置声明** —— `App.h` 里 `ECDI::Label*` / `Panel*` / `ScrollView*` / `Button*` 等
 改成前置声明，把 `#include "ECDI/Widget/*.h"` 从 `App.h` 移到需要的 `.cpp`。
@@ -272,6 +304,23 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 改一行私有成员就重编 20+。**拆分把「改头文件」的代价放大了 10 倍**，Stage 3 是还这笔债。
 （顺带说明：编译时间从来不是拆分的理由，见 plan §0.7——这是拆分带来的**新**成本。）
 
+### 7.5 刀③ 的量（接手前先算清，别指望它砍行数）
+
+刀③ 的收益**不是行数，是重编半径**：`App.h` 现在 include 了 8 个 `ECDI/Widget/*.h`
++ `ECDI/Application/Application.h`，其中 7 个只用来写 `ECDI::Label*` / `Panel*` / `ScrollView*`
+这类**指针成员**（共 72 处）——指针成员只需前置声明。
+
+- 好消息：`App.h` 里几乎没有内联函数体（只有 2 处单行内联），所以**不存在**
+  「内联函数用到完整类型因而不能降级」的阻碍。
+- 坏消息：`App.h` 会被 **19 个 TU** 包含；把 include 摘掉后，凡是在 `.cpp` 里
+  `new ECDI::Button(...)` / 调 `->SetText(...)` 的地方都得自己补 include。
+  已实测各头被哪些文件用到（`grep -rl "ECDI/Widget/X.h"`）：
+  `Button` 9 处 / `Label` 13 / `ScrollView` 9 / `ScrollBar` 7 / `TextBox` 9 /
+  `CollapsiblePanel` 2 / `ProgressBar` 与 `RingProgressBar` **只有 `App.h` 用**。
+- ⇒ 顺序建议：**先摘只有 App.h 用的两个**（`ProgressBar` / `RingProgressBar`，
+  前置声明即可，零扩散），验证编译通过再动其它 6 个。
+- 预期行数变化 ≈ -10（几个 include + 注释），**不是几百行**。别把它当瘦身刀，它是重编刀。
+
 ---
 
 ## 8. Stage 4 / 5：先别做
@@ -293,7 +342,7 @@ cd /d/Project/ECDI_fake_harness
 git status --short                     # 应为空
 unset http_proxy https_proxy
 cmake --build gui/build --config Release        # 门 1，约 11s 增量
-python tools/split_verify.py --check .scratch/split-baseline/fp-before.json   # 门 2，应 279/279
+python tools/split_verify.py --check .scratch/split-baseline/fp-stage3.json   # 门 2，应 286/286
 python tools/regress.py                          # 门 3，约 6 分钟
 ```
 
