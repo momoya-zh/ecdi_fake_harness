@@ -135,13 +135,25 @@
 
 ### 2.2 仪器（与产品代码物理隔离，这是第一刀）
 
-| 文件 | 内容 | 预计行数 |
+**1a 已落地（2026-10-25），实际行数如下**（`wc -l` 实测，含 include 区与文件头）：
+
+| 文件 | 内容 | 实际行数 |
 |---|---|---:|
-| `ProbeSupport.cpp` | `SynthesizeClickAt` `SynthesizeKey` `WidgetKindName` `SnapshotRows` `SnapshotUi` `CompareUi` `CompareRows` `DigestReplayFile` `ProbeResizeClient` | ≈310 |
-| `ProbeTranscript.cpp` | `RunHitProbe` `RunReasoningProbe` `RunRebuildProbe` `RunAnswerProbe` `RunSelectProbe` `RunDelProvProbe` | ≈740 |
-| `ProbeSidebar.cpp` | `RunSidebarProbe` `RunSessionProbe` `RunHistoryProbe` `RunThemeProbe` | ≈1190 |
-| `ProbeChrome.cpp` | `RunMenuProbe` `RunResizeProbe` `RunHudProbe` `RunEmptyProbe` `RunModelProbe` | ≈950 |
-| `ProbeFlow.cpp` | `RunEnterProbe` `RunGrowProbe` `RunJumpProbe` `RunKeyProbe` `RunSettingsProbe` `RunWorkspaceProbe` | ≈1330 |
+| `ProbeSupport.cpp` | `SynthesizeClickAt` `SynthesizeKey` `WidgetKindName` `SnapshotRows` `SnapshotUi` `CompareUi` `CompareRows` `DigestReplayFile` `ProbeResizeClient` | 366 |
+| `ProbeTranscript.cpp` | `RunHitProbe` `RunReasoningProbe` `RunRebuildProbe` `RunAnswerProbe` `RunSelectProbe` `RunDelProvProbe` | 748 |
+| `ProbeSidebar.cpp` | `RunSidebarProbe` `RunSessionProbe` `RunHistoryProbe` `RunThemeProbe` | 1233 |
+| `ProbeChrome.cpp` | `RunMenuProbe` `RunResizeProbe` `RunHudProbe` `RunEmptyProbe` `RunModelProbe` | 977 |
+| `ProbeFlow.cpp` | `RunEnterProbe` `RunGrowProbe` `RunJumpProbe` `RunKeyProbe`（纯 UI 交互） | 730 |
+| `ProbeSettings.cpp` | `RunSettingsProbe` `RunWorkspaceProbe`（唯一碰磁盘/环境/真子进程的两个） | 729 |
+
+> **与初版的差异**：原计划 `ProbeFlow.cpp` 装 6 个函数（≈1330 行，超 1200 上限），
+> 实际执行时按上限规则再切一刀，拆出 `ProbeSettings.cpp`。切分依据不是行数，是**副作用面**：
+> Enter/Grow/Jump/Key 四个是纯 UI 交互（合成事件 + 回读控件位），
+> Settings/Workspace 两个会写配置、读凭据库、设 env、拉真子进程——混在一起改一个要滚过另一个的全部仪器代码。
+>
+> `ProbeSidebar.cpp` 1233 行，比 1200 的软上限高 2.7%，**刻意不拆**：
+> 四个函数共用同一套「拆列表→重建→逐行比对」机制，拆开会把一套仪器劈成两半，
+> 收益（33 行）远小于成本（两个文件都要重复 include 与 helper 短名）。
 
 ### 2.3 头文件
 
@@ -192,6 +204,30 @@ done
 5. `AppUiChrome.cpp` / `AppUiMain.cpp`——最后，因为 Stage 2 还要动它。
 
 **Stage 1 结束时**：App.cpp ≈970 行，最大文件 `ProbeFlow.cpp` 1330 行，中位数 ≈500。
+
+#### 1a 已完成（2026-10-25）——实测结果
+
+| 项 | 结果 |
+|---|---|
+| App.cpp | **12269 → 7790 行**（切出 30 个函数 + 5 个新 TU） |
+| 新文件 | ProbeSupport 366 / ProbeTranscript 748 / ProbeSidebar 1233 / ProbeChrome 977 / ProbeFlow 730 / ProbeSettings 729 |
+| 门 1 编译 | 零 error；唯一警告在 `Credentials.cpp`（**本次未触碰的文件**，是既有警告——此前一直是增量构建，从未重编过它） |
+| 门 2 指纹 | **PASS**：279 个函数一致 / 0 变 / 0 丢 / 0 新增（含 30 个搬家函数，函数体逐字节相同） |
+| 门 3 回归 | **PASS**：6 夹具 + 13 探针 + REQ-03 A/B + validate.py |
+| 门 3 GL 抽测 | `backend=gl`、8/19/43、退出码 0 |
+| 门 4 摘要 | 6 夹具 + GL 全部 IDENTICAL（见下方 invalidations 的例外说明） |
+
+**执行中遇到的三个真问题（后续 1b–1e 会再遇到，先记下）**：
+
+1. **`ECDI::PlatformWindow` 是不完整类型**。探针要 `m_window->GetPlatformWindow().StartTimer(...)`，
+   而 `Window.h` 只前置声明 `PlatformWindow`。App.cpp 原先靠 `Platform.h` 间接带入，
+   新 TU 必须显式 `#include "ECDI/Platform/PlatformWindow.h"`。
+2. **跨 TU 符号**：实测探针只依赖 5 个非成员符号——`PathToUtf8`(5 处) `WideFromUtf8Path`(4 处)
+   `kPinThreshold`(3 处) `kSidebarRowH`/`kSidebarGroupH`(各 1 处)。已按 §5 的预案上提到
+   `AppInternal.h`，各 TU 加 `using harness::internal::xxx;`。**其余 45 个匿名 ns 符号探针一个都不用**
+   （`ContentWidth`/`Pick`/`HarnessRootLayout` 那几处命中都在产品函数或注释里，不在探针体内）。
+3. **`ThemeUsing.h` 是必需品，不是洁癖**：6 个新 TU 全部要用主题令牌短名，
+   若各抄 52 条 `using`，加一个令牌就要改 7 处。§5 里 Zcode 提的那条风险由此消解。
 
 ### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）
 
@@ -275,6 +311,25 @@ gui/build/Release/harness_gui.exe --replay protocol/fixtures/demo-session.jsonl 
 
 对 Stage 0 存的 6 份基线摘要，逐 key 比对。**排除 volatile 键**（`frameCount` `paints` `maxPaintUs` `avgPaintUs`——它们随 caret 闪烁 timer 相位浮动，同二进制 3 跑可差 ±2~4，见 2026-10-25 实测记录）。其余键必须**完全相等**，包括探针数组里每个 `matched` 与 `note`。
 **⚠ `invalidations` 不在排除清单里——它是稳定锚**（demo 恒 8 / cot 恒 20，整个 P4 期间逐位不变；P4.C 曾因多打两次 RequestRepaint 被它抓过 8→10）。纯搬运若让它漂移，说明 RequestRepaint/投影链路被改坏——这正是门 4 要抓的事故。（2026-10-25 评审修正：初版把 invalidations 误列为 volatile。）
+
+**1a 实测补一条（2026-10-25，别当成噪声忽略）**：`--auto-close 40000` 这种长窗口下，
+`invalidations` 会**偶发 ±1**。本次基线抓到 demo=9，而拆分后连跑 4 次全是 8；
+为判定归属，另建 HEAD（拆分前）的 worktree 编了一份二进制连跑 3 次——**也全是 8**。
+⇒ 基线那次 9 是尾 tick 抖动（40 秒里 caret 闪烁定时器的最后一拍落在退出边界上），**不是回归**。
+
+判定协议（遇到 invalidations 不一致时按这个走，不许直接改基线）：
+
+```bash
+# 1. 拆分后的二进制连跑 3 次，看是否稳定
+# 2. 若稳定在某个值 v，用 HEAD（拆分前）建 worktree 编一份，同样连跑 3 次
+git worktree add .scratch/pre-split <拆分前的 commit>
+cd .scratch/pre-split && cmake -S gui -B gui/build -DECDI_PREFIX=<repo>/third_party/ecdi
+cmake --build gui/build --config Release
+# 3. 两边同值 ⇒ 基线抖动，改基线并在此处记一笔；不同值 ⇒ 真回归，回滚该 commit
+```
+
+★ 顺带确认了 volatile 清单的正确性：同一次实验里拆分前 `paints` 跑出 **112 / 93 / 95**，
+拆分后 94——三跑差 ±19，`paints`/`frameCount`/`maxPaintUs`/`avgPaintUs` 确实不能当判据。
 
 ---
 
