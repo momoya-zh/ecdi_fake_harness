@@ -81,6 +81,13 @@ struct CliOptions {
     //   标黄 / 回放下行点击的如实 notice / cot 的 hello.context 分母上屏）。
     //   默认 false ⇒ 零行为变化。
     bool modelProbe = false;              // --model-probe：模型浮窗 + 用量判据
+    // ★★ P4 Phase G（2026-10-25）：转录可选中控件（尖峰开关）——assistant 正文
+    //   行用只读 TextBox（方向键/选区/Ctrl+A/C 照常，TextBox.h:50 契约）替代
+    //   Label。默认 false ⇒ 树与基线逐位同形。读数对比随尖峰跑批记录。
+    bool selectableRows = false;          // --selectable-rows：assistant 行可选中复制
+    // ★★ P4 Phase G：--selectable-rows 的功能判据（合成 Ctrl+A/Ctrl+C 回读
+    //   剪贴板 == 块全文）。默认 false ⇒ 零行为变化。
+    bool selectProbe = false;             // --select-probe：选中复制取证
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
@@ -589,7 +596,11 @@ private:
     // 行记录：m_rows 用 deque（push_back 不失效指针——回调捕获依赖这一点）
     struct RowRec {
         ECDI::Widget* panel = nullptr;            // 行根（Panel），非拥有
-        ECDI::Label* label = nullptr;             // 主文本；tool 行 = 展开体文本，非拥有
+        // ★★ P4 G（2026-10-25）：Label → TextWidget*（Label 与 TextBox 的共同
+        //   基类）——尖峰：--selectable-rows 下 assistant 正文行用只读 TextBox
+        //   （可选区/复制），其余行仍是 Label。GetText/SetText/SetWordWrap/
+        //   AutoSize/SetTextColor 全在共同基类面。
+        ECDI::TextWidget* label = nullptr;        // 主文本；tool 行 = 展开体文本，非拥有
         ECDI::Button* headerBtn = nullptr;        // tool 卡片标题按钮，非拥有
         ECDI::CollapsiblePanel* body = nullptr;   // tool 卡片展开体，非拥有
         ECDI::Button* allowBtn = nullptr;         // ask 行按钮，非拥有
@@ -1904,6 +1915,17 @@ private:
     std::vector<ModelProbeRec> m_modelProbeLog;
     bool m_modelProbeDone = false;
     void RunModelProbe();
+
+    // ★★ P4 Phase G（--select-probe）：选中复制判据。形状同 RunJumpProbe。
+    struct SelectProbeRec {
+        std::string phase;        // select-and-copy / negative-focus-elsewhere
+        std::string clipText;     // 回读的剪贴板（截断到 60 字节进摘要）
+        bool matched = true;
+        std::string note;
+    };
+    std::vector<SelectProbeRec> m_selectProbeLog;
+    bool m_selectProbeDone = false;
+    void RunSelectProbe();
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
     //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），

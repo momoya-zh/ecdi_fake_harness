@@ -3451,6 +3451,10 @@ void HarnessApp::OnReplayTick() {
             if (m_options.modelProbe && !m_modelProbeDone) {
                 RunModelProbe();
             }
+            // ★★ P4 Phase G 选中复制探针：同步跑完即 Exit，同上。
+            if (m_options.selectProbe && !m_selectProbeDone) {
+                RunSelectProbe();
+            }
             // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
             if (m_options.settingsProbe && !m_settingsProbeDone) {
                 RunSettingsProbe();
@@ -4074,6 +4078,23 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             .cornerRadius = kRadiusCard,
             .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
             .borderColor = kUserBorder});
+        // ★★ P4 G：user 行同款只读 TextBox 化（见下方 assistant 分支注释）。
+        if (m_options.selectableRows) {
+            auto box = std::make_unique<ECDI::TextBox>();
+            rec.label = box.get();
+            box->SetText(block.text);
+            box->SetReadOnly(true);
+            box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+            box->SetFont(harness::SansFont(harness::kFontBody));
+            box->SetStyle(ECDI::TextBoxStyleOverride{
+                .background = Pick(m_options.probeContrast, kUserBg, kProbeBg),
+                .caretWidth = 0.0f,
+                .padding = 0.0f,
+                .cornerRadius = 0.0f,
+                .borderWidth = 0.0f});
+            panel->AddChild(std::move(box));
+            return panel;
+        }
         auto label = std::make_unique<ECDI::Label>(block.text);
         rec.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
@@ -4090,6 +4111,26 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             .cornerRadius = kRadiusCard,
             .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
             .borderColor = kCardBorder});
+        // ★★ P4 G 尖峰（--selectable-rows）：assistant 正文行用只读 TextBox——
+        //   「编辑 no-op 但方向键/选区/Ctrl+A/C 照常」（TextBox.h:50 契约）⇒ 转录
+        //   可选中/复制不需要框架新能力。视觉与 Label 版同形：透明底/无边框/
+        //   无 caret/同字体同色。默认关闭 ⇒ 基线路径零变化。
+        if (m_options.selectableRows) {
+            auto box = std::make_unique<ECDI::TextBox>();
+            rec.label = box.get();
+            box->SetText(block.text);
+            box->SetReadOnly(true);
+            box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+            box->SetFont(harness::SansFont(harness::kFontBody));
+            box->SetStyle(ECDI::TextBoxStyleOverride{
+                .background = Pick(m_options.probeContrast, kCardBg, kProbeBg),
+                .caretWidth = 0.0f,
+                .padding = 0.0f,
+                .cornerRadius = 0.0f,
+                .borderWidth = 0.0f});
+            panel->AddChild(std::move(box));
+            return panel;
+        }
         auto label = std::make_unique<ECDI::Label>(block.text);
         rec.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
@@ -7414,6 +7455,68 @@ void HarnessApp::RunModelProbe() {
     }
     SetModelPopupOpen(false);
     m_modelProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+// ★★ P4 Phase G（--select-probe）：--selectable-rows 的功能判据。
+// 【它要回答什么】只读 TextBox 行真的**可选中、可复制**（TextBox.h:50 契约的
+//   实证）——焦点给行、合成 Ctrl+A/Ctrl+C（真实派发链），回读剪贴板 == 块全文。
+// 【负对照】焦点在 composer 输入框时同一组按键复制到的是输入框内容（证明
+//   复制走的是焦点控件的单收件人路径，不是探针直接捅剪贴板）。
+void HarnessApp::RunSelectProbe() {
+    if (!m_sess || !m_sess->replay || !m_window) { m_selectProbeDone = true; return; }
+    // 找第一个正文行（非 tool/reasoning/ask）且控件是 TextBox。
+    ECDI::TextBox* row = nullptr;
+    std::string fullText;
+    for (const RowRec& r : m_sess->rows) {
+        if (r.tool || r.reasoning || r.ask || !r.label) continue;
+        if (!(row = dynamic_cast<ECDI::TextBox*>(r.label))) continue;
+        fullText = r.label->GetText();
+        break;
+    }
+    if (!row) {
+        SelectProbeRec rec;
+        rec.phase = "skipped-no-selectable-row";
+        rec.matched = false;
+        rec.note = "run with --selectable-rows";
+        m_selectProbeLog.push_back(std::move(rec));
+        m_selectProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+    auto readClip = [&]() {
+        return m_window->GetPlatformWindow().GetClipboardText();
+    };
+    // ① 焦点给行 → Ctrl+A 全选 → Ctrl+C 复制。
+    ECDI::Widget* const focusBefore = m_window->GetFocusedWidget();
+    m_window->SetFocusedWidget(row);
+    SynthesizeKey(ECDI::KeyCode::A, false, ECDI::KeyModifier::Ctrl);
+    SynthesizeKey(ECDI::KeyCode::C, false, ECDI::KeyModifier::Ctrl);
+    {
+        SelectProbeRec rec;
+        rec.phase = "select-and-copy";
+        rec.clipText = readClip();
+        rec.matched = (rec.clipText == fullText);
+        if (!rec.matched) rec.note = "clipboard != block full text";
+        m_selectProbeLog.push_back(std::move(rec));
+    }
+    // ② 负对照：焦点回输入框、放点文本，同组按键 ⇒ 剪贴板 = 输入框内容。
+    if (m_promptBar && m_promptBar->input()) {
+        ECDI::TextBox* input = m_promptBar->input();
+        input->SetText("__focus_elsewhere__");
+        m_window->SetFocusedWidget(input);
+        SynthesizeKey(ECDI::KeyCode::A, false, ECDI::KeyModifier::Ctrl);
+        SynthesizeKey(ECDI::KeyCode::C, false, ECDI::KeyModifier::Ctrl);
+        SelectProbeRec rec;
+        rec.phase = "negative-focus-elsewhere";
+        rec.clipText = readClip();
+        rec.matched = (rec.clipText == "__focus_elsewhere__");
+        if (!rec.matched) rec.note = "copy should follow the focused widget";
+        m_selectProbeLog.push_back(std::move(rec));
+        input->SetText("");
+    }
+    if (focusBefore) m_window->SetFocusedWidget(focusBefore);
+    m_selectProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -11424,6 +11527,41 @@ void HarnessApp::WriteSummary() {
                           r.listRows, r.ctxKnown ? "true" : "false",
                           r.chipText.c_str(), r.matched ? "true" : "false",
                           r.note.c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ P4 Phase G（--select-probe）：选中复制判据。
+    if (m_options.selectProbe && !m_selectProbeLog.empty()) {
+        // clipHead 只为诊断：按字节截断会切进多字节字符（实测 JSON 解析炸）——
+        // 回退到 UTF-8 序列边界；块文本可能含引号/换行（会破坏 JSON 字面量），
+        // 一并压成空格。
+        auto truncUtf8 = [](const std::string& s) {
+            // 数码点截断（≤48 码点），终点必落在完整序列后。
+            std::string t;
+            int cp = 0;
+            for (size_t i = 0; i < s.size() && cp < 48; ++i, ++cp) {
+                const unsigned char c = s[i];
+                size_t len = c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4));
+                if (i + len > s.size()) break;   // 尾部残缺序列：丢弃
+                t += s.substr(i, len);
+                i += len - 1;
+            }
+            for (char& c : t) {
+                if (c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t') c = ' ';
+            }
+            return t;
+        };
+        json += "  \"selectProbe\": [";
+        for (size_t i = 0; i < m_selectProbeLog.size(); ++i) {
+            const SelectProbeRec& r = m_selectProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"clipHead\": \"%s\", "
+                          "\"matched\": %s, \"note\": \"%s\"}",
+                          r.phase.c_str(), truncUtf8(r.clipText).c_str(),
+                          r.matched ? "true" : "false", r.note.c_str());
             json += b;
         }
         json += "],\n";

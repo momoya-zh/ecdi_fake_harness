@@ -115,6 +115,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.emptyProbe = true;      // ★ P4 Phase C：空状态引导判据
         } else if (arg == L"--model-probe") {
             options.modelProbe = true;      // ★ P4 Phase H：模型浮窗+用量判据
+        } else if (arg == L"--selectable-rows") {
+            options.selectableRows = true;  // ★ P4 Phase G 尖峰：assistant 行只读 TextBox
+        } else if (arg == L"--select-probe") {
+            options.selectProbe = true;     // ★ P4 Phase G：选中复制判据
         } else if (arg == L"--grow-probe") {
             options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
         } else if (arg == L"--async-probe") {
@@ -176,6 +180,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --key-probe                      全局快捷键：Ctrl+B/I/,/N + Esc 逐层判据\n"
                     L"  --empty-probe                    空状态引导：回放负对照 + firstRun 正对照\n"
                     L"  --model-probe                    模型浮窗（Ctrl+M）+ v4 分母上屏判据\n"
+                    L"  --selectable-rows                转录正文行改只读 TextBox（可选中复制）\n"
+                    L"  --select-probe                   选中复制判据（配 --selectable-rows 用）\n"
                     L"  --grow-probe                     输入框多行自动长高判据\n"
                     L"  --async-probe                    REQ-03：PostToUi 投递 vs 8ms 轮询的读数\n"
                     L"  --legacy-poll                    REQ-03 对照世界：恢复每 tick 等 8ms 的旧路径\n"
