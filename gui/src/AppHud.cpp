@@ -25,6 +25,10 @@
 
 #include "ECDI/Platform/PlatformWindow.h"   // 同上：Relayout 里设标题/定时器
 #include "ECDI/Theme/PanelStyle.h"
+// ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Widget/CollapsiblePanel.h"
+#include "ECDI/Widget/ProgressBar.h"
+#include "ECDI/Widget/RingProgressBar.h"
 #include "ECDI/Widget/ScrollBar.h"
 #include "ECDI/Widget/ScrollView.h"
 

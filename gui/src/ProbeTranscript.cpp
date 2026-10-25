@@ -39,6 +39,7 @@
 #include "ECDI/Platform/PlatformWindow.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Widget/Button.h"
+#include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/ScrollBar.h"
 #include "ECDI/Widget/ScrollView.h"

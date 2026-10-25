@@ -27,6 +27,8 @@
 
 #include "ECDI/Core/Logger.h"
 #include "ECDI/Core/UTF8.h"   // ByteOffsetToCodepointIndex（中间省略按码点算）
+// ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Widget/ScrollView.h"
 
 #include <algorithm>
 #include <filesystem>

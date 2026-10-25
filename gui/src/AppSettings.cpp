@@ -25,6 +25,8 @@
 
 #include "ECDI/Core/Logger.h"
 #include "ECDI/Core/String.h"   // ECDI::UTF8ToWide（日志与配置路径）
+// ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Widget/ScrollView.h"
 
 #include <filesystem>
 #include <map>

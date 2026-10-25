@@ -30,6 +30,8 @@
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/Panel.h"
+// ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Widget/ScrollView.h"
 #include "ECDI/Widget/TextBox.h"
 #include "ECDI/Window/CaptionBar.h"
 

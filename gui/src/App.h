@@ -26,15 +26,26 @@
 // ★ P4 Phase B：SynthesizeKey 第三参（KeyModifier 按值）与 HandleGlobalKeyDown
 //   的形参都需要完整枚举定义。
 #include "ECDI/EventSystem/Input/KeyBoard/KeyModifier.h"
-#include "ECDI/Widget/Button.h"
-#include "ECDI/Widget/CollapsiblePanel.h"
-#include "ECDI/Widget/Label.h"
-#include "ECDI/Widget/ProgressBar.h"
-#include "ECDI/Widget/RingProgressBar.h"
-#include "ECDI/Widget/ScrollView.h"
-// ★ P4 Phase A（2026-10-25）：RefreshJumpButton 要读垂直条实际宽度让位，
-//   GetVerticalScrollBar() 只回前置声明——调用其成员必须有完整类型。
-#include "ECDI/Widget/ScrollBar.h"
+// ★★ 2026-10-25（Stage 3 刀③）：控件类型一律前置声明，不包 `ECDI/Widget/*.h`。
+//   判据（改前实测）：`ECDI::Label*` / `Button*` / `Panel*` / `ScrollView*` / `TextBox*`
+//   在 App.h 里共 72 处，**全是指针**；仅有的两处引用形参（`BuildSidebar(ECDI::Panel&)` /
+//   `BuildInspector(ECDI::Panel&)`）也不需要完整类型；App.h 里没有一处内联函数体
+//   （只有 2 处单行内联）⇒ 不存在「内联用到完整类型因而不能降级」的阻碍。
+//   ★ 收益是**重编半径**不是行数：App.h 被 19 个 TU 包含，改一个控件头现在只重编
+//     真正使用它的那些 TU。这条债是 Stage 1 拆分放大的（见交接文档 §7.4）。
+//   ★ 例外，别顺手改：`WindowResizedEvent` / `KeyCode` / `KeyModifier`（上方三条注释已写明）；
+//     `ECDI::Color` 在 `Notice` 里是**值成员**，`Color.h` 必须留。
+//   ★ `ECDI::Widget` 不用在这里声明——`Application.h` 已经前置声明了它。
+namespace ECDI {
+class Button;
+class CollapsiblePanel;
+class Label;
+class Panel;
+class ProgressBar;
+class RingProgressBar;
+class ScrollView;
+class TextBox;
+}  // namespace ECDI
 
 #include <chrono>
 #include <deque>

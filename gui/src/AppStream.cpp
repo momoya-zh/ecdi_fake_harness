@@ -27,6 +27,8 @@
 #include "ECDI/Core/Logger.h"
 // Window.h 只前置声明 PlatformWindow；这里要调它的 StartTimer/SetTitle ⇒ 完整类型。
 #include "ECDI/Platform/PlatformWindow.h"
+// ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Widget/ScrollView.h"
 
 #include <string>
 #include <vector>
