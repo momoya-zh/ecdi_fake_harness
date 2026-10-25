@@ -166,6 +166,10 @@ bool AppConfig::Load(std::string& error) {
     }
 
     // v2：providers 数组 + defaultProviderId。坏行跳过（不否决整份配置）。
+    // ★★ P4 修复（2026-10-25，实测反馈连带）：**同 id 去重（留最后一份）**——
+    //   id 由 BaseURL host 派生，历史文件里同端点多份同 id 累积（实测 8 份）
+    //   ⇒「按 id 删除/编辑/切换」语义全被打穿。去重走既有 Upsert（同 id 更新），
+    //   下次 Save 落盘即收敛。
     const auto* arr = root.Find("providers");
     if (!arr || !arr->IsArray() || arr->array.empty()) {
         error = "config has no providers array";
@@ -176,7 +180,7 @@ bool AppConfig::Load(std::string& error) {
         ProviderConfig pc;
         fillProvider(prov, pc);
         if (pc.baseUrl.empty() || pc.model.empty()) continue;
-        providers.push_back(pc);
+        Upsert(pc);
     }
     if (providers.empty()) {
         error = "config providers array has no usable entry";

@@ -119,6 +119,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.selectableRows = true;  // ★ P4 Phase G 尖峰：assistant 行只读 TextBox
         } else if (arg == L"--select-probe") {
             options.selectProbe = true;     // ★ P4 Phase G：选中复制判据
+        } else if (arg == L"--delprov-probe") {
+            options.delProvProbe = true;    // ★ P4：删除所选不崩判据
         } else if (arg == L"--grow-probe") {
             options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
         } else if (arg == L"--async-probe") {

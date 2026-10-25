@@ -88,6 +88,9 @@ struct CliOptions {
     // ★★ P4 Phase G：--selectable-rows 的功能判据（合成 Ctrl+A/Ctrl+C 回读
     //   剪贴板 == 块全文）。默认 false ⇒ 零行为变化。
     bool selectProbe = false;             // --select-probe：选中复制取证
+    // ★★ P4 修复验证（2026-10-25，实测反馈：删除所选崩溃）：--config 隔离配置
+    //   下合成「选中提供商 → 点删除所选」全链。默认 false ⇒ 零行为变化。
+    bool delProvProbe = false;            // --delprov-probe：删除所选不崩判据
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
@@ -1932,6 +1935,21 @@ private:
     std::vector<SelectProbeRec> m_selectProbeLog;
     bool m_selectProbeDone = false;
     void RunSelectProbe();
+
+    // ★★ P4（--delprov-probe）：删除所选判据。三路：
+    //   dedup-load（同 id 8 份 ⇒ Load 去重剩 1）/ delete-one（2 家删所选剩 1，
+    //   逐实例语义）/ keep-last（仅 1 家时拒绝删除且不崩）。
+    struct DelProvProbeRec {
+        std::string phase;
+        size_t providersBefore = 0;
+        size_t providersAfter = 0;
+        std::string hint;
+        bool matched = true;
+        std::string note;
+    };
+    std::vector<DelProvProbeRec> m_delProvProbeLog;
+    bool m_delProvProbeDone = false;
+    void RunDelProvProbe();
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
     //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），

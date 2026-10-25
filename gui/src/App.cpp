@@ -2786,17 +2786,30 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                     m_hud.settingsHint->SetText("先在列表中选择要删除的提供商");
                     return;
                 }
-                if (m_appConfig.providers.size() <= 1) {
+                // ★★ P4 修复（实测反馈：点删除未响应后崩溃）：
+                //   ① 原按 id 过滤=「同名全家一次删光」——id 由 BaseURL host 派生，
+                //     同端点多份配置 id 相同（实测用户配置里有 8 份同 id）⇒ 全删后
+                //     providers[0] 在**空向量上越界**（UB ⇒ 未响应/崩溃）。改「删
+                //     所选的**一个实例**」（第一个匹配位）——同 id 多份时逐次删。
+                //   ② 删后为空的守卫用**删除结果**判断（原 size()<=1 判的是删前，
+                //     8→0 的场景它拦不住）。
+                bool removed = false;
+                for (auto it = m_appConfig.providers.begin();
+                     it != m_appConfig.providers.end(); ++it) {
+                    if (it->id == m_editingProviderId) {
+                        m_appConfig.providers.erase(it);
+                        removed = true;
+                        break;
+                    }
+                }
+                if (!removed || m_appConfig.providers.empty()) {
                     m_hud.settingsHint->SetText("至少保留一个提供商");
+                    std::string reloadError;
+                    m_appConfig.Load(reloadError);   // 放弃本次内存改动，回配置文件态
                     return;
                 }
-                std::vector<ProviderConfig> next;
-                for (const auto& pc : m_appConfig.providers) {
-                    if (pc.id != m_editingProviderId) next.push_back(pc);
-                }
-                m_appConfig.providers = std::move(next);
                 if (m_appConfig.defaultProviderId == m_editingProviderId) {
-                    m_appConfig.defaultProviderId = m_appConfig.providers[0].id;
+                    m_appConfig.defaultProviderId = m_appConfig.providers.front().id;
                 }
                 std::string saveError;
                 if (!m_appConfig.Save(saveError)) {
@@ -3551,6 +3564,10 @@ void HarnessApp::OnReplayTick() {
             // ★★ P4 Phase G 选中复制探针：同步跑完即 Exit，同上。
             if (m_options.selectProbe && !m_selectProbeDone) {
                 RunSelectProbe();
+            }
+            // ★★ P4 删除所选探针：同步跑完即 Exit，同上。
+            if (m_options.delProvProbe && !m_delProvProbeDone) {
+                RunDelProvProbe();
             }
             // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
             if (m_options.settingsProbe && !m_settingsProbeDone) {
@@ -7627,6 +7644,109 @@ void HarnessApp::RunSelectProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ P4（--delprov-probe，2026-10-25）：「删除所选」崩溃修复的判据。
+// 复现条件 = --config 指向隔离配置（真实反馈场景：文件里 8 份同 id 累积）。
+// 判据按 providers 数量分流：8 份同 id ⇒ Load 去重剩 1 ⇒ 点删除走「至少保留
+// 一个」不崩；2 家 ⇒ 删所选一个实例剩 1。跑完全程不崩本身就是核心判据
+// （修复前：按 id 全删光 ⇒ 空向量 [0] 越界 UB ⇒ 未响应/崩溃）。
+void HarnessApp::RunDelProvProbe() {
+    if (!m_sess || !m_sess->replay || !m_hud.settingsPanel) {
+        m_delProvProbeDone = true;
+        return;
+    }
+    if (m_appConfig.providers.empty()) {
+        // 空配置（--config 路径错/文件不存在）⇒ 如实记跳过，不许在 front() 上 UB。
+        DelProvProbeRec rec;
+        rec.phase = "skipped-empty-config";
+        rec.matched = false;
+        rec.note = "no providers loaded -- check --config path";
+        m_delProvProbeLog.push_back(std::move(rec));
+        m_delProvProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+    auto snap = [&](const char* phase) -> DelProvProbeRec& {
+        DelProvProbeRec rec;
+        rec.phase = phase;
+        rec.providersBefore = m_appConfig.providers.size();
+        rec.providersAfter = rec.providersBefore;   // 调用方按需覆盖
+        rec.hint = m_hud.settingsHint ? m_hud.settingsHint->GetText() : "";
+        m_delProvProbeLog.push_back(std::move(rec));
+        return m_delProvProbeLog.back();
+    };
+    auto clickButtonWithText = [&](ECDI::Widget* root, const char* text) {
+        // 最多下探两层（panel → row → button）——「删除所选」在 panel 直接子的
+        // row 里；列表行是 settingsProviderList 直接子。
+        for (size_t i = 0; root && i < root->GetChildCount(); ++i) {
+            ECDI::Widget* c = root->GetChildAt(i);
+            if (ECDI::Button* b = dynamic_cast<ECDI::Button*>(c)) {
+                if (b->GetText() == text) {
+                    const ECDI::Point abs = b->GetAbsolutePosition();
+                    SynthesizeClickAt(static_cast<int>(abs.x) + b->GetWidth() / 2,
+                                      static_cast<int>(abs.y) + b->GetHeight() / 2);
+                    return true;
+                }
+            }
+            for (size_t j = 0; j < c->GetChildCount(); ++j) {
+                ECDI::Widget* cc = c->GetChildAt(j);
+                if (ECDI::Button* b = dynamic_cast<ECDI::Button*>(cc)) {
+                    if (b->GetText() == text) {
+                        const ECDI::Point abs = b->GetAbsolutePosition();
+                        SynthesizeClickAt(static_cast<int>(abs.x) + b->GetWidth() / 2,
+                                          static_cast<int>(abs.y) + b->GetHeight() / 2);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    // ① 打开设置。
+    SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
+    {
+        DelProvProbeRec& r = snap("settings-opened");
+        r.matched = m_settingsVisible && m_hud.settingsPanel->IsVisible();
+        if (!r.matched) r.note = "settings did not open";
+    }
+    // ② Load 去重判据（8 份同 id ⇒ 1 份；2 家不同 id ⇒ 保持 2）。
+    const size_t loaded = m_appConfig.providers.size();
+    // ③ 选中第一家（列表第一个 Button 子——不按文本匹配：marker（●/○/[编辑中]）
+    //   随会话状态变，脆）→ 点「删除所选」→ 全程不崩 + 数量守恒。
+    if (m_hud.settingsProviderList) {
+        for (size_t i = 0; i < m_hud.settingsProviderList->GetChildCount(); ++i) {
+            if (ECDI::Button* row =
+                    dynamic_cast<ECDI::Button*>(m_hud.settingsProviderList->GetChildAt(i))) {
+                const ECDI::Point abs = row->GetAbsolutePosition();
+                SynthesizeClickAt(static_cast<int>(abs.x) + row->GetWidth() / 2,
+                                  static_cast<int>(abs.y) + row->GetHeight() / 2);
+                break;
+            }
+        }
+    }
+    const bool deleted =
+        clickButtonWithText(m_hud.settingsPanel, "\xE5\x88\xA0\xE9\x99\xA4\xE6\x89\x80\xE9\x80\x89");   // 删除所选
+    {
+        DelProvProbeRec& r = snap("after-delete-click");
+        r.providersAfter = m_appConfig.providers.size();
+        if (!deleted) {
+            r.matched = false;
+            r.note = "delete button not found/clicked";
+        } else if (loaded == 1) {
+            // 仅一家（去重后）：删除被拒绝且程序活着。
+            r.matched = (r.providersAfter == 1);
+            if (!r.matched) r.note = "sole provider must be kept";
+        } else {
+            // 多家：删所选**一个实例**。
+            r.matched = (r.providersAfter == loaded - 1);
+            if (!r.matched) r.note = "should remove exactly one instance";
+        }
+    }
+    SetSettingsVisible(false);
+    m_delProvProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。
 //
 // 【它要回答什么】`Hud` 里那些指针，**建树时真的都赋过值吗**？
@@ -9698,7 +9818,7 @@ void HarnessApp::RebuildSettingsProviderList() {
     const std::string liveId = m_sess ? m_sess->providerId : std::string();
     for (const auto& pc : m_appConfig.providers) {
         std::string marker = "○ ";
-        if (pc.id == m_sess->providerId) marker = "● ";
+        if (pc.id == liveId) marker = "● ";   // ★ P4：用守卫式 liveId（原裸解引用 m_sess）
         if (pc.id == m_editingProviderId) marker += "[编辑中] ";
         auto row = std::make_unique<ECDI::Button>(
             marker + pc.id + " · " + pc.model);
@@ -11687,6 +11807,24 @@ void HarnessApp::WriteSummary() {
                           "{\"phase\": \"%s\", \"clipHead\": \"%s\", "
                           "\"matched\": %s, \"note\": \"%s\"}",
                           r.phase.c_str(), truncUtf8(r.clipText).c_str(),
+                          r.matched ? "true" : "false", r.note.c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ P4（--delprov-probe）：删除所选判据。
+    if (m_options.delProvProbe && !m_delProvProbeLog.empty()) {
+        json += "  \"delProvProbe\": [";
+        for (size_t i = 0; i < m_delProvProbeLog.size(); ++i) {
+            const DelProvProbeRec& r = m_delProvProbeLog[i];
+            json += (i ? ", " : "");
+            char b[640];
+            // ★ 无 hint 字段——中文按字节截断会切出非法 UTF-8（G 相同坑），
+            //   note 已含失败原因。
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"before\": %zu, \"after\": %zu, "
+                          "\"matched\": %s, \"note\": \"%s\"}",
+                          r.phase.c_str(), r.providersBefore, r.providersAfter,
                           r.matched ? "true" : "false", r.note.c_str());
             json += b;
         }
