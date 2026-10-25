@@ -7,6 +7,9 @@
 #include <shellapi.h>   // CommandLineToArgvW
 
 #include "App.h"
+// ★ 2026-10-25（Stage 3 刀①）：显式包 CliOptions，不再靠 App.h 的传递包含——
+//   本文件只用到这一个结构体，说明依赖就该写明白。
+#include "CliOptions.h"
 
 #include <filesystem>
 #include <string>
