@@ -538,6 +538,20 @@ private:
     void BuildTopBar(ECDI::Widget& root);
     void BuildMainArea(ECDI::Widget& root);
     void BuildBottom(ECDI::Widget& root);
+
+    // ★★ Stage 2（2026-10-25）：`BuildMainArea` 原来 980 行一个函数，按现有分节
+    //   注释切成 7 个 builder。**装配顺序是契约**（见 BuildMainArea 的注释）。
+    //   ★ 参数取舍：
+    //     · `main` 是 BuildMainArea 的局部容器（不进 m_hud），传引用比造假成员诚实；
+    //     · 中栏句柄用 `m_counting`（它本来就是这个对象），不额外传参；
+    //     · `BuildSettingsSheet` 返回所有权——设置面板要"先建后挂"（建时视口还没建）。
+    void BuildSidebar(ECDI::Panel& main);
+    void BuildConversationHead();
+    void BuildMoreMenu();
+    std::unique_ptr<ECDI::Widget> BuildSettingsSheet();
+    void BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet);
+    void BuildComposer();
+    void BuildInspector(ECDI::Panel& main);
     // ★★ 2026-10-21：**HUD 覆盖自检**——`Hud` 里被 `RefreshHud` 读的指针，
     //   建树时必须全部被赋值，否则那个 `if` 永远是死分支。
     //

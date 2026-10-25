@@ -340,21 +340,55 @@ done
 **include 减法**：四个 `Layout/*.h` + `ThemedCaptionBar.h` + `<set>` 随代码搬走。
 App.cpp 的注释里写清了"若某天又想在这里建控件，先想想该不该去 AppUiChrome / AppUiMain"。
 
-### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）
+### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）✅ 已完成
 
-982 行按现有 `// ──` 分节注释切成 6 个 builder，`BuildMainArea` 只留组合：
+**实测结果（2026-10-25）**：980 行 → **7 个 builder + 36 行编排**。文件 1048 → 1090 行。
 
-| 新函数 | 覆盖行（当前绝对行号） | 行数 |
-|---|---|---:|
-| `BuildSidebar` | 2255–2412 | ≈157 |
-| `BuildConversationHead` | 2420–2519 | ≈99 |
-| `BuildMoreMenu` | 2519–2621 | ≈102 |
-| `BuildSettingsOverlay` | 2621–2937 | ≈289 |
-| `BuildModelPopup` + `BuildTooltip` + `BuildJumpButton` + `BuildModalMask` | 2910–3054 | ≈120 |
-| `BuildInspector` | 3054–3231 | ≈177 |
-| `BuildMainArea`（组合 + 浮层显隐投影） | 2249–2255、3231 前收尾 | ≈60 |
+| 新函数 | 行数 | 内容 |
+|---|---:|---|
+| `BuildMainArea` | **36** | 只剩装配顺序 + 三处显隐投影 |
+| `BuildSidebar` | 158 | 工作区 / 会话列表 / 回放进度 / 历史 / 身份行 |
+| `BuildConversationHead` | 100 | 标题 + 元信息 + 三个操作钮（导出/检查器/更多） |
+| `BuildMoreMenu` | 103 | `···` 内联下拉（导出/设置/归档/清空视图） |
+| `BuildSettingsSheet` | 283 | 设置面板内容体（**返回所有权**，见下） |
+| `BuildTranscriptViewport` | 117 | ScrollView + 五个浮层（跳转钮/遮罩/设置 sheet/模型浮窗/tooltip） |
+| `BuildComposer` | 28 | 输入条 |
+| `BuildInspector` | 175 | 五张白卡（渲染探针/模型/用量/协议健康/权限历史） |
 
-**这是唯一需要"读懂代码"的一步**，但它只是把直线代码切成函数：没有 lambda 捕获逃逸问题（各段之间靠 `main` 局部变量 `side`/`center`/`insp` 传递，切成成员函数后改成返回值 `std::unique_ptr<ECDI::Panel>` 或传引用）。切完必须逐个验证：树结构与控件句柄赋值顺序不变（`m_hud.xxx = ptr.get()` 的写入必须仍然发生在 `AddChild` 之前）。
+**与原计划的 6 个不同：拆成了 7 个。** 原因是设置面板**必须先建后挂**——它要当视口浮层，
+而视口（`m_scroll`）在它之后才建。原计划把"设置面板"和"模型浮窗/tooltip/遮罩"合进一个
+`BuildSettingsOverlay`，但那四者的挂载点在视口内，只有面板本体是在视口之前建的。
+硬合会让"返回值"跨两段传递，比拆开更绕。`BuildSettingsSheet` 返回 `unique_ptr` 正好表达
+「建好了但还没挂」这个中间态。
+
+**改了什么（全量清单，只有这四处）**：
+1. `counting->AddChild(...)` → `m_counting->AddChild(...)`（局部句柄 → 成员句柄，同一对象）
+2. `main->AddChild(...)` → `main.AddChild(...)`（`main` 成了引用参数）
+3. `settingsSheetOwned` → 函数返回值 / 入参（原代码里它就是"暂存"语义）
+4. 每个分区的注释块随分区一起搬（`// ──` 分节注释是切分依据，也是给读者的地图）
+
+**其余一字未动，含缩进**——所以 diff 里能一眼看出只有上面这几处。
+
+#### 门 2 在 Stage 2 失效，替代判据是什么
+
+`BuildMainArea` 的函数体真的变了，门 2 必然报 `变了 1 / 新增 7`——这不是失败，是这个阶段
+的正常指纹。所以必须换一条**能证明"行为没变"**的判据：
+
+**`tools/build_order_check.py`（本轮新增）**。做法：把新文件里对同文件成员函数的调用
+**在调用点原地展开**，重建出**执行顺序**，再与拆前的线性函数逐行比对。文件里的书写顺序
+不算数（编排函数排在最前，与执行顺序无关），只有执行顺序算数。
+
+```
+  python tools/build_order_check.py --before .scratch/AppUiMain.before.cpp \
+         --after gui/src/AppUiMain.cpp --entry BuildMainArea
+  → 树结构（AddChild/RemoveChild）  一致（83 条，逐行相同）
+  → 句柄写入（m_hud.* = ....get()） 一致（34 条，逐行相同）
+```
+
+两条契约各自对应一类事故：
+- **树结构顺序** = 父子关系 = 命中测试顺序 = 绘制层序。顺序错了，浮层就压不住、点击会穿透。
+- **句柄写入顺序**：`m_hud.xxx = ptr.get()` 必须在 `AddChild` **之前**——AddChild 转移所有权，
+  反过来写就是悬空指针。这条比树结构更隐蔽（编译不报错，运行时才炸）。
 
 ### Stage 3 — 头文件瘦身（紧接 Stage 1，解决"改头文件重编 20 TU"）
 
@@ -482,7 +516,7 @@ cmake --build gui/build --config Release
 | 1c | 导出/历史/工作区/设置 | 同上 | → 5404 ✅ |
 | 1d | 会话/转录/流式/HUD | 同上 | → 2346 ✅ |
 | 1e | `AppUiChrome.cpp` / `AppUiMain.cpp` | 同上 | App.cpp 871 ✅ |
-| 2 | `BuildMainArea` 6 分解 | 门 1+3+4 | 最大文件 ≤1330 |
+| 2 | `BuildMainArea` 7 分解 | 门 1+3+4+树序 | 最大文件 ≤1330 ✅ |
 | 3 | `CliOptions.h` / `ProbeTypes.h` / 前置声明 | 门 1+3 | App.h ≈900 |
 | 4 | `ProbeState` + 派发表 + 摘要分段（可选） | 门 1+2+3+4 | App.h ≈700，摘要与探针同址 |
 | 5 | 组件化（不建议现在） | — | — |

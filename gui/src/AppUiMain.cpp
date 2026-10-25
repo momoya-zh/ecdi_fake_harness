@@ -66,11 +66,52 @@ const ECDI::Color kTooltipInk = ECDI::Color::FromRGBA8(240, 241, 245);
 }   // namespace
 
 // 主区（hi-fi .main）：左栏（新建会话/会话/回放/工作区）+ 中栏（转录 + Composer）+ 右栏检查器
+
+// ★★ Stage 2（2026-10-25）：本函数只做**装配顺序**，各分区自成一个 builder。
+//   为什么按这个顺序：树结构与 `m_hud.xxx = ptr.get()` 的写入顺序都是契约
+//   （句柄必须在 AddChild 之前写——AddChild 会转移所有权）。改顺序 = 改行为。
+//   ★ 设置面板必须**先建后挂**：它要当视口浮层，而视口（m_scroll）在后面才建，
+//     所以 BuildSettingsSheet 返回所有权，由 BuildTranscriptViewport 挂上去。
 void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     auto main = std::make_unique<ECDI::Panel>();
     main->SetStretch(1);
     main->SetLayout(std::make_unique<ECDI::HorizontalLayout>(0, true, 0));
 
+    BuildSidebar(*main);
+
+    // ── 中栏（转录 + Composer）──
+    auto counting = std::make_unique<CountingPanel>();
+    m_counting = counting.get();
+    m_counting->SetStretch(1);
+    m_counting->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true, 0));
+    m_counting->SetStyle(ECDI::PanelStyleOverride{
+        .background = m_options.probeContrast ? kProbeBg : kContentBg});
+
+    BuildConversationHead();
+    BuildMoreMenu();
+
+    auto settingsSheet = BuildSettingsSheet();
+    BuildTranscriptViewport(std::move(settingsSheet));
+    BuildComposer();
+
+    // ★ P3.5：设置面板的显隐投影（中栏三件都建完了，唯一投影路径此刻可用）。
+    ApplySettingsVisibility();
+    // ★★ P4 H：模型浮窗显隐投影（重建后按模型位恢复——同 ApplySettingsVisibility
+    //   的「投影只存在于一条路径」纪律）+ chip 首帧数据。
+    SetModelPopupOpen(m_modelPopupOpen);
+    UpdateModelChip();
+    // ★ P3.6：模型列表首帧/重建后置脏（tick 里统一重建——列表行是动态的）。
+    m_modelListDirty = true;
+    main->AddChild(std::move(counting));
+
+    BuildInspector(*main);
+
+    root.AddChild(std::move(main));
+}
+
+
+// ── 左栏：工作区 / 会话 / 回放 / 历史 / 身份行（hi-fi .side）──
+void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     // ── 左栏（hi-fi .side）──
     auto side = std::make_unique<ECDI::Panel>();
     m_hud.sidebar = side.get();   // Step 2：显隐入口要能摸到侧栏本体
@@ -226,16 +267,11 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         side->AddChild(std::move(row));
     }
 
-    main->AddChild(std::move(side));
+    main.AddChild(std::move(side));
+}
 
-    // ── 中栏（转录 + Composer）──
-    auto counting = std::make_unique<CountingPanel>();
-    m_counting = counting.get();
-    m_counting->SetStretch(1);
-    m_counting->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true, 0));
-    m_counting->SetStyle(ECDI::PanelStyleOverride{
-        .background = m_options.probeContrast ? kProbeBg : kContentBg});
-
+// ── 中栏会话头：标题 + 元信息 + 三个操作钮（导出 / 检查器 / 更多）──
+void HarnessApp::BuildConversationHead() {
     // ── 中栏会话头（原型 C 的 `.conversation-head`，62px）──────────
     // ★ 为什么加：原型 C 中栏顶部有「标题 + 元信息 + 操作」这一带，而现状
     //   ScrollView 直接从第一行开始，**标题只存在于系统标题栏**（用户看不到
@@ -332,9 +368,12 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         mkAct("↗", "导出转录", HeadAct::Export);
         mkAct("≡", "检查器", HeadAct::Inspector);
         mkAct("···", "更多", HeadAct::Menu);
-        counting->AddChild(std::move(head));
+        m_counting->AddChild(std::move(head));
     }
+}
 
+// ── `···` 菜单条：内联下拉，撑开在会话头与转录之间 ──
+void HarnessApp::BuildMoreMenu() {
     // ── ★★ 2026-10-20：`···` 菜单条（内联下拉）───────────
     // 位置：`head` 与 `scroll` **之间**——点 `···` 后在头部正下方撑开一行，
     //   下方转录区自然下移。为什么不做真浮层见 `Hud::moreMenu` 的注释（ECDI
@@ -434,9 +473,12 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         //     而 `timeline` 是历史会话/重建/导出的唯一来源，删了就找不回来。
         //     这里要的是「视图错乱了就重画一遍」，模型的作者不是这个按钮。
         mkMenuItem("清空视图", "从模型重画视图", [this] { RebuildTranscriptView(); });
-        counting->AddChild(std::move(menu));
+        m_counting->AddChild(std::move(menu));
     }
+}
 
+// ── 设置面板（模态 sheet 的内容体）：返回所有权，由视口挂载 ──
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
     // ── ★★ P3.5：设置面板（★★ P4 F 起改模态浮层：遮罩+居中 sheet 挂 m_scroll；
     //   显隐见 ApplySettingsVisibility——转录/composer 不再腾槽）──
     //   显隐是模型侧状态 `m_settingsVisible`（重建后恢复，同 m_sidebarVisible 纪律）。
@@ -717,6 +759,11 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         settingsSheetOwned = std::move(panel);
     }
 
+    return settingsSheetOwned;
+}
+
+// ── 转录视口：ScrollView + 四个浮层（跳转钮 / 遮罩 / 设置 sheet / 模型浮窗 / tooltip）──
+void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet) {
     auto scroll = std::make_unique<ECDI::ScrollView>();
     m_scroll = scroll.get();
     m_scroll->SetStretch(1);
@@ -774,9 +821,9 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         .pressedBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150),
         .hoverBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150)});
     scroll->AddChild(std::move(mask));
-    if (settingsSheetOwned) {
+    if (settingsSheet) {
         m_hud.settingsPanel->SetVisible(false);   // 显隐统一走 ApplySettingsVisibility
-        scroll->AddChild(std::move(settingsSheetOwned));
+        scroll->AddChild(std::move(settingsSheet));
     }
     // ★★ P4 Phase H（2026-10-25）：模型下拉浮窗——顶部下拉（视口坐标系内
     //   右上角），z 序在 mask/sheet 之上、tooltip 之下。搜索框 + 行列表 + 底注。
@@ -832,7 +879,10 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         scroll->AddChild(std::move(tip));
     }
     m_counting->AddChild(std::move(scroll));
+}
 
+// ── Composer（输入条）──
+void HarnessApp::BuildComposer() {
     // Composer 收进中栏（hi-fi .composer 在 .mid 内）
     auto composer = std::make_unique<PromptBar>();
     m_promptBar = composer.get();
@@ -858,18 +908,11 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         Relayout();
         RequestRepaint();
     });
-    counting->AddChild(std::move(composer));
+    m_counting->AddChild(std::move(composer));
+}
 
-    // ★ P3.5：设置面板的显隐投影（中栏三件都建完了，唯一投影路径此刻可用）。
-    ApplySettingsVisibility();
-    // ★★ P4 H：模型浮窗显隐投影（重建后按模型位恢复——同 ApplySettingsVisibility
-    //   的「投影只存在于一条路径」纪律）+ chip 首帧数据。
-    SetModelPopupOpen(m_modelPopupOpen);
-    UpdateModelChip();
-    // ★ P3.6：模型列表首帧/重建后置脏（tick 里统一重建——列表行是动态的）。
-    m_modelListDirty = true;
-    main->AddChild(std::move(counting));
-
+// ── 右栏检查器：五张白卡（渲染探针 / 模型 / 用量 / 协议健康 / 权限历史）──
+void HarnessApp::BuildInspector(ECDI::Panel& main) {
     // ── 右栏检查器（hi-fi .insp：卡片化）──
     auto insp = std::make_unique<ECDI::Panel>();
     m_hud.inspector = insp.get();
@@ -1042,7 +1085,5 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         insp->AddChild(std::move(card));
     }
 
-    main->AddChild(std::move(insp));
-
-    root.AddChild(std::move(main));
+    main.AddChild(std::move(insp));
 }
