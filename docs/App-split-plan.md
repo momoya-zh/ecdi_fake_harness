@@ -203,7 +203,8 @@ done
 4. `AppSession.cpp` / `AppTranscript.cpp` / `AppStream.cpp` / `AppHud.cpp`——核心耦合，最后切。
 5. `AppUiChrome.cpp` / `AppUiMain.cpp`——最后，因为 Stage 2 还要动它。
 
-**Stage 1 结束时**：App.cpp ≈970 行，最大文件 `ProbeFlow.cpp` 1330 行，中位数 ≈500。
+**Stage 1 实际结束时**（2026-10-25）：App.cpp **871 行**，最大文件 `ProbeSidebar.cpp` 1233 行，
+中位数 ≈700。（原估 ≈970 / 1330 是按函数名粗算的，实测略有出入。）
 
 #### 1a 已完成（2026-10-25）——实测结果
 
@@ -308,6 +309,36 @@ done
 
 **顺手做的减法**：`UTF8.h` / `BackendFactory.h` / `MouseButton*.h` / `ScrollBar.h` 五个 include
 随代码搬走（`grep -c` 只剩 include 行本身）。App.cpp 现在只剩 UI 构建 + `Run` + 应用接线。
+
+#### 1e 已完成（2026-10-25）——Stage 1 收尾：App.cpp 只剩应用接线
+
+| 项 | 结果 |
+|---|---|
+| App.cpp | 2346 → **871 行**（累计 12269 → 871，**-93%**） |
+| 新文件 | `AppUiChrome.cpp` 509 / `AppUiMain.cpp` 1048（`BuildMainArea` 980 行整体搬） |
+| App.cpp 剩余 | 10 个函数：`Run`(127) / 构造 / 4 个 `HarnessApplication::*` / `HandleGlobalKeyDown` / `OnWindowResized` / `SetSidebarVisible` / `ToggleInspector` |
+| 门 1 | 零 error、零新增 warning |
+| 门 2 | PASS：279 一致 / 0 变 / 0 丢 |
+| 门 3 | PASS（regress 全绿 + GL 抽测 `backend=gl` 8/19/43） |
+| 门 4 | 7 份摘要 IDENTICAL |
+
+**Stage 1 到此结束**：`App.cpp` 从 12269 行降到 871 行，全仓最大文件是 `ProbeSidebar.cpp` 1233 行
+（`AppUiMain.cpp` 1048 次之），中位数 ≈700。
+
+**1e 遇到的两个真问题（值得记，Stage 2 会再碰）**：
+
+1. **默认实参只能写一次**。`AddLine` 原本把默认值写在定义处（App.cpp 里只有定义）。
+   上提到 `UiCommon.cpp` + 声明进 `AppInternal.h` 之后，两边都带默认值 ⇒ C2572 重定义。
+   解法：**默认值只留在定义处**，头文件声明故意不带。理由不只是 C++ 规则——门 2 要求
+   定义行逐字节可比，签名里少一个 `= false` 就算"变了"。所有调用点本来就传满 6 个参数。
+2. **一次算好所有搬运区间，最后统一倒序删除**。第一版脚本先删 `HarnessRootLayout` 块
+   （144–205 行），再用**原始行号**删 206/214 两处命名空间大括号 ⇒ 索引整体上移 62 行，
+   把 `OnKeyDown` 里的两行削掉了。门 2 立刻报 `OnKeyDown 18 → 16 MISMATCH`——
+   这是本轮唯一一次门 2 抓到真事故，而它抓的正是"搬运时削掉了代码"这类最容易漏的问题。
+   教训：**区间删除必须一次性倒序执行**，不能分两趟。
+
+**include 减法**：四个 `Layout/*.h` + `ThemedCaptionBar.h` + `<set>` 随代码搬走。
+App.cpp 的注释里写清了"若某天又想在这里建控件，先想想该不该去 AppUiChrome / AppUiMain"。
 
 ### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）
 
@@ -450,7 +481,7 @@ cmake --build gui/build --config Release
 | 1b | `AppSummary.cpp` | 同上 | → 6700 |
 | 1c | 导出/历史/工作区/设置 | 同上 | → 5404 ✅ |
 | 1d | 会话/转录/流式/HUD | 同上 | → 2346 ✅ |
-| 1e | `AppUiChrome.cpp` / `AppUiMain.cpp` | 同上 | App.cpp ≈970 |
+| 1e | `AppUiChrome.cpp` / `AppUiMain.cpp` | 同上 | App.cpp 871 ✅ |
 | 2 | `BuildMainArea` 6 分解 | 门 1+3+4 | 最大文件 ≤1330 |
 | 3 | `CliOptions.h` / `ProbeTypes.h` / 前置声明 | 门 1+3 | App.h ≈900 |
 | 4 | `ProbeState` + 派发表 + 摘要分段（可选） | 门 1+2+3+4 | App.h ≈700，摘要与探针同址 |

@@ -1,19 +1,29 @@
 // ============================================================
-// 共享 UI 文本 / 测量 helper（2026-10-25 Stage 1d 从 App.cpp 搬出）
+// 共享 UI helper：文本拼法 / 宽度测量 / 一行小标签（2026-10-25 从 App.cpp 搬出）
 // ------------------------------------------------------------
-// 为什么单独一个文件：这五个函数原本是 App.cpp 匿名命名空间的内部链接 helper。
-//   1d 把转录（AppTranscript）与 HUD（AppHud）拆成独立 TU 之后，两边都要用同一份
-//   ——尤其是 UnknownKindText / ReasoningTitle，它们是**单一真相源**：同一段文本
-//   在"建行 / delta 更新 / 展开收起"三处生成，各写一份必然漂移（本项目已踩过两次）。
-// ★ 纪律：这里只放**纯函数**（输入→字符串/宽度），不许读 m_* 成员、不许建控件。
-//   一旦某天要读状态，说明它该是成员函数，不该在这里。
+// 为什么单独一个文件：这些函数原本是 App.cpp 匿名命名空间的内部链接 helper。
+//   1d 把转录（AppTranscript）与 HUD（AppHud）拆成独立 TU、1e 又把 UI 构建拆成
+//   Chrome/Main 两块之后，多处都要用同一份——尤其是 UnknownKindText /
+//   ReasoningTitle，它们是**单一真相源**：同一段文本在"建行 / delta 更新 /
+//   展开收起"三处生成，各写一份必然漂移（本项目已踩过两次）。
+// ★ 纪律：这里只放**无状态** helper——要么输入→字符串/宽度，要么"给父容器建一个
+//   标签"。不许读 m_* 成员、不许按业务状态决定长相；一旦需要读状态，
+//   说明它该是 HarnessApp 的成员函数，不该在这里。
+//   `AddLine` 是唯一"会建控件"的成员（1e 加进来的）：它是 AppUiChrome 与
+//   AppUiMain 共用的同一段建标签逻辑，各写一份会漏掉「行高随字号走」这条修复。
 // ★ 函数体与搬家前**逐字节相同**（门 2 的函数体指纹可比）。
 // ============================================================
 
 #include "AppInternal.h"
 
+#include "Theme.h"   // harness::SansFont
 #include "Transcript.h"   // Block 完整类型（UnknownKindText / ReasoningTitle 读它的字段）
+#include "ECDI/Widget/Label.h"
+#include "ECDI/Widget/Panel.h"
 #include "ECDI/Widget/ScrollView.h"
+
+#include <memory>
+#include <optional>
 
 namespace harness {
 namespace internal {
@@ -90,6 +100,27 @@ std::string ReasoningTitle(const Block& block, bool expanded) {
         out += " \xC2\xB7 " + std::to_string(block.tokens) + " tokens";
     }
     return out;
+}
+
+// 侧栏/状态栏的一行小标签；返回裸指针（树拥有），供 HUD 动态 SetText
+ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
+                     const ECDI::Color& color, bool heading = false, int width = 170,
+                     std::optional<float> fontSize = std::nullopt) {
+    auto label = std::make_unique<ECDI::Label>(text);
+    label->SetTextColor(color);
+    // ★ 2026-10-18 v7：族名走主题（浅色 = 雅黑，深色 = 空/SimSun 基线）。
+    //   原先只在传了 fontSize 时才 SetFont ⇒ 不传的那些落到空 family = SimSun，
+    //   与显式指定的控件**同一界面两种中文字形**。
+    //   默认值取 `ECDI::Font::size` 的出厂值 14.0f（原先不调 SetFont 时就是这个数）。
+    label->SetFont(harness::SansFont(fontSize.value_or(14.0f)));
+    // ★ 行高随字号走（2026-10-16 用户反馈「小节标题字太小」）：
+    //   标题 11f→13f 后，13px 的行盒在原来的 15px 里会被**裁切**
+    //   （`Font::size` 是 DIP 高度，`Font.h:17`）。标题行高 15→18 留出行距。
+    //   正文行高 17 不变（其字号未动）。
+    label->SetSize(width, heading ? 18 : 17);
+    ECDI::Label* raw = label.get();
+    parent.AddChild(std::move(label));
+    return raw;
 }
 
 }  // namespace internal

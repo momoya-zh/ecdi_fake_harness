@@ -17,10 +17,13 @@
 #include "ECDI/Core/Color.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 
 // 前置声明（避免把 UiKit/Transcript 的整棵头树拖进每个包含者）
 namespace ECDI {
+class Label;
+class Panel;
 class ScrollView;
 }
 struct Block;   // Transcript.h
@@ -73,6 +76,9 @@ inline constexpr int kTooltipDelayMs = 400;
 //   「x 跨度到 899」这类**仪器噪声**，并据此误判过产品行为。改成白底黑字零描边后，
 //   测量退化为**平凡问题**。★ 默认关闭 ⇒ 所有既有路径逐位等价，不参与交付外观。
 //   ★ kProbeCanvas 留在 App.cpp（只有 Run/RebuildUi 设窗口底色用它）。
+//   ★ kProbeCanvas 2026-10-25（Stage 1e）上提：Run 设窗口底色 + AppUiChrome 的
+//     RebuildUi 也要设同一色，两处必须是同一个值。
+inline const ECDI::Color kProbeCanvas = ECDI::Color::FromRGBA8(255, 255, 255, 255);
 inline const ECDI::Color kProbeBg  = ECDI::Color::FromRGBA8(255, 255, 255, 255);
 inline const ECDI::Color kProbeInk = ECDI::Color::FromRGBA8(0, 0, 0, 255);
 
@@ -92,6 +98,16 @@ std::string ConversationTitle();
 std::string ConversationSubtitle();
 std::string UnknownKindText(const Block& block);
 std::string ReasoningTitle(const Block& block, bool expanded);
+
+// 「一行小标签」的唯一建法：返回裸指针（树拥有），供 HUD 动态 SetText。
+//   ★ 2026-10-25（Stage 1e）上提：AppUiChrome（顶栏/底栏）与 AppUiMain（检查器）
+//     都建这种标签，各写一份会漏掉「行高随字号走」这条 2026-10-16 的修复。
+//   ★ 默认实参**只写在定义处**（UiCommon.cpp），这里故意不带——两个原因：
+//     ① C++ 规定默认实参只能出现一次；② 门 2 要求定义行逐字节可比，
+//     签名里少一个 `= false` 就算"变了"。所有调用点都显式传满 6 个参数。
+ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
+                     const ECDI::Color& color, bool heading, int width,
+                     std::optional<float> fontSize);
 
 // ── 协议版本上限（协议 §9）──
 //   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 RouteLastMessage）。
