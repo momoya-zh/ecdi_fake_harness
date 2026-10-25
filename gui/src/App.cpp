@@ -2472,15 +2472,16 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         counting->AddChild(std::move(menu));
     }
 
-    // ── ★★ P3.5：设置面板（占 scroll 的槽位；显隐见 ApplySettingsVisibility）──
-    //   与 scroll 互斥：settings 可见 ⇔ scroll + composer 隐藏（腾满中栏）。
+    // ── ★★ P3.5：设置面板（★★ P4 F 起改模态浮层：遮罩+居中 sheet 挂 m_scroll；
+    //   显隐见 ApplySettingsVisibility——转录/composer 不再腾槽）──
     //   显隐是模型侧状态 `m_settingsVisible`（重建后恢复，同 m_sidebarVisible 纪律）。
+    std::unique_ptr<ECDI::Widget> settingsSheetOwned;   // 暂存——scroll 建好后转移挂载
     {
         auto panel = std::make_unique<ECDI::Panel>();
         m_hud.settingsPanel = panel.get();
         panel->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 14));
         // ★ P3.6 观感：卡片底色 + 描边，与周边（kSidebarBg）明显区隔；
-        //   显式尺寸（F2/D9 布局契约：不 SetSize = 0x0，R-12 的教训）。
+        //   尺寸由 LayoutSettingsOverlay 按视口钳制（初始值仅为基准）。
         panel->SetSize(560, 620);
         panel->SetStyle(ECDI::PanelStyleOverride{
             .background = m_options.probeContrast ? kProbeBg : kCardBg,
@@ -2494,14 +2495,25 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         title->SetSize(520, 26);
         panel->AddChild(std::move(title));
 
-        auto addLabel = [&panel](const std::string& text) {
+        // ★★ P4 F：字段区收进 ScrollView——sheet 高被视口钳制（vh-80）时字段
+        //   可滚（修最小窗 880×460 下原 620 固定高的溢出）。底部保存行/hint
+        //   留在 panel（固定底栏，不随字段滚走）。
+        auto sv = std::make_unique<ECDI::ScrollView>();
+        sv->SetSize(520, 400);   // 基准尺寸（F2/D9 契约）；stretch=1 吃剩余高
+        sv->SetStretch(1);
+        sv->SetScrollStep(28);
+        ECDI::Widget* content = &sv->GetContentView();
+        content->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 4));
+        panel->AddChild(std::move(sv));
+
+        auto addLabel = [&content](const std::string& text) {
             auto l = std::make_unique<ECDI::Label>(text);
             l->SetTextColor(kDarkMuted);
             l->SetFont(harness::SansFont(harness::kFontSmall));
             l->SetSize(520, 20);
-            panel->AddChild(std::move(l));
+            content->AddChild(std::move(l));
         };
-        auto addInput = [this, &panel](ECDI::TextBox** slot, bool password) {
+        auto addInput = [this, &content](ECDI::TextBox** slot, bool password) {
             auto box = std::make_unique<ECDI::TextBox>();
             *slot = box.get();
             (*slot)->SetSingleLine(true);
@@ -2509,9 +2521,9 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                 (*slot)->SetEchoMode(ECDI::TextBox::EchoMode::Password);
             }
             (*slot)->SetSize(520, 30);
-            panel->AddChild(std::move(box));
+            content->AddChild(std::move(box));
         };
-        auto mkSmallButton = [&panel](const char* text, int w, int h,
+        auto mkSmallButton = [&content](const char* text, int w, int h,
                                       std::function<void()> fn) {
             auto b = std::make_unique<ECDI::Button>(text);
             b->SetTextColor(kDarkInk);
@@ -2525,16 +2537,16 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(w, h);
             b->SetOnClick(std::move(fn));
-            panel->AddChild(std::move(b));
+            content->AddChild(std::move(b));
         };
-        auto addPresetRow = [this, &panel, &mkSmallButton](
+        auto addPresetRow = [this, &content, &mkSmallButton](
                                 const std::string& label, ECDI::TextBox** slot,
                                 std::initializer_list<const char*> presets) {
             auto cap = std::make_unique<ECDI::Label>(label);
             cap->SetTextColor(kDarkMuted);
             cap->SetFont(harness::SansFont(harness::kFontSmall));
             cap->SetSize(520, 20);
-            panel->AddChild(std::move(cap));
+            content->AddChild(std::move(cap));
             auto row = std::make_unique<ECDI::Panel>();
             row->SetSize(520, 26);
             row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
@@ -2561,7 +2573,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
                 });
                 row->AddChild(std::move(b));
             }
-            panel->AddChild(std::move(row));
+            content->AddChild(std::move(row));
         };
 
         auto listCap = std::make_unique<ECDI::Label>(
@@ -2575,7 +2587,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             m_hud.settingsProviderList = list.get();
             list->SetSize(520, 108);
             list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
-            panel->AddChild(std::move(list));
+            content->AddChild(std::move(list));
         }
         {
             auto row = std::make_unique<ECDI::Panel>();
@@ -2714,7 +2726,9 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         hint->SetSize(520, 18);
         panel->AddChild(std::move(hint));
 
-        m_counting->AddChild(std::move(panel));
+        // ★★ P4 F：不进 counting（那会被 VerticalLayout 接管成槽位兄弟）——
+        //   暂存，scroll 建好后与遮罩一起转移为视口浮层。
+        settingsSheetOwned = std::move(panel);
     }
 
     auto scroll = std::make_unique<ECDI::ScrollView>();
@@ -2753,6 +2767,28 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         RefreshJumpButton();
     });
     scroll->AddChild(std::move(jump));   // ScrollView 的最后子节点 = 最上层
+    // ★★ P4 F（2026-10-25）：设置 = 模态浮层（半透明遮罩 + 居中 sheet），与
+    //   jump 按钮同款浮层口（ScrollView 直接子节点：无布局接管、固定视口、
+    //   HitTest 逆序后加者在上）。子序 [.., jump, mask, sheet] ⇒ 设置打开时
+    //   sheet 最先命中、mask 次之（jump 被盖住点不到——模态语义），转录在
+    //   半透明遮罩后继续渲染（用户验收过原型这条）。
+    auto mask = std::make_unique<ECDI::Button>();
+    m_hud.settingsMask = mask.get();
+    mask->SetVisible(false);
+    mask->SetOnClick([] {});   // 点击被 Button 消费但不做事——防误触，关闭走 Esc/Ctrl+,
+    mask->SetStyle(ECDI::ButtonStyleOverride{
+        // ★ ECDI #71/REQ-11 首个半透明消费者（评审定案）：DrawRect 路径经
+        //   BlendAlphaSolid 消费 alpha；双后端（--backend gdi|gl）实证渲染，
+        //   任一后端不出半透明 ⇒ 退不透明深色（不阻塞本 Phase，现象登记 #71）。
+        .background = ECDI::Color::FromRGBA8(15, 17, 23, 150),
+        .cornerRadius = 0.0f,
+        .pressedBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150),
+        .hoverBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150)});
+    scroll->AddChild(std::move(mask));
+    if (settingsSheetOwned) {
+        m_hud.settingsPanel->SetVisible(false);   // 显隐统一走 ApplySettingsVisibility
+        scroll->AddChild(std::move(settingsSheetOwned));
+    }
     m_counting->AddChild(std::move(scroll));
 
     // Composer 收进中栏（hi-fi .composer 在 .mid 内）
@@ -7214,15 +7250,20 @@ void HarnessApp::RunSettingsProbe() {
             }
             // ★ 独立判（不能写成 !bad.empty() && ——那会让"面板默认可见"的
             //   实现连带着跳过本条，投影缺失（M4）就永远不可观测）。
-            if (m_scroll && m_scroll->IsVisible()) {
+            // ★★ P4 F 判据迁移（行为变化点，方案 §8 验收明写）：设置=模态浮层
+            //   ——转录与 composer **必须仍可见**（流式在遮罩后继续），遮罩可见。
+            if (m_scroll && !m_scroll->IsVisible()) {
                 bad = bad.empty()
-                          ? "scroll still visible (slot not surrendered on first run)"
-                          : bad + "; scroll still visible";
+                          ? "scroll must stay visible under the modal mask (P4 F)"
+                          : bad + "; scroll hidden under settings";
             }
-            if (m_promptBar && m_promptBar->IsVisible()) {
-                bad = bad.empty()
-                          ? "composer still visible (slot not surrendered on first run)"
-                          : bad + "; composer still visible";
+            if (m_promptBar && !m_promptBar->IsVisible()) {
+                bad = bad.empty() ? "composer must stay visible (P4 F)"
+                                  : bad + "; composer hidden under settings";
+            }
+            if (m_hud.settingsMask && !m_hud.settingsMask->IsVisible()) {
+                bad = bad.empty() ? "modal mask not visible on first run"
+                                  : bad + "; mask not visible";
             }
             if (bad.empty() &&
                 (!m_hud.settingsBase || !m_hud.settingsBase->GetText().empty() ||
@@ -8789,9 +8830,33 @@ void HarnessApp::ApplySettingsVisibility() {
     // 「投影只存在于一条路径」是 2026-10-21 起始幻影（34px 空洞）的教训。
     if (!m_hud.settingsPanel) return;
     m_hud.settingsPanel->SetVisible(m_settingsVisible);
-    if (m_scroll) m_scroll->SetVisible(!m_settingsVisible);
-    if (m_promptBar) m_promptBar->SetVisible(!m_settingsVisible);
-    if (ECDI::Widget* parent = m_hud.settingsPanel->GetParent()) parent->Arrange();
+    if (m_hud.settingsMask) m_hud.settingsMask->SetVisible(m_settingsVisible);
+    // ★★ P4 F（行为变化点）：不再隐藏 scroll/composer——设置是浮在视口上的
+    //   模态层，流式输出在半透明遮罩后继续可见/继续滚动（用户验收过原型）。
+    //   --settings-probe 的「腾槽」判据已同步迁移为「scroll 必须仍可见」。
+    // 三件套互斥（menu/settings）：开设置合菜单——菜单还是槽位控件，两者同开
+    //   会一个占槽一个浮层，视觉关系说不清。
+    if (m_settingsVisible && m_moreMenuOpen) SetMoreMenuOpen(false);
+    LayoutSettingsOverlay();
+}
+
+// ★★ P4 F：遮罩 + 居中 sheet 的几何。sheet = clamp(视口-80, 280..620 × 240..560)
+//   （方案 §8：min(620, rootW-80) × min(560, rootH-80)，挂视口按视口算 + 下限钳
+//   防过小窗退化）。浮层无父布局 ⇒ SetSize 后必须自己 Arrange（内部 stretch
+//   才会吃到高度）。
+void HarnessApp::LayoutSettingsOverlay() {
+    if (!m_scroll || !m_hud.settingsPanel) return;
+    const int vw = m_scroll->GetWidth();
+    const int vh = m_scroll->GetHeight();
+    if (m_hud.settingsMask) {
+        m_hud.settingsMask->SetSize(vw, vh);
+        m_hud.settingsMask->SetPosition(0, 0);
+    }
+    const int w = std::clamp(vw - 80, 280, 620);
+    const int h = std::clamp(vh - 80, 240, 560);
+    m_hud.settingsPanel->SetSize(w, h);
+    m_hud.settingsPanel->SetPosition((vw - w) / 2, (vh - h) / 2);
+    m_hud.settingsPanel->Arrange();
 }
 
 void HarnessApp::SetSettingsVisible(bool visible) {
@@ -9953,6 +10018,8 @@ void HarnessApp::Relayout() {
     RefreshJumpButton();
     // ★★ P4 Phase C：空状态引导的宽度跟随（resize/侧栏切换后重摆）。
     RefreshEmptyGuide();
+    // ★★ P4 Phase F：设置浮层几何跟随（视口尺寸变了，遮罩/sheet 重摆）。
+    LayoutSettingsOverlay();
 }
 
 void HarnessApp::FollowTailIfPinned() {

@@ -378,7 +378,13 @@ private:
         // ★★ P3.5（2026-10-24）：设置面板（首启引导 / `···` 菜单「设置」入口）。
         //   面板占中栏 scroll 的槽位；显隐是模型侧状态 `m_settingsVisible`
         //   （重建后按它恢复——与 `m_sidebarVisible` 同一条纪律）。
-        ECDI::Panel* settingsPanel = nullptr;    // 占 scroll 槽位的设置面板
+        ECDI::Panel* settingsPanel = nullptr;    // 设置 sheet（P4 F 起挂 m_scroll 浮层）
+        // ★★ P4 Phase F（2026-10-25）：模态遮罩（Button 铺满转录视口）。
+        //   Button 而非 Panel：Panel::ContainsPoint 恒 false（输入透传）挡不住
+        //   点击；Button 可命中 + 点击被消费（空回调）= 点击拦截。半透明色
+        //   = ECDI #71/REQ-11 的首个半透明消费者（DrawRect 路径经 BlendAlphaSolid
+        //   消费；双后端实证，见方案 §8 评审定案）。
+        ECDI::Button* settingsMask = nullptr;    // 遮罩（点击吞掉；关闭走 Esc/Ctrl+,）
         ECDI::TextBox* settingsBase = nullptr;   // BaseURL（单行）
         ECDI::TextBox* settingsKey = nullptr;    // API Key（单行 + Password 掩码）
         ECDI::TextBox* settingsModel = nullptr;  // 模型名（单行）
@@ -1045,6 +1051,9 @@ private:
     // 把模型侧显隐投到控件上（BuildUi 首帧与 RebuildUi 重建共用同一条路径——
     // 「投影只存在于一条路径」正是 2026-10-21 起始幻影 34px 空洞的教训）。
     void ApplySettingsVisibility();
+    // ★★ P4 F：遮罩 + 居中 sheet 的几何（sheet = clamp(视口-80, 280..620 ×
+    //   240..560)）。浮层无父布局 ⇒ SetSize 后自己 Arrange（内部 stretch 生效）。
+    void LayoutSettingsOverlay();
     // 设置面板「保存并连接」：校验 → CredWriteW → Save 配置 → 拉起 live 会话。
     // 失败 ⇒ settingsHint 显示**非敏感**原因（不含 key），面板保持打开。
     void OnSettingsSave();
