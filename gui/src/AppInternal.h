@@ -33,6 +33,15 @@ inline constexpr int kPinThreshold = 60;   // 距底 ≤ 此值 = 贴底（跟�
 //   ★ 侧栏行几何：探针（--sidebar-probe 量行高/标题行高）与产品侧建行共用。
 inline constexpr int kSidebarRowH = 28;
 inline constexpr int kSidebarGroupH = 18;  // 分组标题行高（分隔的高度，不带"条目"语义）
+//   ★ 2026-10-25（Stage 1c）：整块侧栏几何上提。原先只在 App.cpp 用，搬出
+//     AppHistory.cpp（历史会话列表建行）后成跨 TU 依赖；1e 拆 UI builder 时
+//     BuildMainArea 侧栏段也要用同一组数。**值一字未改**。
+//     行宽 158 而非容器宽 172 的原因见 App.cpp 原注释（滚动条占 14px）。
+inline constexpr int kSidebarListW = 172;
+inline constexpr int kSidebarRowW = 158;
+inline constexpr int kSidebarRowGap = 4;
+inline constexpr int kSidebarNameW = 106;  // 22(dot 右缘) → 128，给右侧 18px 删除钮留 6px 间隙
+inline constexpr int kSidebarMaxRows = 4;
 
 // ── 协议版本上限（协议 §9）──
 //   core 声明的 `hello.protocol` **高于**此值 ⇒ 拒绝连接（见 RouteLastMessage）。

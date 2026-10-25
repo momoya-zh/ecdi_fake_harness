@@ -246,6 +246,38 @@ done
 摘要的函数，字段顺序是 84 份 evals 基线的一部分。比对方法：两边都剔除 4 个 volatile 键后
 按原顺序 re-dump 再比字符串——顺序变了就会被抓到。
 
+#### 1c 已完成（2026-10-25）——产品代码第一刀：导出/历史/工作区/设置
+
+| 项 | 结果 |
+|---|---|
+| App.cpp | 6709 → **5404 行**（再切出 47 个函数，累计 -56%） |
+| 新文件 | `AppExport.cpp` 198 / `AppHistory.cpp` 355 / `AppWorkspace.cpp` 362 / `AppSettings.cpp` 565 |
+| 门 1 | 零 error、零新增 warning |
+| 门 2 | PASS：279 一致 / 0 变 / 0 丢 |
+| 门 3 | PASS（regress 全绿 + GL 抽测 `backend=gl` 8/19/43） |
+| 门 4 | 7 份摘要 IDENTICAL |
+
+**分组依据不是"功能名词"，是"副作用面"**——这条在 1a 切 ProbeFlow 时立的规矩，1c 又用了一次：
+
+- `AppWorkspace.cpp` 里全是**状态迁移 + 消息投递**，一个控件都不建；建行/建控件的那两个
+  （`RebuildProjectList` / `MaterializePendingPrompts`）**故意留在 App.cpp 没搬**，它们属 1d 的
+  HUD / 转录。判据：搬走之后这个文件的依赖从 7 个内部符号降到 **0 个**。
+- `AppHistory.cpp` 把"历史 .jsonl 扫描"和"UI 状态持久化"合成一个文件，理由是它们**共享
+  state 目录的路径规则**（`HistoryRoot` / `UiStatePath`）——拆成两个文件等于把同一套路径拼法
+  写两遍。
+- `AppSettings.cpp` 是唯一读环境变量、写配置文件、碰凭据库的路径，所以它独立带
+  `Credentials.h` / `AppConfig.h` / `String.h`（`ECDI::UTF8ToWide`）。
+
+**1c 的额外依赖（1d/1e 还会遇到）**：
+- 侧栏几何整组（`kSidebarListW` / `kSidebarRowW` / `kSidebarRowGap` / `kSidebarNameW` /
+  `kSidebarMaxRows`）上提 `AppInternal.h`——历史列表建行要用，1e 的侧栏 builder 也要用。
+- `ECDI::UTF8ToWide` 要显式 `#include "ECDI/Core/String.h"`；`creds::` 要 `Credentials.h`。
+
+**顺手做的减法（这是"搬走"的一部分，不是顺手改）**：App.cpp 顶部
+`ShlObj.h` / `objbase.h` / `commdlg.h` / `Credentials.h` 四个 include 随代码一起搬走了。
+判据是机读的：`grep -E "SHGet|CoTaskMem|BROWSEINFO|OPENFILENAME|creds::"` 在 App.cpp 里已归零。
+现在 App.cpp **不再碰任何 Windows 壳对话框或 COM 初始化**——这条边界以前是混的。
+
 ### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）
 
 982 行按现有 `// ──` 分节注释切成 6 个 builder，`BuildMainArea` 只留组合：
@@ -385,7 +417,7 @@ cmake --build gui/build --config Release
 | 0 | 提交未提交改动 + 基线 | regress 全绿 + 6 份摘要快照 | 干净的起点 |
 | 1a | 5 个 `Probe*.cpp` | 门 1+2+3+4 | App.cpp 12333 → 7800 |
 | 1b | `AppSummary.cpp` | 同上 | → 6700 |
-| 1c | 导出/历史/工作区/设置 | 同上 | → 5000 |
+| 1c | 导出/历史/工作区/设置 | 同上 | → 5404 ✅ |
 | 1d | 会话/转录/流式/HUD | 同上 | → 1700 |
 | 1e | `AppUiChrome.cpp` / `AppUiMain.cpp` | 同上 | App.cpp ≈970 |
 | 2 | `BuildMainArea` 6 分解 | 门 1+3+4 | 最大文件 ≤1330 |
