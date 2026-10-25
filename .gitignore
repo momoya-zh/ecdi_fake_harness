@@ -47,6 +47,9 @@ __pycache__/
 # agent 的长期记忆与当日日志（MEMORY.md / YYYY-MM-DD.md）：
 #   属「工作笔记」性质，留在本地；仓库内以 docs/ 的规格与账本为准。
 .workbuddy/
+# 2026-10-25：同一决定适用于本仓当前使用的记忆目录 `.workbuddy-ai/`
+#   （`MEMORY.md` + 当日日志，性质与 `.workbuddy/` 完全相同）。
+.workbuddy-ai/
 
 # ===== 临时 / 诊断 =====
 .scratch/
