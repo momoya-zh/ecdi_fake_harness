@@ -515,6 +515,30 @@ void HarnessApp::RebuildSettingsProviderList() {
         });
         m_hud.settingsProviderList->AddChild(std::move(row));
     }
+    // ★★ 2026-10-25 修复（实测反馈「上面空一大片」）：容器原来恒 108 高，
+    //   空配置（首启）时就是一块纯空白——用户第一眼看到的是「设置页顶上
+    //   空了一大片」，而不是「这里该有个提供商」。⇒ 空态给一行说明，高度
+    //   改按行数收敛（空态 20，每行 24+4，4 行起钳到原 108）。
+    if (m_appConfig.providers.empty()) {
+        auto tip = std::make_unique<ECDI::Label>(
+            "还没有提供商——填写下方字段，保存后出现在这里");
+        tip->SetTextColor(kDarkMuted);
+        tip->SetFont(harness::SansFont(harness::kFontSmall));
+        tip->SetSize(500, 20);
+        m_hud.settingsProviderList->AddChild(std::move(tip));
+    }
+    {
+        const int rows = static_cast<int>(m_hud.settingsProviderList->GetChildCount());
+        int listH = 20;   // 空态：一行说明
+        if (!m_appConfig.providers.empty()) {
+            listH = rows * 28 - 4;   // 每行 24 + 间隙 4
+            if (listH > 108) listH = 108;   // 4 行起钳到原固定高（不撑破面板）
+        }
+        m_hud.settingsProviderList->SetSize(500, listH);
+    }
+    // ★ 顺序：先更新 extent（content 尺寸变了），再 Arrange（按新尺寸摆位）。
+    //   反了的话 Arrange 用的是旧 extent，最后一行会被裁在视口外。
+    if (m_hud.settingsSv) m_hud.settingsSv->UpdateContentExtent();
     if (ECDI::Widget* parent = m_hud.settingsProviderList->GetParent()) {
         parent->Arrange();
     }

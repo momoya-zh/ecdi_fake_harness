@@ -844,6 +844,25 @@ void HarnessApp::RefreshEmptyGuide() {
     // extent 收敛到 0——本卡不进 extent，由这里自己摆。
     const int w = std::max(200, ContentWidth(m_scroll) - 2 * kCanvasPadX);
     m_hud.emptyGuide->SetSize(w, 128);
+    // ★ 必须显式 Arrange：本卡是浮在 content 里的独立块（不进内容流），
+    //   没有父布局会替它摆位——`SetSize` 只改自身矩形，子控件仍停在上一轮的
+    //   坐标上（首帧即 (0,0) 全叠在一起）。此前卡片被 extent=0 裁掉、从没真正
+    //   上过屏，所以这条一直没暴露。
+    m_hud.emptyGuide->Arrange();
+    // ★★ 2026-10-25 修复（实测反馈「没有数据的时候上面空一大片」）：
+    //   上面那句只摆了卡，但**没给内容节点留高度**——空转录时 `Relayout` 末尾
+    //   `SetContentExtent(contentW, max(0, y - kRowGap))` 算出的是 0，内容节点
+    //   高 0 ⇒ 卡片虽在树里、`IsVisible()` 也是 true，却被 ScrollView 的视口
+    //   整块裁掉，屏幕上什么都看不到（`--empty-probe` 只查可见位，所以一直绿）。
+    //   ⇒ 空态下把 extent 抬到卡片底边：这张卡就是此刻唯一的"内容"。
+    if (m_scroll) {
+        const ECDI::Size ext = m_scroll->GetContentExtent();
+        const int needH = 128;
+        if (static_cast<int>(ext.height) < needH) {
+            m_scroll->SetContentExtent(std::max(ContentWidth(m_scroll), w + 2 * kCanvasPadX),
+                                       needH);
+        }
+    }
 }
 
 void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color) {

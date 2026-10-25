@@ -521,7 +521,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             auto l = std::make_unique<ECDI::Label>(text);
             l->SetTextColor(kDarkMuted);
             l->SetFont(harness::SansFont(harness::kFontSmall));
-            l->SetSize(520, 20);
+            l->SetSize(500, 20);
             content->AddChild(std::move(l));
         };
         auto addInput = [this, &content](ECDI::TextBox** slot, bool password) {
@@ -538,7 +538,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
                 .border = kLine,
                 .cornerRadius = harness::kRadiusBtn,
                 .borderWidth = 1.0f});
-            (*slot)->SetSize(520, 30);
+            (*slot)->SetSize(500, 30);
             content->AddChild(std::move(box));
         };
         auto mkSmallButton = [&content](const char* text, int w, int h,
@@ -563,10 +563,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             auto cap = std::make_unique<ECDI::Label>(label);
             cap->SetTextColor(kDarkMuted);
             cap->SetFont(harness::SansFont(harness::kFontSmall));
-            cap->SetSize(520, 20);
+            cap->SetSize(500, 20);
             content->AddChild(std::move(cap));
             auto row = std::make_unique<ECDI::Panel>();
-            row->SetSize(520, 26);
+            // ★ 26（输入框/挡位钮）+ 6×2 padding ⇒ 38；原 26 会让按钮下沿被裁。
+            // ★ 宽 500 而非 520：520 = sv 宽时视口被垂直条吃掉 8px ⇒ 恒出一条
+            //   横向滚动条（把 API Key 输入框压掉半行）。留 20px 给它。
+            row->SetSize(500, 38);
             row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
             auto box = std::make_unique<ECDI::TextBox>();
             *slot = box.get();
@@ -594,22 +597,35 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             content->AddChild(std::move(row));
         };
 
+        // ── ★★ 2026-10-25 修复（实测反馈「上面空一大片」）─────────────
+        //   此前这三件**分居两处**：`list` 挂在 content 首位（字段之前）、`listCap`
+        //   挂在 panel 底部（字段之后）⇒ ① 空列表时字段上方恒留 108px 纯空白
+        //   （首启必现，用户看到的就是它）；② 「点击选择编辑」的标签与它描述的
+        //   列表被整片字段隔开，读不出从属关系。
+        //   ⇒ 统一收进 content，并按「先选后编」排在字段之前：标签→列表→增删行
+        //     紧挨着，选中哪家、下方字段就填哪家。
         auto listCap = std::make_unique<ECDI::Label>(
             "提供商（点击选择编辑；● = 当前连接）");
         listCap->SetTextColor(kDarkMuted);
         listCap->SetFont(harness::SansFont(harness::kFontSmall));
-        listCap->SetSize(520, 20);
-        panel->AddChild(std::move(listCap));
+        listCap->SetSize(500, 20);
+        content->AddChild(std::move(listCap));
         {
             auto list = std::make_unique<ECDI::Panel>();
             m_hud.settingsProviderList = list.get();
-            list->SetSize(520, 108);
+            // 基准高 = 一行提示（空态）；有行时由 RebuildSettingsProviderList
+            //   按行数改到 ≤108（3 行满格），不再恒占 108 的空白。
+            list->SetSize(500, 26);
             list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
             content->AddChild(std::move(list));
         }
         {
             auto row = std::make_unique<ECDI::Panel>();
-            row->SetSize(520, 26);
+            // ★★ 行高必须 ≥ 子控件高 + 2×padding：`HorizontalLayout` 的 padding
+            //   是**四边硬 inset**，槽位从 padding 起摆、子控件却保持自身高度 ⇒
+            //   行高 26 + padding 6 时可用高只有 26-6=20，26px 按钮的下沿被父容器
+            //   裁掉 6px（圆角消失、文字下半截被切——实测截图）。
+            row->SetSize(500, 38);   // 26（按钮）+ 6×2
             row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
             auto b1 = std::make_unique<ECDI::Button>("新增提供商");
             b1->SetTextColor(kDarkInk);
@@ -687,7 +703,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
                 m_hud.settingsHint->SetText("已删除");
             });
             row->AddChild(std::move(b2));
-            panel->AddChild(std::move(row));
+            content->AddChild(std::move(row));   // ★ 与标签/列表同处 content（见上方注释）
         }
 
         // ★ 无 placeholder：TextBox 没有 Placeholder API（ENTER-SEND 起登记的
@@ -705,7 +721,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
 
         {
             auto row = std::make_unique<ECDI::Panel>();
-            row->SetSize(520, 30);
+            // ★ 同上：30px 按钮 + 6×2 padding ⇒ 42（原 30 会把按钮下沿裁掉 6px）。
+            row->SetSize(500, 42);
             row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
             auto save = std::make_unique<ECDI::Button>("保存并连接");
             m_hud.settingsSave = save.get();

@@ -676,29 +676,30 @@ void HarnessApp::RunDelProvProbe() {
         return m_probeState.delProvProbeLog.back();
     };
     auto clickButtonWithText = [&](ECDI::Widget* root, const char* text) {
-        // 最多下探两层（panel → row → button）——「删除所选」在 panel 直接子的
-        // row 里；列表行是 settingsProviderList 直接子。
-        for (size_t i = 0; root && i < root->GetChildCount(); ++i) {
-            ECDI::Widget* c = root->GetChildAt(i);
-            if (ECDI::Button* b = dynamic_cast<ECDI::Button*>(c)) {
-                if (b->GetText() == text) {
-                    const ECDI::Point abs = b->GetAbsolutePosition();
-                    SynthesizeClickAt(static_cast<int>(abs.x) + b->GetWidth() / 2,
-                                      static_cast<int>(abs.y) + b->GetHeight() / 2);
-                    return true;
-                }
-            }
-            for (size_t j = 0; j < c->GetChildCount(); ++j) {
-                ECDI::Widget* cc = c->GetChildAt(j);
-                if (ECDI::Button* b = dynamic_cast<ECDI::Button*>(cc)) {
-                    if (b->GetText() == text) {
-                        const ECDI::Point abs = b->GetAbsolutePosition();
-                        SynthesizeClickAt(static_cast<int>(abs.x) + b->GetWidth() / 2,
-                                          static_cast<int>(abs.y) + b->GetHeight() / 2);
-                        return true;
+        // ★★ 2026-10-25：设置面板的「提供商区」收进 ScrollView 之后，「删除所选」
+        //   从 `panel → row → button`（两层）变成 `panel → sv → content → row →
+        //   button`（四层）——原来的固定两层下探会**找不到按钮**，判据会误报
+        //   "delete button not found"。⇒ 改成有界广度优先（深度 4，不遍历整棵树）。
+        //   语义不变：仍是「按文本找按钮 → 用它的绝对中心合成点击」，不猜坐标。
+        std::vector<ECDI::Widget*> level{root};
+        for (int depth = 0; depth < 4 && !level.empty(); ++depth) {
+            std::vector<ECDI::Widget*> next;
+            for (ECDI::Widget* node : level) {
+                if (!node) continue;
+                for (size_t i = 0; i < node->GetChildCount(); ++i) {
+                    ECDI::Widget* c = node->GetChildAt(i);
+                    if (ECDI::Button* b = dynamic_cast<ECDI::Button*>(c)) {
+                        if (b->GetText() == text) {
+                            const ECDI::Point abs = b->GetAbsolutePosition();
+                            SynthesizeClickAt(static_cast<int>(abs.x) + b->GetWidth() / 2,
+                                              static_cast<int>(abs.y) + b->GetHeight() / 2);
+                            return true;
+                        }
                     }
+                    next.push_back(c);
                 }
             }
+            level.swap(next);
         }
         return false;
     };
