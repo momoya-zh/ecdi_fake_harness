@@ -74,6 +74,9 @@ struct CliOptions {
     // ★★ P4 Phase B（2026-10-25）：全局快捷键取证（Ctrl+B/I/,/N、Esc 逐层关，
     //   两态对照 = 焦点在输入框内/外）。默认 false ⇒ 零行为变化。
     bool keyProbe = false;                // --key-probe：快捷键模型位/控件位 A==B 判据
+    // ★★ P4 Phase C（2026-10-25）：空状态引导取证（空转录显示引导卡；
+    //   负对照 = --instant 回放加载后不出现）。默认 false ⇒ 零行为变化。
+    bool emptyProbe = false;              // --empty-probe：回放负对照 + firstRun 正对照
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
@@ -471,6 +474,11 @@ private:
         //     moreMenu 的注释，那里记了为什么不能用浮层）。ScrollView 内部
         //     恰好是「无布局、手动定位」的口子，正好承载浮层。
         ECDI::Button* jumpLatest = nullptr;   // 视口右下角浮层（显隐 = 离开贴底态）
+        // ★★ P4 Phase C（2026-10-25）：空状态引导卡（挂 m_content 顶部）。
+        //   ★ 空转录（rows 0 且无 pending 气泡）⇒ 显示；任何行/pending 到达即拆。
+        //   ★ 修的死胡同：首启（firstRun）关掉设置面板后屏幕全空（App.cpp 原注释
+        //     记录过该场景）——现在引导卡给出「打开设置」出口。
+        ECDI::Panel* emptyGuide = nullptr;    // 空状态引导卡（m_content 子节点）
         // ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容。
         //   数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
         //   回放会话没有工作区 ⇒ 此段显示「无工作区」。
@@ -1080,6 +1088,12 @@ private:
 
     void Relayout();
     void FollowTailIfPinned();
+    // ★★ P4 Phase C（2026-10-25）：空状态引导。RefreshEmptyGuide 幂等——
+    //   空且无 → 建；非空且有 → 拆（RemoveChild 丢弃所有权）；空且有 → 宽度跟随。
+    //   刷新点：MaterializePendingPrompts 尾部（覆盖全部行到达 + pending 变化）、
+    //   Relayout 尾部（宽度跟随）；RebuildTranscriptView 拆树后指针置空。
+    bool TranscriptIsEmpty() const;
+    void RefreshEmptyGuide();
     void RequestRepaint();
     void CacheEvalMetrics();
     void RefreshHud();
@@ -1786,6 +1800,30 @@ private:
     std::vector<KeyProbeRec> m_keyProbeLog;
     bool m_keyProbeDone = false;
     void RunKeyProbe();
+
+    // ★★ P4 Phase C（--empty-probe，2026-10-25）：空状态引导判据。
+    //   同一开关按会话形态分流：回放模式只做负对照（加载/Ctrl+N 后不得出现），
+    //   firstRun 空壳会话做正对照（关设置 ⇒ 引导出现 + 「打开设置」接线 + notice 拆除）。
+    //   ★ 判据：
+    //     · replay-loaded / after-new-session —— 引导不存在（负对照；Ctrl+N 的
+    //       空会话带 notice ⇒ 按方案「notice 到达即拆」语义也不得出现）；
+    //     · firstrun-open —— 首启设置面板开 ∧ 引导已建（可见性由 scroll 决定）；
+    //     · closed-settings —— Ctrl+, 关设置 ⇒ scroll 可见 ∧ 引导可见；
+    //     · click-reopens —— 合成点击引导上的「打开设置」⇒ 设置重开（接线判据）；
+    //     · dismiss-on-notice —— AddNoticeRow（notice 渲染唯一入口；合成协议
+    //       notice 需要真 core，firstRun 场景没有）⇒ 引导被拆。
+    struct EmptyProbeRec {
+        std::string phase;
+        bool settingsVisible = false;
+        bool guideExists = false;      // m_hud.emptyGuide != nullptr
+        bool guideVisible = false;     // 控件自身位 ∧ scroll 可见（父链语义）
+        size_t rowCount = 0;
+        bool matched = true;
+        std::string note;
+    };
+    std::vector<EmptyProbeRec> m_emptyProbeLog;
+    bool m_emptyProbeDone = false;
+    void RunEmptyProbe();
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
     //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），

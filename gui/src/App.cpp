@@ -3270,6 +3270,10 @@ void HarnessApp::OnReplayTick() {
             if (m_options.keyProbe && !m_keyProbeDone) {
                 RunKeyProbe();
             }
+            // ★★ P4 Phase C 空状态探针（回放形态）：同步跑完即 Exit，同上。
+            if (m_options.emptyProbe && !m_emptyProbeDone) {
+                RunEmptyProbe();
+            }
             // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
             if (m_options.settingsProbe && !m_settingsProbeDone) {
                 RunSettingsProbe();
@@ -4230,6 +4234,9 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
             m_content->RemoveChild(m_content->GetChildAt(0));
         }
     }
+    // ★★ P4 C：引导卡挂在 m_content 上，随上面的拆树一并析构——指针必须立刻
+    //   归零（末尾 Relayout → RefreshEmptyGuide 会按需重建）。
+    m_hud.emptyGuide = nullptr;
 
     // ② 按模型重放（或按调用方给的**错误**次序重放——那正是负对照要的形状）
     if (!orderOverride) {
@@ -7019,6 +7026,101 @@ void HarnessApp::RunKeyProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ P4 Phase C（--empty-probe，2026-10-25）：空状态引导判据。
+// 同一开关按会话形态分流（互斥进程，一个进程只会走到一支）：
+//   · 回放形态（settle 分支，rows>0）—— 负对照：加载后/Ctrl+N 后引导都不得存在；
+//   · firstRun 空壳形态（settle 分支，rows==0）—— 正对照：关设置 ⇒ 引导出现；
+//     合成点击「打开设置」⇒ 设置重开；AddNoticeRow ⇒ 引导拆除。
+// ★ 分流判据用 firstRun+空行而不用 source：空壳会话的 source 是「Load 失败的
+//   ReplaySource」非 nullptr（CreateSessionFromOptions 的 else 分支无条件挂
+//   replay 指针）⇒ !source 分支永远轮不到它；它走的就是 replay-settle 路径。
+void HarnessApp::RunEmptyProbe() {
+    auto snap = [&](const char* phase) -> EmptyProbeRec& {
+        EmptyProbeRec rec;
+        rec.phase = phase;
+        rec.settingsVisible = m_settingsVisible;
+        rec.guideExists = (m_hud.emptyGuide != nullptr);
+        rec.guideVisible =
+            rec.guideExists && m_hud.emptyGuide->IsVisible() && m_scroll &&
+            m_scroll->IsVisible();   // 父链语义：scroll 藏着时引导不算可见
+        rec.rowCount = m_sess ? m_sess->rows.size() : 0;
+        m_emptyProbeLog.push_back(std::move(rec));
+        return m_emptyProbeLog.back();
+    };
+
+    if (m_sess && m_sess->replay && !m_options.firstRun) {
+        // ── 回放形态：负对照 ──
+        {
+            EmptyProbeRec& r = snap("replay-loaded");
+            r.matched = !r.guideExists && r.rowCount > 0;
+            if (!r.matched) r.note = "empty guide must not exist on loaded replay";
+        }
+        // Ctrl+N 的空会话带 notice（诚实提示行）⇒ 引导同样不得出现。
+        SynthesizeKey(ECDI::KeyCode::N, false, ECDI::KeyModifier::Ctrl);
+        {
+            EmptyProbeRec& r = snap("after-new-session");
+            r.matched = !r.guideExists && r.rowCount > 0;
+            if (!r.matched) r.note = "guide must stay hidden on notice-bearing new session";
+        }
+        m_emptyProbeDone = true;
+        if (m_application) m_application->Exit();
+        return;
+    }
+
+    // ── firstRun 空壳形态：正对照（设置面板在构造期已打开）──
+    if (!m_options.firstRun || !m_sess || !m_sess->rows.empty() || !m_sess->replay) {
+        // 非空壳会话（理论到不了——防御：如实退出，不造读数）。
+        m_emptyProbeDone = true;
+        return;
+    }
+    {
+        EmptyProbeRec& r = snap("firstrun-open");
+        r.matched = r.settingsVisible && r.guideExists;
+        if (!r.matched) r.note = "firstRun should open settings and build the guide";
+    }
+    // Ctrl+, 关设置（真实派发链）⇒ scroll 恢复可见 ∧ 引导可见。
+    SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
+    {
+        EmptyProbeRec& r = snap("closed-settings");
+        r.matched = !r.settingsVisible && r.guideExists && r.guideVisible;
+        if (!r.matched) r.note = "closing settings should reveal the guide";
+    }
+    // 合成点击引导上的「打开设置」⇒ 设置重开（接线判据）。
+    // ★ 按钮位置不猜（VerticalLayout 摆位）：从引导卡子控件里现找 Button，
+    //   用它的 GetAbsolutePosition 取中心（同 4274 的「不手算父链」纪律）。
+    if (m_hud.emptyGuide) {
+        for (size_t i = 0; i < m_hud.emptyGuide->GetChildCount(); ++i) {
+            ECDI::Widget* child = m_hud.emptyGuide->GetChildAt(i);
+            if (!dynamic_cast<ECDI::Button*>(child)) continue;
+            const ECDI::Point abs = child->GetAbsolutePosition();
+            SynthesizeClickAt(static_cast<int>(abs.x) + child->GetWidth() / 2,
+                              static_cast<int>(abs.y) + child->GetHeight() / 2);
+            break;
+        }
+    }
+    {
+        EmptyProbeRec& r = snap("click-reopens");
+        r.matched = r.settingsVisible;
+        if (!r.matched) r.note = "guide button should reopen settings";
+    }
+    SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
+    {
+        EmptyProbeRec& r = snap("closed-again");
+        r.matched = !r.settingsVisible && r.guideExists;
+        if (!r.matched) r.note = "settings should close again";
+    }
+    // notice 到达 ⇒ 引导拆除（AddNoticeRow 是 notice 渲染唯一入口；合成协议
+    // notice 需要真 core，firstRun 场景没有——妥协直接调它，渲染路径仍是真的）。
+    AddNoticeRow("empty-probe: notice", kDarkMuted);
+    {
+        EmptyProbeRec& r = snap("dismiss-on-notice");
+        r.matched = !r.guideExists && r.rowCount == 1;
+        if (!r.matched) r.note = "notice must tear the guide down";
+    }
+    m_emptyProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。
 //
 // 【它要回答什么】`Hud` 里那些指针，**建树时真的都赋过值吗**？
@@ -9067,6 +9169,9 @@ void HarnessApp::MaterializePendingPrompts() {
         view.row = row;
         m_pendingPromptViews.push_back(std::move(view));
     }
+    // ★★ P4 C：pending 视图增删后刷新空状态引导（AddRow 尾部也经此处 ⇒
+    //   所有「行到达」路径一并覆盖——任何行/pending 出现即拆引导卡）。
+    RefreshEmptyGuide();
 }
 
 void HarnessApp::RunWorkspaceProbe() {
@@ -9516,6 +9621,98 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildNoticeRow(const std::string& text
     return panel;
 }
 
+// ── ★★ P4 Phase C（2026-10-25）：空状态引导 ──────────────────────────
+// 修的死胡同：首启（firstRun）关掉设置面板后，转录区一行都没有、屏幕全空。
+// 空转录 = 「引导卡」的展示条件：一句话 + 出口（live 会话给建议指令、无 core
+// 给「打开设置」）。任何行（含 notice）/pending 气泡到达即拆——回放/Ctrl+N 的
+// 空会话带 notice，天然不触发（方案 §5 的「回放/harness 场景不弹」由此成立）。
+bool HarnessApp::TranscriptIsEmpty() const {
+    return m_sess && m_sess->rows.empty() && m_pendingPromptViews.empty();
+}
+
+void HarnessApp::RefreshEmptyGuide() {
+    if (!m_content || !m_sess) return;
+    if (!TranscriptIsEmpty()) {
+        if (m_hud.emptyGuide) {
+            m_content->RemoveChild(m_hud.emptyGuide);   // 返回所有权，丢弃即析构
+            m_hud.emptyGuide = nullptr;
+            // ★ 不 RequestRepaint：拆除发生在「行/pending 到达」的 tick 里，
+            //   调用方（relayoutPulse / Relayout 链）必然带着重绘——再请求一次
+            //   会让 invalidations 漂 +1（demo 实测 8→10，违反 §0.3 读数纪律）。
+        }
+        return;
+    }
+    if (!m_hud.emptyGuide) {
+        auto panel = std::make_unique<ECDI::Panel>();
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = kPanel2,
+            .cornerRadius = harness::kRadiusCard,
+            .borderWidth = 1.0f,
+            .borderColor = kLine});
+        panel->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 18));
+        auto title = std::make_unique<ECDI::Label>("开始新对话");
+        title->SetTextColor(kDarkInk);
+        title->SetFont(harness::SansFont(harness::kFontTitle));
+        title->SetSize(400, 20);
+        panel->AddChild(std::move(title));
+        auto mkBtn = [](const std::string& label) {
+            auto b = std::make_unique<ECDI::Button>(label);
+            b->SetTextColor(kDarkInk);
+            b->SetFont(harness::SansFont(harness::kFontSmall));
+            b->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = harness::kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            return b;
+        };
+        // 出口分两形态：live 会话给建议指令（点击 = SendPrompt，pending 气泡
+        // 一出现本卡即拆）；无 core（firstRun 空壳 / 回放空会话）给「打开设置」。
+        if (m_sess->source && m_sess->source->IsLive()) {
+            auto sub = std::make_unique<ECDI::Label>("输入消息，或从下面的建议开始：");
+            sub->SetTextColor(kDarkMuted);
+            sub->SetFont(harness::SansFont(harness::kFontSmall));
+            sub->SetSize(400, 16);
+            panel->AddChild(std::move(sub));
+            auto row = std::make_unique<ECDI::Panel>();
+            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, false, 0));
+            const char* prompts[] = {"介绍这个工作区里有什么", "帮我梳理最近的改动"};
+            for (const char* p : prompts) {
+                auto b = mkBtn(p);
+                b->SetSize(170, 30);
+                std::string text = p;
+                b->SetOnClick([this, text] { SendPrompt(text); });
+                row->AddChild(std::move(b));
+            }
+            row->SetSize(356, 30);
+            panel->AddChild(std::move(row));
+        } else {
+            auto sub = std::make_unique<ECDI::Label>(
+                "还没有连接任何提供商——先在设置里配好 BaseURL 和 API Key。");
+            sub->SetTextColor(kDarkMuted);
+            sub->SetFont(harness::SansFont(harness::kFontSmall));
+            sub->SetSize(400, 16);
+            panel->AddChild(std::move(sub));
+            auto b = mkBtn("打开设置");
+            b->SetSize(110, 30);
+            b->SetOnClick([this] { SetSettingsVisible(true); });
+            panel->AddChild(std::move(b));
+        }
+        panel->SetPosition(kCanvasPadX, 0);
+        m_hud.emptyGuide = panel.get();
+        m_content->AddChild(std::move(panel));
+        // ★ 不 RequestRepaint：建卡的路径（首帧 BuildUi / 关设置的
+        //   ApplySettingsVisibility→SetVisible 内建 Invalidate / tick 重排链）
+        //   都自带整窗重绘——额外请求会污染 invalidations（demo 实测 +1）。
+    }
+    // 宽度跟随（resize/侧栏切换/设置开合）：空转录时 Relayout 的行循环零迭代，
+    // extent 收敛到 0——本卡不进 extent，由这里自己摆。
+    const int w = std::max(200, ContentWidth(m_scroll) - 2 * kCanvasPadX);
+    m_hud.emptyGuide->SetSize(w, 128);
+}
+
 void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color) {
     // ★★ 0c：通知进模型。此前它**只**是控件 —— 而通知恰好承载全部协议健康信息
     //   （I4/I5 缺口、截断报错、协议 §9 拒连、hello/bye 摘要、发送/回答回执）。
@@ -9707,6 +9904,8 @@ void HarnessApp::Relayout() {
     //   「跳到最新」的几何与显隐跟着刷新一次（Relayout 覆盖 resize/侧栏/菜单/
     //   设置切换等全部几何路径）。
     RefreshJumpButton();
+    // ★★ P4 Phase C：空状态引导的宽度跟随（resize/侧栏切换后重摆）。
+    RefreshEmptyGuide();
 }
 
 void HarnessApp::FollowTailIfPinned() {
@@ -10690,6 +10889,29 @@ void HarnessApp::WriteSummary() {
                           r.menuShown ? "true" : "false",
                           r.sessionCount, r.inputText.c_str(),
                           r.matched ? "true" : "false", r.note.c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ P4 Phase C（--empty-probe）：空状态引导判据。
+    //   判据：全部相位 matched == true（回放负对照两相 + firstRun 正对照四相，
+    //   按会话形态分流，一个进程只跑其中一支）。
+    if (m_options.emptyProbe && !m_emptyProbeLog.empty()) {
+        json += "  \"emptyProbe\": [";
+        for (size_t i = 0; i < m_emptyProbeLog.size(); ++i) {
+            const EmptyProbeRec& r = m_emptyProbeLog[i];
+            json += (i ? ", " : "");
+            char b[512];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"settingsVisible\": %s, "
+                          "\"guideExists\": %s, \"guideVisible\": %s, "
+                          "\"rowCount\": %zu, \"matched\": %s, \"note\": \"%s\"}",
+                          r.phase.c_str(),
+                          r.settingsVisible ? "true" : "false",
+                          r.guideExists ? "true" : "false",
+                          r.guideVisible ? "true" : "false",
+                          r.rowCount, r.matched ? "true" : "false",
+                          r.note.c_str());
             json += b;
         }
         json += "],\n";
