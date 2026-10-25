@@ -37,8 +37,11 @@
 #include "ECDI/EventSystem/Input/KeyBoard/KeyDownEvent.h"
 #include "ECDI/EventSystem/Window/TimerEvent.h"
 #include "ECDI/Layout/HorizontalLayout.h"
+#include "ECDI/Layout/Layout.h"   // ★ P4 F：HarnessRootLayout 基类
 #include "ECDI/Layout/ListLayout.h"
 #include "ECDI/Layout/VerticalLayout.h"
+
+#include <set>   // ★ P4 F：HarnessRootLayout 的豁免集
 #include "ECDI/Theme/PanelStyle.h"
 // ★★ 2026-10-21：`--grow-probe` 的 exact-fit 相要读输入框**内部**滚动条的可见性
 //   （`TextBox::GetVerticalScrollBar` 返回 `ScrollBar*`）⇒ 完整类型。
@@ -237,6 +240,69 @@ inline const ECDI::Color kProbeInk    = ECDI::Color::FromRGBA8(0, 0, 0, 255);
 inline ECDI::Color Pick(bool probe, const ECDI::Color& normal, const ECDI::Color& hi) {
     return probe ? hi : normal;
 }
+
+// ★★ P4 F（2026-10-25）：root 专用布局——逐位复刻 VerticalLayout(0, true) 的
+//   摆位算法（spacing=0 / fillCrossAxis / 隐藏子 C-VIS 停泊），但对 **Exempt 注册
+//   的浮层**（设置遮罩/sheet）完全跳过：不进统计、不停泊、不摆位（几何归
+//   LayoutSettingsOverlay）。
+//   ★ 为什么必须换：原 VerticalLayout 把**可见的**浮层当固定尺寸子统计——
+//   mask(整窗高)+sheet 一显示，主区就被挤没了（实测 counting 被挤到 0×0）。
+//   ★ 隐藏子停泊语义保留（C-VIS-4）：非豁免的隐藏子照旧停 (−w,−h)。
+class HarnessRootLayout : public ECDI::Layout {
+public:
+    void Exempt(ECDI::Widget* w) { m_exempt.insert(w); }
+
+    void Arrange(ECDI::Widget& parent) override {
+        const size_t count = parent.GetChildCount();
+        int fixedTotal = 0;
+        int totalStretch = 0;
+        size_t visibleCount = 0;
+        size_t visibleStretchCount = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const ECDI::Widget* child = parent.GetChildAt(i);
+            if (!child->IsVisible() || m_exempt.count(child) > 0) continue;
+            ++visibleCount;
+            if (child->GetStretch() > 0) {
+                totalStretch += child->GetStretch();
+                ++visibleStretchCount;
+            } else {
+                fixedTotal += child->GetHeight();
+            }
+        }
+        const int remaining =
+            (std::max)(0, parent.GetHeight() - fixedTotal);
+        const int cross = (std::max)(0, parent.GetWidth());
+        int y = 0;
+        int allocated = 0;
+        size_t stretchSeen = 0;
+        for (size_t i = 0; i < count; ++i) {
+            ECDI::Widget* child = parent.GetChildAt(i);
+            if (m_exempt.count(child) > 0) continue;   // 浮层：视而不见
+            if (!child->IsVisible()) {
+                const int parkW = child->GetWidth();
+                const int parkH = child->GetHeight();
+                child->SetPosition(-parkW, -parkH);   // C-VIS-4 停泊
+                continue;
+            }
+            if (child->GetStretch() > 0) {
+                ++stretchSeen;
+                int height = (stretchSeen == visibleStretchCount)
+                                 ? remaining - allocated
+                                 : static_cast<int>(static_cast<long long>(remaining) *
+                                                    child->GetStretch() / totalStretch);
+                allocated += height;
+                child->SetSize(cross, height);
+            } else {
+                child->SetSize(cross, child->GetHeight());
+            }
+            child->SetPosition(0, y);
+            y += child->GetHeight();
+        }
+    }
+
+private:
+    std::set<const ECDI::Widget*> m_exempt;
+};
 }   // namespace
 
 int ContentWidth(const ECDI::ScrollView* scroll) {
@@ -1820,7 +1886,14 @@ int HarnessApp::Run() {
 
 void HarnessApp::BuildUi(ECDI::Window& window) {
     ECDI::Widget& root = window.GetRootWidget();
-    root.SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true));
+    // ★★ P4 F 修复（实测反馈）：root 布局换 HarnessRootLayout——逐位复刻
+    //   VerticalLayout(0,true) 但跳过 Exempt 注册的全窗浮层（设置遮罩/sheet，
+    //   它们挂 root 盖全窗）。原布局把**可见的**浮层当固定尺寸子统计
+    //   （mask 整窗高 + sheet 560 高），一开设置主区就被挤没了。浮层几何
+    //   归 LayoutSettingsOverlay。BuildUi 尾部转移挂载后注册豁免。
+    auto rootLayout = std::make_unique<HarnessRootLayout>();
+    HarnessRootLayout* const rootLayoutRaw = rootLayout.get();
+    root.SetLayout(std::move(rootLayout));
 
     // CaptionBar 是 root 的直接子项：保持贴边全宽，空白区可拖动，按钮由 harness 自绘
     // （ECDI 原生 CaptionBar 把颜色写死，跟不了主题 —— 见 ThemedCaptionBar.h 头注）。
@@ -1847,6 +1920,19 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     RebuildHistoryList();
     // ★★ 2026-10-20：「项目」段同样要首帧填上（同理由）。
     RebuildProjectList();
+    // ★★ P4 F 修复（实测反馈「变色应该是整个变色」）：遮罩 + sheet 转移到
+    //   **root 末尾**（最后子 = 最上层，盖过 caption/counting 全窗——含顶栏/
+    //   侧栏/检查器；此前挂 m_scroll 只盖转录视口）。转移必须在 root.Arrange()
+    //   **之前**：Arrange 递归驱动子树，挂好后 mask/sheet 尺寸交给
+    //   LayoutSettingsOverlay（Relayout 尾部）摆。
+    if (m_hud.settingsMask && m_hud.settingsMask->GetParent() == m_scroll) {
+        root.AddChild(m_scroll->RemoveChild(m_hud.settingsMask));
+        rootLayoutRaw->Exempt(m_hud.settingsMask);   // 布局视而不见
+    }
+    if (m_hud.settingsPanel && m_hud.settingsPanel->GetParent() == m_scroll) {
+        root.AddChild(m_scroll->RemoveChild(m_hud.settingsPanel));
+        rootLayoutRaw->Exempt(m_hud.settingsPanel);
+    }
     root.Arrange();
 }
 
@@ -2558,6 +2644,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         //   可滚（修最小窗 880×460 下原 620 固定高的溢出）。底部保存行/hint
         //   留在 panel（固定底栏，不随字段滚走）。
         auto sv = std::make_unique<ECDI::ScrollView>();
+        m_hud.settingsSv = sv.get();   // ★ P4 F 修复：LayoutSettingsOverlay 要补 extent
         sv->SetSize(520, 400);   // 基准尺寸（F2/D9 契约）；stretch=1 吃剩余高
         sv->SetStretch(1);
         sv->SetScrollStep(28);
@@ -2579,6 +2666,13 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
             if (password) {
                 (*slot)->SetEchoMode(ECDI::TextBox::EchoMode::Password);
             }
+            // ★★ P4 修复（实测反馈）：白卡上无边框的输入框与背景融为一体、
+            //   几乎不可辨——灰底 + 描边（与挡位钮同款对比），实测可辨。
+            (*slot)->SetStyle(ECDI::TextBoxStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .cornerRadius = harness::kRadiusBtn,
+                .borderWidth = 1.0f});
             (*slot)->SetSize(520, 30);
             content->AddChild(std::move(box));
         };
@@ -2831,6 +2925,9 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     //   HitTest 逆序后加者在上）。子序 [.., jump, mask, sheet] ⇒ 设置打开时
     //   sheet 最先命中、mask 次之（jump 被盖住点不到——模态语义），转录在
     //   半透明遮罩后继续渲染（用户验收过原型这条）。
+    //   ★★ 修复（实测反馈「变色应该是整个变色」）：mask+sheet 此后由 BuildUi
+    //   尾部转移到 **root 末尾**（盖全窗，含顶栏/侧栏/检查器）——此处先挂
+    //   scroll 只是建树期的临时归属。
     auto mask = std::make_unique<ECDI::Button>();
     m_hud.settingsMask = mask.get();
     mask->SetVisible(false);
@@ -7332,15 +7429,25 @@ void HarnessApp::RunEmptyProbe() {
             ECDI::Widget* child = m_hud.emptyGuide->GetChildAt(i);
             if (!dynamic_cast<ECDI::Button*>(child)) continue;
             const ECDI::Point abs = child->GetAbsolutePosition();
-            SynthesizeClickAt(static_cast<int>(abs.x) + child->GetWidth() / 2,
-                              static_cast<int>(abs.y) + child->GetHeight() / 2);
+            const int cx = static_cast<int>(abs.x) + child->GetWidth() / 2;
+            const int cy = static_cast<int>(abs.y) + child->GetHeight() / 2;
+            // ★ 命中者回读（取证：点击前屏幕上这一点真正属于谁——把「点不到」
+            //   从猜测变成读数）。
+            const ECDI::Widget* hit =
+                m_window ? m_window->GetRootWidget().HitTest(cx, cy) : nullptr;
+            SynthesizeClickAt(cx, cy);
+            // ★ 命中者回读（保留：点不到时把「谁接了这个点」变成读数，不靠猜）。
+            m_emptyProbeClickTarget = WidgetKindName(hit);
             break;
         }
     }
     {
         EmptyProbeRec& r = snap("click-reopens");
         r.matched = r.settingsVisible;
-        if (!r.matched) r.note = "guide button should reopen settings";
+        if (!r.matched) {
+            r.note = "guide button should reopen settings; hit=" +
+                     (m_emptyProbeClickTarget.empty() ? "(none)" : m_emptyProbeClickTarget);
+        }
     }
     SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
     {
@@ -8557,7 +8664,7 @@ void HarnessApp::SendPrompt(const std::string& text) {
 
 std::string HarnessApp::PostPrompt(const std::string& text, bool allowBusyForProbe) {
     if (!m_sess || !m_sess->writer || m_sess->disconnected ||
-        m_sess->protocolIncompatible || m_sess->protocolVer != 3 ||
+        m_sess->protocolIncompatible || m_sess->protocolVer < 3 ||
         (m_sess->workspaceCap && !m_sess->workspaceSyncComplete) ||
         !m_sess->pendingWorkspaceId.empty()) {
         return {};
@@ -8632,7 +8739,7 @@ void HarnessApp::FailPendingOperations(const std::string& reason) {
 }
 
 bool HarnessApp::RequestWorkspace(const std::string& path, bool initialSync) {
-    if (!m_sess || !m_sess->writer || m_sess->protocolVer != 3 ||
+    if (!m_sess || !m_sess->writer || m_sess->protocolVer < 3 ||
         !m_sess->workspaceCap || m_sess->protocolIncompatible || m_sess->disconnected ||
         path.empty() || m_sess->coreState != "idle" ||
         !m_sess->pendingWorkspaceId.empty()) {
@@ -8868,7 +8975,7 @@ void HarnessApp::RebuildProjectList() {
 }
 
 void HarnessApp::MaybeStartWorkspaceSync() {
-    if (!m_sess || !m_sess->writer || m_sess->protocolVer != 3 ||
+    if (!m_sess || !m_sess->writer || m_sess->protocolVer < 3 ||
         !m_sess->workspaceCap || m_sess->workspaceSyncStarted ||
         m_sess->disconnected || m_sess->coreState != "idle") {
         return;
@@ -8915,7 +9022,7 @@ void HarnessApp::MaybeSendAutoPrompt() {
         SendPrompt(m_options.autoPrompt);
         return;
     }
-    if (m_sess->protocolVer != 3 ||
+    if (m_sess->protocolVer < 3 ||
         (m_sess->workspaceCap && !m_sess->workspaceSyncComplete) ||
         m_sess->coreState != "idle" || !m_sess->pendingWorkspaceId.empty() ||
         m_sess->disconnected) {
@@ -8927,8 +9034,19 @@ void HarnessApp::MaybeSendAutoPrompt() {
 
 void HarnessApp::ChooseWorkspaceFolder() {
     if (!m_sess || !m_sess->writer || !m_sess->workspaceCap ||
-        m_sess->protocolVer != 3 || m_sess->disconnected ||
+        m_sess->protocolVer < 3 || m_sess->disconnected ||
         m_sess->coreState != "idle" || !m_sess->pendingWorkspaceId.empty()) {
+        // ★★ P4 修复（实测反馈「直接进去选择文件夹不能选择」）：
+        //   ① 首启空壳会话（无 live）此前整段**静默 return**——按钮看起来是死的。
+        //     现在如实说原因（同 RequestModelSwitch 的「不是 live」风格）。
+        //   ② `protocolVer != 3` 是 P3.6 升 v4 后没更新的拦路守卫——v4 core 的
+        //     live 会话同样被静默拦死。workspace 能力 v3 引入、v4 保留 ⇒ 改 `< 3`。
+        if (m_sess && !m_sess->writer) {
+            AddNoticeRow("[选择工作区需要已连接的 live 会话——先在设置里连接提供商]",
+                         kDarkMuted);
+            Relayout();
+            RequestRepaint();
+        }
         return;
     }
     BROWSEINFOW browse{};
@@ -9166,23 +9284,31 @@ void HarnessApp::ApplySettingsVisibility() {
     LayoutSettingsOverlay();
 }
 
-// ★★ P4 F：遮罩 + 居中 sheet 的几何。sheet = clamp(视口-80, 280..620 × 240..560)
-//   （方案 §8：min(620, rootW-80) × min(560, rootH-80)，挂视口按视口算 + 下限钳
-//   防过小窗退化）。浮层无父布局 ⇒ SetSize 后必须自己 Arrange（内部 stretch
-//   才会吃到高度）。
+// ★★ P4 F：遮罩 + 居中 sheet 的几何。★ 修复（实测反馈）：**遮罩盖全窗**
+//   （mask+sheet 挂 root 末尾，画过 caption/counting 全部；此前挂 m_scroll
+//   只盖转录视口）——sheet 尺寸改按 root 算。浮层无父布局 ⇒ SetSize 后必须
+//   自己 Arrange（ArrangeInternal 递归驱动整棵子树布局——字段区由此摆位），
+//   **再 UpdateContentExtent**（字段包围盒 → content extent；漏了它 extent=0，
+//   字段区不显示——首版实测反馈的根因）。
+//   ★ root.Arrange()（HarnessRootLayout）**跳过浮层子**——浮层几何完全归
+//   本函数管，布局与浮层互不干扰。
 void HarnessApp::LayoutSettingsOverlay() {
-    if (!m_scroll || !m_hud.settingsPanel) return;
-    const int vw = m_scroll->GetWidth();
-    const int vh = m_scroll->GetHeight();
+    if (!m_hud.settingsPanel) return;
+    ECDI::Widget& root = m_window->GetRootWidget();
+    const int rw = root.GetWidth();
+    const int rh = root.GetHeight();
     if (m_hud.settingsMask) {
-        m_hud.settingsMask->SetSize(vw, vh);
+        m_hud.settingsMask->SetSize(rw, rh);
         m_hud.settingsMask->SetPosition(0, 0);
     }
-    const int w = std::clamp(vw - 80, 280, 620);
-    const int h = std::clamp(vh - 80, 240, 560);
+    const int w = std::clamp(rw - 80, 280, 620);
+    const int h = std::clamp(rh - 80, 240, 560);
     m_hud.settingsPanel->SetSize(w, h);
-    m_hud.settingsPanel->SetPosition((vw - w) / 2, (vh - h) / 2);
+    m_hud.settingsPanel->SetPosition((rw - w) / 2, (rh - h) / 2);
     m_hud.settingsPanel->Arrange();
+    if (m_hud.settingsSv) {
+        m_hud.settingsSv->UpdateContentExtent();   // 字段包围盒 → 滚动范围
+    }
 }
 
 void HarnessApp::SetSettingsVisible(bool visible) {

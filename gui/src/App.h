@@ -404,6 +404,10 @@ private:
         //   = ECDI #71/REQ-11 的首个半透明消费者（DrawRect 路径经 BlendAlphaSolid
         //   消费；双后端实证，见方案 §8 评审定案）。
         ECDI::Button* settingsMask = nullptr;    // 遮罩（点击吞掉；关闭走 Esc/Ctrl+,）
+        // ★★ P4 F 修复（实测反馈）：字段区 ScrollView 句柄——浮层面板 Arrange
+        //   递归摆字段后，还需 UpdateContentExtent 重算内容范围（否则 extent=0，
+        //   字段区不可见/不可滚）。
+        ECDI::ScrollView* settingsSv = nullptr;  // 设置面板内部滚动区
         ECDI::TextBox* settingsBase = nullptr;   // BaseURL（单行）
         ECDI::TextBox* settingsKey = nullptr;    // API Key（单行 + Password 掩码）
         ECDI::TextBox* settingsModel = nullptr;  // 模型名（单行）
@@ -1890,6 +1894,8 @@ private:
     std::vector<EmptyProbeRec> m_emptyProbeLog;
     bool m_emptyProbeDone = false;
     void RunEmptyProbe();
+    // ★★ P4：click-reopens 相的命中者回读（「点不到」的取证读数）。
+    std::string m_emptyProbeClickTarget;
     // ★★ P4 E：tooltip 延迟态（定时器在飞 = armed；到点显示）。
     const ECDI::Widget* m_tooltipAnchor = nullptr;   // 待显示锚点（TipButton）
     std::string m_tooltipPending;                    // 待显示文案
