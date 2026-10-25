@@ -550,6 +550,12 @@ private:
         //     两者一起才构成合法状态（answered=true 而 answer 为空 = 模型不一致，
         //     由 `MarkAnswered` 的单一写入点保证不会出现）。
         std::string answer;
+        // ★★ P4 Phase D（2026-10-25）：answer 的**时刻**（"HH:MM"，本地时）。
+        //   与 answer 同族：GUI 侧决策记录，不进协议（answer 回执是一次性的，
+        //   这里的时刻是「用户何时做的决定」——审计信息，作者仍是 GUI）。
+        //   sidecar 经 answerTimes 键往返；旧 sidecar 无此键 ⇒ 空 ⇒ 重建不显
+        //   时刻（如实呈现「来自旧状态文件」，不编造）。
+        std::string answerAt;
     };
 
     // 行记录：m_rows 用 deque（push_back 不失效指针——回调捕获依赖这一点）
@@ -560,6 +566,9 @@ private:
         ECDI::CollapsiblePanel* body = nullptr;   // tool 卡片展开体，非拥有
         ECDI::Button* allowBtn = nullptr;         // ask 行按钮，非拥有
         ECDI::Button* denyBtn = nullptr;
+        // ★★ P4 Phase D：已答结论行（● 已允许/已拒绝 · 时刻）。BuildAskRow 预建
+        //   （隐藏），ApplyAnsweredLook 填文本/色并显示——首答与重建同一函数 ⇒ 同形。
+        ECDI::Label* conclusion = nullptr;
         // ★★ Step 3：已答的**结论**（"allow" / "deny"），视图侧的回填。
         //   ★ 为何在视图侧也留一份：`SnapshotRows` 的纪律是"只读 RowRec 上已有的东西"。
         //     若两侧都回查模型，比对就恒等（同义反复）；存在这里，重建时若模型里的
@@ -839,7 +848,12 @@ private:
     //     拒绝"变成**像素**，不用新增控件、不动布局，且能被探针经 `GetTextColor()`
     //     读回（ECDI 无 style getter，文字色是唯一可读回的标记 —— 同侧栏选中态）。
     //   ★ 幂等：重建期对已答条目再跑一次无副作用。
-    void ApplyAnsweredLook(RowRec& rec, const std::string& choice);
+    //   ★★ P4 Phase D（2026-10-25）：两钮**隐藏** + 行内结论标记（● 已允许/已拒绝
+    //   + 时刻，绿/红）——替代原「选中者留色、另一个灰化」。理由：权限决定是
+    //   审计事实，置灰两钮的形态既说不出结论也占着两个死按钮的位置。
+    //   `when`（"HH:MM"）空 = 来自旧 sidecar 的重建——如实不带时刻段。
+    void ApplyAnsweredLook(RowRec& rec, const std::string& choice,
+                           const std::string& when);
 
     // ── ★★ 0d：多会话生命周期 ──────────────────────────────────────────
     // `CreateSessionFromOptions()`：按当前 CLI 建一个会话并 push 进 `m_sessions`，

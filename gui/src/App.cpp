@@ -11,6 +11,7 @@
 //   但声明在 `commdlg.h` 而**不在** `ShlObj.h` 里 ⇒ 必须单独包，
 //   且在 `gui/CMakeLists.txt` 里要链 `comdlg32`。
 #include <commdlg.h>
+#include <ctime>   // ★ P4 D：MarkAnswered 的 answerAt（本地 HH:MM）
 
 #ifdef DrawText
 #undef DrawText
@@ -1134,6 +1135,9 @@ bool HarnessApp::LoadUiState(Session& s) {
     // answers: { "<ask id>": "allow" | "deny" }
     if (const json::Value* answers = root.Find("answers");
         answers && answers->IsObject()) {
+        // ★★ P4 D：answerTimes（id → "HH:MM"）是可选键——旧 sidecar 没有 ⇒
+        //   answerAt 留空，重建的结论行如实不带时刻段。
+        const json::Value* times = root.Find("answerTimes");
         for (const auto& kv : answers->object) {
             if (!kv.second.IsString()) continue;
             for (TimelineEntry& entry : s.timeline) {
@@ -1141,6 +1145,12 @@ bool HarnessApp::LoadUiState(Session& s) {
                 if (entry.id != kv.first) continue;
                 entry.answered = true;
                 entry.answer = kv.second.text;
+                if (times && times->IsObject()) {
+                    const auto it = times->object.find(kv.first);
+                    if (it != times->object.end() && it->second.IsString()) {
+                        entry.answerAt = it->second.text;
+                    }
+                }
             }
         }
     }
@@ -1167,13 +1177,22 @@ void HarnessApp::SaveUiState(const Session& s) {
     root.object["version"].type = json::Value::Type::Number;
     root.object["version"].number = 1.0;
     root.object["answers"].type = json::Value::Type::Object;
+    root.object["answerTimes"].type = json::Value::Type::Object;
     root.object["expanded"].type = json::Value::Type::Array;
+    bool anyAnswerTime = false;
     for (const TimelineEntry& entry : s.timeline) {
         if (entry.kind == TimelineEntry::Kind::Ask && !entry.answer.empty()) {
             json::Value v;
             v.type = json::Value::Type::String;
             v.text = entry.answer;
             root.object["answers"].object[entry.id] = v;
+            if (!entry.answerAt.empty()) {
+                json::Value t;
+                t.type = json::Value::Type::String;
+                t.text = entry.answerAt;
+                root.object["answerTimes"].object[entry.id] = t;
+                anyAnswerTime = true;
+            }
         } else if (entry.kind == TimelineEntry::Kind::Block && entry.expanded) {
             json::Value v;
             v.type = json::Value::Type::String;
@@ -1181,6 +1200,8 @@ void HarnessApp::SaveUiState(const Session& s) {
             root.object["expanded"].array.push_back(v);
         }
     }
+    // ★ 无任何时刻记录（旧状态文件升级后首写）就不落空键——读侧按缺键处理。
+    if (!anyAnswerTime) root.object.erase("answerTimes");
     std::error_code ec;
     if (!path.parent_path().empty()) {
         std::filesystem::create_directories(path.parent_path(), ec);
@@ -1204,7 +1225,7 @@ void HarnessApp::ApplyUiStateToView(Session& s) {
         const TimelineEntry& entry = s.timeline[r.timelineIdx];
         if (r.ask && entry.answered) {
             r.answered = true;
-            ApplyAnsweredLook(r, entry.answer);   // 同一条视觉路径（Step 3）
+            ApplyAnsweredLook(r, entry.answer, entry.answerAt);   // 同一条视觉路径（Step 3）
         }
         if (r.body && entry.expanded) {
             r.expanded = true;
@@ -4191,7 +4212,7 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             //   看不见配色 ⇒ 又一次"比对全等但屏幕不一样"（同 0c 的 buildTitle 缺陷）。
             if (entry.answered) {
                 stored.answered = true;
-                ApplyAnsweredLook(stored, entry.answer);
+                ApplyAnsweredLook(stored, entry.answer, entry.answerAt);
             }
             return;
         }
@@ -4313,6 +4334,14 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
         .cornerRadius = kRadiusBtn,
         .hoverBackground = kDenyHover});
     panel->AddChild(std::move(deny));
+
+    // ★★ P4 Phase D：已答结论行（预建、隐藏；ApplyAnsweredLook 填充并显示）。
+    auto concl = std::make_unique<ECDI::Label>();
+    rec.conclusion = concl.get();
+    concl->SetVisible(false);
+    concl->SetTextColor(kOkDark);
+    concl->SetFont(harness::SansFont(12.0f));
+    panel->AddChild(std::move(concl));
     return panel;
 }
 
@@ -5511,25 +5540,33 @@ void HarnessApp::RunAnswerProbe() {
         return n;
     };
     auto modelAnswer = [&]() { return m_sess->timeline[askTimeline].answer; };
-    // ★ 屏幕侧独立读数：从文字色反推（ECDI 无 style getter，这是唯一出口）
+    // ★★ P4 D 改版：屏幕侧独立读数改从**结论行文本**反推（原手法读两钮文字色
+    //   ——两钮已隐藏，配色不再是屏幕事实；文本反而是更直接的独立读数，
+    //   仍不查模型）。未答 = 结论行隐藏、两钮可见。
     auto screenAnswer = [&]() -> std::string {
         const RowRec* r = askRow();
-        if (!r || !r->allowBtn || !r->denyBtn) return "unknown";
-        const ECDI::Color a = r->allowBtn->GetTextColor();
-        const ECDI::Color d = r->denyBtn->GetTextColor();
-        const bool allowNormal = (a == kWarnInk);
-        const bool denyNormal = (d == kDenyInk);
-        const bool allowGray = (a == harness::kBtnDisabledInk);
-        const bool denyGray = (d == harness::kBtnDisabledInk);
-        if (allowNormal && denyGray) return "allow";
-        if (denyNormal && allowGray) return "deny";
-        if (allowNormal && denyNormal) return "";       // 未答：两钮都常态
-        return "unknown";                               // 两个都灰 = 答了但不认识的 choice
+        if (!r) return "unknown";
+        const bool buttonsUp = r->allowBtn && r->allowBtn->IsVisible() &&
+                               r->denyBtn && r->denyBtn->IsVisible();
+        if (buttonsUp && (!r->conclusion || !r->conclusion->IsVisible())) {
+            return "";   // 未答：两钮都在、结论行不在
+        }
+        if (r->conclusion && r->conclusion->IsVisible()) {
+            const std::string t = r->conclusion->GetText();
+            if (t.find("\xE5\xB7\xB2\xE5\x85\x81\xE8\xAE\xB8") != std::string::npos)
+                return "allow";   // 已允许
+            if (t.find("\xE5\xB7\xB2\xE6\x8B\x92\xE7\xBB\x9D") != std::string::npos)
+                return "deny";    // 已拒绝
+            return "unknown";     // 答了但结论不认识
+        }
+        return "unknown";
     };
     auto buttonsDisabled = [&]() {
         const RowRec* r = askRow();
         if (!r || !r->allowBtn || !r->denyBtn) return false;
-        return !r->allowBtn->IsEnabled() && !r->denyBtn->IsEnabled();
+        // ★ P4 D：「不可再点」= 禁用或隐藏（HitTest 对两者都早退）。
+        return (!r->allowBtn->IsEnabled() || !r->allowBtn->IsVisible()) &&
+               (!r->denyBtn->IsEnabled() || !r->denyBtn->IsVisible());
     };
 
     auto snap = [&](const char* phase) {
@@ -9527,6 +9564,16 @@ void HarnessApp::RunWorkspaceProbe() {
     }
 }
 
+// ★★ P4 Phase D：本地时刻 "HH:MM"（answerAt 用——审计信息，分钟粒度够用）。
+static std::string NowHm() {
+    std::time_t now = std::time(nullptr);
+    std::tm tmv{};
+    if (localtime_s(&tmv, &now) != 0) return std::string();
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    return buf;
+}
+
 void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     if (rec.answered) return;
     rec.answered = true;
@@ -9537,11 +9584,15 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     if (rec.timelineIdx < m_sess->timeline.size()) {
         m_sess->timeline[rec.timelineIdx].answered = true;
         m_sess->timeline[rec.timelineIdx].answer = choice;
+        m_sess->timeline[rec.timelineIdx].answerAt = NowHm();
     }
     rec.answer = choice;
     // ★ 视觉走**同一条**路径（见 `ApplyAnsweredLook` 的注释：首答与重建必须同形，
     //   否则"刚答完"和"重建后"长得不同，而 A==B 看不见配色差异）。
-    ApplyAnsweredLook(rec, choice);
+    ApplyAnsweredLook(rec, choice,
+                      rec.timelineIdx < m_sess->timeline.size()
+                          ? m_sess->timeline[rec.timelineIdx].answerAt
+                          : std::string());
     m_sess->waitForAnswer = false;
     if (m_sess->writer) {
         // live：真发 answer（协议 §4：需 id + choice；I3 的解除信号）
@@ -9561,52 +9612,42 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
 
 // ★★ Step 3：已答权限门的视觉。**首答与重建共用**（这是本函数存在的唯一理由）。
 //
-// 判据设计（为什么是"选中者留色、另一个灰化"而不是加一行回显文字）：
-//   · ECDI 的 Button **不画 disabled 态**（契约：灰化是调用方责任，先例
-//     `PromptBar::ApplySendStyle`）⇒ 若不自己处置，两个钮置灰后**像素完全不变**，
-//     屏幕上根本看不出"答过了"，更看不出"答的是什么"。
-//   · 加回显 Label 要动 `Relayout` 的 ask 分支（多一个子控件、多一处定位），
-//     而本步的契约是"只补模型、不改布局"——那会把一次数据修复变成一次布局改动。
-//   · 因此复用**已有**的两个钮：结论落在"哪个钮还是常态色"上。
-//     信息量相同（allow/deny/未答 三态可分），零新增控件，零布局改动。
-//
-// 可读回：ECDI 无 style getter，`GetTextColor()` 是唯一能问出"这个钮是什么色"的接口
-//   ⇒ 探针据此独立于模型判断"屏幕上是哪个答案"（同侧栏选中态的判据手法）。
-void HarnessApp::ApplyAnsweredLook(RowRec& rec, const std::string& choice) {
-    // 两个钮都**不可再点**（`SetEnabled(false)` 同时退出命中——`Widget::HitTest`
-    // 对禁用控件早退，故这里不需要额外的点击守卫）。
-    if (rec.allowBtn) rec.allowBtn->SetEnabled(false);
-    if (rec.denyBtn) rec.denyBtn->SetEnabled(false);
-
-    const bool allowPicked = (choice == "allow");
-    const bool denyPicked = (choice == "deny");
-    // 选中的那个留常态色；另一个进"已弃"外观。未知 choice（协议外的值）⇒ 两个都灰，
-    // 如实呈现"答了但答案不认识"，不编造一个看起来正常的状态。
-    auto paint = [](ECDI::Button* b, bool keepNormal, bool isAllow) {
-        if (!b) return;
-        const ECDI::Color fg = keepNormal ? (isAllow ? kWarnInk : kDenyInk) : harness::kBtnDisabledInk;
-        const ECDI::Color bg = keepNormal ? (isAllow ? kWarn : kBtnDenyBg) : harness::kBtnDisabledBg;
-        const ECDI::Color bd = keepNormal ? kAskBorder : harness::kBtnDisabledLine;
-        b->SetTextColor(fg);
-        // ⚠ 事实核对（2026-10-19，读 Button.cpp:243+ 后确认）：`Button::OnPaint` 的填充
-        //   **只**来自 `m_displayedBackground`，它**从不**用 ButtonStyle.border 画自身边框
-        //   ——border/borderWidth 唯一的消费者是焦点框（`HasFocus() && ShowFocusRect()` 时
-        //   传给 DrawFocusRect）。故这里设的 bd 既不画边、也不改底色，只是给"刚被点过的
-        //   那个钮"的焦点环定色（答完之后这个钮仍持焦点，直到焦点被别处拿走）。
-        //   留着它是因为删掉会让焦点环落到主题缺省色、与权限门的配色脱节；但**别指望
-        //   靠它加一圈边框**——要边框得外层包一个 Panel（ScrollView 那条 D13 同理）。
-        b->SetStyle(ECDI::ButtonStyleOverride{
-            .background = bg,
-            .border = bd,
-            .borderWidth = 1.0f,
-            .cornerRadius = kRadiusBtn,
-            .pressedBackground = bg,
-            .hoverBackground = bg});   // 禁用后不会再 hover，但钉死可防"状态回退时闪色"
-    };
-    paint(rec.allowBtn, allowPicked, true);
-    paint(rec.denyBtn, denyPicked, false);
+// ★★ P4 Phase D（2026-10-25）改版：两钮**隐藏** + 行内结论标记
+//   （`● 已允许 HH:MM` 绿 / `● 已拒绝 HH:MM` 红）。
+//   · 原「选中者留色、另一个灰化」只把结论编码在配色里（审计事实读不出来），
+//     且 ECDI Button 不画 disabled 态——两个死按钮留在行里占位却不可点。
+//   · 结论标记是文本 ⇒ 探针可从 `conclusion->GetText()` **独立于模型**读回
+//     （原手法读两钮文字色，钮一隐藏即失效——本版判据反而更直接）。
+//   · `when` 为空 = 旧 sidecar 重建（无时刻记录）——如实省略时刻段，不编造。
+//   · 未答/重建未答：conclusion 隐藏、两钮可见可点（幂等）。
+void HarnessApp::ApplyAnsweredLook(RowRec& rec, const std::string& choice,
+                                   const std::string& when) {
+    if (rec.allowBtn) {
+        rec.allowBtn->SetEnabled(false);   // 双保险：不可点（命中早退）且不可见
+        rec.allowBtn->SetVisible(false);
+    }
+    if (rec.denyBtn) {
+        rec.denyBtn->SetEnabled(false);
+        rec.denyBtn->SetVisible(false);
+    }
+    if (!rec.conclusion) return;
     // 记下视图侧结论（`SnapshotRows` 只读 RowRec，不回查模型——见字段注释）
     rec.answer = choice;
+    const bool allowPicked = (choice == "allow");
+    const bool denyPicked = (choice == "deny");
+    const std::string whenSeg = when.empty() ? std::string() : (" " + when);
+    if (allowPicked) {
+        rec.conclusion->SetTextColor(kOkDark);
+        rec.conclusion->SetText("\xE2\x97\x8F \xE5\xB7\xB2\xE5\x85\x81\xE8\xAE\xB8" + whenSeg);
+    } else if (denyPicked) {
+        rec.conclusion->SetTextColor(kErrorDark);
+        rec.conclusion->SetText("\xE2\x97\x8F \xE5\xB7\xB2\xE6\x8B\x92\xE7\xBB\x9D" + whenSeg);
+    } else {
+        // 未知 choice（协议外的值）：如实呈现「答了但答案不认识」，不编造正常态。
+        rec.conclusion->SetTextColor(kDarkMuted);
+        rec.conclusion->SetText("\xE2\x97\x8F \xE5\xB7\xB2\xE5\x9B\x9E\xE7\xAD\x94\xEF\xBC\x88\xE6\x9C\xAA\xE7\x9F\xA5\xE7\xBB\x93\xE8\xAE\xBA\xEF\xBC\x89" + whenSeg);
+    }
+    rec.conclusion->SetVisible(true);
 }
 
 // 通知行：**纯构造**（重建可重放）。
@@ -9816,6 +9857,12 @@ void HarnessApp::Relayout() {
                     if (r.denyBtn) {
                         r.denyBtn->SetSize(70, 28);
                         r.denyBtn->SetPosition(innerW - 82, 5);
+                    }
+                    // ★★ P4 D：已答结论行占两钮原来的位置（右对齐、垂直居中）。
+                    if (r.conclusion && r.conclusion->IsVisible()) {
+                        r.conclusion->AutoSize();
+                        const int cw = r.conclusion->GetWidth();
+                        r.conclusion->SetPosition(innerW - cw - 14, 10);
                     }
                 } else {
                     // 聊天气泡（Phase 29 wrap）：单行放得下 → 气泡收缩；
