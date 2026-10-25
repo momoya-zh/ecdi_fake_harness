@@ -412,6 +412,16 @@ void HarnessApplication::OnKeyDown(const ECDI::KeyDownEvent& event) {
 
 HarnessApp::HarnessApp(CliOptions options)
     : m_options(std::move(options)) {
+    // ★★ P4 H：配置**无条件**先加载一次——此前只在 firstRun 直连路径里 Load，
+    //   回放/--replay 模式的 providers 恒空（模型浮窗/右栏只读卡全 "—"）。
+    //   失败只记日志：文件不存在 = 干净首启（TryAutoConnectFromConfig 语义不变）。
+    {
+        std::string cfgError;
+        if (!m_appConfig.Load(cfgError)) {
+            ECDI::Logger::Log(ECDI::LogLevel::Warning,
+                              ECDI::UTF8ToWide("AppConfig: " + cfgError));
+        }
+    }
     // ★★ P3.5（规格 §8.5 D7）：无参启动的解析在**建会话之前**——
     //   配置 + 凭据都可用 ⇒ 填 corePath/coreArgs/m_coreApiKey，下面照常建 live 会话；
     //   否则 ⇒ 首启：设置面板打开（会话为空壳，保存成功后再建 live 会话）。
@@ -495,6 +505,10 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         //   同一个进程里此后可以同时有 live / 启动 replay / 历史 replay。
         s.originKind = "live";
         s.originPath = m_options.corePath;
+        // ★ P4 H：模型名预填（hello 不带 model 字段；ack 到达前 chip 显示它）。
+        if (const ProviderConfig* def = m_appConfig.DefaultProvider()) {
+            s.modelName = def->model;
+        }
         if (m_sessions.empty()) {
             // 首个 live 会话：把 fixtureName 也定下来（窗口标题 / 摘要用）
             m_options.fixtureName = s.label;
@@ -1617,10 +1631,14 @@ void HarnessApp::ToggleInspector() {
 bool HarnessApp::HandleGlobalKeyDown(const ECDI::KeyDownEvent& event) {
     const ECDI::KeyCode key = event.GetKeyCode();
     if (key == ECDI::KeyCode::Escape) {
-        // 逐层关：设置 > （Phase H 模型浮窗届时插这层）> ···菜单。
+        // 逐层关：设置 > 模型浮窗（P4 H）> ···菜单。
         // 无层可关 ⇒ 返回 false 让事件照常派发（Esc 不悬空拦截）。
         if (m_settingsVisible) {
             SetSettingsVisible(false);
+            return true;
+        }
+        if (m_modelPopupOpen) {
+            SetModelPopupOpen(false);
             return true;
         }
         if (m_moreMenuOpen) {
@@ -1643,7 +1661,9 @@ bool HarnessApp::HandleGlobalKeyDown(const ECDI::KeyDownEvent& event) {
         case ECDI::KeyCode::N:
             NewSession();
             return true;
-        // Ctrl+M：模型浮窗（Phase H）——浮窗存在后在此接入。
+        case ECDI::KeyCode::M:   // ★ P4 H：模型浮窗开合（同顶栏 chip 点击）
+            SetModelPopupOpen(!m_modelPopupOpen);
+            return true;
         default:
             return false;
     }
@@ -2079,6 +2099,26 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     }
     state->SetSize(60, 20);
     bar->AddChild(std::move(state));
+
+    // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip（`提供商 › 模型 · N% ▾`）。
+    //   数据常驻（RefreshHud 里 UpdateModelChip）；点击开下拉浮窗（Ctrl+M 同）。
+    auto modelChip = std::make_unique<uikit::TipButton>(
+        "— ▾", "模型切换（Ctrl+M）——仅 idle 发出，运行中自动排队",
+        [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+        [this](uikit::TipButton*) { HideTooltip(); });
+    m_hud.modelChip = modelChip.get();
+    modelChip->SetTextColor(kDarkInk);
+    modelChip->SetFont(harness::SansFont(harness::kFontSmall));
+    modelChip->SetStyle(ECDI::ButtonStyleOverride{
+        .background = kPanel2,
+        .border = kLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = harness::kRadiusBtn,
+        .pressedBackground = kToolHeaderPressed,
+        .hoverBackground = kToolHeaderHover});
+    modelChip->SetSize(200, 22);
+    modelChip->SetOnClick([this] { SetModelPopupOpen(!m_modelPopupOpen); });
+    bar->AddChild(std::move(modelChip));
 
     // ★★ Step 4 / 0e（2026-10-19）：运行期主题切换控件。
     //   【为什么必须放在顶栏】它是**全局**状态的中枢，不是某个面板的属性；
@@ -2808,8 +2848,42 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
         m_hud.settingsPanel->SetVisible(false);   // 显隐统一走 ApplySettingsVisibility
         scroll->AddChild(std::move(settingsSheetOwned));
     }
+    // ★★ P4 Phase H（2026-10-25）：模型下拉浮窗——顶部下拉（视口坐标系内
+    //   右上角），z 序在 mask/sheet 之上、tooltip 之下。搜索框 + 行列表 + 底注。
+    {
+        auto pop = std::make_unique<ECDI::Panel>();
+        m_hud.modelPopup = pop.get();
+        pop->SetVisible(false);
+        pop->SetStyle(ECDI::PanelStyleOverride{
+            .background = kCardBg,
+            .cornerRadius = kRadiusBtn,
+            .borderWidth = 1.0f,
+            .borderColor = kCardBorder});
+        auto search = std::make_unique<ECDI::TextBox>();
+        m_hud.modelSearch = search.get();
+        search->SetSingleLine(true);
+        search->SetSize(320, 26);
+        search->SetPosition(10, 8);
+        search->SetOnTextChanged([this](const std::string&) { RebuildModelPopupList(); });
+        pop->AddChild(std::move(search));
+        auto list = std::make_unique<ECDI::Panel>();
+        m_hud.modelPopupList = list.get();
+        list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+        list->SetPosition(10, 40);
+        pop->AddChild(std::move(list));
+        auto foot = std::make_unique<ECDI::Label>(
+            "仅 idle 发出 · 运行中自动排队（本轮输出完生效）");
+        m_hud.modelPopupFoot = foot.get();
+        foot->SetTextColor(kDarkMuted);
+        foot->SetFont(harness::SansFont(harness::kFontMicro));
+        foot->SetSize(320, 16);
+        foot->SetPosition(10, 250);
+        pop->AddChild(std::move(foot));
+        pop->SetSize(340, 272);
+        scroll->AddChild(std::move(pop));
+    }
     // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层——最后子 = 最上层（盖过
-    //   jump/遮罩/sheet）。隐藏态常驻，TipButton enter 起 400ms 定时器后显示。
+    //   jump/遮罩/sheet/模型浮窗）。隐藏态常驻，TipButton enter 起 400ms 定时器后显示。
     {
         auto tip = std::make_unique<ECDI::Panel>();
         m_hud.tooltip = tip.get();
@@ -2858,6 +2932,10 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     // ★ P3.5：设置面板的显隐投影（中栏三件都建完了，唯一投影路径此刻可用）。
     ApplySettingsVisibility();
+    // ★★ P4 H：模型浮窗显隐投影（重建后按模型位恢复——同 ApplySettingsVisibility
+    //   的「投影只存在于一条路径」纪律）+ chip 首帧数据。
+    SetModelPopupOpen(m_modelPopupOpen);
+    UpdateModelChip();
     // ★ P3.6：模型列表首帧/重建后置脏（tick 里统一重建——列表行是动态的）。
     m_modelListDirty = true;
     main->AddChild(std::move(counting));
@@ -3369,6 +3447,10 @@ void HarnessApp::OnReplayTick() {
             if (m_options.emptyProbe && !m_emptyProbeDone) {
                 RunEmptyProbe();
             }
+            // ★★ P4 Phase H 模型浮窗探针：同步跑完即 Exit，同上。
+            if (m_options.modelProbe && !m_modelProbeDone) {
+                RunModelProbe();
+            }
             // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
             if (m_options.settingsProbe && !m_settingsProbeDone) {
                 RunSettingsProbe();
@@ -3743,12 +3825,9 @@ void HarnessApp::RouteLastMessage() {
                 m_sess->providerId = def->id;
             }
         }
-        if (m_sess->ctxCapacity == 0) {
-            m_sess->ctxCapacity = static_cast<int>(m_sess->contextLimit);
-        }
-        // ★★ 协议 §9：只有 core 声明的主版本**高于**本 GUI 上限才拒连（不做降级猜测）。
-        //   缺字段按 v1 宽容；**低于**上限从来不是拒绝理由（§9 无此条）。
         if (m_sess->protocolVer > kProtocolMaxSupported) {
+            // ★★ 协议 §9：只有 core 声明的主版本**高于**本 GUI 上限才拒连（不做降级猜测）。
+            //   缺字段按 v1 宽容；**低于**上限从来不是拒绝理由（§9 无此条）。
             char buf[192];
             std::snprintf(buf, sizeof(buf),
                           "[协议不兼容] core 声明 protocol %d，本 GUI 支持到 %d"
@@ -3773,6 +3852,12 @@ void HarnessApp::RouteLastMessage() {
         if (const json::Value* ctx = msg.Find("context");
             ctx && ctx->IsNumber() && ctx->number > 0) {
             m_sess->contextLimit = static_cast<long long>(ctx->number);
+            // ★★ P4 H 修复（P3.6 bug #2）：ctxCapacity 的 v4 逐轮分母在此**填充后**
+            //   迁移——原实现把迁移放在填充之前（迁进去的恒 0），hello.context
+            //   与 usage.context 的覆盖形同虚设（百分比/环一直拿不到分母）。
+            if (m_sess->ctxCapacity == 0) {
+                m_sess->ctxCapacity = static_cast<int>(ctx->number);
+            }
         }
         m_hudDirty = true;
         AddNoticeRow("core " + msg.GetString("core") + " · session " +
@@ -3888,6 +3973,7 @@ void HarnessApp::RouteLastMessage() {
                          kErrorDark);
         } else {
             m_sess->providerId = msg.GetString("provider", m_sess->providerId);
+            m_sess->modelName = msg.GetString("model", m_sess->modelName);
             if (const json::Value* c = msg.Find("context");
                 c && c->IsNumber() && c->number > 0) {
                 m_sess->ctxCapacity = static_cast<int>(c->number);
@@ -3896,6 +3982,7 @@ void HarnessApp::RouteLastMessage() {
             AddNoticeRow("[已切换] " + m_sess->providerId + " / " +
                              msg.GetString("model", "?"), kDarkMuted);
             m_modelListDirty = true;
+            UpdateModelChip();   // ★ P4 H：chip 常驻数据跟着切换走
         }
         m_hudDirty = true;
         return;
@@ -7232,6 +7319,104 @@ void HarnessApp::RunEmptyProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ P4 Phase H（--model-probe，2026-10-25）：模型浮窗 + 用量判据。
+// ★ 只在回放模式：live 会点击真的发 model 切换（探针不制造真副作用）。
+// ★ 分母判据用 cot 夹具跑（hello.context=128000 ⇒ v4 ctxCapacity 上屏；
+//   demo 夹具无 context ⇒ ctxPct 恒 "—"，判据不成立）。
+void HarnessApp::RunModelProbe() {
+    if (!m_sess || !m_sess->replay) { m_modelProbeDone = true; return; }
+    auto countRows = [&]() {
+        size_t n = 0;
+        if (m_hud.modelPopupList) {
+            for (size_t i = 0; i < m_hud.modelPopupList->GetChildCount(); ++i) {
+                if (dynamic_cast<ECDI::Button*>(m_hud.modelPopupList->GetChildAt(i))) {
+                    ++n;
+                }
+            }
+        }
+        return n;
+    };
+    auto snap = [&](const char* phase) -> ModelProbeRec& {
+        ModelProbeRec rec;
+        rec.phase = phase;
+        rec.popupVisible = m_hud.modelPopup && m_hud.modelPopup->IsVisible();
+        rec.listRows = countRows();
+        rec.ctxKnown = m_hud.ctxPct && m_hud.ctxPct->GetText() != "—" &&
+                       m_hud.ctxPct->GetText() != "%";
+        rec.chipText = m_hud.modelChip ? m_hud.modelChip->GetText() : "";
+        m_modelProbeLog.push_back(std::move(rec));
+        return m_modelProbeLog.back();
+    };
+    const size_t noticeBefore = m_sess->timeline.size();
+
+    // ① 分母上屏（P3.6 遗留接线的修复判据：v4 ctxCapacity 进百分比）。
+    {
+        ModelProbeRec& r = snap("ctx-denominator");
+        r.matched = r.ctxKnown;
+        if (!r.matched) r.note = "ctxPct still em-dash (denominator not on screen)";
+    }
+    // ② chip 接线。
+    {
+        ModelProbeRec& r = snap("chip-text");
+        r.matched = r.chipText.find("\xE2\x96\xBE") != std::string::npos;   // ▾
+        if (!r.matched) r.note = "chip text lacks dropdown marker";
+    }
+    // ③ Ctrl+M 开 → Esc 关（优先级：设置 > 浮窗 > 菜单——浮窗层独立可关）。
+    SynthesizeKey(ECDI::KeyCode::M, false, ECDI::KeyModifier::Ctrl);
+    {
+        ModelProbeRec& r = snap("ctrl-m-open");
+        r.matched = r.popupVisible;
+        if (!r.matched) r.note = "Ctrl+M did not open the popup";
+    }
+    const size_t allRows = countRows();
+    // ④ 搜索过滤（相对判据：不依赖跑批机配置的具体家数）。
+    //   ★ 探针只能 SetText + 手动重建——TextBox 的 D7 契约「SetText 不走
+    //   OnTextChanged」，真实键入才触发回调（grow-probe 同坑已记）；过滤逻辑
+    //   本身（RebuildModelPopupList 读搜索词）仍是被测的真实路径。
+    if (m_hud.modelSearch) {
+        m_hud.modelSearch->SetText("__no_such_provider__");
+        RebuildModelPopupList();
+        ModelProbeRec& r = snap("search-filter");
+        r.matched = (r.listRows == 0);
+        if (!r.matched) r.note = "filter matched everything (filter not wired)";
+        m_hud.modelSearch->SetText("");
+        RebuildModelPopupList();
+        ModelProbeRec& r2 = snap("search-clear");
+        r2.matched = (r2.listRows == allRows);
+        if (!r2.matched) r2.note = "clearing filter did not restore rows";
+    }
+    // ⑤ 合成点击第一行 ⇒ 浮窗关 ∧ 回放会话被如实拒绝（writer==null ⇒ notice）。
+    if (allRows > 0 && m_hud.modelPopupList) {
+        for (size_t i = 0; i < m_hud.modelPopupList->GetChildCount(); ++i) {
+            ECDI::Button* row =
+                dynamic_cast<ECDI::Button*>(m_hud.modelPopupList->GetChildAt(i));
+            if (!row) continue;
+            const ECDI::Point abs = row->GetAbsolutePosition();
+            SynthesizeClickAt(static_cast<int>(abs.x) + row->GetWidth() / 2,
+                              static_cast<int>(abs.y) + row->GetHeight() / 2);
+            break;
+        }
+        ModelProbeRec& r = snap("click-row");
+        bool noticed = false;
+        for (size_t i = noticeBefore; i < m_sess->timeline.size(); ++i) {
+            const TimelineEntry& e = m_sess->timeline[i];
+            if (e.kind == TimelineEntry::Kind::Notice &&
+                e.text.find("\xE4\xB8\x8D\xE6\x98\xAF live") != std::string::npos) {
+                noticed = true;   // 「不是 live」
+            }
+        }
+        r.matched = !r.popupVisible && noticed;
+        if (!r.matched) r.note = "popup should close and replay session be rejected";
+    } else {
+        ModelProbeRec& r = snap("click-row-skipped");
+        r.matched = true;
+        r.note = "no providers configured on this machine";
+    }
+    SetModelPopupOpen(false);
+    m_modelProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。
 //
 // 【它要回答什么】`Hud` 里那些指针，**建树时真的都赋过值吗**？
@@ -9140,11 +9325,95 @@ void HarnessApp::RebuildModelList() {
     while (m_hud.modelList->GetChildCount() > 0) {
         m_hud.modelList->RemoveChild(m_hud.modelList->GetChildAt(0));
     }
+    // ★★ P4 H：右栏改**只读卡**（当前 提供商/模型/容量/输出上限）——切换入口
+    //   收敛到顶栏 chip 浮窗（P3.6 的逐行切换列表退役；两处入口必然漂移）。
+    const Session* s = m_sess;
+    auto addRow = [this](const std::string& label, const std::string& value) {
+        auto row = std::make_unique<ECDI::Panel>();
+        row->SetSize(200, 18);
+        auto l = std::make_unique<ECDI::Label>(label);
+        l->SetTextColor(kDarkMuted);
+        l->SetFont(harness::SansFont(harness::kFontMicro));
+        l->SetSize(70, 16);
+        l->SetPosition(0, 1);
+        row->AddChild(std::move(l));
+        auto v = std::make_unique<ECDI::Label>(value);
+        v->SetTextColor(kDarkInk);
+        v->SetFont(harness::SansFont(harness::kFontMicro));
+        v->SetSize(130, 16);
+        v->SetPosition(72, 1);
+        row->AddChild(std::move(v));
+        m_hud.modelList->AddChild(std::move(row));
+    };
+    addRow("提供商", s && !s->providerId.empty() ? s->providerId : "—");
+    addRow("模型", s && !s->modelName.empty() ? s->modelName : "—");
+    if (s && s->ctxCapacity > 0) {
+        addRow("容量", std::to_string(s->ctxCapacity) + " tok");
+    } else {
+        addRow("容量", "—");
+    }
+    const ProviderConfig* pc =
+        s ? m_appConfig.Find(s->providerId) : nullptr;
+    addRow("输出上限",
+           pc && pc->maxOutput > 0 ? std::to_string(pc->maxOutput) : "—");
+    if (ECDI::Widget* parent = m_hud.modelList->GetParent()) parent->Arrange();
+    RequestRepaint();
+}
+
+// ── ★★ P4 Phase H（2026-10-25）：顶栏 chip + 模型下拉浮窗 ──────────────
+
+void HarnessApp::SetModelPopupOpen(bool open) {
+    if (m_modelPopupOpen == open &&
+        (!m_hud.modelPopup || m_hud.modelPopup->IsVisible() == open)) {
+        return;   // 幂等（同 SetSidebarVisible）
+    }
+    m_modelPopupOpen = open;
+    if (!m_hud.modelPopup) return;
+    m_hud.modelPopup->SetVisible(open);
+    if (open) {
+        if (m_moreMenuOpen) SetMoreMenuOpen(false);   // 互斥：两处下拉不同开
+        if (m_hud.modelSearch) m_hud.modelSearch->SetText("");
+        RebuildModelPopupList();
+        // 顶部下拉、右上角对齐（视口坐标系）。
+        m_hud.modelPopup->SetPosition(
+            std::max(0, m_scroll->GetWidth() - m_hud.modelPopup->GetWidth() - 12), 0);
+    }
+}
+
+void HarnessApp::RebuildModelPopupList() {
+    if (!m_hud.modelPopupList) return;
+    while (m_hud.modelPopupList->GetChildCount() > 0) {
+        m_hud.modelPopupList->RemoveChild(m_hud.modelPopupList->GetChildAt(0));
+    }
+    const std::string q = m_hud.modelSearch ? m_hud.modelSearch->GetText() : "";
+    // 同名检测：跨提供商相同 model 名 ⇒ 标黄 + 「同名×N」（同名跨家切换容易
+    // 误点，这是唯一的防呆读数）。
+    std::map<std::string, int> modelCounts;
+    for (const auto& pc : m_appConfig.providers) ++modelCounts[pc.model];
     const std::string active = m_sess ? m_sess->providerId : std::string();
+    int y = 0;
+    int rows = 0;
     for (const auto& pc : m_appConfig.providers) {
-        auto row = std::make_unique<ECDI::Button>(
-            (pc.id == active ? "● " : "○ ") + pc.id + " · " + pc.model);
-        row->SetTextColor(kDarkInk);
+        const bool idHit = q.empty() ||
+                           pc.id.find(q) != std::string::npos ||
+                           pc.model.find(q) != std::string::npos;
+        if (!idHit) continue;
+        auto group = std::make_unique<ECDI::Label>(
+            (pc.id == active ? "● " : "") + pc.id);
+        group->SetTextColor(kDarkMuted);
+        group->SetFont(harness::SansFont(harness::kFontMicro));
+        group->SetSize(320, 16);
+        group->SetPosition(0, y);
+        y += 18;
+        m_hud.modelPopupList->AddChild(std::move(group));
+        const int dup = modelCounts[pc.model];
+        std::string text = pc.model;
+        if (pc.context > 0) {
+            text += " · " + std::to_string(pc.context / 1000) + "K";
+        }
+        if (dup > 1) text += "  同名×" + std::to_string(dup);
+        auto row = std::make_unique<ECDI::Button>(text);
+        row->SetTextColor(dup > 1 ? kWarn : kDarkInk);   // 同名标黄
         row->SetFont(harness::SansFont(harness::kFontSmall));
         row->SetStyle(ECDI::ButtonStyleOverride{
             .background = kPanel2,
@@ -9153,20 +9422,43 @@ void HarnessApp::RebuildModelList() {
             .cornerRadius = kRadiusBtn,
             .pressedBackground = kToolHeaderPressed,
             .hoverBackground = kToolHeaderHover});
-        row->SetSize(200, 24);
+        row->SetSize(320, 24);
+        row->SetPosition(0, y);
+        y += 28;
         const std::string pid = pc.id;
-        row->SetOnClick([this, pid] { RequestModelSwitch(pid); });
-        m_hud.modelList->AddChild(std::move(row));
+        row->SetOnClick([this, pid] {
+            SetModelPopupOpen(false);
+            RequestModelSwitch(pid);
+        });
+        m_hud.modelPopupList->AddChild(std::move(row));
+        ++rows;
     }
-    if (m_appConfig.providers.empty()) {
-        auto l = std::make_unique<ECDI::Label>("（无提供商——用设置添加）");
+    if (rows == 0) {
+        auto l = std::make_unique<ECDI::Label>("（无匹配——用设置添加提供商）");
         l->SetTextColor(kDarkMuted);
         l->SetFont(harness::SansFont(harness::kFontSmall));
-        l->SetSize(200, 20);
-        m_hud.modelList->AddChild(std::move(l));
+        l->SetSize(320, 20);
+        l->SetPosition(0, y);
+        m_hud.modelPopupList->AddChild(std::move(l));
     }
-    if (ECDI::Widget* parent = m_hud.modelList->GetParent()) parent->Arrange();
     RequestRepaint();
+}
+
+void HarnessApp::UpdateModelChip() {
+    if (!m_hud.modelChip || !m_sess) return;
+    std::string text = m_sess->providerId.empty()
+                           ? "—"
+                           : (m_sess->providerId + " › " +
+                              (m_sess->modelName.empty() ? "?" : m_sess->modelName));
+    // ★ 用量常驻（v4 分母 ctxCapacity——P3.6 只写不读的接线在这里补上）：
+    //   分子与右栏百分比同口径（usageIn）。
+    if (m_sess->ctxCapacity > 0 && m_sess->usageIn >= 0) {
+        const long long pct =
+            (m_sess->usageIn * 100 + m_sess->ctxCapacity / 2) / m_sess->ctxCapacity;
+        text += " · " + std::to_string(pct) + "%";
+    }
+    text += " ▾";
+    m_hud.modelChip->SetText(text);
 }
 
 void HarnessApp::RebuildSettingsProviderList() {
@@ -10495,7 +10787,12 @@ void HarnessApp::RefreshHud() {
     //   ★ 分子 = `usage.input`（= 本轮送进模型的上下文规模）。**不含 output**：
     //     output 是本轮新生成的，尚未回到下一轮的上下文里。
     //   ★ 三者任一未知 ⇒ 显示 `—` 且条归零（**不猜**；分母未知时百分比无定义）。
-    const bool ctxKnown = (m_sess->contextLimit > 0 && m_sess->usageIn >= 0);
+    // ★★ P4 H 修复（P3.6 遗留接线）：分母改 **ctxCapacity**（v4 逐轮覆盖：
+    // hello.context ⇒ usage.context ⇒ model ack 逐级写它）——此前只写不读，
+    // 百分比/环一直用 v2 的 contextLimit，usage.context 覆盖从未生效。
+    // ★ P4 H：顶栏模型 chip 的常驻数据同源刷新。
+    UpdateModelChip();
+    const bool ctxKnown = (m_sess->ctxCapacity > 0 && m_sess->usageIn >= 0);
     if (HudTouch("ctxPct"), m_hud.ctxPct) {
         if (!ctxKnown) {
             m_hud.ctxPct->SetText("—");
@@ -10503,7 +10800,7 @@ void HarnessApp::RefreshHud() {
         } else {
             // 四舍五入到整数百分比；占用可能 >100%（core 低估容量）⇒ 如实显示，不钳
             const long long pct =
-                (m_sess->usageIn * 100 + m_sess->contextLimit / 2) / m_sess->contextLimit;
+                (m_sess->usageIn * 100 + m_sess->ctxCapacity / 2) / m_sess->ctxCapacity;
             m_hud.ctxPct->SetText(std::to_string(pct) + "%");
             // 配色：<70% 常规 · 70–90% 琥珀（该收尾了）· >90% 红（快溢出）
             m_hud.ctxPct->SetTextColor(pct >= 90 ? kErrorDark
@@ -10513,14 +10810,14 @@ void HarnessApp::RefreshHud() {
     if (m_ctxRing) {
         const float frac = ctxKnown
                                ? static_cast<float>(m_sess->usageIn) /
-                                     static_cast<float>(m_sess->contextLimit)
+                                     static_cast<float>(m_sess->ctxCapacity)
                                : 0.0f;
         // 环本身钳到 [0,1]（SetProgress 契约）；文本仍如实显示 >100%
         m_ctxRing->SetProgress(frac > 1.0f ? 1.0f : frac);
         // ★ 环色与右侧数字**同源**（同一组阈值），避免「环是绿的、字是红的」自相矛盾。
         //   阈值沿用既有口径：<70 常规绿 · 70–90 琥珀 · >90 红；分母未知 ⇒ 回退绿（环归零）。
         const long long pctForColor =
-            ctxKnown ? (m_sess->usageIn * 100 + m_sess->contextLimit / 2) / m_sess->contextLimit : 0;
+            ctxKnown ? (m_sess->usageIn * 100 + m_sess->ctxCapacity / 2) / m_sess->ctxCapacity : 0;
         const int level = pctForColor >= 90 ? 2 : (pctForColor >= 70 ? 1 : 0);
         // ★★ 只在**档位翻转**时 SetStyle + 补重绘——不能每 tick 都做：
         //   `RingProgressBar::SetStyle` 的头**未**声明「覆盖后 Invalidate」
@@ -11107,6 +11404,25 @@ void HarnessApp::WriteSummary() {
                           r.guideExists ? "true" : "false",
                           r.guideVisible ? "true" : "false",
                           r.rowCount, r.matched ? "true" : "false",
+                          r.note.c_str());
+            json += b;
+        }
+        json += "],\n";
+    }
+    // ★★ P4 Phase H（--model-probe）：模型浮窗 + 用量判据。
+    if (m_options.modelProbe && !m_modelProbeLog.empty()) {
+        json += "  \"modelProbe\": [";
+        for (size_t i = 0; i < m_modelProbeLog.size(); ++i) {
+            const ModelProbeRec& r = m_modelProbeLog[i];
+            json += (i ? ", " : "");
+            char b[640];
+            std::snprintf(b, sizeof(b),
+                          "{\"phase\": \"%s\", \"popupVisible\": %s, "
+                          "\"listRows\": %zu, \"ctxKnown\": %s, "
+                          "\"chipText\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                          r.phase.c_str(), r.popupVisible ? "true" : "false",
+                          r.listRows, r.ctxKnown ? "true" : "false",
+                          r.chipText.c_str(), r.matched ? "true" : "false",
                           r.note.c_str());
             json += b;
         }

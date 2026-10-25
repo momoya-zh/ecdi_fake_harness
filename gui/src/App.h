@@ -77,6 +77,10 @@ struct CliOptions {
     // ★★ P4 Phase C（2026-10-25）：空状态引导取证（空转录显示引导卡；
     //   负对照 = --instant 回放加载后不出现）。默认 false ⇒ 零行为变化。
     bool emptyProbe = false;              // --empty-probe：回放负对照 + firstRun 正对照
+    // ★★ P4 Phase H（2026-10-25）：模型浮窗取证（Ctrl+M 开合 / 搜索过滤 / 同名
+    //   标黄 / 回放下行点击的如实 notice / cot 的 hello.context 分母上屏）。
+    //   默认 false ⇒ 零行为变化。
+    bool modelProbe = false;              // --model-probe：模型浮窗 + 用量判据
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
@@ -404,6 +408,12 @@ private:
         ECDI::Button* settingsSave = nullptr;    // 保存并连接
         // ★ P3.6：检查器「模型」卡片（提供商列表 + 切换）。
         ECDI::Panel* modelList = nullptr;        // 行容器（children 由 RebuildModelList 重建）
+        // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip + 下拉浮窗。
+        ECDI::Button* modelChip = nullptr;       // 顶栏：`提供商 › 模型 · N% ▾`
+        ECDI::Panel* modelPopup = nullptr;       // 浮窗壳（挂 m_scroll，顶部下拉）
+        ECDI::TextBox* modelSearch = nullptr;    // 浮窗顶部搜索框
+        ECDI::Panel* modelPopupList = nullptr;   // 行容器（按搜索词重建）
+        ECDI::Label* modelPopupFoot = nullptr;   // 底注（仅 idle 发出 · 运行中排队）
         ECDI::Label* stateChip = nullptr;    // 顶栏：running / idle
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
         ECDI::Label* convTitle = nullptr;    // 中栏会话头：标题（原型 C .conversation-head）
@@ -753,6 +763,9 @@ private:
         long long contextLimit = 0;
         // ★ P3.6（协议 v4）：提供商/模型热切换。
         std::string providerId;          // 当前提供商（spawn 的 --provider-id；model ack 更新）
+        // ★★ P4 H：当前模型名（hello 不带——live 会话创建时从 config 预填，model
+        //   ack 更新；回放会话为 "?"，chip 如实显示）。
+        std::string modelName;
         bool hasModelCap = false;        // hello.caps 声明了 "model"
         int ctxCapacity = 0;             // 当下分母：hello.context ⇒ usage.context ⇒ model ack 逐级覆盖
         std::string pendingModelId;      // 已发出未确认的切换请求 id（I11 在途）
@@ -1083,6 +1096,11 @@ private:
     void SendPendingModelSwitchIfIdle();                   // state=idle 时的排队兑现点
     void CacheProviderKeys();           // 凭据库 → m_providerKeys（全部提供商）
     static std::string EnvSanitizeProviderId(const std::string& id);
+    // ── ★★ P4 Phase H（2026-10-25）：顶栏 chip + 模型下拉浮窗 ─────────────
+    //   浮窗挂 m_scroll（F 同款浮层口）；显隐 = m_modelPopupOpen 模型侧状态。
+    void SetModelPopupOpen(bool open);   // 唯一入口（chip 点击 / Ctrl+M / 行点击关）
+    void RebuildModelPopupList();        // 按搜索词重建行（开窗 + 搜索变化时）
+    void UpdateModelChip();              // chip 文本（提供商 › 模型 · N% ▾）
 
     // ── ★★ Step 5（2026-10-19）：打开历史会话 ────────────────────────────
     // 历史 = 磁盘上的 `protocol/fixtures/**/*.jsonl`。点开 = **新建一个 replay 会话**
@@ -1264,6 +1282,8 @@ private:
     // 提供商 id → key（凭据库的本次进程缓存；spawn 注入 env 用。绝不进日志/摘要）。
     std::map<std::string, std::string> m_providerKeys;
     bool m_modelListDirty = false;   // 检查器模型列表重建（tick 执行，同 m_sidebarDirty 族）
+    // ★★ P4 H：模型浮窗开合（模型侧状态——重建后按它恢复，同 m_moreMenuOpen）。
+    bool m_modelPopupOpen = false;
     std::string m_editingProviderId; // 设置面板当前编辑的提供商（空 = 新增）
     // ★★ Step 4（2026-10-19）：整树重建待执行。
     //   与 `m_sidebarDirty` 完全同族、同一个理由：顶栏「主题」钮的回调跑在
@@ -1862,6 +1882,28 @@ private:
     // ★★ P4 E：tooltip 延迟态（定时器在飞 = armed；到点显示）。
     const ECDI::Widget* m_tooltipAnchor = nullptr;   // 待显示锚点（TipButton）
     std::string m_tooltipPending;                    // 待显示文案
+
+    // ★★ P4 Phase H（--model-probe，2026-10-25）：模型浮窗 + 用量判据。
+    //   回放形态（cot：hello.context=128000 ⇒ 分母上屏走 v4 逐轮覆盖分母）：
+    //     · ctx-denominator —— 右栏 ctxPct 文本非 "—"（分母真的上了屏）；
+    //     · chip-text —— 顶栏 chip 含 `▾`（接线判据）；
+    //     · ctrl-m / esc —— Ctrl+M 开浮窗（可见）⇒ Esc 关（优先级：设置 > 浮窗 > 菜单）；
+    //     · search-filter —— 搜索框 SetText 后列表行数变少（负对照：清空恢复）；
+    //     · click-row —— 合成点击一行 ⇒ 浮窗关 ∧ 「不是 live」notice（回放会话
+    //       writer==null，RequestModelSwitch 如实拒绝——排队语义由 settings-probe
+    //       的 switch-ok 相在 live 下验证）。
+    struct ModelProbeRec {
+        std::string phase;
+        bool popupVisible = false;
+        size_t listRows = 0;
+        bool ctxKnown = false;
+        std::string chipText;
+        std::string note;
+        bool matched = true;
+    };
+    std::vector<ModelProbeRec> m_modelProbeLog;
+    bool m_modelProbeDone = false;
+    void RunModelProbe();
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
     //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），
