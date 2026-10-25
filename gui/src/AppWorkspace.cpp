@@ -34,8 +34,8 @@ using harness::internal::Utf8FromWidePath;
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时只计数、零副作用，保持旧读数。
-    if (m_hitProbeActive) {
-        ++m_hitProbeSendCalls;
+    if (m_probeState.hitProbeActive) {
+        ++m_probeState.hitProbeSendCalls;
         return;
     }
     if (m_sess->writer) {

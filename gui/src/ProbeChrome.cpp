@@ -71,12 +71,12 @@
 //      ★ 走的是**同一个** `WriteTranscriptExport()`，绕开的只有"路径从哪儿来"。
 //        `GetSaveFileNameW` 那个模态对话框**没有被覆盖**，这是诚实的缺口。
 void HarnessApp::RunMenuProbe() {
-    if (!m_sess) { m_menuProbeDone = true; return; }
+    if (!m_sess) { m_probeState.menuProbeDone = true; return; }
     // 只在回放模式：live 下点「清空视图」/导出都安全，但 live 的转录在持续增长，
     //   两次快照之间必然不同 ⇒ `timeline` 长度判据会假失败。
-    if (!m_sess->replay) { m_menuProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.menuProbeDone = true; return; }
     if (!m_hud.moreMenu || !m_hud.moreToggle || !m_hud.exportToggle || !m_content) {
-        m_menuProbeDone = true;
+        m_probeState.menuProbeDone = true;
         return;
     }
 
@@ -101,12 +101,12 @@ void HarnessApp::RunMenuProbe() {
         for (const TimelineEntry& e : m_sess->timeline) {
             if (e.kind == TimelineEntry::Kind::Notice) ++rec.noticeRows;
         }
-        m_menuProbeLog.push_back(std::move(rec));
+        m_probeState.menuProbeLog.push_back(std::move(rec));
     };
     auto expect = [&](const char* phase,
                       std::vector<std::pair<bool, const char*>> conds) {
         snap(phase);
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         std::string bad;
         for (const auto& c : conds) {
             if (c.first) continue;
@@ -135,7 +135,7 @@ void HarnessApp::RunMenuProbe() {
                            {head != nullptr, "conversation head not found"}});
     // ★ gap 的判据要等 snap 之后才能读到，故单独判（失败时把它写进差异里）。
     {
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         const int menuH = m_hud.moreMenu->GetHeight();
         if (rec.gap != 0) {
             rec.matched = false;
@@ -147,14 +147,14 @@ void HarnessApp::RunMenuProbe() {
     }
 
     // ② menu-open：点真钮（走 `Application::OnEvent` 派发链，不是直接调 ToggleMoreMenu）
-    const int closedGap = m_menuProbeLog.back().gap;
+    const int closedGap = m_probeState.menuProbeLog.back().gap;
     const int menuH = m_hud.moreMenu->GetHeight();
     const bool clickedOpen = clickCentreOf(m_hud.moreToggle);
     expect("menu-open", {{clickedOpen, "menu toggle click did not dispatch"},
                          {m_moreMenuOpen, "model did not flip to open"},
                          {m_hud.moreMenu->IsVisible(), "menu bar still hidden"}});
     {
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         if (rec.gap != closedGap + menuH) {
             rec.matched = false;
             if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
@@ -171,7 +171,7 @@ void HarnessApp::RunMenuProbe() {
                                  {!m_moreMenuOpen, "model did not flip back to closed"},
                                  {!m_hud.moreMenu->IsVisible(), "menu bar still visible"}});
     {
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         if (rec.gap != closedGap) {
             rec.matched = false;
             if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
@@ -212,7 +212,7 @@ void HarnessApp::RunMenuProbe() {
     //     这正是 0c `buildTitle` 的同族陷阱：**函数对了，钮没接上**。
     //   ★ 所以这一臂必须**点真钮**（走 `Application::OnEvent` 派发链）。
     //   ★ 障碍是保存对话框（`GetSaveFileNameW` 是模态循环，点上去会把探针挂死）。
-    //     解法是把 `m_menuProbeExportPath` 预置成一个临时路径 ⇒ `ExportTranscript()`
+    //     解法是把 `m_probeState.menuProbeExportPath` 预置成一个临时路径 ⇒ `ExportTranscript()`
     //     跳过对话框、直接落盘。**绕过去的只有"路径从哪儿来"**，回调、按钮、
     //     写盘都是真的。未被覆盖的仍是对话框本身（诚实缺口，写在这里）。
     //   ★ 判据：点之前文件不存在 ⇒ 点之后**存在且非空**。
@@ -228,10 +228,10 @@ void HarnessApp::RunMenuProbe() {
         std::filesystem::remove(target, ec);
         const bool absentBefore = !std::filesystem::exists(target);
 
-        m_menuProbeExportPath = target;    // 探针专用：让回调跳过对话框
+        m_probeState.menuProbeExportPath = target;    // 探针专用：让回调跳过对话框
         const size_t noticesBefore = m_sess->timeline.size();
         const bool clicked = clickCentreOf(m_hud.exportToggle);
-        m_menuProbeExportPath.clear();
+        m_probeState.menuProbeExportPath.clear();
 
         std::error_code ec2;
         const bool exists = std::filesystem::exists(target, ec2);
@@ -246,7 +246,7 @@ void HarnessApp::RunMenuProbe() {
                                          "(the callback is probably still empty)"},
                                 {size > 0, "exported file is empty"},
                                 {noticeAdded, "export did not report itself on screen"}});
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         rec.exportWrote = exists;
         rec.exportBytes = static_cast<size_t>(size);
         std::filesystem::remove(target, ec2);
@@ -313,7 +313,7 @@ void HarnessApp::RunMenuProbe() {
                                text.find(someNotice) != std::string::npos;
 
         snap("export-text");
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         rec.exportLines = m_sess->timeline.size() - missing;
         rec.exportHasNotice = hasNotice;
         rec.noticeRows = 0;
@@ -345,24 +345,24 @@ void HarnessApp::RunMenuProbe() {
     {
         std::error_code ec;
         const std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
-        m_menuProbeTempFile = dir / ("harness-menu-probe-" +
+        m_probeState.menuProbeTempFile = dir / ("harness-menu-probe-" +
                                      std::to_string(static_cast<unsigned long long>(
                                          std::chrono::steady_clock::now().time_since_epoch().count())) +
                                      ".txt");
         std::string err;
-        const bool wrote = WriteTranscriptExport(m_menuProbeTempFile, &err);
+        const bool wrote = WriteTranscriptExport(m_probeState.menuProbeTempFile, &err);
         const std::string expected = BuildTranscriptExportText();
         std::string actual;
         size_t bytes = expected.size();
         bool lfOnly = false;
         if (wrote) {
-            std::ifstream in(m_menuProbeTempFile, std::ios::binary);
+            std::ifstream in(m_probeState.menuProbeTempFile, std::ios::binary);
             actual.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
             bytes = actual.size();
             lfOnly = actual.find('\r') == std::string::npos;
         }
         snap("export-file");
-        MenuProbeRec& rec = m_menuProbeLog.back();
+        MenuProbeRec& rec = m_probeState.menuProbeLog.back();
         rec.exportWrote = wrote;
         rec.exportBytes = bytes;
         rec.exportLfOnly = lfOnly;
@@ -387,25 +387,25 @@ void HarnessApp::RunMenuProbe() {
     }
 
     // 收尾：删掉探针造的临时文件（仓库/夹具目录保持零改动）
-    if (!m_menuProbeTempFile.empty()) {
+    if (!m_probeState.menuProbeTempFile.empty()) {
         std::error_code ec;
-        std::filesystem::remove(m_menuProbeTempFile, ec);
+        std::filesystem::remove(m_probeState.menuProbeTempFile, ec);
     }
     if (m_window) m_window->SetFocusedWidget(focusBefore);
     // 菜单恢复成关（探针不许把状态留在屏上）
     SetMoreMenuOpen(false);
 
-    m_menuProbeDone = true;
+    m_probeState.menuProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
 void HarnessApp::RunResizeProbe() {
     if (!m_window || !m_sess || !m_scroll || !m_content) {
-        m_resizeProbeDone = true;
+        m_probeState.resizeProbeDone = true;
         return;
     }
     // 只在回放模式：live 的转录在持续增长，两次快照之间行数会变（同 `RunMenuProbe`）。
-    if (!m_sess->replay) { m_resizeProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.resizeProbeDone = true; return; }
 
     auto snap = [&](const char* phase) {
         ResizeProbeRec rec;
@@ -434,12 +434,12 @@ void HarnessApp::RunResizeProbe() {
                 rec.rowWMax = std::max(rec.rowWMax, w);
             }
         }
-        m_resizeProbeLog.push_back(std::move(rec));
+        m_probeState.resizeProbeLog.push_back(std::move(rec));
     };
     auto expect = [&](const char* phase,
                       std::vector<std::pair<bool, const char*>> conds) {
         snap(phase);
-        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad;
         for (const auto& c : conds) {
             if (c.first) continue;
@@ -459,7 +459,7 @@ void HarnessApp::RunResizeProbe() {
     // ① baseline：前置条件 —— 必须有行可测，否则"一起变宽"是空真。
     expect("baseline", {{m_sess->rows.size() >= 1, "no transcript row to measure"},
                         {base.width > 0, "client size is zero"}});
-    const ResizeProbeRec baseRec = m_resizeProbeLog.back();
+    const ResizeProbeRec baseRec = m_probeState.resizeProbeLog.back();
 
     // ② grow：客户区 +280/+140。每一行都必须变宽，且标题栏跟上。
     ProbeResizeClient(base.width + 280, base.height + 140);
@@ -468,7 +468,7 @@ void HarnessApp::RunResizeProbe() {
                     {baseRec.rows == 0 || m_sess->rows.size() == baseRec.rows,
                      "resizing changed the number of rows (it must not touch the model)"}});
     {
-        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
         auto add = [&](const std::string& s) {
             if (!bad.empty()) bad += "; ";
@@ -513,7 +513,7 @@ void HarnessApp::RunResizeProbe() {
     expect("shrink", {{m_window->GetRootWidget().GetWidth() == base.width - 240,
                        "root did not take the smaller width"}});
     {
-        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
         auto add = [&](const std::string& s) {
             if (!bad.empty()) bad += "; ";
@@ -551,7 +551,7 @@ void HarnessApp::RunResizeProbe() {
                          {m_scroll->GetHeight() == baseRec.scrollH,
                           "viewport height did not return"}});
     {
-        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
         auto add = [&](const std::string& s) {
             if (!bad.empty()) bad += "; ";
@@ -584,7 +584,7 @@ void HarnessApp::RunResizeProbe() {
         root.Arrange();                       // 只重排，**不**调 Relayout()
         expect("negative", {{m_sess->rows.size() == baseRec.rows,
                              "setup: rows changed"}});
-        ResizeProbeRec& rec = m_resizeProbeLog.back();
+        ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
         auto add = [&](const std::string& s) {
             if (!bad.empty()) bad += "; ";
@@ -628,7 +628,7 @@ void HarnessApp::RunResizeProbe() {
                             {m_window->GetRootWidget().GetHeight() >= kMinClientH,
                              "root height is below the floor"}});
         {
-            ResizeProbeRec& rec = m_resizeProbeLog.back();
+            ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
             std::string bad = rec.firstDivergence;
             auto add = [&](const std::string& s) {
                 if (!bad.empty()) bad += "; ";
@@ -672,7 +672,7 @@ void HarnessApp::RunResizeProbe() {
                                 {m_window->GetRootWidget().GetHeight() == 360,
                                  "setup: with the floor cleared the request did NOT land at 360"}});
         {
-            ResizeProbeRec& rec = m_resizeProbeLog.back();
+            ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
             std::string bad = rec.firstDivergence;
             auto add = [&](const std::string& s) {
                 if (!bad.empty()) bad += "; ";
@@ -697,12 +697,12 @@ void HarnessApp::RunResizeProbe() {
         Relayout();
     }
 
-    m_resizeProbeDone = true;
+    m_probeState.resizeProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
 void HarnessApp::RunHudProbe() {
-    if (!m_sess || !m_window) { m_hudProbeDone = true; return; }
+    if (!m_sess || !m_window) { m_probeState.hudProbeDone = true; return; }
 
     auto report = [&](const char* phase, size_t touched,
                       const std::vector<std::string>& unbuilt) {
@@ -714,19 +714,19 @@ void HarnessApp::RunHudProbe() {
             if (i) rec.unbuiltNames += ",";
             rec.unbuiltNames += unbuilt[i];
         }
-        m_hudProbeLog.push_back(std::move(rec));
+        m_probeState.hudProbeLog.push_back(std::move(rec));
     };
 
     // ① hud-built：全部建好时，集合必须为空。
     {
-        m_hudTouched.clear();
-        m_hudAudit = true;
+        m_probeState.hudTouched.clear();
+        m_probeState.hudAudit = true;
         RefreshHud();                       // 触发每一个读取点
         const std::vector<std::string> unbuilt = HudUnbuilt();
-        const size_t touched = m_hudTouched.size();
-        m_hudAudit = false;
+        const size_t touched = m_probeState.hudTouched.size();
+        m_probeState.hudAudit = false;
         report("hud-built", touched, unbuilt);
-        HudProbeRec& rec = m_hudProbeLog.back();
+        HudProbeRec& rec = m_probeState.hudProbeLog.back();
         std::string bad;
         // 前置：必须真的读过东西（否则"集合为空"是空真——一次都没碰就当通过）
         if (touched < 15) {
@@ -746,14 +746,14 @@ void HarnessApp::RunHudProbe() {
     {
         ECDI::Label* const saved = m_hud.stateChip;
         m_hud.stateChip = nullptr;          // probe-only corruption
-        m_hudTouched.clear();
-        m_hudAudit = true;
+        m_probeState.hudTouched.clear();
+        m_probeState.hudAudit = true;
         RefreshHud();
         const std::vector<std::string> unbuilt = HudUnbuilt();
-        m_hudAudit = false;
+        m_probeState.hudAudit = false;
         m_hud.stateChip = saved;            // 复原（先复原再看结论，避免提前返回漏复原）
-        report("hud-built-negative", m_hudTouched.size(), unbuilt);
-        HudProbeRec& rec = m_hudProbeLog.back();
+        report("hud-built-negative", m_probeState.hudTouched.size(), unbuilt);
+        HudProbeRec& rec = m_probeState.hudProbeLog.back();
         std::string bad;
         const bool sawIt = std::find(unbuilt.begin(), unbuilt.end(), "stateChip") !=
                            unbuilt.end();
@@ -769,7 +769,7 @@ void HarnessApp::RunHudProbe() {
         RefreshHud();
     }
 
-    m_hudProbeDone = true;
+    m_probeState.hudProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -791,8 +791,8 @@ void HarnessApp::RunEmptyProbe() {
             rec.guideExists && m_hud.emptyGuide->IsVisible() && m_scroll &&
             m_scroll->IsVisible();   // 父链语义：scroll 藏着时引导不算可见
         rec.rowCount = m_sess ? m_sess->rows.size() : 0;
-        m_emptyProbeLog.push_back(std::move(rec));
-        return m_emptyProbeLog.back();
+        m_probeState.emptyProbeLog.push_back(std::move(rec));
+        return m_probeState.emptyProbeLog.back();
     };
 
     if (m_sess && m_sess->replay && !m_options.firstRun) {
@@ -809,7 +809,7 @@ void HarnessApp::RunEmptyProbe() {
             r.matched = !r.guideExists && r.rowCount > 0;
             if (!r.matched) r.note = "guide must stay hidden on notice-bearing new session";
         }
-        m_emptyProbeDone = true;
+        m_probeState.emptyProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
@@ -817,7 +817,7 @@ void HarnessApp::RunEmptyProbe() {
     // ── firstRun 空壳形态：正对照（设置面板在构造期已打开）──
     if (!m_options.firstRun || !m_sess || !m_sess->rows.empty() || !m_sess->replay) {
         // 非空壳会话（理论到不了——防御：如实退出，不造读数）。
-        m_emptyProbeDone = true;
+        m_probeState.emptyProbeDone = true;
         return;
     }
     {
@@ -848,7 +848,7 @@ void HarnessApp::RunEmptyProbe() {
                 m_window ? m_window->GetRootWidget().HitTest(cx, cy) : nullptr;
             SynthesizeClickAt(cx, cy);
             // ★ 命中者回读（保留：点不到时把「谁接了这个点」变成读数，不靠猜）。
-            m_emptyProbeClickTarget = WidgetKindName(hit);
+            m_probeState.emptyProbeClickTarget = WidgetKindName(hit);
             break;
         }
     }
@@ -857,7 +857,7 @@ void HarnessApp::RunEmptyProbe() {
         r.matched = r.settingsVisible;
         if (!r.matched) {
             r.note = "guide button should reopen settings; hit=" +
-                     (m_emptyProbeClickTarget.empty() ? "(none)" : m_emptyProbeClickTarget);
+                     (m_probeState.emptyProbeClickTarget.empty() ? "(none)" : m_probeState.emptyProbeClickTarget);
         }
     }
     SynthesizeKey(ECDI::KeyCode::Comma, false, ECDI::KeyModifier::Ctrl);
@@ -874,7 +874,7 @@ void HarnessApp::RunEmptyProbe() {
         r.matched = !r.guideExists && r.rowCount == 1;
         if (!r.matched) r.note = "notice must tear the guide down";
     }
-    m_emptyProbeDone = true;
+    m_probeState.emptyProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -883,7 +883,7 @@ void HarnessApp::RunEmptyProbe() {
 // ★ 分母判据用 cot 夹具跑（hello.context=128000 ⇒ v4 ctxCapacity 上屏；
 //   demo 夹具无 context ⇒ ctxPct 恒 "—"，判据不成立）。
 void HarnessApp::RunModelProbe() {
-    if (!m_sess || !m_sess->replay) { m_modelProbeDone = true; return; }
+    if (!m_sess || !m_sess->replay) { m_probeState.modelProbeDone = true; return; }
     auto countRows = [&]() {
         size_t n = 0;
         if (m_hud.modelPopupList) {
@@ -903,8 +903,8 @@ void HarnessApp::RunModelProbe() {
         rec.ctxKnown = m_hud.ctxPct && m_hud.ctxPct->GetText() != "—" &&
                        m_hud.ctxPct->GetText() != "%";
         rec.chipText = m_hud.modelChip ? m_hud.modelChip->GetText() : "";
-        m_modelProbeLog.push_back(std::move(rec));
-        return m_modelProbeLog.back();
+        m_probeState.modelProbeLog.push_back(std::move(rec));
+        return m_probeState.modelProbeLog.back();
     };
     const size_t noticeBefore = m_sess->timeline.size();
 
@@ -972,6 +972,6 @@ void HarnessApp::RunModelProbe() {
         r.note = "no providers configured on this machine";
     }
     SetModelPopupOpen(false);
-    m_modelProbeDone = true;
+    m_probeState.modelProbeDone = true;
     if (m_application) m_application->Exit();
 }

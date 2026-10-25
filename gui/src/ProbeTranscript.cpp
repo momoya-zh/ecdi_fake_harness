@@ -68,7 +68,7 @@ void HarnessApp::RunHitProbe() {
     ECDI::TextBox* input = m_promptBar->input();
     if (input) centerOf(input, nx, ny);
 
-    m_hitProbeActive = true;   // 此后 SendPrompt 只计数、零副作用
+    m_probeState.hitProbeActive = true;   // 此后 SendPrompt 只计数、零副作用
 
     // ★ 保存焦点并在探针结束后**复原**：合成的点击会走 `Application::OnMouseButtonDown`
     //   里的 `SetFocusedWidget(...)`，把焦点从输入框挪到按钮（`Button::CanFocus() == true`）
@@ -93,10 +93,10 @@ void HarnessApp::RunHitProbe() {
         rec.hitConsumes = (hit != nullptr && hit->ConsumesMouseInput());
         rec.hitClass = WidgetKindName(hit);
         // 点击是否达：先取计数 → 合成 Down+Up → 看 SendPrompt 有没有被进入
-        const int before = m_hitProbeSendCalls;
+        const int before = m_probeState.hitProbeSendCalls;
         SynthesizeClickAt(x, y);
-        rec.clickReached = (m_hitProbeSendCalls > before);
-        m_hitProbeLog.push_back(std::move(rec));
+        rec.clickReached = (m_probeState.hitProbeSendCalls > before);
+        m_probeState.hitProbeLog.push_back(std::move(rec));
     };
 
     // ① **正对照**：真实状态 + 按钮中心 ⇒ 应「命中即它 ∧ 点击达」
@@ -118,7 +118,7 @@ void HarnessApp::RunHitProbe() {
     // ★ 焦点复原（见上：不清干净会改变 caret 闪烁重绘 ⇒ 污染 paints/frames 读数）
     m_window->SetFocusedWidget(focusBefore);
 
-    m_hitProbeActive = false;
+    m_probeState.hitProbeActive = false;
 }
 
 // ── ★★ 协议 v2 §7 思维链折叠行为的机读取证（--reasoning-probe）────────────
@@ -145,11 +145,11 @@ void HarnessApp::RunReasoningProbe() {
             break;
         }
     }
-    if (!target) { m_reasoningProbeDone = true; return; }
+    if (!target) { m_probeState.reasoningProbeDone = true; return; }
 
     // 步进节流：给折叠动画（200ms）留足时间，确保读到的是**终态**
     const auto now = std::chrono::steady_clock::now();
-    if (m_reasoningProbeStep > 0 && now < m_reasoningProbeNextAt) return;
+    if (m_probeState.reasoningProbeStep > 0 && now < m_probeState.reasoningProbeNextAt) return;
     const auto settle = std::chrono::milliseconds(400);   // > 200ms 动画
 
     auto snapshot = [&](const char* phase) {
@@ -159,15 +159,15 @@ void HarnessApp::RunReasoningProbe() {
         rec.expanded = target->body->IsExpanded();
         rec.contentVisible = target->body->GetContent()->IsVisible();
         rec.panelH = target->panel->GetHeight();
-        m_reasoningProbeLog.push_back(std::move(rec));
+        m_probeState.reasoningProbeLog.push_back(std::move(rec));
     };
 
-    switch (m_reasoningProbeStep) {
+    switch (m_probeState.reasoningProbeStep) {
         case 0:
             // ① 默认态：必须**收起**且正文**不可见**（用户口径「默认应当不渲染」）
             snapshot("default");
-            m_reasoningProbeStep = 1;
-            m_reasoningProbeNextAt = now + settle;
+            m_probeState.reasoningProbeStep = 1;
+            m_probeState.reasoningProbeNextAt = now + settle;
             return;
         case 1: {
             // ② 点标题中心一次 —— 走真实 HitTest + 派发链（与 --hit-probe 同源）
@@ -175,16 +175,16 @@ void HarnessApp::RunReasoningProbe() {
             const int cx = static_cast<int>(abs.x) + target->headerBtn->GetWidth() / 2;
             const int cy = static_cast<int>(abs.y) + target->headerBtn->GetHeight() / 2;
             SynthesizeClickAt(cx, cy);
-            m_reasoningProbeStep = 2;
-            m_reasoningProbeNextAt = now + settle;
+            m_probeState.reasoningProbeStep = 2;
+            m_probeState.reasoningProbeNextAt = now + settle;
             return;
         }
         case 2:
             // ③ 展开终态：必须 expanded ∧ 内容可见 ∧ 箭头为 ▲
             Relayout();   // 动画结束后补一次布局，让行高落到终态
             snapshot("after-click-1");
-            m_reasoningProbeStep = 3;
-            m_reasoningProbeNextAt = now + settle;
+            m_probeState.reasoningProbeStep = 3;
+            m_probeState.reasoningProbeNextAt = now + settle;
             return;
         case 3: {
             // ④ 再点一次：必须**回到收起**（箭头必须翻回去，不能单向）
@@ -192,19 +192,19 @@ void HarnessApp::RunReasoningProbe() {
             const int cx = static_cast<int>(abs.x) + target->headerBtn->GetWidth() / 2;
             const int cy = static_cast<int>(abs.y) + target->headerBtn->GetHeight() / 2;
             SynthesizeClickAt(cx, cy);
-            m_reasoningProbeStep = 4;
-            m_reasoningProbeNextAt = now + settle;
+            m_probeState.reasoningProbeStep = 4;
+            m_probeState.reasoningProbeNextAt = now + settle;
             return;
         }
         case 4:
             Relayout();
             snapshot("after-click-2");
-            m_reasoningProbeStep = 5;
-            m_reasoningProbeDone = true;   // 全部采完 ⇒ 可以退出
+            m_probeState.reasoningProbeStep = 5;
+            m_probeState.reasoningProbeDone = true;   // 全部采完 ⇒ 可以退出
             if (m_application) m_application->Exit();
             return;
         default:
-            m_reasoningProbeDone = true;
+            m_probeState.reasoningProbeDone = true;
             return;
     }
 }
@@ -213,15 +213,15 @@ void HarnessApp::RunRebuildProbe() {
     if (!m_window || !m_sess->replay) return;
     if (m_options.rowModeList) {
         // 固定行高模式下"行高随展开变化"这件事本就不成立，探针无从比较 ⇒ 如实不开跑
-        m_rebuildProbeDone = true;
+        m_probeState.rebuildProbeDone = true;
         return;
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (m_rebuildProbeStep > 0 && now < m_rebuildProbeNextAt) return;
+    if (m_probeState.rebuildProbeStep > 0 && now < m_probeState.rebuildProbeNextAt) return;
     const auto settle = std::chrono::milliseconds(400);   // > 200ms 折叠动画
 
-    switch (m_rebuildProbeStep) {
+    switch (m_probeState.rebuildProbeStep) {
         case 0: {
             // ① 造**必有**区分力的前置条件：真的展开若干可折叠行、真的答掉若干权限门。
             //   ★ 走 `ToggleRow` / `MarkAnswered`（用户点下去走的**同一条**路径），
@@ -243,37 +243,37 @@ void HarnessApp::RunRebuildProbe() {
                 const std::string beforeT = r.headerBtn->GetText();
                 ToggleRow(r, r.reasoning);
                 const std::string afterT = r.headerBtn->GetText();
-                if (m_rebuildTitleSample.empty()) {
-                    m_rebuildTitleSample = beforeT;
-                    m_rebuildTitleAfter = afterT;
+                if (m_probeState.rebuildTitleSample.empty()) {
+                    m_probeState.rebuildTitleSample = beforeT;
+                    m_probeState.rebuildTitleAfter = afterT;
                 }
-                if (afterT.empty() && !beforeT.empty()) ++m_rebuildTitleEmptied;
-                ++m_rebuildExpandedSamples;
+                if (afterT.empty() && !beforeT.empty()) ++m_probeState.rebuildTitleEmptied;
+                ++m_probeState.rebuildExpandedSamples;
             };
             for (RowRec& r : m_sess->rows) {   // 第一轮：工具卡（钉住那个 bug）
-                if (m_rebuildExpandedSamples >= 2) break;
+                if (m_probeState.rebuildExpandedSamples >= 2) break;
                 if (r.tool && r.body && r.headerBtn && !r.expanded) sampleOne(r);
             }
             for (RowRec& r : m_sess->rows) {   // 第二轮：思维链卡
-                if (m_rebuildExpandedSamples >= kMaxExpandSamples) break;
+                if (m_probeState.rebuildExpandedSamples >= kMaxExpandSamples) break;
                 if (r.reasoning && r.body && r.headerBtn && !r.expanded) sampleOne(r);
             }
             for (RowRec& r : m_sess->rows) {   // 兜底：别的可折叠行
-                if (m_rebuildExpandedSamples >= kMaxExpandSamples) break;
+                if (m_probeState.rebuildExpandedSamples >= kMaxExpandSamples) break;
                 if (!r.tool && !r.reasoning && r.body && r.headerBtn && !r.expanded) sampleOne(r);
             }
             for (RowRec& r : m_sess->rows) {
-                if (m_rebuildAnsweredSamples >= kMaxAnswerSamples) break;
+                if (m_probeState.rebuildAnsweredSamples >= kMaxAnswerSamples) break;
                 if (r.ask && !r.answered) {
                     MarkAnswered(r, "allow");
-                    ++m_rebuildAnsweredSamples;
+                    ++m_probeState.rebuildAnsweredSamples;
                 }
             }
             // 模型里记下的通知条数（"通知进模型"这件事的承重性证据：
             //   若模型不记通知，重建就会**静默**少这么多行）
-            m_rebuildNoticeCount = 0;
+            m_probeState.rebuildNoticeCount = 0;
             for (const TimelineEntry& e : m_sess->timeline) {
-                if (e.kind == TimelineEntry::Kind::Notice) ++m_rebuildNoticeCount;
+                if (e.kind == TimelineEntry::Kind::Notice) ++m_probeState.rebuildNoticeCount;
             }
             // ★ 滚动这一项也要**先造出判别力**：夹具抽干后视图停在顶部
             //   （offset=0，而 scale 的 maxOffset 有 10 万），此时"重建后有没有
@@ -282,19 +282,19 @@ void HarnessApp::RunRebuildProbe() {
             if (m_scroll && m_scroll->GetMaxOffsetY() > 200) {
                 m_scroll->SetContentOffset(0, m_scroll->GetMaxOffsetY() / 3);
             }
-            m_rebuildScrollBefore = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
-            m_rebuildProbeBefore = SnapshotRows();
-            m_rebuildProbeStep = 1;
-            m_rebuildProbeNextAt = now + settle;
+            m_probeState.rebuildScrollBefore = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
+            m_probeState.rebuildProbeBefore = SnapshotRows();
+            m_probeState.rebuildProbeStep = 1;
+            m_probeState.rebuildProbeNextAt = now + settle;
             return;
         }
         case 1: {
             // ② forward：照 `timeline` 重建 ⇒ 判据 A == B（必须全等）
             RebuildTranscriptView();
-            m_rebuildProbeLog.push_back(
-                CompareRows("forward", m_rebuildProbeBefore, SnapshotRows(), false));
-            m_rebuildProbeStep = 2;
-            m_rebuildProbeNextAt = now + settle;
+            m_probeState.rebuildProbeLog.push_back(
+                CompareRows("forward", m_probeState.rebuildProbeBefore, SnapshotRows(), false));
+            m_probeState.rebuildProbeStep = 2;
+            m_probeState.rebuildProbeNextAt = now + settle;
             return;
         }
         case 2: {
@@ -302,10 +302,10 @@ void HarnessApp::RunRebuildProbe() {
             //   这一项专抓"状态只落到控件、没落回模型"：第一次重建屏幕上看着对，
             //   第二次就会塌回收起态，而单看 ② 是看不出来的（② 的 B 是第一次的产物）。
             RebuildTranscriptView();
-            m_rebuildProbeLog.push_back(
-                CompareRows("forward-again", m_rebuildProbeBefore, SnapshotRows(), false));
-            m_rebuildProbeStep = 3;
-            m_rebuildProbeNextAt = now + settle;
+            m_probeState.rebuildProbeLog.push_back(
+                CompareRows("forward-again", m_probeState.rebuildProbeBefore, SnapshotRows(), false));
+            m_probeState.rebuildProbeStep = 3;
+            m_probeState.rebuildProbeNextAt = now + settle;
             return;
         }
         case 3: {
@@ -317,19 +317,19 @@ void HarnessApp::RunRebuildProbe() {
             std::vector<std::string> lex = m_sess->transcript.Order();
             std::sort(lex.begin(), lex.end());
             RebuildTranscriptView(&lex);
-            m_rebuildProbeLog.push_back(
-                CompareRows("lexicographic", m_rebuildProbeBefore, SnapshotRows(), true));
-            m_rebuildProbeStep = 4;
-            m_rebuildProbeNextAt = now + settle;
+            m_probeState.rebuildProbeLog.push_back(
+                CompareRows("lexicographic", m_probeState.rebuildProbeBefore, SnapshotRows(), true));
+            m_probeState.rebuildProbeStep = 4;
+            m_probeState.rebuildProbeNextAt = now + settle;
             return;
         }
         case 4: {
-            m_rebuildProbeDone = true;
+            m_probeState.rebuildProbeDone = true;
             if (m_application) m_application->Exit();
             return;
         }
         default:
-            m_rebuildProbeDone = true;
+            m_probeState.rebuildProbeDone = true;
             return;
     }
 }
@@ -352,10 +352,10 @@ void HarnessApp::RunRebuildProbe() {
 //   ⑤ 复原：把答案改回去，必须重新相等 —— 证明差异来自那一个自变量（单变量纪律）；
 //   ⑥ 未答的权限门：answer 为空、两钮**都还能点** —— 负对照，证明"置灰"只发生在答过之后。
 void HarnessApp::RunAnswerProbe() {
-    if (!m_sess) { m_answerProbeDone = true; return; }
+    if (!m_sess) { m_probeState.answerProbeDone = true; return; }
     // ★ 只在回放模式：live 下点击「允许」会真的 `writer->Answer()` 发给 core，
     //   探针不该在测量里制造真副作用（仪器污染实验）。
-    if (!m_sess->replay) { m_answerProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.answerProbeDone = true; return; }
 
     // 找第一个权限门：**记 timelineIdx 而不是 RowRec***，因为重建会清空 rows，
     // 拿着的引用会立刻悬垂。timelineIdx 是模型侧坐标，重建不动它。
@@ -369,8 +369,8 @@ void HarnessApp::RunAnswerProbe() {
         rec.phase = "no-ask";
         rec.firstDivergence = "(fixture has no ask row)";
         rec.matched = false;
-        m_answerProbeLog.push_back(std::move(rec));
-        m_answerProbeDone = true;
+        m_probeState.answerProbeLog.push_back(std::move(rec));
+        m_probeState.answerProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
@@ -463,11 +463,11 @@ void HarnessApp::RunAnswerProbe() {
         rec.answerModel = modelAnswer();
         rec.answerOnScreen = screenAnswer();
         rec.buttonsDisabled = buttonsDisabled();
-        m_answerProbeLog.push_back(std::move(rec));
+        m_probeState.answerProbeLog.push_back(std::move(rec));
     };
     auto expect = [&](const char* phase, std::vector<std::pair<bool, const char*>> conds) {
         snap(phase);
-        AnswerProbeRec& rec = m_answerProbeLog.back();
+        AnswerProbeRec& rec = m_probeState.answerProbeLog.back();
         std::string bad;
         for (const auto& c : conds) {
             if (c.first) continue;
@@ -488,7 +488,7 @@ void HarnessApp::RunAnswerProbe() {
     // ① 未答态（负对照⑥）：答案为空、两钮都还能点。
     snap("baseline");
     {
-        AnswerProbeRec& rec = m_answerProbeLog.back();
+        AnswerProbeRec& rec = m_probeState.answerProbeLog.back();
         const RowRec* r = askRow();
         const bool bothEnabled = r && r->allowBtn && r->denyBtn &&
                                  r->allowBtn->IsEnabled() && r->denyBtn->IsEnabled();
@@ -530,8 +530,8 @@ void HarnessApp::RunAnswerProbe() {
         expect("forward", {{conditionsOk, "forward rebuild lost the answer or changed rows"}});
         // ★ 差异文本只在失败时写：无条件覆盖会把 `expect` 记下的"哪一条没满足"
         //   换成一句与条件无关的比对摘要，排查的人反而看不到断言的失败原因。
-        if (!conditionsOk && m_answerProbeLog.back().firstDivergence.empty()) {
-            m_answerProbeLog.back().firstDivergence = cmp.firstDivergence;
+        if (!conditionsOk && m_probeState.answerProbeLog.back().firstDivergence.empty()) {
+            m_probeState.answerProbeLog.back().firstDivergence = cmp.firstDivergence;
         }
     }
 
@@ -544,7 +544,7 @@ void HarnessApp::RunAnswerProbe() {
         RebuildTranscriptView();
         const RebuildProbeRec cmp = CompareRows("negative", answeredRows, SnapshotRows(), false);
         snap("negative");   // ★ 先 push 再取引用：push_back 可能重分配，先取引用会悬垂
-        AnswerProbeRec& rec = m_answerProbeLog.back();
+        AnswerProbeRec& rec = m_probeState.answerProbeLog.back();
         const bool sawDifference = (cmp.mismatches != 0);
         // ★ 用 `find("answer [")` 而不是 `rfind("answer", 0)`：后者只在**位置 0** 匹配，
         //   而差异文本形如 `idx=7 A/q1 -> A/q1 @answer [allow] -> [deny]`，
@@ -573,13 +573,13 @@ void HarnessApp::RunAnswerProbe() {
         const bool conditionsOk = (cmp.mismatches == 0) && modelAnswer() == "allow" &&
                                   screenAnswer() == "allow" && buttonsDisabled();
         expect("restored", {{conditionsOk, "restore did not return to the forward state"}});
-        if (!conditionsOk && m_answerProbeLog.back().firstDivergence.empty()) {
-            m_answerProbeLog.back().firstDivergence = cmp.firstDivergence;
+        if (!conditionsOk && m_probeState.answerProbeLog.back().firstDivergence.empty()) {
+            m_probeState.answerProbeLog.back().firstDivergence = cmp.firstDivergence;
         }
     }
 
     if (m_window) m_window->SetFocusedWidget(focusBefore);
-    m_answerProbeDone = true;
+    m_probeState.answerProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -589,7 +589,7 @@ void HarnessApp::RunAnswerProbe() {
 // 【负对照】焦点在 composer 输入框时同一组按键复制到的是输入框内容（证明
 //   复制走的是焦点控件的单收件人路径，不是探针直接捅剪贴板）。
 void HarnessApp::RunSelectProbe() {
-    if (!m_sess || !m_sess->replay || !m_window) { m_selectProbeDone = true; return; }
+    if (!m_sess || !m_sess->replay || !m_window) { m_probeState.selectProbeDone = true; return; }
     // 找第一个正文行（非 tool/reasoning/ask）且控件是 TextBox。
     ECDI::TextBox* row = nullptr;
     std::string fullText;
@@ -604,8 +604,8 @@ void HarnessApp::RunSelectProbe() {
         rec.phase = "skipped-no-selectable-row";
         rec.matched = false;
         rec.note = "run with --selectable-rows";
-        m_selectProbeLog.push_back(std::move(rec));
-        m_selectProbeDone = true;
+        m_probeState.selectProbeLog.push_back(std::move(rec));
+        m_probeState.selectProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
@@ -623,7 +623,7 @@ void HarnessApp::RunSelectProbe() {
         rec.clipText = readClip();
         rec.matched = (rec.clipText == fullText);
         if (!rec.matched) rec.note = "clipboard != block full text";
-        m_selectProbeLog.push_back(std::move(rec));
+        m_probeState.selectProbeLog.push_back(std::move(rec));
     }
     // ② 负对照：焦点回输入框、放点文本，同组按键 ⇒ 剪贴板 = 输入框内容。
     if (m_promptBar && m_promptBar->input()) {
@@ -637,11 +637,11 @@ void HarnessApp::RunSelectProbe() {
         rec.clipText = readClip();
         rec.matched = (rec.clipText == "__focus_elsewhere__");
         if (!rec.matched) rec.note = "copy should follow the focused widget";
-        m_selectProbeLog.push_back(std::move(rec));
+        m_probeState.selectProbeLog.push_back(std::move(rec));
         input->SetText("");
     }
     if (focusBefore) m_window->SetFocusedWidget(focusBefore);
-    m_selectProbeDone = true;
+    m_probeState.selectProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -652,7 +652,7 @@ void HarnessApp::RunSelectProbe() {
 // （修复前：按 id 全删光 ⇒ 空向量 [0] 越界 UB ⇒ 未响应/崩溃）。
 void HarnessApp::RunDelProvProbe() {
     if (!m_sess || !m_sess->replay || !m_hud.settingsPanel) {
-        m_delProvProbeDone = true;
+        m_probeState.delProvProbeDone = true;
         return;
     }
     if (m_appConfig.providers.empty()) {
@@ -661,8 +661,8 @@ void HarnessApp::RunDelProvProbe() {
         rec.phase = "skipped-empty-config";
         rec.matched = false;
         rec.note = "no providers loaded -- check --config path";
-        m_delProvProbeLog.push_back(std::move(rec));
-        m_delProvProbeDone = true;
+        m_probeState.delProvProbeLog.push_back(std::move(rec));
+        m_probeState.delProvProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
@@ -672,8 +672,8 @@ void HarnessApp::RunDelProvProbe() {
         rec.providersBefore = m_appConfig.providers.size();
         rec.providersAfter = rec.providersBefore;   // 调用方按需覆盖
         rec.hint = m_hud.settingsHint ? m_hud.settingsHint->GetText() : "";
-        m_delProvProbeLog.push_back(std::move(rec));
-        return m_delProvProbeLog.back();
+        m_probeState.delProvProbeLog.push_back(std::move(rec));
+        return m_probeState.delProvProbeLog.back();
     };
     auto clickButtonWithText = [&](ECDI::Widget* root, const char* text) {
         // 最多下探两层（panel → row → button）——「删除所选」在 panel 直接子的
@@ -744,6 +744,6 @@ void HarnessApp::RunDelProvProbe() {
         }
     }
     SetSettingsVisible(false);
-    m_delProvProbeDone = true;
+    m_probeState.delProvProbeDone = true;
     if (m_application) m_application->Exit();
 }

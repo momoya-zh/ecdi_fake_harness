@@ -70,10 +70,10 @@ using harness::internal::kSidebarGroupH;
 //                   **活动会话的转录行数一位都不变**（负对照：删别人不能动我）
 // ═══════════════════════════════════════════════════════════════════════════
 void HarnessApp::RunSidebarProbe() {
-    if (!m_sess) { m_sidebarProbeDone = true; return; }
+    if (!m_sess) { m_probeState.sidebarProbeDone = true; return; }
     // ★ 只在回放模式：live 下 NewSession 会真拉 core 子进程，探针不该制造真进程。
-    if (!m_sess->replay) { m_sidebarProbeDone = true; return; }
-    if (!m_hud.sessList) { m_sidebarProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.sidebarProbeDone = true; return; }
+    if (!m_hud.sessList) { m_probeState.sidebarProbeDone = true; return; }
 
     auto snap = [&](const char* phase) {
         SidebarProbeRec rec;
@@ -105,7 +105,7 @@ void HarnessApp::RunSidebarProbe() {
         //   中栏没吃到那 200px"骗过（0c 的"重建了但没重排"同族缺陷）。
         rec.sidebarVisible = m_hud.sidebar ? m_hud.sidebar->IsVisible() : false;
         rec.midWidth = m_counting ? m_counting->GetWidth() : 0;
-        m_sidebarProbeLog.push_back(std::move(rec));
+        m_probeState.sidebarProbeLog.push_back(std::move(rec));
     };
 
     // ★ 焦点守卫：合成点击会把焦点交给被点的 Button（`Application::OnMouseButtonDown`
@@ -147,7 +147,7 @@ void HarnessApp::RunSidebarProbe() {
     auto expect = [&](const char* phase,
                       std::vector<std::pair<bool, const char*>> conds) {
         snap(phase);
-        SidebarProbeRec& rec = m_sidebarProbeLog.back();
+        SidebarProbeRec& rec = m_probeState.sidebarProbeLog.back();
         std::string bad;
         for (const auto& c : conds) {
             if (c.first) continue;
@@ -170,8 +170,8 @@ void HarnessApp::RunSidebarProbe() {
     {
         const SidebarCompare cmp = CompareSessionList(baseList, SnapshotSessionList());
         snap("rebuild");
-        m_sidebarProbeLog.back().matched = cmp.matched;
-        m_sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
+        m_probeState.sidebarProbeLog.back().matched = cmp.matched;
+        m_probeState.sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
     }
 
     // ③ 再重建一次 ⇒ 幂等（与 ② 的快照比，而不是与 ① 比：
@@ -181,8 +181,8 @@ void HarnessApp::RunSidebarProbe() {
         RebuildSessionList();
         const SidebarCompare cmp = CompareSessionList(afterRebuild, SnapshotSessionList());
         snap("rebuild-again");
-        m_sidebarProbeLog.back().matched = cmp.matched;
-        m_sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
+        m_probeState.sidebarProbeLog.back().matched = cmp.matched;
+        m_probeState.sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
     }
 
     // ④ 新建会话 ⇒ 列表行数 +1、会话数 +1。
@@ -245,22 +245,22 @@ void HarnessApp::RunSidebarProbe() {
         RebuildSessionList(&rev);
         const SidebarCompare cmp = CompareSessionList(twoList, SnapshotSessionList());
         snap("negative");
-        m_sidebarProbeLog.back().matched = cmp.matched;
-        m_sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
+        m_probeState.sidebarProbeLog.back().matched = cmp.matched;
+        m_probeState.sidebarProbeLog.back().firstDivergence = cmp.firstDivergence;
         // 复原：负对照只借用一次列表，别把逆序留在屏上（⑦ 的读数会受它影响）
         RebuildSessionList();
         const SidebarCompare restored = CompareSessionList(twoList, SnapshotSessionList());
         if (!restored.matched) {
             // 复原失败 = 重建不是纯函数（第一次的差异被留在了状态里）⇒ 必须显式暴露
-            m_sidebarProbeLog.back().firstDivergence =
+            m_probeState.sidebarProbeLog.back().firstDivergence =
                 "restore-after-negative failed: " + restored.firstDivergence;
-            m_sidebarProbeLog.back().matched = true;   // 仍记负对照通过，但差异里写明复原失败
+            m_probeState.sidebarProbeLog.back().matched = true;   // 仍记负对照通过，但差异里写明复原失败
         }
     } else {
         // 理论上到不了这里（④ 之后至少 2 个会话）；留一条诚实读数而不是静默跳过。
         snap("negative");
-        m_sidebarProbeLog.back().matched = true;
-        m_sidebarProbeLog.back().firstDivergence =
+        m_probeState.sidebarProbeLog.back().matched = true;
+        m_probeState.sidebarProbeLog.back().firstDivergence =
             "(no degrees of freedom: fewer than 2 sessions)";
     }
 
@@ -504,9 +504,9 @@ void HarnessApp::RunSidebarProbe() {
             const SidebarCompare cmp =
                 CompareSessionList(beforeRename, SnapshotSessionList());
             snap("group-negative");
-            m_sidebarProbeLog.back().matched =
+            m_probeState.sidebarProbeLog.back().matched =
                 !cmp.matched && cmp.firstDivergence.rfind("row 0 name", 0) == 0;
-            m_sidebarProbeLog.back().firstDivergence =
+            m_probeState.sidebarProbeLog.back().firstDivergence =
                 cmp.matched ? "(group negative control saw no difference)"
                             : cmp.firstDivergence;
         }
@@ -516,7 +516,7 @@ void HarnessApp::RunSidebarProbe() {
         const SidebarCompare restoredGroup =
             CompareSessionList(beforeRename, SnapshotSessionList());
         if (!restoredGroup.matched) {
-            m_sidebarProbeLog.back().firstDivergence =
+            m_probeState.sidebarProbeLog.back().firstDivergence =
                 "restore-after-group-negative failed: " + restoredGroup.firstDivergence;
         }
 
@@ -578,8 +578,8 @@ void HarnessApp::RunSidebarProbe() {
                 const SidebarCompare cmp =
                     CompareSessionList(beforeCorrupt, SnapshotSessionList());
                 snap("archive-negative");
-                m_sidebarProbeLog.back().matched = !cmp.matched;
-                m_sidebarProbeLog.back().firstDivergence =
+                m_probeState.sidebarProbeLog.back().matched = !cmp.matched;
+                m_probeState.sidebarProbeLog.back().firstDivergence =
                     cmp.matched ? "(archive negative control saw no difference)"
                                 : cmp.firstDivergence;
             }
@@ -593,18 +593,18 @@ void HarnessApp::RunSidebarProbe() {
     if (m_window) m_window->SetFocusedWidget(focusBefore);
     m_sidebarDirty = false;
 
-    m_sidebarProbeDone = true;
+    m_probeState.sidebarProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
 // ★★ Step 0d：多会话探针（--session-probe）。同步跑完——三个读数（会话数/活动下标/
 //   行数）都是同步值，不像重建那样要等折叠动画沉降，故不需要跨 tick 状态机。
 void HarnessApp::RunSessionProbe() {
-    if (!m_sess) { m_sessionProbeDone = true; return; }
+    if (!m_sess) { m_probeState.sessionProbeDone = true; return; }
     // ★ 只在回放模式跑（契约见 App.h 声明处）：live 下 NewSession 会真拉一个 core
     //   子进程，探针不该在测量里制造真进程。目前调用点只在 replay settled 分支，
     //   已间接保证；这里再显式挡一道，防止将来有人从别处调用它。
-    if (!m_sess->replay) { m_sessionProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.sessionProbeDone = true; return; }
 
     auto snap = [&](const char* phase) {
         SessionProbeRec rec;
@@ -617,7 +617,7 @@ void HarnessApp::RunSessionProbe() {
         for (const RowRec& r : m_sess->rows) {
             if (r.tool || r.reasoning || (!r.blockId.empty() && !r.ask)) ++rec.blockRowCount;
         }
-        m_sessionProbeLog.push_back(std::move(rec));
+        m_probeState.sessionProbeLog.push_back(std::move(rec));
     };
 
     snap("baseline");                 // ① 起点：当前会话数 / 行数
@@ -625,7 +625,7 @@ void HarnessApp::RunSessionProbe() {
     snap("new");                      //    读：会话数应 +1；新会话块行数应为 0
     SwitchToSession(0);               // ③ 切回会话 0
     snap("back");                     //    读：活动会话应回到 0；行数应回到 baseline
-    m_sessionProbeDone = true;
+    m_probeState.sessionProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -642,12 +642,12 @@ void HarnessApp::RunSessionProbe() {
 //      模型里 answer 非空、屏幕上那个钮仍是常态色。**缺失时**则必须如实提示
 //      「此会话没有决策记录」，而不是静默当成"从未回答过"（Step 3 修的就是这条病）。
 void HarnessApp::RunHistoryProbe() {
-    if (!m_sess) { m_historyProbeDone = true; return; }
-    if (!m_sess->replay) { m_historyProbeDone = true; return; }
-    if (!m_hud.historyList) { m_historyProbeDone = true; return; }
-    if (m_historyProbeStep > 0) {
+    if (!m_sess) { m_probeState.historyProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.historyProbeDone = true; return; }
+    if (!m_hud.historyList) { m_probeState.historyProbeDone = true; return; }
+    if (m_probeState.historyProbeStep > 0) {
         const auto now = std::chrono::steady_clock::now();
-        if (now < m_historyProbeNextAt) return;
+        if (now < m_probeState.historyProbeNextAt) return;
     }
     const auto settle = std::chrono::milliseconds(300);
 
@@ -675,11 +675,11 @@ void HarnessApp::RunHistoryProbe() {
                 if (e.kind == TimelineEntry::Kind::Ask && !e.answer.empty()) ++rec.modelAnswers;
             }
         }
-        m_historyProbeLog.push_back(std::move(rec));
+        m_probeState.historyProbeLog.push_back(std::move(rec));
     };
     auto finish = [&](const char* phase, std::vector<std::pair<bool, const char*>> conds) {
         snap(phase);
-        HistoryProbeRec& rec = m_historyProbeLog.back();
+        HistoryProbeRec& rec = m_probeState.historyProbeLog.back();
         std::string bad;
         for (const auto& [ok, what] : conds) {
             if (ok) continue;
@@ -690,7 +690,7 @@ void HarnessApp::RunHistoryProbe() {
         rec.firstDivergence = bad;
     };
 
-    switch (m_historyProbeStep) {
+    switch (m_probeState.historyProbeStep) {
     case 0: {
         // ── ① list：磁盘 == 屏幕，且至少有一个可点的目标 ──
         RebuildHistoryList();   // 直接重建，保证计数是最新的
@@ -700,7 +700,7 @@ void HarnessApp::RunHistoryProbe() {
         //   （cot 打开 cot、scale 打开 scale，判别力比"永远打开 demo"强得多）。
         //   ★ 若当前会话不是文件来源（live / 空会话），退到 demo（它有权限门，
         //     sidecar 三态才有意义），再退到第一个。
-        m_historyProbeFile.clear();
+        m_probeState.historyProbeFile.clear();
         const std::filesystem::path currentFile =
             (m_sess->originPath.empty() || !m_sess->originPath.has_extension())
                 ? std::filesystem::path()
@@ -713,43 +713,43 @@ void HarnessApp::RunHistoryProbe() {
             for (const std::filesystem::path& f : m_historyFiles) {
                 std::error_code ec2;
                 if (std::filesystem::weakly_canonical(f, ec2) == want) {
-                    m_historyProbeFile = f;
+                    m_probeState.historyProbeFile = f;
                     break;
                 }
             }
         }
-        if (m_historyProbeFile.empty()) {
+        if (m_probeState.historyProbeFile.empty()) {
             for (const std::filesystem::path& f : m_historyFiles) {
-                if (f.filename() == "demo-session.jsonl") { m_historyProbeFile = f; break; }
+                if (f.filename() == "demo-session.jsonl") { m_probeState.historyProbeFile = f; break; }
             }
         }
-        if (m_historyProbeFile.empty() && !m_historyFiles.empty()) {
-            m_historyProbeFile = m_historyFiles.front();
+        if (m_probeState.historyProbeFile.empty() && !m_historyFiles.empty()) {
+            m_probeState.historyProbeFile = m_historyFiles.front();
         }
-        m_historyProbeDigest = DigestReplayFile(m_historyProbeFile);
-        const bool existed = !m_historyProbeFile.empty() &&
-            std::filesystem::is_regular_file(m_historyProbeFile.generic_string() + ".ui.json");
+        m_probeState.historyProbeDigest = DigestReplayFile(m_probeState.historyProbeFile);
+        const bool existed = !m_probeState.historyProbeFile.empty() &&
+            std::filesystem::is_regular_file(m_probeState.historyProbeFile.generic_string() + ".ui.json");
         finish("list", {{onDisk > 0, "no fixture found on disk"},
                         {rowsOnScreen() == onDisk, "row count != file count on disk"},
-                        {!m_historyProbeFile.empty(), "no target file chosen"},
-                        {m_historyProbeDigest.loaded && m_historyProbeDigest.blocks > 0,
+                        {!m_probeState.historyProbeFile.empty(), "no target file chosen"},
+                        {m_probeState.historyProbeDigest.loaded && m_probeState.historyProbeDigest.blocks > 0,
                          "digest of target file is empty"}});
-        m_historyProbeLog.back().sidecarExisted = existed;
-        m_historyProbeStep = 1;
-        m_historyProbeNextAt = std::chrono::steady_clock::now();   // 立刻进下一步
+        m_probeState.historyProbeLog.back().sidecarExisted = existed;
+        m_probeState.historyProbeStep = 1;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now();   // 立刻进下一步
         return;
     }
     case 1: {
         // ── ② 点真实的历史行（走真实派发链，不是直接调 OpenHistorySession）──
         size_t targetRow = 0;
         for (size_t i = 0; i < m_historyFiles.size(); ++i) {
-            if (m_historyFiles[i] == m_historyProbeFile) { targetRow = i; break; }
+            if (m_historyFiles[i] == m_probeState.historyProbeFile) { targetRow = i; break; }
         }
         ECDI::Widget* row = m_hud.historyList->GetContentView().GetChildAt(targetRow);
         if (!row) {
             finish("open", {{false, "history row widget missing"}});
-            m_historyProbeStep = 9;
-            m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+            m_probeState.historyProbeStep = 9;
+            m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
             return;
         }
         // ★★ 视口陷阱（Step 3 的同族，这里换了个容器）：历史区最多显示 4 行，
@@ -769,16 +769,16 @@ void HarnessApp::RunHistoryProbe() {
         const ECDI::Point abs = row->GetAbsolutePosition();
         SynthesizeClickAt(static_cast<int>(abs.x) + row->GetWidth() / 2,
                           static_cast<int>(abs.y) + row->GetHeight() / 2);
-        m_historyProbeStep = 2;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.historyProbeStep = 2;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 2: {
         // ── ③ open：确实是"历史"来源、真的跳到末尾、内容与独立回放一致 ──
-        const ReplayDigest& d = m_historyProbeDigest;
+        const ReplayDigest& d = m_probeState.historyProbeDigest;
         finish("open", {
             {m_sess->originKind == "replay-history", "originKind is not replay-history"},
-            {m_sess->label == m_historyProbeFile.filename().generic_string(),
+            {m_sess->label == m_probeState.historyProbeFile.filename().generic_string(),
              "opened session label != file name"},
             {m_sess->replay && m_sess->replay->Empty(), "replay not drained to the end"},
             {m_sess->transcript.Blocks() == d.blocks, "blocks != independent digest"},
@@ -786,8 +786,8 @@ void HarnessApp::RunHistoryProbe() {
             {(m_sess->replay ? m_sess->replay->Total() : 0) == d.messages,
              "messages != independent digest"},
         });
-        m_historyProbeStep = 3;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.historyProbeStep = 3;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 3: {
@@ -816,9 +816,9 @@ void HarnessApp::RunHistoryProbe() {
             conds.push_back({noticeSaid, "missing sidecar was not announced"});
         }
         finish("sidecar-missing", conds);
-        m_historyProbeLog.back().sidecarExisted = false;
-        m_historyProbeStep = 4;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.historyProbeLog.back().sidecarExisted = false;
+        m_probeState.historyProbeStep = 4;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 4: {
@@ -830,8 +830,8 @@ void HarnessApp::RunHistoryProbe() {
         if (!allow) {
             // 目标夹具没有权限门 ⇒ 这一相与下一相无意义，如实记下而不是静默跳过。
             finish("sidecar-write", {{false, "(target fixture has no ask row)"}});
-            m_historyProbeStep = 7;
-            m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+            m_probeState.historyProbeStep = 7;
+            m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
             return;
         }
         // ★★ 同一个视口陷阱的第三次出场：历史会话是**直接拉到末尾**打开的，
@@ -853,8 +853,8 @@ void HarnessApp::RunHistoryProbe() {
         const ECDI::Point abs = allow->GetAbsolutePosition();
         SynthesizeClickAt(static_cast<int>(abs.x) + allow->GetWidth() / 2,
                           static_cast<int>(abs.y) + allow->GetHeight() / 2);
-        m_historyProbeStep = 5;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.historyProbeStep = 5;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 5: {
@@ -872,18 +872,18 @@ void HarnessApp::RunHistoryProbe() {
                                  {hasAnswer, "sidecar does not contain the answer"},
                                  {m_sess->originKind == "replay-history",
                                   "write happened for a non-history session"}});
-        m_historyProbeLog.back().sidecarWritten = written;
-        m_historyProbeStep = 6;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.historyProbeLog.back().sidecarWritten = written;
+        m_probeState.historyProbeStep = 6;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 6: {
         // ── ⑥ sidecar-roundtrip：重新打开同一文件 ⇒ 结论必须回来 ──
         //   ★ 直接调 `OpenHistorySession`（此刻不在派发栈上，安全），
         //     而不是再点一次行：点行这一相已在 ② 验过，这里测的是**读回**。
-        OpenHistorySession(m_historyProbeFile);
-        m_historyProbeStep = 7;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        OpenHistorySession(m_probeState.historyProbeFile);
+        m_probeState.historyProbeStep = 7;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 7: {
@@ -914,42 +914,42 @@ void HarnessApp::RunHistoryProbe() {
         //     `--replay` 那个文件）⇒ 用 `UiStatePath(*m_sess)` 会算错路径、
         //     把用户的 sidecar 留下来、还删不掉自己的。
         const std::filesystem::path statePath =
-            m_historyProbeFile.empty()
+            m_probeState.historyProbeFile.empty()
                 ? std::filesystem::path()
-                : std::filesystem::path(m_historyProbeFile.generic_string() + ".ui.json");
-        const bool created = !m_historyProbeLog.front().sidecarExisted;
+                : std::filesystem::path(m_probeState.historyProbeFile.generic_string() + ".ui.json");
+        const bool created = !m_probeState.historyProbeLog.front().sidecarExisted;
         if (created && !statePath.empty()) {
             std::error_code ec;
             std::filesystem::remove(statePath, ec);
-            m_historyProbeLog.back().sidecarRemoved = !ec;
+            m_probeState.historyProbeLog.back().sidecarRemoved = !ec;
         }
         // 删掉探针新建的会话（从尾部删，`DeleteSessionAt` 会先切邻居再 erase）
         while (m_sessions.size() > 1) {
             DeleteSessionAt(m_sessions.size() - 1);
         }
         m_sidebarDirty = true;
-        m_historyProbeStep = 8;
-        m_historyProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.historyProbeStep = 8;
+        m_probeState.historyProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 8: {
         // ── ⑦ 收尾读数：工作区真的干净了（会话数回到 1、sidecar 不再存在）──
         const bool cleanSessions = m_sessions.size() == 1;
         bool cleanSidecar = true;
-        if (!m_historyProbeFile.empty()) {
+        if (!m_probeState.historyProbeFile.empty()) {
             cleanSidecar = !std::filesystem::is_regular_file(
-                m_historyProbeFile.generic_string() + ".ui.json");
+                m_probeState.historyProbeFile.generic_string() + ".ui.json");
         }
-        const bool created = !m_historyProbeLog.front().sidecarExisted;
+        const bool created = !m_probeState.historyProbeLog.front().sidecarExisted;
         finish("cleanup", {{cleanSessions, "sessions left behind by the probe"},
                            {cleanSidecar || !created, "sidecar left behind by the probe"}});
-        m_historyProbeStep = 9;
-        m_historyProbeDone = true;
+        m_probeState.historyProbeStep = 9;
+        m_probeState.historyProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
     default:
-        m_historyProbeDone = true;
+        m_probeState.historyProbeDone = true;
         return;
     }
 }
@@ -962,23 +962,23 @@ void HarnessApp::RunHistoryProbe() {
 //     ② 要证明"重建真的发生了"，必须读 `m_uiRebuilds` **在重建之后**的值。
 //   ⇒ 故写成跨 tick 状态机（`settle` 与 `RunRebuildProbe` 同款 400ms：足够让
 //     重建落地 + 一帧画完 + HUD 刷完）。
-//   【判据的骨架】所有 rebuild 类相都比 `m_themeUiBefore`（baseline 四路快照）：
+//   【判据的骨架】所有 rebuild 类相都比 `m_probeState.themeUiBefore`（baseline 四路快照）：
 //     · `matched == true`  —— 侧栏/转录/输入框/状态标记四路一处不差；
 //     · `paints` **恰好等于** baseline —— 这是"仪器没被实验打坏"的唯一读数；
 //     · `frames`/`frameUsTotal` 恰好相等 —— `SeedCounters` 真的把历史搬回来了。
 //   【负对照】`negative` 相把 `m_sidebarVisible` 单独改掉再重建：四路比对应**报出**
 //     `state: sidebarVisible [1] -> [0]`。它证明 ①②③ 的相等不是"量具瞎了"。
 void HarnessApp::RunThemeProbe() {
-    if (!m_sess) { m_themeProbeDone = true; return; }
+    if (!m_sess) { m_probeState.themeProbeDone = true; return; }
     // ★ 只在回放模式：live 下重建会... 其实也安全（child 是 Session 的，不受控件树影响），
     //   但 live 的转录在持续增长 ⇒ 两次快照之间必然不同，`matched` 会假失败。
     //   探针测的是"重建保状态"，不是"重建和流式数据赛跑"，故限定回放。
-    if (!m_sess->replay) { m_themeProbeDone = true; return; }
-    if (!m_hud.themeToggle) { m_themeProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.themeProbeDone = true; return; }
+    if (!m_hud.themeToggle) { m_probeState.themeProbeDone = true; return; }
 
-    if (m_themeProbeStep > 0) {
+    if (m_probeState.themeProbeStep > 0) {
         const auto now = std::chrono::steady_clock::now();
-        if (now < m_themeProbeNextAt) return;
+        if (now < m_probeState.themeProbeNextAt) return;
     }
     const auto settle = std::chrono::milliseconds(400);
 
@@ -998,15 +998,15 @@ void HarnessApp::RunThemeProbe() {
         rec.sidebarVisible = (m_hud.sidebar != nullptr) && m_hud.sidebar->IsVisible();
         rec.activeIndex = m_activeIndex;
         rec.sessionCount = m_sessions.size();
-        m_themeProbeLog.push_back(std::move(rec));
+        m_probeState.themeProbeLog.push_back(std::move(rec));
     };
     // 记一条并把四路比对结果写进去（`paints` 等三项仪器读数单独判）
     auto snapCompare = [&](const char* phase, size_t paintsBefore, size_t framesBefore,
                            size_t frameUsBefore) {
         const UiSnapshot after = SnapshotUi();
-        const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+        const SidebarCompare cmp = CompareUi(m_probeState.themeUiBefore, after);
         snap(phase);
-        ThemeProbeRec& rec = m_themeProbeLog.back();
+        ThemeProbeRec& rec = m_probeState.themeProbeLog.back();
         std::string bad = cmp.matched ? std::string() : cmp.firstDivergence;
         // ★ 仪器读数：重建期间不该有任何重绘 ⇒ 必须**恰好**相等。
         //   变大/变小都是缺陷，故不用 ">=" 之类的宽容判据。
@@ -1032,17 +1032,17 @@ void HarnessApp::RunThemeProbe() {
         rec.frameUsTotal = after.frameUsTotal;
     };
 
-    switch (m_themeProbeStep) {
+    switch (m_probeState.themeProbeStep) {
     case 0: {
         // ── ① baseline：抓四路快照 + 仪器读数，然后**同步**做一次重建 ──
         //   ★ 这里可以同步重建：本函数跑在 `OnReplayTick` 里（timer 回调，不在派发栈上）。
         //     而 `toggle` 相不行——那一相必须走真实点击，故分了两条路径。
-        m_themeUiBefore = SnapshotUi();
-        m_themePaintsBefore = m_themeUiBefore.paints;
-        m_themeFramesBefore = m_themeUiBefore.frames;
+        m_probeState.themeUiBefore = SnapshotUi();
+        m_probeState.themePaintsBefore = m_probeState.themeUiBefore.paints;
+        m_probeState.themeFramesBefore = m_probeState.themeUiBefore.frames;
         snap("baseline");
         {
-            ThemeProbeRec& rec = m_themeProbeLog.back();
+            ThemeProbeRec& rec = m_probeState.themeProbeLog.back();
             // baseline 的判据是"前置条件成立"：必须有 ≥1 个会话行、≥1 个转录行，
             // 否则"重建后都一样"只说明两边都是空的（探针是瞎的）。
             rec.matched = (rec.sidebarRows >= 1) && (rec.transcriptRows >= 1);
@@ -1055,25 +1055,25 @@ void HarnessApp::RunThemeProbe() {
         if (m_promptBar && m_promptBar->input()) {
             m_promptBar->input()->SetText("draft-not-sent");
             m_promptBar->input()->MoveCaretToEnd();
-            // ★ 塞完草稿要重抓快照：`m_themeUiBefore` 必须包含这段草稿，
+            // ★ 塞完草稿要重抓快照：`m_probeState.themeUiBefore` 必须包含这段草稿，
             //   否则重建后"草稿还在"这条就成了拿空串对比空串。
-            m_themeUiBefore = SnapshotUi();
-            m_themePaintsBefore = m_themeUiBefore.paints;
-            m_themeFramesBefore = m_themeUiBefore.frames;
+            m_probeState.themeUiBefore = SnapshotUi();
+            m_probeState.themePaintsBefore = m_probeState.themeUiBefore.paints;
+            m_probeState.themeFramesBefore = m_probeState.themeUiBefore.frames;
         }
         RebuildUi();
         // ★ 重建后立刻比对（同一 tick，未经过任何重绘）
-        snapCompare("rebuild", m_themePaintsBefore, m_themeFramesBefore,
-                    m_themeUiBefore.frameUsTotal);
+        snapCompare("rebuild", m_probeState.themePaintsBefore, m_probeState.themeFramesBefore,
+                    m_probeState.themeUiBefore.frameUsTotal);
         // ★ 额外：`uiRebuilds` 必须真的 +1（这是"重建发生了"的机读证据；
         //   若忘了 ++，后面的 toggle 相还会通过，但"重建"其实一次都没跑）。
-        if (m_themeProbeLog.back().uiRebuilds != 1) {
-            m_themeProbeLog.back().matched = false;
-            m_themeProbeLog.back().firstDivergence +=
-                "; uiRebuilds expected 1, got " + std::to_string(m_themeProbeLog.back().uiRebuilds);
+        if (m_probeState.themeProbeLog.back().uiRebuilds != 1) {
+            m_probeState.themeProbeLog.back().matched = false;
+            m_probeState.themeProbeLog.back().firstDivergence +=
+                "; uiRebuilds expected 1, got " + std::to_string(m_probeState.themeProbeLog.back().uiRebuilds);
         }
-        m_themeProbeStep = 1;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 1;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 1: {
@@ -1084,8 +1084,8 @@ void HarnessApp::RunThemeProbe() {
         if (m_counting) for (uint64_t us : m_counting->FrameDurationsUs()) t += us;
         RebuildUi();
         snapCompare("rebuild-again", p, f, static_cast<size_t>(t));
-        m_themeProbeStep = 2;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 2;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 2: {
@@ -1097,18 +1097,18 @@ void HarnessApp::RunThemeProbe() {
         const ECDI::Point abs = m_hud.themeToggle->GetAbsolutePosition();
         SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.themeToggle->GetWidth() / 2,
                           static_cast<int>(abs.y) + m_hud.themeToggle->GetHeight() / 2);
-        m_themeProbeStep = 3;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 3;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 3: {
         // ── ④ 读数：重建必须真的发生（uiRebuilds 2→3）且真的换色 ──
         snap("toggle");
         {
-            ThemeProbeRec& rec = m_themeProbeLog.back();
+            ThemeProbeRec& rec = m_probeState.themeProbeLog.back();
             std::string bad;
-            // 注意：`m_themeUiBefore.light` 是深色时的值；翻转后应相反
-            if (rec.light == m_themeUiBefore.light) bad += "theme did not flip";
+            // 注意：`m_probeState.themeUiBefore.light` 是深色时的值；翻转后应相反
+            if (rec.light == m_probeState.themeUiBefore.light) bad += "theme did not flip";
             if (rec.uiRebuilds != 3) {
                 if (!bad.empty()) bad += "; ";
                 bad += "uiRebuilds expected 3, got " + std::to_string(rec.uiRebuilds);
@@ -1117,7 +1117,7 @@ void HarnessApp::RunThemeProbe() {
             //   （换的是颜色，不是内容。`SnapshotSessionList`/`SnapshotRows` 都只记
             //   文字与几何、不记颜色，故此处相等是正确判据；颜色由 `light` 字段证明）。
             const UiSnapshot after = SnapshotUi();
-            const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+            const SidebarCompare cmp = CompareUi(m_probeState.themeUiBefore, after);
             if (!cmp.matched) {
                 if (!bad.empty()) bad += "; ";
                 bad += cmp.firstDivergence;
@@ -1128,8 +1128,8 @@ void HarnessApp::RunThemeProbe() {
             rec.transcriptRows = static_cast<int>(after.transcript.size());
             rec.inputText = after.inputText;
         }
-        m_themeProbeStep = 4;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 4;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 4: {
@@ -1137,22 +1137,22 @@ void HarnessApp::RunThemeProbe() {
         const ECDI::Point abs = m_hud.themeToggle->GetAbsolutePosition();
         SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.themeToggle->GetWidth() / 2,
                           static_cast<int>(abs.y) + m_hud.themeToggle->GetHeight() / 2);
-        m_themeProbeStep = 5;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 5;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 5: {
         snap("toggle-back");
         {
-            ThemeProbeRec& rec = m_themeProbeLog.back();
+            ThemeProbeRec& rec = m_probeState.themeProbeLog.back();
             std::string bad;
-            if (rec.light != m_themeUiBefore.light) bad += "theme did not flip back";
+            if (rec.light != m_probeState.themeUiBefore.light) bad += "theme did not flip back";
             if (rec.uiRebuilds != 4) {
                 if (!bad.empty()) bad += "; ";
                 bad += "uiRebuilds expected 4, got " + std::to_string(rec.uiRebuilds);
             }
             const UiSnapshot after = SnapshotUi();
-            const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+            const SidebarCompare cmp = CompareUi(m_probeState.themeUiBefore, after);
             if (!cmp.matched) {
                 if (!bad.empty()) bad += "; ";
                 bad += cmp.firstDivergence;
@@ -1160,8 +1160,8 @@ void HarnessApp::RunThemeProbe() {
             rec.matched = bad.empty();
             rec.firstDivergence = bad;
         }
-        m_themeProbeStep = 6;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 6;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 6: {
@@ -1180,9 +1180,9 @@ void HarnessApp::RunThemeProbe() {
         // ★ 现在侧栏是**隐藏**的 ⇒ 与 baseline（可见）比对必须不等，
         //   且分歧必须指向 sidebarVisible。
         const UiSnapshot after = SnapshotUi();
-        const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+        const SidebarCompare cmp = CompareUi(m_probeState.themeUiBefore, after);
         snap("negative");
-        ThemeProbeRec& rec = m_themeProbeLog.back();
+        ThemeProbeRec& rec = m_probeState.themeProbeLog.back();
         rec.paints = p;   // 仪器读数对本相无意义（此处只测模型状态是否进比对）
         rec.frames = f;
         rec.frameUsTotal = static_cast<size_t>(t);
@@ -1204,30 +1204,30 @@ void HarnessApp::RunThemeProbe() {
         if (m_hud.sidebar) {
             if (ECDI::Widget* parent = m_hud.sidebar->GetParent()) parent->Arrange();
         }
-        m_themeProbeStep = 7;
-        m_themeProbeNextAt = std::chrono::steady_clock::now() + settle;
+        m_probeState.themeProbeStep = 7;
+        m_probeState.themeProbeNextAt = std::chrono::steady_clock::now() + settle;
         return;
     }
     case 7: {
         // ── ⑦ restored：确认回到 baseline（含侧栏可见性、主题、仪器读数） ──
         const UiSnapshot after = SnapshotUi();
-        const SidebarCompare cmp = CompareUi(m_themeUiBefore, after);
+        const SidebarCompare cmp = CompareUi(m_probeState.themeUiBefore, after);
         snap("restored");
-        ThemeProbeRec& rec = m_themeProbeLog.back();
+        ThemeProbeRec& rec = m_probeState.themeProbeLog.back();
         std::string bad = cmp.matched ? std::string() : cmp.firstDivergence;
-        if (after.light != m_themeUiBefore.light) {
+        if (after.light != m_probeState.themeUiBefore.light) {
             if (!bad.empty()) bad += "; ";
             bad += "theme not restored";
         }
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
-        m_themeProbeStep = 8;
-        m_themeProbeDone = true;
+        m_probeState.themeProbeStep = 8;
+        m_probeState.themeProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
     default:
-        m_themeProbeDone = true;
+        m_probeState.themeProbeDone = true;
         return;
     }
 }

@@ -58,6 +58,7 @@ class TextBox;
 // ★ 2026-10-25（Stage 3 刀①）：命令行选项已搬到 `CliOptions.h`（逐字节未改）。
 #include "CliOptions.h"
 #include "ProbeTypes.h"
+#include "ProbeState.h"
 
 class HarnessApp;   // 前置（HarnessApplication 转发用）
 
@@ -319,7 +320,7 @@ private:
     //   做法：在 `RefreshHud` 的**每个** `if (m_hud.X)` 上挂一条记录（`Touch`），
     //   收尾时把所有"碰过但从未赋值"的名字报出来。赋值在 `BuildUi` 期间发生，
     //   而 `RefreshHud` 在 `BuildUi` 之后才第一次跑 ⇒ 这个顺序使判据成立。
-    //   ★ 只在 `--hud-probe` 下启用记录（`m_hudAudit`），默认零开销、零行为变化。
+    //   ★ 只在 `--hud-probe` 下启用记录（`m_probeState.hudAudit`），默认零开销、零行为变化。
     void HudTouch(const char* name);          // RefreshHud 里每个 if 调一次
     // 返回"被读过但建树时从未赋值"的字段名列表（空 = 覆盖完整）。
     std::vector<std::string> HudUnbuilt() const;
@@ -848,7 +849,6 @@ private:
     // 探针专用：非空 ⇒ `ExportTranscript()` 跳过保存对话框，直接写这个路径。
     //   ★ 唯一的存在理由：`GetSaveFileNameW` 是模态循环，探针点上去会挂死。
     //     默认空 ⇒ 产品路径零行为变化。
-    std::filesystem::path m_menuProbeExportPath;
     // `ToggleMoreMenu()`：`···` 菜单条显隐（**唯一入口**，按钮与探针共用）。
     //   ★ 纪律同 `SetSidebarVisible`：瞬时切换 + 重排**父容器**，不用动画。
     //     `counting` 是 `VerticalLayout`，隐藏子不占槽 ⇒ 不 Arrange 的话
@@ -1095,26 +1095,27 @@ private:
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
 
+    // ★ 2026-10-25（Stage 4）：探针状态整体搬到 `ProbeState.h`（103 个成员），本类只留一条入口。
+    //   ⇒ 全仓 `grep -n "m_probeState\."` 就是**仪器状态接触面**的完整清单，
+    //     `grep -v` 之后剩下的才是产品状态。这条边界以前只能靠人记。
+    //   ★ 判据与「哪些没搬、为什么」写在 `ProbeState.h` 的头注里。
+    //   ★ **别再把探针字段加回这个类**——加回去就等于把刚划清的边界重新搅浑。
+    //   下面这些「为什么必须有这个探针」的注释**故意留在原处**：它们讲的是判据（行为），
+    //   而实现那些判据的 `Run*Probe()` 就紧跟在后，注释跟函数在一起才对。
+    ProbeState m_probeState;
+
     // ★★ REQ-04 探针读数（--state-probe）：每次 RefreshHud 观察到「与上次不同」的
     //   {send 使能, stop 使能, send 标题} 时记一行 ⇒ 摘要里是一份**状态翻转轨迹**。
     //   ★ 只在**变化时**记录（否则 30Hz 下会记几千行相同内容，摘要不可读）。
     //   ★ 与 core 的 `state` 并排输出 ⇒ 可逐行核对「state:X ⇒ 按钮使能应为 Y」。
-    std::vector<StateProbeRec> m_stateProbeLog;
-    bool m_stateProbeLastValid = false;            // 是否已有「上次」可比
-    bool m_stateProbeLastSend = true;
-    bool m_stateProbeLastStop = false;
 
     // ★★ REQ-04 边界探针（--hit-probe，2026-10-14）
     //   `--state-probe` 回答的是「使能位对不对」；本组回答的是「**禁用后点击到不到**」。
     //   两者是 REQ-04 的**两个不同断言**——前者为真**推不出**后者（命中门控是另一段代码，
     //   `Widget.cpp:188/195`），故必须单独取证。
     //   ★ 每条 = {场景, 坐标, 使能, 命中者是否==发送按钮, 命中者类型, 点击是否达}。
-    std::vector<HitProbeRec> m_hitProbeLog;
-    int m_hitProbeSendCalls = 0;      // SendPrompt 进入次数（探针期间唯一观测通道）
-    bool m_hitProbeActive = false;    // 探针执行中：SendPrompt 只计数、零副作用
-    bool m_hitProbeDone = false;      // 已跑过（夹具 settle 后只跑一次）
 
-    void RunHitProbe();                       // 跑四组受控对照并写入 m_hitProbeLog
+    void RunHitProbe();                       // 跑四组受控对照并写入 m_probeState.hitProbeLog
     void SynthesizeClickAt(int x, int y);     // 合成 Down+Up 走**真实**派发链
     static std::string WidgetKindName(const ECDI::Widget* w);
 
@@ -1123,16 +1124,11 @@ private:
     //   不能证明"点一下真的翻了、再点一下真的回去了"。故沿用 `--hit-probe` 的做法：
     //   合成点击走真实派发链，把**状态轨迹**写成机读读数。
     //   ★ 每条 = {阶段, 标题文本, 折叠体是否展开, 内容是否可见, 行高}。
-    std::vector<ReasoningProbeRec> m_reasoningProbeLog;
     // ★ 跨 tick 推进的状态机（不能在一个 tick 内做完——见 RunReasoningProbe 注释）
-    int m_reasoningProbeStep = 0;
-    std::chrono::steady_clock::time_point m_reasoningProbeNextAt;
-    bool m_reasoningProbeDone = false;
     // ★★ 流式态标题必须在**建行时刻**抓，不能事后补（2026-10-14 用户裁决后重新需要）：
     //   标题现在**真的会变**（`▼ 思考中` → `▼ 已完成 · N tokens`），而 `--instant`
     //   在同一 tick 抽干整个夹具 ⇒ 事后回读**永远**是「已完成」，「思考中」采不到。
     //   ★ 与首版同一个坑（那次三条读数全一样），故这次保留该捕获点。
-    std::string m_reasoningTitleStreaming;   // 建行时读到的标题（应为 ▼ 思考中）
     void RunReasoningProbe();
 
     // ★★ Step 0c 重建探针（--rebuild-probe，2026-10-19）
@@ -1146,26 +1142,13 @@ private:
     //     ③ noticeLoss —— 若模型只存块、不存通知，重建会丢几行（这一项用「模型里实际
     //        记下的通知条数」直接给出，说明第 ② 组之外**还有**一类损失，非零才证明
     //        通知进模型这件事是承重的）。
-    std::vector<RebuildProbeRec> m_rebuildProbeLog;
     // 重建前快照（一行一条，`\x1f` 分隔字段——比对用，不进摘要原文）
-    std::vector<std::string> m_rebuildProbeBefore;
-    size_t m_rebuildNoticeCount = 0;       // 模型里记下的通知行数（承重性证据）
-    int m_rebuildScrollBefore = 0;         // 重建前的滚动偏移（判"有没有跳回顶部"）
     // ★ 点击一次之后标题是否被清空（0c 顺手修的那个 bug 的**专属**读数）。
     //   它必须独立于重建比对：那个 bug 让重建前后标题**同为**空串，A == B 照样成立。
-    std::string m_rebuildTitleSample;      // 首个样本点击**前**的标题
-    std::string m_rebuildTitleAfter;       // 同一样本点击**后**的标题
-    int m_rebuildTitleEmptied = 0;         // 点击后有标题被清空的次数
     // ★ 前置条件是否真的成立（展开样本数 / 已答样本数）。若都为 0，则 forward 全等
     //   **证明不了"状态被保住"**——那种全等只说明"两边都是空的"，探针是瞎的。
-    int m_rebuildExpandedSamples = 0;
-    int m_rebuildAnsweredSamples = 0;
-    bool m_rebuildProbeDone = false;
-    int m_rebuildProbeStep = 0;
-    std::chrono::steady_clock::time_point m_rebuildProbeNextAt;
     // 快照 A 的「只含块行」投影（负对照的比对面——不含通知/问句，正是"只照块表重建"
     // 这个错误实现能产出的全部内容；故两者的差**只**来自次序）
-    std::vector<std::string> m_rebuildProbeBlockOnly;
     void RunRebuildProbe();
     // 把当前 `rows` 压成可比较的行快照（探针 A/B 两侧共用**同一个**量具）
     std::vector<std::string> SnapshotRows() const;
@@ -1186,8 +1169,6 @@ private:
     //     ③ back     —— 切回会话 0，行数必须回到 baseline（**往返无损**）。
     //   ★ 只在**回放**模式跑：live 模式新建会话会真拉一个 core 子进程，
     //     探针不该在测量里制造真进程（仪器污染实验，条 57③）。
-    std::vector<SessionProbeRec> m_sessionProbeLog;
-    bool m_sessionProbeDone = false;
     void RunSessionProbe();
 
     // ★★ Step 1（2026-10-19）：侧栏列表的 A==B 探针。
@@ -1195,14 +1176,10 @@ private:
     //   不涉及动画、不涉及折叠，没有"要等 400ms settle"的东西。
     //   ★ 唯一需要等待的是 `NewSession()`：回放模式下它会 `AddNoticeRow` + `Relayout`，
     //     但这些全是同步的，故整条探针可以一轮跑完。
-    std::vector<SidebarProbeRec> m_sidebarProbeLog;
-    bool m_sidebarProbeDone = false;
     void RunSidebarProbe();
 
     // ★★ Step 3（2026-10-19）：ask 答案内容（`answer`）进模型的取证。
     //   形状同 `RunSessionProbe`：同步跑完即 Exit，不需要跨 tick（无动画参与）。
-    std::vector<AnswerProbeRec> m_answerProbeLog;
-    bool m_answerProbeDone = false;
     void RunAnswerProbe();
 
     // ★★ Step 4 / 0e（2026-10-19）：整树重建 + 运行期主题切换的取证（--theme-probe）。
@@ -1218,8 +1195,6 @@ private:
     //     相等才是对的——重建期间不该有任何重绘（拆树不画、建树不画、只有末尾
     //     `RequestRepaint` 那一帧才画）。若变小 ⇒ 计数器被清零（`SeedCounters` 没接）；
     //     若变大 ⇒ 有东西在测量窗口里偷偷重绘了（比如折叠动画、或 HUD 每 tick 刷）。
-    std::vector<ThemeProbeRec> m_themeProbeLog;
-    bool m_themeProbeDone = false;
 
     // ★ 整树重建的比对面：一次 snapshot 抓齐四路。结构独立于 `ThemeProbeRec`，
     //   因为 baseline 与每次重建后都要抓，且**同一个量具**两侧共用。
@@ -1228,14 +1203,9 @@ private:
     //（`sidebar:` / `transcript:` / `input:` / `state:`），失败时一眼看出断在哪。
     SidebarCompare CompareUi(const UiSnapshot& before, const UiSnapshot& after) const;
 
-    // ★ 跨 tick 状态机（与 `m_rebuildProbeStep` 同款）：`toggle` 相必须走真实点击，
+    // ★ 跨 tick 状态机（与 `m_probeState.rebuildProbeStep` 同款）：`toggle` 相必须走真实点击，
     //   而点击回调只置 `m_uiRebuildPending`，真正的重建发生在**下一个 tick 的开头**
     //   ⇒ 探针不能在一步里做完，必须等重建真的落地再读数。
-    int m_themeProbeStep = 0;
-    std::chrono::steady_clock::time_point m_themeProbeNextAt;
-    UiSnapshot m_themeUiBefore;        // baseline 的四路快照（所有 rebuild 相的比对面）
-    size_t m_themePaintsBefore = 0;    // 同一 tick 内 `RebuildUi` 前后的 paints（必须相等）
-    size_t m_themeFramesBefore = 0;
 
     // ★ 整树重建的累计计数。**只在 `--theme-probe` 打开时进摘要**（默认 false ⇒
     //   摘要逐字节不变，这是本仓铁律）。计数放在成员而不是 `ThemeProbeRec` 里，
@@ -1245,8 +1215,6 @@ private:
     // ★★ Step 5（2026-10-19）：打开历史会话的取证（--history-probe）。
     //   形状同 `RunThemeProbe`（跨 tick）：`open` 相要点真实的历史行按钮，
     //   而打开被延迟到下一个 tick（派发栈 UAF），故不能在一步里做完。
-    std::vector<HistoryProbeRec> m_historyProbeLog;
-    bool m_historyProbeDone = false;
     void RunHistoryProbe();
     // 探针专用：直接回放某个文件到末尾并返回读数（**不**动活动会话）。
     //   ★ 用临时 `ReplaySource` + `Transcript`，与 GUI 的消费路径同源——
@@ -1255,40 +1223,19 @@ private:
     //     若"打开"这条路径偷偷漏行/重放行，此处立刻不等。
     ReplayDigest DigestReplayFile(const std::filesystem::path& file) const;
     // 跨 tick 状态机的步号与下次允许时刻（同 `RunThemeProbe` 的形状）。
-    int m_historyProbeStep = 0;
-    std::chrono::steady_clock::time_point m_historyProbeNextAt;
     // 探针点的那一行（记住**文件路径**而不是控件指针：打开后整棵侧栏会被重建）。
-    std::filesystem::path m_historyProbeFile;
     // 探针自己算出的真值（`content` 相的双路比对用）：
-    ReplayDigest m_historyProbeDigest;
 
-    std::vector<WorkspaceProbeRec> m_workspaceProbeLog;
     // ★ 当前帧的 §7 读数（snap 时拷入 rec；只用于探针）
-    std::string m_workspaceProbeBubbleText;
-    bool m_workspaceProbeBubbleShapeOk = false;
-    int m_workspaceProbeStep = 0;
-    bool m_workspaceProbeDone = false;
-    std::string m_workspaceProbeOriginalPath;
-    std::string m_workspaceProbeTargetPath;
-    std::string m_workspaceProbeFailPath;
-    std::string m_workspaceProbeWorkspaceId;
-    std::string m_workspaceProbeAcceptedId;
-    std::string m_workspaceProbeRejectedId;
-    std::chrono::steady_clock::time_point m_workspaceProbeDeadline{};
 
     // ★★ 2026-10-21：中栏头 `↗`/`···` 的取证（--menu-probe）。
     //   形状照抄 `RunSidebarProbe`：同步跑完即 Exit（无动画、无跨 tick 等待）。
-    std::vector<MenuProbeRec> m_menuProbeLog;
-    bool m_menuProbeDone = false;
     void RunMenuProbe();
     // 探针写入的临时文件（收尾会删掉：夹具目录/仓库保持零改动）
-    std::filesystem::path m_menuProbeTempFile;
     // ★★ 2026-10-21：窗口拉伸探针（--resize-probe）。形状同 `RunMenuProbe`：
     //   同步跑完即 Exit。★ 它**会真的改窗口尺寸**（`SetBounds`），因此必须在
     //   `--out` 落盘之前跑完，且跑完要恢复原尺寸——否则摘要里的 paints/frames
     //   会带上探针自己制造的重排成本。
-    std::vector<ResizeProbeRec> m_resizeProbeLog;
-    bool m_resizeProbeDone = false;
     void RunResizeProbe();
     // 探针用：把窗口设成给定客户区尺寸（走真正的平台 `SetBounds`）。
     //   ★ 用它而不是直接 `root.SetSize`：后者绕过了 `Window::OnResized`，
@@ -1321,29 +1268,18 @@ private:
     static constexpr int kMinClientH = 460;
 
     // ★★ 2026-10-21：`Hud` 覆盖自检的状态（见 `HudTouch` 的声明注释）。
-    //   `m_hudAudit` 默认 **false**：默认零开销、零行为变化（本仓铁律）。
+    //   `m_probeState.hudAudit` 默认 **false**：默认零开销、零行为变化（本仓铁律）。
     //   探针打开它之后，`RefreshHud` 里每个读取点登记一次字段名；
     //   收尾时把"登记过、但建树时从未赋值"的字段名报出来。
-    bool m_hudAudit = false;
-    std::vector<std::string> m_hudTouched;      // 读过的字段名（去重不必要，逐次记）
 
     // ★★ 2026-10-21：HUD 覆盖探针（--hud-probe）。同步跑完即 Exit。
-    std::vector<HudProbeRec> m_hudProbeLog;
-    bool m_hudProbeDone = false;
     void RunHudProbe();
 
     // ★★ P3.5（--settings-probe）：设置面板 + 凭据/配置/env 注入判据。
     //   相位：first-run 可见 / save（配置+凭据+key 不进配置文件）/
     //   session-live（保存后 live 会话拿到 hello）/ env-check（显式 env block
     //   真把变量带给子进程，用 cmd.exe /c set 直接取证）/ cleanup。
-    std::vector<SettingsProbeRec> m_settingsProbeLog;
-    bool m_settingsProbeDone = false;
-    std::string m_settingsProbeKey;   // save 相输入的 key（判据 5 用：不得出现在配置文件）
-    int m_settingsProbeStage = 0;     // 跨 tick 步进（save 点击后要等 hello 下一 tick 才到）
-    std::chrono::steady_clock::time_point m_settingsProbeNextAt;
 
-    std::vector<EnterProbeRec> m_enterProbeLog;
-    bool m_enterProbeDone = false;
     void RunEnterProbe();
     // 合成一次真实按键：走 `Application::OnEvent`，与系统消息到达后同源。
     //   ★ 与 `SynthesizeClickAt` 同一纪律：不直接调 `PromptBar::Submit()`，
@@ -1363,8 +1299,6 @@ private:
     //   **不溢出时恒等于视口高** ⇒ 框只会变高、永远缩不回来（删掉换行也不变矮）。
     //   这种实现在"长高"相里是**全绿**的，只有在"变矮"相才会红。故 `shrink` 相不是补充，
     //   它是这个功能唯一的负对照方向。
-    std::vector<GrowProbeRec> m_growProbeLog;
-    bool m_growProbeDone = false;
     void RunGrowProbe();
 
     // ★★ P4 Phase A（--jump-probe，2026-10-25）：「跳到最新」按钮判据。
@@ -1378,8 +1312,6 @@ private:
     //     · after-click-again —— 再点 ⇒ 回底 ∧ 隐藏（往返闭环）。
     //     · skipped-short-fixture —— 内容装不满视口时如实记跳过（matched=false，
     //       由跑批判据豁免；不许静默绿）。
-    std::vector<JumpProbeRec> m_jumpProbeLog;
-    bool m_jumpProbeDone = false;
     void RunJumpProbe();
     // 脏检查缓存：上次刷新时的 offset（DirtyRefreshJumpButton 用）。
     int m_jumpLastOffsetY = -1;
@@ -1395,8 +1327,6 @@ private:
     //     · ctrl-n —— 会话数 +1；
     //     · passthrough —— 焦点在输入框合成 Backspace ⇒ 文本真的少一字符
     //       （负对照：拦截器若吞掉未列键，编辑路径必红）。
-    std::vector<KeyProbeRec> m_keyProbeLog;
-    bool m_keyProbeDone = false;
     void RunKeyProbe();
 
     // ★★ P4 Phase C（--empty-probe，2026-10-25）：空状态引导判据。
@@ -1410,11 +1340,8 @@ private:
     //     · click-reopens —— 合成点击引导上的「打开设置」⇒ 设置重开（接线判据）；
     //     · dismiss-on-notice —— AddNoticeRow（notice 渲染唯一入口；合成协议
     //       notice 需要真 core，firstRun 场景没有）⇒ 引导被拆。
-    std::vector<EmptyProbeRec> m_emptyProbeLog;
-    bool m_emptyProbeDone = false;
     void RunEmptyProbe();
     // ★★ P4：click-reopens 相的命中者回读（「点不到」的取证读数）。
-    std::string m_emptyProbeClickTarget;
     // ★★ P4 E：tooltip 延迟态（定时器在飞 = armed；到点显示）。
     const ECDI::Widget* m_tooltipAnchor = nullptr;   // 待显示锚点（TipButton）
     std::string m_tooltipPending;                    // 待显示文案
@@ -1428,36 +1355,20 @@ private:
     //     · click-row —— 合成点击一行 ⇒ 浮窗关 ∧ 「不是 live」notice（回放会话
     //       writer==null，RequestModelSwitch 如实拒绝——排队语义由 settings-probe
     //       的 switch-ok 相在 live 下验证）。
-    std::vector<ModelProbeRec> m_modelProbeLog;
-    bool m_modelProbeDone = false;
     void RunModelProbe();
 
     // ★★ P4 Phase G（--select-probe）：选中复制判据。形状同 RunJumpProbe。
-    std::vector<SelectProbeRec> m_selectProbeLog;
-    bool m_selectProbeDone = false;
     void RunSelectProbe();
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：
     //   dedup-load（同 id 8 份 ⇒ Load 去重剩 1）/ delete-one（2 家删所选剩 1，
     //   逐实例语义）/ keep-last（仅 1 家时拒绝删除且不崩）。
-    std::vector<DelProvProbeRec> m_delProvProbeLog;
-    bool m_delProvProbeDone = false;
     void RunDelProvProbe();
 
     // ── ★★ REQ-03 探针读数（只在 `--async-probe` 下累加）────────────────
-    //  ★ 口径：`m_apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），
+    //  ★ 口径：`m_probeState.apBlockedUs` 只统计**带超时**的那次等待（`NextWithin(..., 8)`），
     //    也就是 UI 线程真正挂在条件变量上的时间。这正是「拉」的代价，也是
     //    「推」要消掉的东西。★ 不统计 `timeoutMs == 0` 的调用——那不等，不是代价。
-    size_t m_apTicks = 0;              // 经过 live 分支的 tick 次数
-    size_t m_apBlockedTicks = 0;       // 其中真的阻塞过（等了 >0 µs）的 tick 数
-    uint64_t m_apBlockedUs = 0;        // 累计阻塞 µs
-    uint64_t m_apMaxBlockedUs = 0;     // 单次最长阻塞 µs
-    size_t m_apLinesWake = 0;          // 由**唤醒回调**处理的行数
-    size_t m_apLinesTick = 0;          // 由 tick 兜底处理的行数
-    size_t m_apMaxLinesPerCallback = 0;  // 单次回调最多处理了多少行（预算是否生效）
-    size_t m_apCallbacks = 0;          // 唤醒回调执行次数
-    std::vector<uint64_t> m_apLatencyUs;  // 入队 → HandleLine 的墙钟差（开戳时才有）
-    bool m_apEofSeen = false;
     // 安装唤醒时**值捕获**的 Application 指针（见 `InstallWakeHandler` 的注释）。
     void InstallWakeHandlers();
     void InstallWakeHandler(Session& session);
@@ -1475,10 +1386,6 @@ private:
     uint64_t m_evalLastUs = 0;
     size_t m_invalidations = 0;                    // 应用侧 Invalidate() 调用数（§6.2）
     // PaintProbe 读数（--cull-probe 时有效）
-    size_t m_evalProbeFrames = 0;
-    size_t m_evalProbeCommands = 0;
-    size_t m_evalProbeMax = 0;
-    size_t m_evalProbeAvg = 0;
     uint64_t m_evalMaxExecUs = 0;                  // 后端执行端帧时（BeginFrame..EndFrame）
     uint64_t m_evalAvgExecUs = 0;
     size_t m_evalMeasureCalls = 0;                 // MeasureProbe 读数（文本测量成本）

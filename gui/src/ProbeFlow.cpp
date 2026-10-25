@@ -72,11 +72,11 @@ using harness::internal::PathToUtf8;
 //     "发了一条"和"多了一行别的"。所以两面都记：sent 相比 Notice 数 +1。）
 void HarnessApp::RunEnterProbe() {
     if (!m_sess || !m_promptBar || !m_promptBar->input()) {
-        m_enterProbeDone = true;
+        m_probeState.enterProbeDone = true;
         return;
     }
     // ★ 只在回放模式：live 下发送会真的写进子进程管道，探针不该制造真副作用。
-    if (!m_sess->replay) { m_enterProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.enterProbeDone = true; return; }
 
     ECDI::TextBox* const input = m_promptBar->input();
 
@@ -120,7 +120,7 @@ void HarnessApp::RunEnterProbe() {
         }
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
-        m_enterProbeLog.push_back(std::move(rec));
+        m_probeState.enterProbeLog.push_back(std::move(rec));
     };
 
     // 焦点守卫：合成按键之前记下焦点，收尾复原（同 `RunHitProbe` 的收尾纪律）。
@@ -146,7 +146,7 @@ void HarnessApp::RunEnterProbe() {
         snap("shift-enter-newline", before, /*sent=*/false);
         // ★ 额外判据：换行真的进去了（抑制相只证明"没发"，不证明"换了行"——
         //   一个把 Shift+Enter 整个吞掉的实现同样满足"没发"）。
-        EnterProbeRec& rec = m_enterProbeLog.back();
+        EnterProbeRec& rec = m_probeState.enterProbeLog.back();
         if (rec.inputText.find('\n') == std::string::npos) {
             rec.matched = false;
             if (!rec.firstDivergence.empty()) rec.firstDivergence += "; ";
@@ -193,7 +193,7 @@ void HarnessApp::RunEnterProbe() {
     }
 
     if (m_window) m_window->SetFocusedWidget(focusBefore);
-    m_enterProbeDone = true;
+    m_probeState.enterProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -218,11 +218,11 @@ void HarnessApp::RunEnterProbe() {
 //   判据 = 恰好 N 行时 `GetMaxScrollOffset()` 必须 == 0。
 void HarnessApp::RunGrowProbe() {
     if (!m_sess || !m_promptBar || !m_promptBar->input()) {
-        m_growProbeDone = true;
+        m_probeState.growProbeDone = true;
         return;
     }
     // 只在回放模式：live 下发送会真的写进子进程管道，探针不该制造真副作用。
-    if (!m_sess->replay) { m_growProbeDone = true; return; }
+    if (!m_sess->replay) { m_probeState.growProbeDone = true; return; }
 
     ECDI::TextBox* const input = m_promptBar->input();
     PromptBar* const bar = m_promptBar;
@@ -268,7 +268,7 @@ void HarnessApp::RunGrowProbe() {
         }
         rec.matched = why.empty();
         rec.firstDivergence = why;
-        m_growProbeLog.push_back(std::move(rec));
+        m_probeState.growProbeLog.push_back(std::move(rec));
     };
 
     ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
@@ -487,7 +487,7 @@ void HarnessApp::RunGrowProbe() {
     bar->SyncInputHeight();
     if (m_window) m_window->SetFocusedWidget(focusBefore);
 
-    m_growProbeDone = true;
+    m_probeState.growProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -504,7 +504,7 @@ void HarnessApp::RunGrowProbe() {
 //   故探针以「点击到尾」为起点造出贴底态，再验上翻/回打的往返闭环。
 void HarnessApp::RunJumpProbe() {
     if (!m_sess || !m_sess->replay || !m_scroll || !m_hud.jumpLatest) {
-        m_jumpProbeDone = true;
+        m_probeState.jumpProbeDone = true;
         return;
     }
     auto snap = [&](const char* phase) {
@@ -517,8 +517,8 @@ void HarnessApp::RunJumpProbe() {
         const bool pinned = rec.offset >= rec.maxOffset - kPinThreshold;
         rec.matched = (rec.visible == (!pinned && rec.maxOffset > 0));
         if (!rec.matched) rec.note = "visibility diverges from pinned state";
-        m_jumpProbeLog.push_back(std::move(rec));
-        return m_jumpProbeLog.back().matched;
+        m_probeState.jumpProbeLog.push_back(std::move(rec));
+        return m_probeState.jumpProbeLog.back().matched;
     };
     auto clickJumpButton = [&]() {
         ECDI::Button* const btn = m_hud.jumpLatest;
@@ -542,8 +542,8 @@ void HarnessApp::RunJumpProbe() {
         rec.visible = m_hud.jumpLatest->IsVisible();
         rec.matched = false;
         rec.note = "fixture content fits viewport; no scroll range to probe";
-        m_jumpProbeLog.push_back(std::move(rec));
-        m_jumpProbeDone = true;
+        m_probeState.jumpProbeLog.push_back(std::move(rec));
+        m_probeState.jumpProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
@@ -554,7 +554,7 @@ void HarnessApp::RunJumpProbe() {
     // ② 点击回底：从任何状态点按钮 ⇒ offset 到底 ∧ 按钮隐藏。
     clickJumpButton();
     if (snap("after-click-tail")) {
-        JumpProbeRec& r = m_jumpProbeLog.back();
+        JumpProbeRec& r = m_probeState.jumpProbeLog.back();
         if (r.offset != r.maxOffset) {
             r.matched = false;
             r.note = "click did not jump to tail";
@@ -572,7 +572,7 @@ void HarnessApp::RunJumpProbe() {
         m_application->OnEvent(wheel);
     }
     if (snap("after-wheel-up")) {
-        JumpProbeRec& r = m_jumpProbeLog.back();
+        JumpProbeRec& r = m_probeState.jumpProbeLog.back();
         if (r.offset >= r.maxOffset - kPinThreshold) {
             r.matched = false;
             r.note = "wheel did not move offset away from tail";
@@ -582,7 +582,7 @@ void HarnessApp::RunJumpProbe() {
     // ④ 再点一次：往返闭环（回底 ∧ 隐藏）。
     clickJumpButton();
     if (snap("after-click-again")) {
-        JumpProbeRec& r = m_jumpProbeLog.back();
+        JumpProbeRec& r = m_probeState.jumpProbeLog.back();
         if (r.offset != r.maxOffset) {
             r.matched = false;
             r.note = "click did not jump to tail";
@@ -590,7 +590,7 @@ void HarnessApp::RunJumpProbe() {
     }
 
     if (m_window && focusBefore) m_window->SetFocusedWidget(focusBefore);
-    m_jumpProbeDone = true;
+    m_probeState.jumpProbeDone = true;
     if (m_application) m_application->Exit();
 }
 
@@ -601,7 +601,7 @@ void HarnessApp::RunJumpProbe() {
 //   ③ Esc 按优先级逐层关；④ 未列入全局表的键照常到达焦点控件（不悬空拦截）。
 // ★ 全部走 SynthesizeKey（真实派发链，拦截器在链上被真实穿过）。
 void HarnessApp::RunKeyProbe() {
-    if (!m_sess || !m_sess->replay) { m_keyProbeDone = true; return; }
+    if (!m_sess || !m_sess->replay) { m_probeState.keyProbeDone = true; return; }
     auto snap = [&](const char* phase) -> KeyProbeRec& {
         KeyProbeRec rec;
         rec.phase = phase;
@@ -612,8 +612,8 @@ void HarnessApp::RunKeyProbe() {
         rec.menuOpen = m_moreMenuOpen;
         rec.menuShown = m_hud.moreMenu ? m_hud.moreMenu->IsVisible() : false;
         rec.sessionCount = m_sessions.size();
-        m_keyProbeLog.push_back(std::move(rec));
-        return m_keyProbeLog.back();
+        m_probeState.keyProbeLog.push_back(std::move(rec));
+        return m_probeState.keyProbeLog.back();
     };
 
     // 前置：任何按键之前，三对模型位/控件位必须已经一致——否则后面的 A==B 全免谈。
@@ -723,7 +723,7 @@ void HarnessApp::RunKeyProbe() {
     SetMoreMenuOpen(false);
     SetSidebarVisible(sidebarAtStart);
     if (m_window && focusBefore) m_window->SetFocusedWidget(focusBefore);
-    m_keyProbeDone = true;
+    m_probeState.keyProbeDone = true;
     if (m_application) m_application->Exit();
 }
 

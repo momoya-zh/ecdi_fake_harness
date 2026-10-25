@@ -147,8 +147,8 @@ bool HarnessApp::ExportTranscript() {
     //   探针走的是**同一个写盘函数**，绕过去的只有"路径从哪儿来"。
     //   ★ 只在 `--menu-probe` 且已经指定路径时生效（默认空 ⇒ 零行为变化）。
     std::filesystem::path target;
-    if (!m_menuProbeExportPath.empty()) {
-        target = m_menuProbeExportPath;
+    if (!m_probeState.menuProbeExportPath.empty()) {
+        target = m_probeState.menuProbeExportPath;
     } else {
         // 保存对话框。`OFN_OVERWRITEPROMPT` 让覆盖变成用户的选择而不是我们默默做决定。
         wchar_t fileBuf[1024]{};

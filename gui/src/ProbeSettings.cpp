@@ -82,12 +82,12 @@ void HarnessApp::RunSettingsProbe() {
         rec.phase = phase;
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
-        m_settingsProbeLog.push_back(std::move(rec));
+        m_probeState.settingsProbeLog.push_back(std::move(rec));
     };
     const auto now = std::chrono::steady_clock::now();
     const auto settle = std::chrono::milliseconds(400);
 
-    switch (m_settingsProbeStage) {
+    switch (m_probeState.settingsProbeStage) {
     case 0: {
         // ① first-run：面板必须可见、scroll/composer 必须腾了槽、字段必须为空。
         {
@@ -137,14 +137,14 @@ void HarnessApp::RunSettingsProbe() {
         const std::string url = m_options.settingsUrl.empty()
                                     ? "https://probe-settings.invalid/v1"
                                     : m_options.settingsUrl;
-        m_settingsProbeKey = m_options.settingsKey.empty()
+        m_probeState.settingsProbeKey = m_options.settingsKey.empty()
                                  ? "sk-probe-settings-not-a-real-key"
                                  : m_options.settingsKey;
         const std::string model = m_options.settingsModel.empty()
                                       ? "probe-model"
                                       : m_options.settingsModel;
         m_hud.settingsBase->SetText(url);
-        m_hud.settingsKey->SetText(m_settingsProbeKey);
+        m_hud.settingsKey->SetText(m_probeState.settingsProbeKey);
         m_hud.settingsModel->SetText(model);
         const ECDI::Point abs = m_hud.settingsSave->GetAbsolutePosition();
         SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.settingsSave->GetWidth() / 2,
@@ -160,7 +160,7 @@ void HarnessApp::RunSettingsProbe() {
                 std::ostringstream ss;
                 ss << in.rdbuf();
                 const std::string text = ss.str();
-                if (text.find(m_settingsProbeKey) != std::string::npos) {
+                if (text.find(m_probeState.settingsProbeKey) != std::string::npos) {
                     bad = "LEAK: the API key text appears in the config file";
                 }
                 if (text.find(url) == std::string::npos ||
@@ -182,14 +182,14 @@ void HarnessApp::RunSettingsProbe() {
             if (!creds::Read(ECDI::UTF8ToWide(target), roundtrip, credError)) {
                 bad += std::string(bad.empty() ? "" : "; ") +
                        "credential roundtrip failed: " + credError;
-            } else if (roundtrip != m_settingsProbeKey) {
+            } else if (roundtrip != m_probeState.settingsProbeKey) {
                 bad += std::string(bad.empty() ? "" : "; ") +
                        "credential roundtrip value mismatch";
             }
             report("save", bad);
         }
-        m_settingsProbeStage = 1;
-        m_settingsProbeNextAt = now + settle;
+        m_probeState.settingsProbeStage = 1;
+        m_probeState.settingsProbeNextAt = now + settle;
         return;
     }
     case 1: {
@@ -202,7 +202,7 @@ void HarnessApp::RunSettingsProbe() {
             // 轮询门：save 后 400ms 起判；5s 内 lines==0 ⇒ 等下一 tick（不写报告）
             if (m_sess && m_sess->originKind == "live" && m_sess->child &&
                 m_sess->child->LinesReceived() == 0 &&
-                now < m_settingsProbeNextAt + std::chrono::seconds(5)) {
+                now < m_probeState.settingsProbeNextAt + std::chrono::seconds(5)) {
                 return;
             }
             if (!m_sess || m_sess->originKind != "live") {
@@ -314,8 +314,8 @@ void HarnessApp::RunSettingsProbe() {
             }
             report("switch-ok", bad);
         }
-        m_settingsProbeStage = 2;
-        m_settingsProbeNextAt = now + settle;
+        m_probeState.settingsProbeStage = 2;
+        m_probeState.settingsProbeNextAt = now + settle;
         return;
     }
     case 2: {
@@ -324,7 +324,7 @@ void HarnessApp::RunSettingsProbe() {
         {
             std::string bad;
             if (!m_sess->pendingModelId.empty()) {
-                if (now < m_settingsProbeNextAt + std::chrono::seconds(5)) {
+                if (now < m_probeState.settingsProbeNextAt + std::chrono::seconds(5)) {
                     return;
                 }
                 bad = "model ack never arrived for same-provider switch";
@@ -332,8 +332,8 @@ void HarnessApp::RunSettingsProbe() {
             report("switch-ok", bad);
         }
         SendModelSwitch("unknown-host.invalid");
-        m_settingsProbeStage = 3;
-        m_settingsProbeNextAt = now + settle;
+        m_probeState.settingsProbeStage = 3;
+        m_probeState.settingsProbeNextAt = now + settle;
         return;
     }
     case 3: {
@@ -341,7 +341,7 @@ void HarnessApp::RunSettingsProbe() {
         {
             std::string bad;
             if (!m_sess->pendingModelId.empty()) {
-                if (now < m_settingsProbeNextAt + std::chrono::seconds(5)) {
+                if (now < m_probeState.settingsProbeNextAt + std::chrono::seconds(5)) {
                     return;
                 }
                 bad = "model ack never arrived for unknown-provider switch";
@@ -364,22 +364,22 @@ void HarnessApp::RunSettingsProbe() {
             std::filesystem::remove(AppConfig::DefaultPath(), ec);
             report("cleanup", bad);
         }
-        m_settingsProbeDone = true;
+        m_probeState.settingsProbeDone = true;
         if (m_application) m_application->Exit();
         return;
     }
     default:
-        m_settingsProbeDone = true;
+        m_probeState.settingsProbeDone = true;
             if (m_application) m_application->Exit();
         return;
     }
 }
 
 void HarnessApp::RunWorkspaceProbe() {
-    if (!m_options.workspaceProbe || m_workspaceProbeDone || !m_sess) return;
+    if (!m_options.workspaceProbe || m_probeState.workspaceProbeDone || !m_sess) return;
     const auto now = std::chrono::steady_clock::now();
-    if (m_workspaceProbeDeadline == std::chrono::steady_clock::time_point{}) {
-        m_workspaceProbeDeadline = now + std::chrono::seconds(80);
+    if (m_probeState.workspaceProbeDeadline == std::chrono::steady_clock::time_point{}) {
+        m_probeState.workspaceProbeDeadline = now + std::chrono::seconds(80);
     }
     auto sendEnabled = [&]() {
         return m_promptBar && m_promptBar->sendButton() && m_promptBar->sendButton()->IsEnabled();
@@ -404,13 +404,13 @@ void HarnessApp::RunWorkspaceProbe() {
         rec.sendEnabled = sendEnabled();
         rec.matched = matched;
         rec.expectedMismatch = expectedMismatch;
-        rec.bubbleText = m_workspaceProbeBubbleText;
-        rec.bubbleShapeOk = m_workspaceProbeBubbleShapeOk;
-        m_workspaceProbeLog.push_back(std::move(rec));
+        rec.bubbleText = m_probeState.workspaceProbeBubbleText;
+        rec.bubbleShapeOk = m_probeState.workspaceProbeBubbleShapeOk;
+        m_probeState.workspaceProbeLog.push_back(std::move(rec));
     };
     auto stopFailed = [&](const std::string& phase, const std::string& clientId, size_t matches) {
         append(phase, clientId, matches, false, false);
-        m_workspaceProbeDone = true;
+        m_probeState.workspaceProbeDone = true;
         if (m_application) m_application->Exit();
     };
     auto equivalent = [](const std::string& path, const std::filesystem::path& expected) {
@@ -427,27 +427,27 @@ void HarnessApp::RunWorkspaceProbe() {
     //   ★ 描边颜色读不回来（ECDI::Panel 无 style getter），所以那一半只能靠截图取证；
     //     这里只钉住文案与形状。
     auto bubbleProbe = [&](const std::string& clientId) {
-        m_workspaceProbeBubbleText.clear();
-        m_workspaceProbeBubbleShapeOk = false;
+        m_probeState.workspaceProbeBubbleText.clear();
+        m_probeState.workspaceProbeBubbleShapeOk = false;
         const auto view = std::find_if(m_pendingPromptViews.begin(), m_pendingPromptViews.end(),
             [&](const PendingPromptView& v) { return v.clientId == clientId; });
         if (view == m_pendingPromptViews.end() || !view->row.label) return;
         const std::string text = view->row.label->GetText();
-        m_workspaceProbeBubbleText = text;
+        m_probeState.workspaceProbeBubbleText = text;
         const auto model = std::find_if(m_sess->pendingPrompts.begin(), m_sess->pendingPrompts.end(),
             [&](const PendingPrompt& p) { return p.clientId == clientId; });
         if (model == m_sess->pendingPrompts.end()) return;
         const std::string suffix = model->status == "sending" ? " \u00b7 \u53d1\u9001\u4e2d"
                                                              : " \u00b7 \u672a\u786e\u8ba4";
-        m_workspaceProbeBubbleShapeOk =
+        m_probeState.workspaceProbeBubbleShapeOk =
             text.find('\n') == std::string::npos &&
             text.size() >= suffix.size() &&
             text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0 &&
             text == model->text + suffix;
     };
 
-    if (now >= m_workspaceProbeDeadline) {
-        stopFailed("timeout", m_workspaceProbeRejectedId, 0);
+    if (now >= m_probeState.workspaceProbeDeadline) {
+        stopFailed("timeout", m_probeState.workspaceProbeRejectedId, 0);
         return;
     }
     if (!m_sess->writer) {
@@ -455,12 +455,12 @@ void HarnessApp::RunWorkspaceProbe() {
         return;
     }
     if (m_sess->protocolIncompatible ||
-        (m_sess->disconnected && m_workspaceProbeStep != 11 && m_workspaceProbeStep != 12)) {
+        (m_sess->disconnected && m_probeState.workspaceProbeStep != 11 && m_probeState.workspaceProbeStep != 12)) {
         stopFailed("disconnected", {}, 0);
         return;
     }
 
-    switch (m_workspaceProbeStep) {
+    switch (m_probeState.workspaceProbeStep) {
         case 0: {
             if (!m_sess->workspaceSyncComplete || !m_sess->pendingWorkspaceId.empty()) return;
             std::error_code ec;
@@ -469,11 +469,11 @@ void HarnessApp::RunWorkspaceProbe() {
                 stopFailed("baseline", {}, 0);
                 return;
             }
-            m_workspaceProbeOriginalPath = m_sess->workspacePath;
+            m_probeState.workspaceProbeOriginalPath = m_sess->workspacePath;
             const bool baselineOk = equivalent(m_sess->workspacePath, cwd);
             append("baseline", {}, 0, baselineOk, false);
             if (!baselineOk) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
@@ -484,181 +484,181 @@ void HarnessApp::RunWorkspaceProbe() {
                 stopFailed("pick-ok", {}, 0);
                 return;
             }
-            m_workspaceProbeTargetPath = PathToUtf8(target);
+            m_probeState.workspaceProbeTargetPath = PathToUtf8(target);
             const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
             if (ec || temp.empty()) {
                 stopFailed("pick-fail", {}, 0);
                 return;
             }
-            m_workspaceProbeFailPath = PathToUtf8(
+            m_probeState.workspaceProbeFailPath = PathToUtf8(
                 temp / ("dsh-v3-workspace-missing-" + std::to_string(now.time_since_epoch().count())));
-            m_workspaceProbeStep = 1;
+            m_probeState.workspaceProbeStep = 1;
             return;
         }
         case 1: {
-            const bool sent = RequestWorkspace(m_workspaceProbeTargetPath, false);
-            m_workspaceProbeWorkspaceId = m_sess->pendingWorkspaceId;
-            const bool locked = sent && !m_workspaceProbeWorkspaceId.empty() && !sendEnabled() &&
-                                m_sess->workspacePath == m_workspaceProbeOriginalPath;
+            const bool sent = RequestWorkspace(m_probeState.workspaceProbeTargetPath, false);
+            m_probeState.workspaceProbeWorkspaceId = m_sess->pendingWorkspaceId;
+            const bool locked = sent && !m_probeState.workspaceProbeWorkspaceId.empty() && !sendEnabled() &&
+                                m_sess->workspacePath == m_probeState.workspaceProbeOriginalPath;
             append("pending-lock", {}, 0, locked, false);
             if (!locked) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 2;
+            m_probeState.workspaceProbeStep = 2;
             return;
         }
         case 2: {
             if (!m_sess->pendingWorkspaceId.empty()) return;
             const bool ok = m_sess->workspaceStatus == "已由 core 确认" &&
                             equivalent(m_sess->workspacePath,
-                                       std::filesystem::path(WideFromUtf8Path(m_workspaceProbeTargetPath)));
+                                       std::filesystem::path(WideFromUtf8Path(m_probeState.workspaceProbeTargetPath)));
             append("pick-ok", {}, 0, ok, false);
             if (!ok) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 3;
+            m_probeState.workspaceProbeStep = 3;
             return;
         }
         case 3: {
-            if (!RequestWorkspace(m_workspaceProbeFailPath, false)) {
+            if (!RequestWorkspace(m_probeState.workspaceProbeFailPath, false)) {
                 stopFailed("pick-fail", {}, 0);
                 return;
             }
-            m_workspaceProbeWorkspaceId = m_sess->pendingWorkspaceId;
-            m_workspaceProbeStep = 4;
+            m_probeState.workspaceProbeWorkspaceId = m_sess->pendingWorkspaceId;
+            m_probeState.workspaceProbeStep = 4;
             return;
         }
         case 4: {
             if (!m_sess->pendingWorkspaceId.empty()) return;
             const bool pathPreserved = equivalent(m_sess->workspacePath,
-                                                  std::filesystem::path(WideFromUtf8Path(m_workspaceProbeTargetPath)));
+                                                  std::filesystem::path(WideFromUtf8Path(m_probeState.workspaceProbeTargetPath)));
             const bool failedAck = m_sess->workspaceStatus.find("切换失败：") == 0;
             const bool ok = pathPreserved && failedAck && sendEnabled();
             append("pick-fail", {}, 0, ok, false);
             if (!ok) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 5;
+            m_probeState.workspaceProbeStep = 5;
             return;
         }
         case 5: {
-            m_workspaceProbeAcceptedId = PostPrompt("workspace probe accepted bubble");
-            if (m_workspaceProbeAcceptedId.empty()) {
+            m_probeState.workspaceProbeAcceptedId = PostPrompt("workspace probe accepted bubble");
+            if (m_probeState.workspaceProbeAcceptedId.empty()) {
                 stopFailed("bubble-flying", {}, 0);
                 return;
             }
-            const size_t matches = canonicalCount(m_workspaceProbeAcceptedId);
+            const size_t matches = canonicalCount(m_probeState.workspaceProbeAcceptedId);
             const bool pending = std::any_of(m_sess->pendingPrompts.begin(),
                 m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
-                    return p.clientId == m_workspaceProbeAcceptedId && p.status == "sending";
+                    return p.clientId == m_probeState.workspaceProbeAcceptedId && p.status == "sending";
                 });
             const auto transientView = std::find_if(m_pendingPromptViews.begin(),
                 m_pendingPromptViews.end(), [&](const PendingPromptView& view) {
-                    return view.clientId == m_workspaceProbeAcceptedId;
+                    return view.clientId == m_probeState.workspaceProbeAcceptedId;
                 });
             const bool rendered = transientView != m_pendingPromptViews.end() &&
                                   transientView->row.panel && transientView->row.label;
-            bubbleProbe(m_workspaceProbeAcceptedId);
+            bubbleProbe(m_probeState.workspaceProbeAcceptedId);
             const bool ok = pending && rendered && matches == 0 && !sendEnabled() &&
-                            m_workspaceProbeBubbleShapeOk;
-            append("bubble-flying", m_workspaceProbeAcceptedId, matches, ok, false);
+                            m_probeState.workspaceProbeBubbleShapeOk;
+            append("bubble-flying", m_probeState.workspaceProbeAcceptedId, matches, ok, false);
             if (!ok) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 6;
+            m_probeState.workspaceProbeStep = 6;
             return;
         }
         case 6: {
-            const size_t matches = canonicalCount(m_workspaceProbeAcceptedId);
+            const size_t matches = canonicalCount(m_probeState.workspaceProbeAcceptedId);
             const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
                 m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
-                    return p.clientId == m_workspaceProbeAcceptedId;
+                    return p.clientId == m_probeState.workspaceProbeAcceptedId;
                 });
             if (pending != m_sess->pendingPrompts.end() && pending->status == "failed") {
-                stopFailed("bubble-confirmed", m_workspaceProbeAcceptedId, matches);
+                stopFailed("bubble-confirmed", m_probeState.workspaceProbeAcceptedId, matches);
                 return;
             }
             if (matches == 0 || pending != m_sess->pendingPrompts.end()) return;
             const bool ok = matches == 1;
             // 已确认后临时气泡应当**已不存在**：这里如实记为 shapeOk=false / 空文案。
-            bubbleProbe(m_workspaceProbeAcceptedId);
-            append("bubble-confirmed", m_workspaceProbeAcceptedId, matches, ok, false);
+            bubbleProbe(m_probeState.workspaceProbeAcceptedId);
+            append("bubble-confirmed", m_probeState.workspaceProbeAcceptedId, matches, ok, false);
             if (!ok) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 7;
+            m_probeState.workspaceProbeStep = 7;
             return;
         }
         case 7: {
             if (m_sess->coreState != "running") return;
-            m_workspaceProbeRejectedId = PostPrompt("workspace probe correlated rejection", true);
-            if (m_workspaceProbeRejectedId.empty()) {
+            m_probeState.workspaceProbeRejectedId = PostPrompt("workspace probe correlated rejection", true);
+            if (m_probeState.workspaceProbeRejectedId.empty()) {
                 stopFailed("bubble-failed", {}, 0);
                 return;
             }
-            m_workspaceProbeStep = 8;
+            m_probeState.workspaceProbeStep = 8;
             return;
         }
         case 8: {
             const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
                 m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
-                    return p.clientId == m_workspaceProbeRejectedId;
+                    return p.clientId == m_probeState.workspaceProbeRejectedId;
                 });
-            const size_t matches = canonicalCount(m_workspaceProbeRejectedId);
+            const size_t matches = canonicalCount(m_probeState.workspaceProbeRejectedId);
             if (pending == m_sess->pendingPrompts.end() || pending->status == "sending") {
                 if (matches == 0) return;
-                stopFailed("bubble-failed", m_workspaceProbeRejectedId, matches);
+                stopFailed("bubble-failed", m_probeState.workspaceProbeRejectedId, matches);
                 return;
             }
             const bool ok = pending->status == "failed" && matches == 0;
-            bubbleProbe(m_workspaceProbeRejectedId);
-            const bool shaped = m_workspaceProbeBubbleShapeOk;
-            append("bubble-failed", m_workspaceProbeRejectedId, matches, ok && shaped, false);
+            bubbleProbe(m_probeState.workspaceProbeRejectedId);
+            const bool shaped = m_probeState.workspaceProbeBubbleShapeOk;
+            append("bubble-failed", m_probeState.workspaceProbeRejectedId, matches, ok && shaped, false);
             if (!ok) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 9;
+            m_probeState.workspaceProbeStep = 9;
             return;
         }
         case 9: {
             // Start a real turn so the following forced prompt is queued while core is busy.
-            m_workspaceProbeAcceptedId = PostPrompt("workspace probe disconnect trigger");
-            if (m_workspaceProbeAcceptedId.empty()) {
+            m_probeState.workspaceProbeAcceptedId = PostPrompt("workspace probe disconnect trigger");
+            if (m_probeState.workspaceProbeAcceptedId.empty()) {
                 stopFailed("disconnect-trigger", {}, 0);
                 return;
             }
-            m_workspaceProbeStep = 10;
+            m_probeState.workspaceProbeStep = 10;
             return;
         }
         case 10: {
-            if (m_sess->coreState != "running" || canonicalCount(m_workspaceProbeAcceptedId) != 1) return;
-            m_workspaceProbeRejectedId = PostPrompt("workspace probe disconnect before ack", true);
-            if (m_workspaceProbeRejectedId.empty() || !m_sess->child) {
-                stopFailed("disconnect-unconfirmed", m_workspaceProbeRejectedId, 0);
+            if (m_sess->coreState != "running" || canonicalCount(m_probeState.workspaceProbeAcceptedId) != 1) return;
+            m_probeState.workspaceProbeRejectedId = PostPrompt("workspace probe disconnect before ack", true);
+            if (m_probeState.workspaceProbeRejectedId.empty() || !m_sess->child) {
+                stopFailed("disconnect-unconfirmed", m_probeState.workspaceProbeRejectedId, 0);
                 return;
             }
-            const size_t matches = canonicalCount(m_workspaceProbeRejectedId);
+            const size_t matches = canonicalCount(m_probeState.workspaceProbeRejectedId);
             const bool pending = std::any_of(m_sess->pendingPrompts.begin(),
                 m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
-                    return p.clientId == m_workspaceProbeRejectedId && p.status == "sending";
+                    return p.clientId == m_probeState.workspaceProbeRejectedId && p.status == "sending";
                 });
             if (!pending || matches != 0) {
-                stopFailed("disconnect-unconfirmed", m_workspaceProbeRejectedId, matches);
+                stopFailed("disconnect-unconfirmed", m_probeState.workspaceProbeRejectedId, matches);
                 return;
             }
-            m_workspaceProbeStep = 11;
+            m_probeState.workspaceProbeStep = 11;
             m_sess->child->Stop(0);  // deterministic EOF before the busy core can answer the queued prompt.
             return;
         }
@@ -666,13 +666,13 @@ void HarnessApp::RunWorkspaceProbe() {
             if (!m_sess->disconnected) return;
             const auto pending = std::find_if(m_sess->pendingPrompts.begin(),
                 m_sess->pendingPrompts.end(), [&](const PendingPrompt& p) {
-                    return p.clientId == m_workspaceProbeRejectedId;
+                    return p.clientId == m_probeState.workspaceProbeRejectedId;
                 });
             const auto view = std::find_if(m_pendingPromptViews.begin(),
                 m_pendingPromptViews.end(), [&](const PendingPromptView& item) {
-                    return item.clientId == m_workspaceProbeRejectedId;
+                    return item.clientId == m_probeState.workspaceProbeRejectedId;
                 });
-            const size_t matches = canonicalCount(m_workspaceProbeRejectedId);
+            const size_t matches = canonicalCount(m_probeState.workspaceProbeRejectedId);
             const bool failedView = view != m_pendingPromptViews.end() &&
                                     view->row.panel && view->row.label;
             const bool ok = pending != m_sess->pendingPrompts.end() &&
@@ -680,22 +680,22 @@ void HarnessApp::RunWorkspaceProbe() {
                             !sendEnabled();
             // ★ 这一相用的是**新的** clientId（step 10 重新赋了值），所以必须重新读
             //   控件；不重读就会把上一相 p2 的文案当成 p4 的读数（实测过）。
-            bubbleProbe(m_workspaceProbeRejectedId);
-            const bool shaped = m_workspaceProbeBubbleShapeOk;
-            append("disconnect-unconfirmed", m_workspaceProbeRejectedId, matches, ok && shaped, false);
+            bubbleProbe(m_probeState.workspaceProbeRejectedId);
+            const bool shaped = m_probeState.workspaceProbeBubbleShapeOk;
+            append("disconnect-unconfirmed", m_probeState.workspaceProbeRejectedId, matches, ok && shaped, false);
             if (!ok) {
-                m_workspaceProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
                 if (m_application) m_application->Exit();
                 return;
             }
-            m_workspaceProbeStep = 12;
+            m_probeState.workspaceProbeStep = 12;
             return;
         }
         case 12: {
             const std::string before = m_sess->workspacePath;
             const std::filesystem::path expected =
-                std::filesystem::path(WideFromUtf8Path(m_workspaceProbeTargetPath));
-            m_sess->workspacePath = m_workspaceProbeOriginalPath;  // probe-only local corruption
+                std::filesystem::path(WideFromUtf8Path(m_probeState.workspaceProbeTargetPath));
+            m_sess->workspacePath = m_probeState.workspaceProbeOriginalPath;  // probe-only local corruption
             RefreshHud();
             const bool expectedMismatch = equivalent(before, expected) &&
                                           !equivalent(m_sess->workspacePath, expected);
@@ -706,19 +706,19 @@ void HarnessApp::RunWorkspaceProbe() {
             bool shapeNegControl = false;
             {
                 const auto view = std::find_if(m_pendingPromptViews.begin(), m_pendingPromptViews.end(),
-                    [&](const PendingPromptView& v) { return v.clientId == m_workspaceProbeRejectedId; });
+                    [&](const PendingPromptView& v) { return v.clientId == m_probeState.workspaceProbeRejectedId; });
                 if (view != m_pendingPromptViews.end() && view->row.label) {
                     const std::string saved = view->row.label->GetText();
                     view->row.label->SetText(saved + "\n\u672a\u786e\u8ba4 \u00b7 \u7b49\u5f85 core \u63a5\u53d7");
-                    bubbleProbe(m_workspaceProbeRejectedId);
-                    shapeNegControl = !m_workspaceProbeBubbleShapeOk;
+                    bubbleProbe(m_probeState.workspaceProbeRejectedId);
+                    shapeNegControl = !m_probeState.workspaceProbeBubbleShapeOk;
                     view->row.label->SetText(saved);
                     // ★ 不把 shapeOk 改回 true：日志里应当留下「负对照确实看见了
                     //   换行」这个读数，而不是抹掉证据好看。
                 }
             }
             append("negative", {}, 0, false, expectedMismatch && shapeNegControl);
-            m_workspaceProbeDone = true;
+            m_probeState.workspaceProbeDone = true;
             if (m_application) m_application->Exit();
             return;
         }

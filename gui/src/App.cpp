@@ -775,7 +775,7 @@ void HarnessApp::OnWindowResized(int width, int height) {
 //     · `WriteTranscriptExport()` —— 只负责落盘，返回 false 时给错误串。
 //     · `ExportTranscript()` —— 只剩「选路径 + 调用上面两个 + 说一声」。
 //   ★ 仍然**没被覆盖**的是那个对话框本身（`GetSaveFileNameW` 的调用点）。
-//     探针走 `m_menuProbeExportPath` 直接给它一个路径，绕开对话框。
+//     探针走 `m_probeState.menuProbeExportPath` 直接给它一个路径，绕开对话框。
 //     这是**诚实的缺口**，写在这里而不是假装探针覆盖了保存对话框。
 
 // 把活动会话的转录渲染成文本。**只读**：不碰模型、不碰协议、不改 seq。
@@ -858,7 +858,7 @@ void HarnessApp::OnWindowResized(int width, int height) {
 //   `backendChip` 已补上真实实现——但"修三个实例"不是修这一类，所以这里把它
 //   变成一条会自己变红的判据。
 //
-//   ★ 开销：默认 `m_hudAudit == false` ⇒ `HudTouch` 只做一次 bool 判断就返回，
+//   ★ 开销：默认 `m_probeState.hudAudit == false` ⇒ `HudTouch` 只做一次 bool 判断就返回，
 //     不分配、不记录。只有探针打开它之后才登记。
 
 

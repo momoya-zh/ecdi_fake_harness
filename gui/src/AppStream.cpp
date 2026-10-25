@@ -116,7 +116,7 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
         if (m_options.asyncProbe && stamp.time_since_epoch().count() != 0) {
             // 入队 → 现在。0 计数的 stamp = 该行没有戳（探针没开 / 戳之前入队），
             // **跳过而不是补 now()**——补 now() 会伪造一个"零延迟"读数。
-            m_apLatencyUs.push_back(static_cast<uint64_t>(
+            m_probeState.apLatencyUs.push_back(static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::steady_clock::now() - stamp)
                     .count()));
@@ -128,11 +128,11 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
 
     if (m_options.asyncProbe) {
         if (fromWake) {
-            m_apLinesWake += handled;
-            ++m_apCallbacks;
-            if (handled > m_apMaxLinesPerCallback) m_apMaxLinesPerCallback = handled;
+            m_probeState.apLinesWake += handled;
+            ++m_probeState.apCallbacks;
+            if (handled > m_probeState.apMaxLinesPerCallback) m_probeState.apMaxLinesPerCallback = handled;
         } else {
-            m_apLinesTick += handled;
+            m_probeState.apLinesTick += handled;
         }
     }
 
@@ -199,7 +199,7 @@ void HarnessApp::OnReplayTick() {
         OpenHistorySession(file);   // 内部会置 m_sidebarDirty + RequestRepaint
     }
     if (!m_sess->source) {
-        if (m_options.workspaceProbe && !m_workspaceProbeDone) RunWorkspaceProbe();
+        if (m_options.workspaceProbe && !m_probeState.workspaceProbeDone) RunWorkspaceProbe();
         return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
     }
     if (m_options.workspaceProbe && !m_sess->source->IsLive()) {
@@ -214,7 +214,7 @@ void HarnessApp::OnReplayTick() {
         //     数据由 `DrainActiveLive(true)` 在消息循环里取；tick 这边只做
         //     **非阻塞**兜底——投递可能失败（关闭中 / 唤醒失败 / `bad_alloc`），
         //     兜底保证最坏情况退化成「33ms 内取到」，而不是永远不取。
-        if (m_options.asyncProbe) ++m_apTicks;
+        if (m_options.asyncProbe) ++m_probeState.apTicks;
         if (m_options.legacyPoll) {
             bool gotAny = false;
             const int budgetMs = 8;
@@ -227,7 +227,7 @@ void HarnessApp::OnReplayTick() {
                 if (got && m_options.asyncProbe && stamp.time_since_epoch().count() != 0) {
                     // ★ 对照世界也用**同一套仪器**：只改唤醒机制这一个自变量，
                     //   不能连"怎么量"都换了——那会让两组读数不可比。
-                    m_apLatencyUs.push_back(static_cast<uint64_t>(
+                    m_probeState.apLatencyUs.push_back(static_cast<uint64_t>(
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - stamp)
                             .count()));
@@ -239,13 +239,13 @@ void HarnessApp::OnReplayTick() {
                         std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - waitStart)
                             .count());
-                    ++m_apBlockedTicks;
-                    m_apBlockedUs += us;
-                    if (us > m_apMaxBlockedUs) m_apMaxBlockedUs = us;
+                    ++m_probeState.apBlockedTicks;
+                    m_probeState.apBlockedUs += us;
+                    if (us > m_probeState.apMaxBlockedUs) m_probeState.apMaxBlockedUs = us;
                 }
                 if (!got) break;
                 ++m_sess->liveLines;
-                if (m_options.asyncProbe) ++m_apLinesTick;
+                if (m_options.asyncProbe) ++m_probeState.apLinesTick;
                 HandleLine(line);
                 gotAny = true;
             }
@@ -261,13 +261,13 @@ void HarnessApp::OnReplayTick() {
         } else {
             DrainActiveLive(false);   // 非阻塞兜底（含 EOF 检测）
         }
-        if (m_options.workspaceProbe && !m_workspaceProbeDone) RunWorkspaceProbe();
+        if (m_options.workspaceProbe && !m_probeState.workspaceProbeDone) RunWorkspaceProbe();
         // ★★ P3.5 设置探针跨 tick 的另一半：save 之后活动会话已是 live ⇒
         //   tick 走**本分支**（replay settle 分支走不到）——stage 0 在 save 那一 tick
         //   已产出 first-run + save 两相，stage 1+ 只能在这里推进。
         //   ★ 教训同 reasoning-probe 的"第一版只放末尾"：探针的跨 tick 推进点
         //     必须铺满**所有**能让它所在的会话形态，缺一个就是永远停在那一拍。
-        if (m_options.settingsProbe && !m_settingsProbeDone) RunSettingsProbe();
+        if (m_options.settingsProbe && !m_probeState.settingsProbeDone) RunSettingsProbe();
         return;
     }
 
@@ -286,76 +286,76 @@ void HarnessApp::OnReplayTick() {
             // ★★ 思维链折叠探针必须**在这里**推进：夹具拉完后本函数会从上面 `return`，
             //   走不到末尾那段。第一版把调用只放在末尾 ⇒ 状态机永远停在 step 0
             //   （只有 settle 那一 tick 采到 default，之后再不前进）。
-            if (m_options.reasoningProbe && !m_reasoningProbeDone) {
+            if (m_options.reasoningProbe && !m_probeState.reasoningProbeDone) {
                 RunReasoningProbe();
             }
             // ★★ Step 0c 重建探针同理：夹具拉完后本函数从这里 `return`，走不到末尾。
             //   第一版只放末尾 ⇒ 摘要里连 `rebuildProbe` 键都没有（探针一步没跑）。
-            if (m_options.rebuildProbe && !m_rebuildProbeDone) {
+            if (m_options.rebuildProbe && !m_probeState.rebuildProbeDone) {
                 RunRebuildProbe();
             }
             // ★★ Step 0d 会话探针：同样放在 settle 分支（回放模式下夹具拉完才跑）。
-            if (m_options.sessionProbe && !m_sessionProbeDone) {
+            if (m_options.sessionProbe && !m_probeState.sessionProbeDone) {
                 RunSessionProbe();
             }
             // ★★ Step 1 侧栏探针：同上（同步跑完即 Exit，故必须排在其他探针之后，
             //   否则它先 Exit 会让别人一步都跑不了。顺序：reasoning → rebuild → session → sidebar）。
-            if (m_options.sidebarProbe && !m_sidebarProbeDone) {
+            if (m_options.sidebarProbe && !m_probeState.sidebarProbeDone) {
                 RunSidebarProbe();
             }
             // ★★ Step 3 答案探针：排在最后（同样同步跑完即 Exit）。
             //   顺序：reasoning → rebuild → session → sidebar → answer。
-            if (m_options.answerProbe && !m_answerProbeDone) {
+            if (m_options.answerProbe && !m_probeState.answerProbeDone) {
                 RunAnswerProbe();
             }
             // ★★ 2026-10-21 菜单/导出探针：同步跑完即 Exit，同上。
             //   ★ 必须排在 `RunSidebarProbe` **之后**：侧栏那一支收尾会 Exit，
             //     排在它前面的探针才有机会跑。
-            if (m_options.menuProbe && !m_menuProbeDone) {
+            if (m_options.menuProbe && !m_probeState.menuProbeDone) {
                 RunMenuProbe();
             }
             // ★★ 2026-10-21 窗口拉伸探针：同步跑完即 Exit，同上。
-            if (m_options.resizeProbe && !m_resizeProbeDone) {
+            if (m_options.resizeProbe && !m_probeState.resizeProbeDone) {
                 RunResizeProbe();
             }
             // ★★ 2026-10-21 Enter 发送探针：同步跑完即 Exit，同上。
-            if (m_options.enterProbe && !m_enterProbeDone) {
+            if (m_options.enterProbe && !m_probeState.enterProbeDone) {
                 RunEnterProbe();
             }
             // ★★ 2026-10-21 输入框自动长高探针：同步跑完即 Exit，同上。
-            if (m_options.growProbe && !m_growProbeDone) {
+            if (m_options.growProbe && !m_probeState.growProbeDone) {
                 RunGrowProbe();
             }
             // ★★ 2026-10-21 HUD 覆盖探针：同步跑完即 Exit，同上。
-            if (m_options.hudProbe && !m_hudProbeDone) {
+            if (m_options.hudProbe && !m_probeState.hudProbeDone) {
                 RunHudProbe();
             }
             // ★★ P4 Phase A 跳到最新探针：同步跑完即 Exit，同上。
-            if (m_options.jumpProbe && !m_jumpProbeDone) {
+            if (m_options.jumpProbe && !m_probeState.jumpProbeDone) {
                 RunJumpProbe();
             }
             // ★★ P4 Phase B 全局快捷键探针：同步跑完即 Exit，同上。
-            if (m_options.keyProbe && !m_keyProbeDone) {
+            if (m_options.keyProbe && !m_probeState.keyProbeDone) {
                 RunKeyProbe();
             }
             // ★★ P4 Phase C 空状态探针（回放形态）：同步跑完即 Exit，同上。
-            if (m_options.emptyProbe && !m_emptyProbeDone) {
+            if (m_options.emptyProbe && !m_probeState.emptyProbeDone) {
                 RunEmptyProbe();
             }
             // ★★ P4 Phase H 模型浮窗探针：同步跑完即 Exit，同上。
-            if (m_options.modelProbe && !m_modelProbeDone) {
+            if (m_options.modelProbe && !m_probeState.modelProbeDone) {
                 RunModelProbe();
             }
             // ★★ P4 Phase G 选中复制探针：同步跑完即 Exit，同上。
-            if (m_options.selectProbe && !m_selectProbeDone) {
+            if (m_options.selectProbe && !m_probeState.selectProbeDone) {
                 RunSelectProbe();
             }
             // ★★ P4 删除所选探针：同步跑完即 Exit，同上。
-            if (m_options.delProvProbe && !m_delProvProbeDone) {
+            if (m_options.delProvProbe && !m_probeState.delProvProbeDone) {
                 RunDelProvProbe();
             }
             // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
-            if (m_options.settingsProbe && !m_settingsProbeDone) {
+            if (m_options.settingsProbe && !m_probeState.settingsProbeDone) {
                 RunSettingsProbe();
             }
             // ★★ Step 4 主题/整树重建探针：排在最后。
@@ -363,14 +363,14 @@ void HarnessApp::OnReplayTick() {
             //     而重建被延迟到下一个 tick）⇒ 它**不能**和上面的同步探针同 tick 共存：
             //     上面任何一个一旦 Exit，本探针就再也拿不到下一个 tick。
             //     故六条互斥使用（同一进程只开一个 `--*-probe`）。
-            if (m_options.themeProbe && !m_themeProbeDone) {
+            if (m_options.themeProbe && !m_probeState.themeProbeDone) {
                 RunThemeProbe();
             }
             // ★★ Step 5 历史会话探针：排在最后，同为**跨 tick**（点历史行后，
             //   打开被延迟到下一个 tick——派发栈 UAF）。
             //   顺序：reasoning → rebuild → session → sidebar → answer → theme → history。
             //   七条互斥使用。
-            if (m_options.historyProbe && !m_historyProbeDone) {
+            if (m_options.historyProbe && !m_probeState.historyProbeDone) {
                 RunHistoryProbe();
             }
             return;
@@ -397,13 +397,13 @@ void HarnessApp::OnReplayTick() {
     // ★★ --hit-probe（REQ-04 边界）：夹具拉完 + `Relayout()` 之后**跑一次**。
     //   位置理由：此刻几何已定（按钮位置/尺寸是探针坐标的来源），
     //   且只跑一次（否则 30Hz 每 tick 都合成点击，读数被自身重复污染）。
-    if (m_options.hitProbe && m_sess->replaySettled && !m_hitProbeDone) {
-        m_hitProbeDone = true;
+    if (m_options.hitProbe && m_sess->replaySettled && !m_probeState.hitProbeDone) {
+        m_probeState.hitProbeDone = true;
         RunHitProbe();
     }
     // ★ 思维链折叠行为取证（协议 v2 §7）：跨 tick 状态机（每次只推进一步，
     //   步间等过 200ms 折叠动画）⇒ 不能像 --hit-probe 那样一次跑完。
-    if (m_options.reasoningProbe && m_sess->replaySettled && !m_reasoningProbeDone) {
+    if (m_options.reasoningProbe && m_sess->replaySettled && !m_probeState.reasoningProbeDone) {
         RunReasoningProbe();
     }
     // 注：`--rebuild-probe` 的推进在**上面 settle 分支里**（本函数到尾就 `return` 了，

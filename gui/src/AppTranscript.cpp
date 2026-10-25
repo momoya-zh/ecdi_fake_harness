@@ -392,8 +392,8 @@ void HarnessApp::CreateBlockRow(const Block& block) {
     // ★ 在**建行时刻**抓流式态标题（`block_start` 刚到、`block_end` 还没来）。
     //   为何必须此刻抓：`--instant` 在同一 tick 抽干夹具 ⇒ 事后回读永远是
     //   「已完成」，`▼ 思考中` 那一态**根本采不到**（首版就栽在这里）。
-    if (m_options.reasoningProbe && stored.reasoning && m_reasoningTitleStreaming.empty()) {
-        m_reasoningTitleStreaming = stored.headerBtn->GetText();
+    if (m_options.reasoningProbe && stored.reasoning && m_probeState.reasoningTitleStreaming.empty()) {
+        m_probeState.reasoningTitleStreaming = stored.headerBtn->GetText();
     }
     // 只有可折叠行需要绑回调（普通气泡/未知 kind 无展开体）
     if (stored.body && stored.headerBtn) BindCollapsible(block, stored);

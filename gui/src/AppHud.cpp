@@ -420,10 +420,10 @@ void HarnessApp::CacheEvalMetrics() {
     m_evalLastUs = frames.empty() ? 0 : frames.back();
 
     if (m_probe) {
-        m_evalProbeFrames = m_probe->FrameCount();
-        m_evalProbeCommands = m_probe->TotalCommands();
-        m_evalProbeMax = m_probe->MaxFrameCommands();
-        m_evalProbeAvg = m_probe->AvgFrameCommands();
+        m_probeState.evalProbeFrames = m_probe->FrameCount();
+        m_probeState.evalProbeCommands = m_probe->TotalCommands();
+        m_probeState.evalProbeMax = m_probe->MaxFrameCommands();
+        m_probeState.evalProbeAvg = m_probe->AvgFrameCommands();
         m_evalMaxExecUs = m_probe->MaxExecuteUs();
         m_evalAvgExecUs = m_probe->AvgExecuteUs();
     }
@@ -445,11 +445,11 @@ void HarnessApp::CacheEvalMetrics() {
 //   `backendChip` 已补上真实实现——但"修三个实例"不是修这一类，所以这里把它
 //   变成一条会自己变红的判据。
 //
-//   ★ 开销：默认 `m_hudAudit == false` ⇒ `HudTouch` 只做一次 bool 判断就返回，
+//   ★ 开销：默认 `m_probeState.hudAudit == false` ⇒ `HudTouch` 只做一次 bool 判断就返回，
 //     不分配、不记录。只有探针打开它之后才登记。
 void HarnessApp::HudTouch(const char* name) {
-    if (!m_hudAudit) return;
-    m_hudTouched.emplace_back(name);
+    if (!m_probeState.hudAudit) return;
+    m_probeState.hudTouched.emplace_back(name);
 }
 
 std::vector<std::string> HarnessApp::HudUnbuilt() const {
@@ -499,7 +499,7 @@ std::vector<std::string> HarnessApp::HudUnbuilt() const {
     };
     std::vector<std::string> out;
     std::vector<std::string> seen;
-    for (const std::string& n : m_hudTouched) {
+    for (const std::string& n : m_probeState.hudTouched) {
         if (std::find(seen.begin(), seen.end(), n) != seen.end()) continue;
         seen.push_back(n);
         if (!nonNull(n)) out.push_back(n);
@@ -612,19 +612,19 @@ void HarnessApp::RefreshHud() {
             const bool sendEnabled = send->IsEnabled();
             const bool stopEnabled = stop->IsEnabled();
             const std::string sendTitle = send->GetText();
-            const bool changed = !m_stateProbeLastValid ||
-                                 sendEnabled != m_stateProbeLastSend ||
-                                 stopEnabled != m_stateProbeLastStop;
+            const bool changed = !m_probeState.stateProbeLastValid ||
+                                 sendEnabled != m_probeState.stateProbeLastSend ||
+                                 stopEnabled != m_probeState.stateProbeLastStop;
             if (changed) {
                 StateProbeRec rec;
                 rec.coreState = m_sess->coreState.empty() ? "idle" : m_sess->coreState;
                 rec.sendEnabled = sendEnabled;
                 rec.stopEnabled = stopEnabled;
                 rec.sendTitle = sendTitle;
-                m_stateProbeLog.push_back(std::move(rec));
-                m_stateProbeLastSend = sendEnabled;
-                m_stateProbeLastStop = stopEnabled;
-                m_stateProbeLastValid = true;
+                m_probeState.stateProbeLog.push_back(std::move(rec));
+                m_probeState.stateProbeLastSend = sendEnabled;
+                m_probeState.stateProbeLastStop = stopEnabled;
+                m_probeState.stateProbeLastValid = true;
             }
         }
     }
@@ -720,7 +720,7 @@ void HarnessApp::RefreshHud() {
     }
     if (HudTouch("probeCmds"), m_hud.probeCmds) {
         if (m_options.cullProbe && m_probe) {
-            m_hud.probeCmds->SetText("avg " + std::to_string(m_evalProbeAvg));
+            m_hud.probeCmds->SetText("avg " + std::to_string(m_probeState.evalProbeAvg));
         } else {
             m_hud.probeCmds->SetText("—");
         }
