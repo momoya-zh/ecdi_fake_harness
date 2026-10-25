@@ -975,3 +975,174 @@ void HarnessApp::RunModelProbe() {
     m_probeState.modelProbeDone = true;
     if (m_application) m_application->Exit();
 }
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendMenuProbeSummary(std::string& json) {
+    json += "  \"menuProbe\": [";
+    // 第五份转义 lambda（各段作用域独立，不能复用别段的局部 lambda）
+    auto escM = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.menuProbeLog.size(); ++i) {
+        const MenuProbeRec& r = m_probeState.menuProbeLog[i];
+        json += (i ? ", " : "");
+        char b[768];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"modelOpen\": %s, \"widgetVisible\": %s, "
+                      "\"headBottom\": %d, \"scrollTop\": %d, \"gap\": %d, "
+                      "\"midWidth\": %d, \"transcriptRows\": %zu, \"timelineLen\": %zu, "
+                      "\"exportLines\": %zu, \"modelBlockLines\": %zu, "
+                      "\"noticeRows\": %zu, \"exportHasNotice\": %s, "
+                      "\"exportWrote\": %s, \"exportBytes\": %zu, \"exportLfOnly\": %s, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.modelOpen ? "true" : "false",
+                      r.widgetVisible ? "true" : "false",
+                      r.headBottom, r.scrollTop, r.gap, r.midWidth,
+                      r.transcriptRows, r.timelineLen,
+                      r.exportLines, r.modelBlockLines, r.noticeRows,
+                      r.exportHasNotice ? "true" : "false",
+                      r.exportWrote ? "true" : "false", r.exportBytes,
+                      r.exportLfOnly ? "true" : "false",
+                      r.matched ? "true" : "false",
+                      escM(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendEmptyProbeSummary(std::string& json) {
+    json += "  \"emptyProbe\": [";
+    for (size_t i = 0; i < m_probeState.emptyProbeLog.size(); ++i) {
+        const EmptyProbeRec& r = m_probeState.emptyProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"settingsVisible\": %s, "
+                      "\"guideExists\": %s, \"guideVisible\": %s, "
+                      "\"rowCount\": %zu, \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(),
+                      r.settingsVisible ? "true" : "false",
+                      r.guideExists ? "true" : "false",
+                      r.guideVisible ? "true" : "false",
+                      r.rowCount, r.matched ? "true" : "false",
+                      r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendModelProbeSummary(std::string& json) {
+    json += "  \"modelProbe\": [";
+    for (size_t i = 0; i < m_probeState.modelProbeLog.size(); ++i) {
+        const ModelProbeRec& r = m_probeState.modelProbeLog[i];
+        json += (i ? ", " : "");
+        char b[640];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"popupVisible\": %s, "
+                      "\"listRows\": %zu, \"ctxKnown\": %s, "
+                      "\"chipText\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), r.popupVisible ? "true" : "false",
+                      r.listRows, r.ctxKnown ? "true" : "false",
+                      r.chipText.c_str(), r.matched ? "true" : "false",
+                      r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendHudProbeSummary(std::string& json) {
+    json += "  \"hudProbe\": [";
+    auto escH2 = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default: out += static_cast<char>(c);
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.hudProbeLog.size(); ++i) {
+        const HudProbeRec& r = m_probeState.hudProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"touched\": %zu, \"unbuilt\": %zu, "
+                      "\"unbuiltNames\": \"%s\", \"matched\": %s, "
+                      "\"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.touched, r.unbuilt,
+                      escH2(r.unbuiltNames).c_str(),
+                      r.matched ? "true" : "false",
+                      escH2(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendResizeProbeSummary(std::string& json) {
+    json += "  \"resizeProbe\": [";
+    auto escR = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.resizeProbeLog.size(); ++i) {
+        const ResizeProbeRec& r = m_probeState.resizeProbeLog[i];
+        json += (i ? ", " : "");
+        char b[640];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"rootW\": %d, \"rootH\": %d, "
+                      "\"scrollW\": %d, \"scrollH\": %d, \"midW\": %d, "
+                      "\"captionW\": %d, \"maxOffsetX\": %d, "
+                      "\"rowWMin\": %d, \"rowWMax\": %d, \"rows\": %zu, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.rootW, r.rootH, r.scrollW, r.scrollH,
+                      r.midW, r.captionW, r.maxOffsetX, r.rowWMin, r.rowWMax, r.rows,
+                      r.matched ? "true" : "false",
+                      escR(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+

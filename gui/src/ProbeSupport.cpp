@@ -364,3 +364,60 @@ void HarnessApp::ProbeResizeClient(int width, int height) {
     b.height = static_cast<float>(height) + dh;
     m_window->GetPlatformWindow().SetBounds(b);
 }
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendAsyncProbeSummary(std::string& json) {
+    uint64_t p50 = 0;
+    uint64_t p99 = 0;
+    if (!m_probeState.apLatencyUs.empty()) {
+        std::vector<uint64_t> sorted = m_probeState.apLatencyUs;
+        std::sort(sorted.begin(), sorted.end());
+        p50 = sorted[sorted.size() / 2];
+        p99 = sorted[std::min(sorted.size() - 1, sorted.size() * 99 / 100)];
+    }
+    const size_t total = m_probeState.apLinesWake + m_probeState.apLinesTick;
+    const uint64_t avgBlockedUs =
+        m_probeState.apBlockedTicks ? (m_probeState.apBlockedUs / m_probeState.apBlockedTicks) : 0;
+    // ★ 延迟分布桶：P99 单看一个数会被尾部样本带偏，而"尾巴是偶发还是系统性的"
+    //   决定它是不是缺陷。桶边界取 1ms / 5ms / 33ms(=tick 周期)——
+    //   ★ 超过 33ms 的样本说明延迟**仍由 tick 决定**（= 推这条路没生效）。
+    uint64_t latMax = 0;
+    size_t le1ms = 0;
+    size_t le5ms = 0;
+    size_t le33ms = 0;
+    size_t gt33ms = 0;
+    for (uint64_t us : m_probeState.apLatencyUs) {
+        if (us > latMax) latMax = us;
+        if (us <= 1000) ++le1ms;
+        else if (us <= 5000) ++le5ms;
+        else if (us <= 33000) ++le33ms;
+        else ++gt33ms;
+    }
+    json += std::string("  \"asyncProbe\": {\"mode\": \"") +
+            (m_options.legacyPoll ? "legacy" : "async") + "\"";
+    json += ", \"ticks\": " + std::to_string(m_probeState.apTicks);
+    json += ", \"blockedTicks\": " + std::to_string(m_probeState.apBlockedTicks);
+    json += ", \"avgBlockedUs\": " + std::to_string(avgBlockedUs);
+    json += ", \"maxBlockedUs\": " + std::to_string(m_probeState.apMaxBlockedUs);
+    json += ", \"linesTotal\": " + std::to_string(total);
+    json += ", \"linesViaWake\": " + std::to_string(m_probeState.apLinesWake);
+    json += ", \"linesViaTick\": " + std::to_string(m_probeState.apLinesTick);
+    json += ", \"callbacks\": " + std::to_string(m_probeState.apCallbacks);
+    // ★ 投递次数必须问**源本身**（`ChildSource::WakePosts()`，只统计成功投递）。
+    //   第一版这里打印的是 App 自己的一个原子量，而它从来没被加过 ⇒ 恒为 0，
+    //   看上去像"一次都没投递"——那正是 `--hud-probe` 抓的「读了但没写」同族。
+    json += ", \"posts\": " +
+            std::to_string(m_sess->child ? m_sess->child->WakePosts() : 0);
+    json += ", \"maxLinesPerCallback\": " + std::to_string(m_probeState.apMaxLinesPerCallback);
+    json += ", \"latencySamples\": " + std::to_string(m_probeState.apLatencyUs.size());
+    json += ", \"latencyP50Us\": " + std::to_string(p50);
+    json += ", \"latencyP99Us\": " + std::to_string(p99);
+    json += ", \"latencyMaxUs\": " + std::to_string(latMax);
+    json += ", \"latLe1ms\": " + std::to_string(le1ms);
+    json += ", \"latLe5ms\": " + std::to_string(le5ms);
+    json += ", \"latLe33ms\": " + std::to_string(le33ms);
+    json += ", \"latGt33ms\": " + std::to_string(gt33ms);
+    json += ", \"eofSeen\": " + std::string(m_sess->liveEof ? "true" : "false");
+    json += "},\n";
+}
+

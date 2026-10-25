@@ -727,3 +727,94 @@ void HarnessApp::RunWorkspaceProbe() {
             return;
     }
 }
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendSettingsProbeSummary(std::string& json) {
+    json += "  \"settingsProbe\": [";
+    auto escS = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default: out += static_cast<char>(c);
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.settingsProbeLog.size(); ++i) {
+        const SettingsProbeRec& r = m_probeState.settingsProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"matched\": %s, "
+                      "\"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(),
+                      r.matched ? "true" : "false",
+                      escS(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendWorkspaceProbeSummary(std::string& json) {
+    json::Value records;
+    records.type = json::Value::Type::Array;
+    auto putString = [](json::Value& object, const char* key, const std::string& value) {
+        json::Value field;
+        field.type = json::Value::Type::String;
+        field.text = value;
+        object.object[key] = std::move(field);
+    };
+    size_t expectedMismatches = 0;
+    bool checksPassed = true;
+    for (const WorkspaceProbeRec& rec : m_probeState.workspaceProbeLog) {
+        json::Value item;
+        item.type = json::Value::Type::Object;
+        putString(item, "phase", rec.phase);
+        putString(item, "clientId", rec.clientId);
+        putString(item, "path", rec.path);
+        putString(item, "pendingId", rec.pendingId);
+        json::Value count;
+        count.type = json::Value::Type::Number;
+        count.number = static_cast<double>(rec.canonicalMatches);
+        item.object["canonicalMatches"] = std::move(count);
+        json::Value send;
+        send.type = json::Value::Type::Bool;
+        send.boolean = rec.sendEnabled;
+        item.object["sendEnabled"] = std::move(send);
+        json::Value matched;
+        matched.type = json::Value::Type::Bool;
+        matched.boolean = rec.matched;
+        item.object["matched"] = std::move(matched);
+        json::Value expected;
+        expected.type = json::Value::Type::Bool;
+        expected.boolean = rec.expectedMismatch;
+        // ★ §7 判据的机器读数：控件上的实际文案 + 形状判据。
+        putString(item, "bubbleText", rec.bubbleText);
+        {
+            json::Value shape;
+            shape.type = json::Value::Type::Bool;
+            shape.boolean = rec.bubbleShapeOk;
+            item.object["bubbleShapeOk"] = std::move(shape);
+        }
+        item.object["expectedMismatch"] = std::move(expected);
+        records.array.push_back(std::move(item));
+        if (rec.expectedMismatch) {
+            ++expectedMismatches;
+            checksPassed = checksPassed && !rec.matched && rec.phase == "negative";
+        } else {
+            checksPassed = checksPassed && rec.matched;
+        }
+    }
+    const bool probePassed = m_probeState.workspaceProbeDone && m_probeState.workspaceProbeLog.size() == 9 &&
+                             expectedMismatches == 1 && checksPassed;
+    json += "  \"workspaceProbe\": " + records.Dump() + ",\n";
+    json += std::string("  \"workspaceProbePassed\": ") +
+            (probePassed ? "true,\n" : "false,\n");
+}
+

@@ -939,6 +939,33 @@ private:
     void RefreshHud();
     void WriteSummary();
 
+    // ★ 2026-10-25（Stage 4）：摘要各段搬进对应的 Probe*.cpp。
+    //   守卫留在这里 —— 本函数就是摘要格式的**目录**，顺序即契约（有 84 份 evals 基线依赖）。
+    void AppendStateProbeSummary(std::string& json);   // AppHud.cpp
+    void AppendHitProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendReasoningProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendOrderProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendRebuildProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendSessionProbeSummary(std::string& json);   // ProbeSidebar.cpp
+    void AppendSidebarProbeSummary(std::string& json);   // ProbeSidebar.cpp
+    void AppendAnswerProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendMenuProbeSummary(std::string& json);   // ProbeChrome.cpp
+    void AppendJumpProbeSummary(std::string& json);   // ProbeFlow.cpp
+    void AppendKeyProbeSummary(std::string& json);   // ProbeFlow.cpp
+    void AppendEmptyProbeSummary(std::string& json);   // ProbeChrome.cpp
+    void AppendModelProbeSummary(std::string& json);   // ProbeChrome.cpp
+    void AppendSelectProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendDelProvProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendHudProbeSummary(std::string& json);   // ProbeChrome.cpp
+    void AppendSettingsProbeSummary(std::string& json);   // ProbeSettings.cpp
+    void AppendEnterProbeSummary(std::string& json);   // ProbeFlow.cpp
+    void AppendGrowProbeSummary(std::string& json);   // ProbeFlow.cpp
+    void AppendResizeProbeSummary(std::string& json);   // ProbeChrome.cpp
+    void AppendThemeProbeSummary(std::string& json);   // ProbeSidebar.cpp
+    void AppendHistoryProbeSummary(std::string& json);   // ProbeSidebar.cpp
+    void AppendWorkspaceProbeSummary(std::string& json);   // ProbeSettings.cpp
+    void AppendAsyncProbeSummary(std::string& json);   // ProbeSupport.cpp
+
     // ★★ Step 4 / 0e（2026-10-19）：**整树重建**——运行期切主题的唯一可行路径。
     //   ★ 为什么必须整树：`Theme.h:19-20` 的令牌是引用别名，颜色值在 `BuildUi`
     //     时就拷进了每个控件的 `PanelStyle`/`ButtonStyle`（ECDI 的 StyleField 是

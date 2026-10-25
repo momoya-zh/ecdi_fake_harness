@@ -747,3 +747,243 @@ void HarnessApp::RunDelProvProbe() {
     m_probeState.delProvProbeDone = true;
     if (m_application) m_application->Exit();
 }
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendHitProbeSummary(std::string& json) {
+    // ★★ REQ-04 **边界**机读证据（2026-10-14）：命中门控受控对照。
+    //   读法：`hitIsSend` = HitTest 是否返回发送按钮本身；`clickReached` = 合成
+    //   Down+Up 后 SendPrompt 是否被进入。判据 = 正对照全 true ∧ forced-disabled 全 false。
+    json += "  \"hitProbe\": [";
+    for (size_t i = 0; i < m_probeState.hitProbeLog.size(); ++i) {
+        const HitProbeRec& r = m_probeState.hitProbeLog[i];
+        json += (i ? ", " : "");
+        char b[320];
+        std::snprintf(b, sizeof(b),
+                      "{\"scene\": \"%s\", \"px\": %d, \"py\": %d, "
+                      "\"sendEnabled\": %s, \"hitIsSend\": %s, \"hitIsNull\": %s, "
+                      "\"hitIsRoot\": %s, \"hitConsumes\": %s, "
+                      "\"hitClass\": \"%s\", \"clickReached\": %s}",
+                      r.scene.c_str(), r.px, r.py,
+                      r.sendEnabled ? "true" : "false",
+                      r.hitIsSend ? "true" : "false",
+                      r.hitIsNull ? "true" : "false",
+                      r.hitIsRoot ? "true" : "false",
+                      r.hitConsumes ? "true" : "false",
+                      r.hitClass.c_str(),
+                      r.clickReached ? "true" : "false");
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendReasoningProbeSummary(std::string& json) {
+    // ★★ 协议 v2 §7 机读证据（2026-10-14）：思维链折叠**行为**轨迹。
+    //   判据 = default 必须 expanded=false ∧ contentVisible=false（默认不渲染正文）；
+    //          after-click-1 必须 expanded=true（点开了）；
+    //          after-click-2 必须回到 false（可逆，不是单向）。
+    //   箭头不单列字段——它在 `headerText` 里（`﹀` 收起 / `︿` 展开），
+    //   与用户可见文本**逐字相同**，避免"读数说箭头对了、屏幕上是另一个字"。
+    json += "  \"reasoningProbe\": [";
+    for (size_t i = 0; i < m_probeState.reasoningProbeLog.size(); ++i) {
+        const ReasoningProbeRec& r = m_probeState.reasoningProbeLog[i];
+        json += (i ? ", " : "");
+        char b[256];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"headerText\": \"%s\", "
+                      "\"expanded\": %s, \"contentVisible\": %s, \"panelH\": %d}",
+                      r.phase.c_str(), r.headerText.c_str(),
+                      r.expanded ? "true" : "false",
+                      r.contentVisible ? "true" : "false", r.panelH);
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendOrderProbeSummary(std::string& json) {
+    // ★★ Step 0a 机读证据（2026-10-19）：块**到达顺序**原文。
+    //   为什么必须是数组而不是一个「顺序对不对」的布尔：探针若自己也算一遍
+    //   `sorted(...)` 再比，比对逻辑就是**被测对象自己**——错的地方会一起错。
+    //   故这里只如实吐出 `Order()` 的内容，判据留给跑批脚本对着夹具独立算。
+    //   读法：本数组必须与夹具里 `block_start` 的出现次序**逐元素相同**。
+    json += "  \"blockOrder\": [";
+    const std::vector<std::string>& order = m_sess->transcript.Order();
+    for (size_t i = 0; i < order.size(); ++i) {
+        json += (i ? ", \"" : "\"");
+        json += order[i];
+        json += "\"";
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendRebuildProbeSummary(std::string& json) {
+    char buf[512];
+    // ★★ Step 0c 机读证据（2026-10-19）：照模型重建视图的逐字段比对。
+    //   判据（跑批脚本执行，不由本函数自评）：
+    //     · forward / forward-again 的 mismatches 必须 == 0（视图重放无损）
+    //     · lexicographic 的 orderMismatches 必须 == 字典序错位量
+    //       （cot 42 / realistic 218 / scale 1998 / demo 0）——负对照，
+    //       为 0 说明探针看不出顺序错，于是上面那条"全等"没有意义
+    //     · rebuildNoticeCount > 0 证明"通知进模型"是承重的（否则重建少这么多行）
+    //     · expanded/answeredSamples > 0 证明"状态被保住"这条断言不是空断言
+    json += "  \"rebuildProbe\": [";
+    // ★ `firstDivergence` 现在会带上**行文本**（标题/正文），而转录里的文字是
+    //   JSON 里来的、可能含引号 ⇒ 必须转义，否则整个摘要不是一个合法 JSON，
+    //   跑批脚本读它会**整份**失败（比少一个字段严重得多）。
+    auto esc = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.rebuildProbeLog.size(); ++i) {
+        const RebuildProbeRec& r = m_probeState.rebuildProbeLog[i];
+        json += (i ? ", " : "");
+        char b[768];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"rowCount\": %zu, \"beforeCount\": %zu, "
+                      "\"timelineCount\": %zu, \"mismatches\": %zu, "
+                      "\"orderMismatches\": %zu, \"firstDivergence\": \"%s\", "
+                      "\"scrollOffset\": %d, \"maxScrollOffset\": %d}",
+                      r.phase.c_str(), r.rowCount, r.beforeCount, r.timelineCount,
+                      r.mismatches, r.orderMismatches, esc(r.firstDivergence).c_str(),
+                      r.scrollOffset, r.maxScrollOffset);
+        json += b;
+    }
+    json += "],\n";
+    std::snprintf(buf, sizeof(buf), "  \"rebuildNoticeCount\": %zu,\n", m_probeState.rebuildNoticeCount);
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"rebuildTimelineCount\": %zu,\n",
+                  m_sess->timeline.size());
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"rebuildExpandedSamples\": %d,\n",
+                  m_probeState.rebuildExpandedSamples);
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"rebuildAnsweredSamples\": %d,\n",
+                  m_probeState.rebuildAnsweredSamples);
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"rebuildScrollBefore\": %d,\n",
+                  m_probeState.rebuildScrollBefore);
+    json += buf;
+    std::snprintf(buf, sizeof(buf), "  \"rebuildRowCount\": %zu,\n", m_sess->rows.size());
+    json += buf;
+    // ★ 点击一次后标题是否还完整（0c 修的工具卡标题被清空那个 bug 的专属读数）
+    std::snprintf(buf, sizeof(buf), "  \"rebuildTitleEmptied\": %d,\n",
+                  m_probeState.rebuildTitleEmptied);
+    json += buf;
+    json += "  \"rebuildTitleSample\": \"" + esc(m_probeState.rebuildTitleSample) + "\",\n";
+    json += "  \"rebuildTitleAfter\": \"" + esc(m_probeState.rebuildTitleAfter) + "\",\n";
+}
+
+void HarnessApp::AppendAnswerProbeSummary(std::string& json) {
+    json += "  \"answerProbe\": [";
+    // ★ 自带一份转义（作用域同 sidebarProbe 段：不能复用别段的局部 lambda）
+    auto escA = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.answerProbeLog.size(); ++i) {
+        const AnswerProbeRec& r = m_probeState.answerProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"askRows\": %zu, \"answeredRows\": %zu, "
+                      "\"modelAnswers\": %zu, \"answerModel\": \"%s\", "
+                      "\"answerOnScreen\": \"%s\", \"buttonsDisabled\": %s, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.askRows, r.answeredRows, r.modelAnswers,
+                      escA(r.answerModel).c_str(), escA(r.answerOnScreen).c_str(),
+                      r.buttonsDisabled ? "true" : "false",
+                      r.matched ? "true" : "false",
+                      escA(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendSelectProbeSummary(std::string& json) {
+    // clipHead 只为诊断：按字节截断会切进多字节字符（实测 JSON 解析炸）——
+    // 回退到 UTF-8 序列边界；块文本可能含引号/换行（会破坏 JSON 字面量），
+    // 一并压成空格。
+    auto truncUtf8 = [](const std::string& s) {
+        // 数码点截断（≤48 码点），终点必落在完整序列后。
+        std::string t;
+        int cp = 0;
+        for (size_t i = 0; i < s.size() && cp < 48; ++i, ++cp) {
+            const unsigned char c = s[i];
+            size_t len = c < 0x80 ? 1 : (c < 0xE0 ? 2 : (c < 0xF0 ? 3 : 4));
+            if (i + len > s.size()) break;   // 尾部残缺序列：丢弃
+            t += s.substr(i, len);
+            i += len - 1;
+        }
+        for (char& c : t) {
+            if (c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t') c = ' ';
+        }
+        return t;
+    };
+    json += "  \"selectProbe\": [";
+    for (size_t i = 0; i < m_probeState.selectProbeLog.size(); ++i) {
+        const SelectProbeRec& r = m_probeState.selectProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"clipHead\": \"%s\", "
+                      "\"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), truncUtf8(r.clipText).c_str(),
+                      r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendDelProvProbeSummary(std::string& json) {
+    json += "  \"delProvProbe\": [";
+    for (size_t i = 0; i < m_probeState.delProvProbeLog.size(); ++i) {
+        const DelProvProbeRec& r = m_probeState.delProvProbeLog[i];
+        json += (i ? ", " : "");
+        char b[640];
+        // ★ 无 hint 字段——中文按字节截断会切出非法 UTF-8（G 相同坑），
+        //   note 已含失败原因。
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"before\": %zu, \"after\": %zu, "
+                      "\"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), r.providersBefore, r.providersAfter,
+                      r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+

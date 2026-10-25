@@ -283,95 +283,51 @@ void HarnessApp::OnReplayTick() {
                 CacheEvalMetrics();
                 RefreshHud();
             }
-            // ★★ 思维链折叠探针必须**在这里**推进：夹具拉完后本函数会从上面 `return`，
-            //   走不到末尾那段。第一版把调用只放在末尾 ⇒ 状态机永远停在 step 0
-            //   （只有 settle 那一 tick 采到 default，之后再不前进）。
-            if (m_options.reasoningProbe && !m_probeState.reasoningProbeDone) {
-                RunReasoningProbe();
-            }
-            // ★★ Step 0c 重建探针同理：夹具拉完后本函数从这里 `return`，走不到末尾。
-            //   第一版只放末尾 ⇒ 摘要里连 `rebuildProbe` 键都没有（探针一步没跑）。
-            if (m_options.rebuildProbe && !m_probeState.rebuildProbeDone) {
-                RunRebuildProbe();
-            }
-            // ★★ Step 0d 会话探针：同样放在 settle 分支（回放模式下夹具拉完才跑）。
-            if (m_options.sessionProbe && !m_probeState.sessionProbeDone) {
-                RunSessionProbe();
-            }
-            // ★★ Step 1 侧栏探针：同上（同步跑完即 Exit，故必须排在其他探针之后，
-            //   否则它先 Exit 会让别人一步都跑不了。顺序：reasoning → rebuild → session → sidebar）。
-            if (m_options.sidebarProbe && !m_probeState.sidebarProbeDone) {
-                RunSidebarProbe();
-            }
-            // ★★ Step 3 答案探针：排在最后（同样同步跑完即 Exit）。
-            //   顺序：reasoning → rebuild → session → sidebar → answer。
-            if (m_options.answerProbe && !m_probeState.answerProbeDone) {
-                RunAnswerProbe();
-            }
-            // ★★ 2026-10-21 菜单/导出探针：同步跑完即 Exit，同上。
-            //   ★ 必须排在 `RunSidebarProbe` **之后**：侧栏那一支收尾会 Exit，
-            //     排在它前面的探针才有机会跑。
-            if (m_options.menuProbe && !m_probeState.menuProbeDone) {
-                RunMenuProbe();
-            }
-            // ★★ 2026-10-21 窗口拉伸探针：同步跑完即 Exit，同上。
-            if (m_options.resizeProbe && !m_probeState.resizeProbeDone) {
-                RunResizeProbe();
-            }
-            // ★★ 2026-10-21 Enter 发送探针：同步跑完即 Exit，同上。
-            if (m_options.enterProbe && !m_probeState.enterProbeDone) {
-                RunEnterProbe();
-            }
-            // ★★ 2026-10-21 输入框自动长高探针：同步跑完即 Exit，同上。
-            if (m_options.growProbe && !m_probeState.growProbeDone) {
-                RunGrowProbe();
-            }
-            // ★★ 2026-10-21 HUD 覆盖探针：同步跑完即 Exit，同上。
-            if (m_options.hudProbe && !m_probeState.hudProbeDone) {
-                RunHudProbe();
-            }
-            // ★★ P4 Phase A 跳到最新探针：同步跑完即 Exit，同上。
-            if (m_options.jumpProbe && !m_probeState.jumpProbeDone) {
-                RunJumpProbe();
-            }
-            // ★★ P4 Phase B 全局快捷键探针：同步跑完即 Exit，同上。
-            if (m_options.keyProbe && !m_probeState.keyProbeDone) {
-                RunKeyProbe();
-            }
-            // ★★ P4 Phase C 空状态探针（回放形态）：同步跑完即 Exit，同上。
-            if (m_options.emptyProbe && !m_probeState.emptyProbeDone) {
-                RunEmptyProbe();
-            }
-            // ★★ P4 Phase H 模型浮窗探针：同步跑完即 Exit，同上。
-            if (m_options.modelProbe && !m_probeState.modelProbeDone) {
-                RunModelProbe();
-            }
-            // ★★ P4 Phase G 选中复制探针：同步跑完即 Exit，同上。
-            if (m_options.selectProbe && !m_probeState.selectProbeDone) {
-                RunSelectProbe();
-            }
-            // ★★ P4 删除所选探针：同步跑完即 Exit，同上。
-            if (m_options.delProvProbe && !m_probeState.delProvProbeDone) {
-                RunDelProvProbe();
-            }
-            // ★★ P3.5 设置探针：跨 tick（save 后 hello 下一 tick 才到队列）。
-            if (m_options.settingsProbe && !m_probeState.settingsProbeDone) {
-                RunSettingsProbe();
-            }
-            // ★★ Step 4 主题/整树重建探针：排在最后。
-            //   ★ 与前五个不同，它是**跨 tick** 的（toggle 相要点真实按钮，
-            //     而重建被延迟到下一个 tick）⇒ 它**不能**和上面的同步探针同 tick 共存：
-            //     上面任何一个一旦 Exit，本探针就再也拿不到下一个 tick。
-            //     故六条互斥使用（同一进程只开一个 `--*-probe`）。
-            if (m_options.themeProbe && !m_probeState.themeProbeDone) {
-                RunThemeProbe();
-            }
-            // ★★ Step 5 历史会话探针：排在最后，同为**跨 tick**（点历史行后，
-            //   打开被延迟到下一个 tick——派发栈 UAF）。
-            //   顺序：reasoning → rebuild → session → sidebar → answer → theme → history。
-            //   七条互斥使用。
-            if (m_options.historyProbe && !m_probeState.historyProbeDone) {
-                RunHistoryProbe();
+            // ★★ 2026-10-25（Stage 4）：探针派发表。**顺序即契约**，见下。
+            //
+            //   为什么改成表：这 19 条形状完全一致
+            //   （`if (m_options.x && !m_probeState.xDone) RunX();`），以前是手抄的
+            //   19 份样板；加一个探针要改三处（开关 / done 标志 / 调用），漏一处就是
+            //   「探针一步没跑」而摘要看起来只是少了几个键。现在只有一行。
+            //
+            //   ★ 顺序为什么不能乱（都是踩过的）：
+            //     · 同步组里多条探针收尾会**同步 `Exit()`**，排在前面的先跑；
+            //       反过来说，任何一个同步探针跑到就 Exit，排在它后面的同 tick 就没机会了
+            //       ⇒ 这也是为什么这些探针「互斥使用」（同一进程只开一个 `--*-probe`）。
+            //     · 跨 tick 组（settings / theme / history）必须排在同步组**之后**：
+            //       它们靠后续 tick 推进，若前面有同步探针 Exit，它们永远等不到下一拍。
+            //     · 第一版把 reasoning 只放在函数末尾 ⇒ 夹具拉完后本函数已 `return`，
+            //       状态机永远停在 step 0（只有 settle 那一 tick 采到 default）。
+            struct ProbeStep {
+                bool CliOptions::*enabled;   // 哪个 --xxx-probe 开关
+                bool ProbeState::*done;      // 对应的「已跑过」标志
+                void (HarnessApp::*run)();   // 跑它
+            };
+            static constexpr ProbeStep kSettleSteps[] = {
+                // ── 同步组：跑完即 Exit ──
+                {&CliOptions::reasoningProbe, &ProbeState::reasoningProbeDone, &HarnessApp::RunReasoningProbe},
+                {&CliOptions::rebuildProbe, &ProbeState::rebuildProbeDone, &HarnessApp::RunRebuildProbe},
+                {&CliOptions::sessionProbe, &ProbeState::sessionProbeDone, &HarnessApp::RunSessionProbe},
+                {&CliOptions::sidebarProbe, &ProbeState::sidebarProbeDone, &HarnessApp::RunSidebarProbe},
+                {&CliOptions::answerProbe, &ProbeState::answerProbeDone, &HarnessApp::RunAnswerProbe},
+                {&CliOptions::menuProbe, &ProbeState::menuProbeDone, &HarnessApp::RunMenuProbe},
+                {&CliOptions::resizeProbe, &ProbeState::resizeProbeDone, &HarnessApp::RunResizeProbe},
+                {&CliOptions::enterProbe, &ProbeState::enterProbeDone, &HarnessApp::RunEnterProbe},
+                {&CliOptions::growProbe, &ProbeState::growProbeDone, &HarnessApp::RunGrowProbe},
+                {&CliOptions::hudProbe, &ProbeState::hudProbeDone, &HarnessApp::RunHudProbe},
+                {&CliOptions::jumpProbe, &ProbeState::jumpProbeDone, &HarnessApp::RunJumpProbe},
+                {&CliOptions::keyProbe, &ProbeState::keyProbeDone, &HarnessApp::RunKeyProbe},
+                {&CliOptions::emptyProbe, &ProbeState::emptyProbeDone, &HarnessApp::RunEmptyProbe},
+                {&CliOptions::modelProbe, &ProbeState::modelProbeDone, &HarnessApp::RunModelProbe},
+                {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
+                {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
+                // ── 跨 tick 组：靠后续 tick 推进，必须排在同步组之后 ──
+                {&CliOptions::settingsProbe, &ProbeState::settingsProbeDone, &HarnessApp::RunSettingsProbe},
+                {&CliOptions::themeProbe, &ProbeState::themeProbeDone, &HarnessApp::RunThemeProbe},
+                {&CliOptions::historyProbe, &ProbeState::historyProbeDone, &HarnessApp::RunHistoryProbe},
+            };
+            for (const ProbeStep& step : kSettleSteps) {
+                if (m_options.*step.enabled && !(m_probeState.*step.done)) (this->*step.run)();
             }
             return;
         }

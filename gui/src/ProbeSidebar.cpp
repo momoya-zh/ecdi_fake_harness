@@ -1231,3 +1231,186 @@ void HarnessApp::RunThemeProbe() {
         return;
     }
 }
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendSessionProbeSummary(std::string& json) {
+    // ★★ Step 0d 机读证据（2026-10-19）：新建/切换会话的行为轨迹。
+    //   判据（跑批脚本执行）：
+    //     · new.sessionCount == baseline.sessionCount + 1（真的多了一个会话）
+    //     · new.blockRowCount == 0（**负对照**：新会话不含旧转录的块行——
+    //       若它非零，说明新会话抄了旧会话的模型，"新建"是假的）
+    //     · back.activeIndex == 0 ∧ back.rowCount == baseline.rowCount（切回无损）
+    json += "  \"sessionProbe\": [";
+    for (size_t i = 0; i < m_probeState.sessionProbeLog.size(); ++i) {
+        const SessionProbeRec& r = m_probeState.sessionProbeLog[i];
+        json += (i ? ", " : "");
+        char b[256];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"sessionCount\": %zu, \"activeIndex\": %zu, "
+                      "\"rowCount\": %zu, \"blockRowCount\": %zu}",
+                      r.phase.c_str(), r.sessionCount, r.activeIndex,
+                      r.rowCount, r.blockRowCount);
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendSidebarProbeSummary(std::string& json) {
+    // ★★ Step 1 机读证据（2026-10-19）：侧栏列表的 A==B 轨迹。
+    //   判据（跑批脚本执行）：
+    //     · rebuild.matched == true ∧ rebuild-again.matched == true
+    //       （原地重建两次都无损 ⇒ 列表是模型的纯函数）
+    //     · negative.matched == **false**（负对照：逆序必须被抓出来。
+    //       若它为 true，说明比对函数没在看次序，上面两条 matched 不作数）
+    //     · new.rowCount == baseline.rowCount + 1 ∧ new.sessionCount == +1
+    //     · deleted.rowCount == baseline.rowCount ∧ deleted.transcriptRows == baseline.transcriptRows
+    //       （删掉会话后列表回到原状，且**活动会话的转录一位没变**）
+    json += "  \"sidebarProbe\": [";
+    // ★ 自带一份转义（与 rebuildProbe 段那个 `esc` 同款，但**不能复用**：
+    //   它是那段 `if` 块内的局部 lambda，作用域到 `],\n` 就结束了）。
+    //   会话 label 含夹具文件名，可能是任意 UTF-8；`firstDivergence` 里还会拼
+    //   行文本 ⇒ 不转义就会让整份摘要不再是合法 JSON（跑批脚本读它会整份失败）。
+    auto esc = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.sidebarProbeLog.size(); ++i) {
+        const SidebarProbeRec& r = m_probeState.sidebarProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"rowCount\": %zu, \"sessionCount\": %zu, "
+                      "\"activeIndex\": %zu, \"selectedRows\": %zu, "
+                      "\"selectedIndex\": %zu, \"transcriptRows\": %zu, "
+                      "\"sidebarVisible\": %s, \"midWidth\": %d, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.rowCount, r.sessionCount, r.activeIndex,
+                      r.selectedRows, r.selectedIndex, r.transcriptRows,
+                      r.sidebarVisible ? "true" : "false", r.midWidth,
+                      r.matched ? "true" : "false",
+                      esc(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendThemeProbeSummary(std::string& json) {
+    // ★ 顶层两个标量：这一次进程最终停在什么主题、整树重建过几次。
+    //   只在探针开启时写 ⇒ 默认摘要**逐字节不变**（本仓铁律）。
+    json += std::string("  \"theme\": \"") + (harness::g_themeLight ? "light" : "dark")
+            + "\",\n";
+    json += "  \"uiRebuilds\": " + std::to_string(m_uiRebuilds) + ",\n";
+    json += "  \"themeProbe\": [";
+    // ★ 第三份转义 lambda（前两份都在各自 if 块作用域内，不能复用）
+    auto escT = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.themeProbeLog.size(); ++i) {
+        const ThemeProbeRec& r = m_probeState.themeProbeLog[i];
+        json += (i ? ", " : "");
+        char b[768];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"light\": %s, \"uiRebuilds\": %zu, "
+                      "\"paints\": %zu, \"frames\": %zu, \"frameUsTotal\": %zu, "
+                      "\"sidebarRows\": %d, \"transcriptRows\": %d, "
+                      "\"inputText\": \"%s\", \"sidebarVisible\": %s, "
+                      "\"activeIndex\": %zu, \"sessionCount\": %zu, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.light ? "true" : "false", r.uiRebuilds,
+                      r.paints, r.frames, r.frameUsTotal, r.sidebarRows, r.transcriptRows,
+                      escT(r.inputText).c_str(), r.sidebarVisible ? "true" : "false",
+                      r.activeIndex, r.sessionCount,
+                      r.matched ? "true" : "false", escT(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendHistoryProbeSummary(std::string& json) {
+    json += "  \"historyProbe\": [";
+    // 第四份转义 lambda（前三份都在各自 if 块作用域内）
+    auto escH = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.historyProbeLog.size(); ++i) {
+        const HistoryProbeRec& r = m_probeState.historyProbeLog[i];
+        json += (i ? ", " : "");
+        char b[1024];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"filesOnDisk\": %zu, \"rowsOnScreen\": %zu, "
+                      "\"openedLabel\": \"%s\", \"originKind\": \"%s\", "
+                      "\"blocks\": %zu, \"deltas\": %zu, \"messages\": %zu, "
+                      "\"atEnd\": %s, \"askRows\": %zu, \"answeredRows\": %zu, "
+                      "\"modelAnswers\": %zu, \"sidecarExisted\": %s, "
+                      "\"sidecarWritten\": %s, \"sidecarRemoved\": %s, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.filesOnDisk, r.rowsOnScreen,
+                      escH(r.openedLabel).c_str(), escH(r.originKind).c_str(),
+                      r.blocks, r.deltas, r.messages,
+                      r.atEnd ? "true" : "false", r.askRows, r.answeredRows,
+                      r.modelAnswers,
+                      r.sidecarExisted ? "true" : "false",
+                      r.sidecarWritten ? "true" : "false",
+                      r.sidecarRemoved ? "true" : "false",
+                      r.matched ? "true" : "false", escH(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+

@@ -859,3 +859,22 @@ void HarnessApp::RefreshHud() {
                                std::to_string(m_evalLastUs) + " us");
     }
 }
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendStateProbeSummary(std::string& json) {
+    // ★★ REQ-04 机读证据（2026-10-14）：状态翻转轨迹。
+    //   每条 = {core state, 发送使能, 停止使能, 发送标题}——**只在变化时**记，
+    //   故可逐行核对协议 §6「发送/停止只由 state 驱动」。
+    //   ★ 标题文本来自 `Button::GetText()` **直接回读**（不靠像素/截图）。
+    json += "  \"stateProbe\": [";
+    for (size_t i = 0; i < m_probeState.stateProbeLog.size(); ++i) {
+        const StateProbeRec& r = m_probeState.stateProbeLog[i];
+        json += (i ? ", " : "");
+        json += "{\"state\": \"" + r.coreState + "\", \"sendEnabled\": " +
+                (r.sendEnabled ? "true" : "false") + ", \"stopEnabled\": " +
+                (r.stopEnabled ? "true" : "false") + ", \"sendTitle\": \"" +
+                r.sendTitle + "\"}";
+    }
+    json += "],\n";
+}
+

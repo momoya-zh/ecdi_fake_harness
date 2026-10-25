@@ -728,3 +728,131 @@ void HarnessApp::RunKeyProbe() {
 }
 
 
+
+// ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────
+void HarnessApp::AppendJumpProbeSummary(std::string& json) {
+    json += "  \"jumpProbe\": [";
+    for (size_t i = 0; i < m_probeState.jumpProbeLog.size(); ++i) {
+        const JumpProbeRec& r = m_probeState.jumpProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"visible\": %s, \"offset\": %d, "
+                      "\"maxOffset\": %d, \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), r.visible ? "true" : "false",
+                      r.offset, r.maxOffset,
+                      r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendKeyProbeSummary(std::string& json) {
+    json += "  \"keyProbe\": [";
+    for (size_t i = 0; i < m_probeState.keyProbeLog.size(); ++i) {
+        const KeyProbeRec& r = m_probeState.keyProbeLog[i];
+        json += (i ? ", " : "");
+        char b[640];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"sidebarVisible\": %s, "
+                      "\"sidebarShown\": %s, \"settingsVisible\": %s, "
+                      "\"settingsShown\": %s, \"menuOpen\": %s, "
+                      "\"menuShown\": %s, \"sessionCount\": %zu, "
+                      "\"inputText\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(),
+                      r.sidebarVisible ? "true" : "false",
+                      r.sidebarShown ? "true" : "false",
+                      r.settingsVisible ? "true" : "false",
+                      r.settingsShown ? "true" : "false",
+                      r.menuOpen ? "true" : "false",
+                      r.menuShown ? "true" : "false",
+                      r.sessionCount, r.inputText.c_str(),
+                      r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendEnterProbeSummary(std::string& json) {
+    json += "  \"enterProbe\": [";
+    auto escE = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.enterProbeLog.size(); ++i) {
+        const EnterProbeRec& r = m_probeState.enterProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"promptCount\": %zu, "
+                      "\"inputText\": \"%s\", \"noticeRows\": %zu, "
+                      "\"sent\": %s, \"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.promptCount, escE(r.inputText).c_str(),
+                      r.noticeRows, r.sent ? "true" : "false",
+                      r.matched ? "true" : "false",
+                      escE(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendGrowProbeSummary(std::string& json) {
+    json += "  \"growProbe\": [";
+    auto escG = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.growProbeLog.size(); ++i) {
+        const GrowProbeRec& r = m_probeState.growProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"rootH\": %d, \"maxInputH\": %d, "
+                      "\"inputH\": %d, \"barH\": %d, \"lines\": %d, "
+                      "\"hintY\": %d, \"buttonY\": %d, \"matched\": %s, "
+                      "\"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.rootH, r.maxInputH, r.inputH, r.barH, r.lines,
+                      r.hintY, r.buttonY,
+                      r.matched ? "true" : "false",
+                      escG(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
