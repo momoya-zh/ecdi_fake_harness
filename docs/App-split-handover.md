@@ -10,15 +10,17 @@
 
 | 项 | 值 |
 |---|---|
-| HEAD | `160b808`（Stage 3 刀③），工作区**干净** |
+| HEAD | `b167580`（Stage 4 收尾），工作区**干净** |
 | `App.cpp` | 12,269 → **869 行**（-93%），只剩 10 个应用接线函数 |
-| `App.h` | 2,009 → **1,488 行**（-26%）：刀① `CliOptions` -259 / 刀② 探针结构体 -276 / 刀③ 前置声明 +11 |
-| 最大的文件 | `ProbeSidebar.cpp` 1233 / `AppSummary.cpp` 1114 / `AppUiMain.cpp` 1092 |
-| 四条验收门 | 全绿；门 2 基线 `fp-stage3.json`（286/286，见 §3） |
+| `App.h` | 2,009 → **1,422 行**（-29%）：刀① -259 / 刀② -276 / 刀③ +11 / Stage 4 收口 -93 + 摘要段声明 +27 |
+| 最大的文件 | `ProbeSidebar.cpp` 1416 / `ProbeChrome.cpp` 1148 / `ProbeTranscript.cpp` 989 |
+| 四条验收门 | 全绿；门 2 基线 `fp-stage4.json`（**310/310**，见 §3） |
 | Stage 2 | `BuildMainArea` 980 行 → 36 行装配 + 7 个 builder，树序 83 条 / 句柄写入 34 条校验一致 |
+| Stage 4 | 103 个探针成员 → `ProbeState.h`（**552 处** `m_probeState.*`）；`WriteSummary` 1082→304；派发表 19 行 |
 
-**一句话**：**Stage 1 / 2 / 3 全部完成**。产品代码与仪器代码物理分开，单函数过大问题已解，
-头文件从 2009 瘦到 1488。剩下的体积是探针注释块与 `m_*ProbeLog` 成员声明（属 Stage 4）。
+**一句话**：**Stage 1 / 2 / 3 / 4 全部完成**。产品代码与仪器代码物理分开、单函数过大已解
+（`WriteSummary` 1082→304、`BuildMainArea` 980→36）、头文件 2009→1422、仪器状态收成一个
+具名句柄 `m_probeState`。**Stage 5（组件化）仍未做，且不建议做**（见 §8.2）。
 
 ---
 
@@ -33,7 +35,7 @@
 | `AppUiChrome.cpp` | 509 | `BuildUi` / `RebuildUi` / `BuildTopBar` / `BuildBottom` / `HarnessRootLayout` |
 | `AppTranscript.cpp` | 861 | 转录行构建、增量追加 |
 | `AppHud.cpp` | 857 | 顶栏 HUD、用量、协议健康 |
-| `AppStream.cpp` | 817 | 回放行消费、delta 合并 |
+| `AppStream.cpp` | 775 | 回放行消费、delta 合并、探针派发表（`kSettleSteps`） |
 | `AppSession.cpp` | 770 | 会话切换、回放控制 |
 | `AppSettings.cpp` | 565 | 设置面板读写、凭据 |
 | `AppWorkspace.cpp` | 362 | 工作区列表 |
@@ -45,7 +47,7 @@
 | 文件 | 行 | 装什么 |
 |---|---|---|
 | `ProbeSidebar.cpp` | 1233 | 侧栏对比探针（最大单文件，**唯一还超 1200 的**） |
-| `AppSummary.cpp` | 1114 | `WriteSummary` —— 单函数 1082 行，见 §8 |
+| `AppSummary.cpp` | 336 | `WriteSummary` 304 行 = 摘要格式的**目录**（24 段实现在各 `Probe*.cpp`），见 §8.1 |
 | `ProbeChrome.cpp` | 977 | 主题/重建/菜单/尺寸探针 |
 | `ProbeTranscript.cpp` | 748 | 转录相关探针 |
 | `ProbeFlow.cpp` | 730 | 会话/回放/历史探针 |
@@ -56,9 +58,10 @@
 
 | 文件 | 行 | 说明 |
 |---|---|---|
-| `App.h` | 1488 | 应用组装声明；Stage 3 之后不含 `CliOptions`、探针结构体与控件头 |
+| `App.h` | 1395 | 应用组装声明；Stage 3/4 之后不含 `CliOptions`、探针结构体、控件头与探针状态 |
 | `CliOptions.h` | 273 | **Stage 3 刀①**：命令行选项 47 字段（含 26 个探针开关），逐字节从 `App.h` 搬出 |
 | `ProbeTypes.h` | 318 | **Stage 3 刀②**：24 个探针读数结构体（命名空间作用域） |
+| `ProbeState.h` | 178 | **Stage 4**：103 个探针状态成员；`HarnessApp` 只留 `ProbeState m_probeState;` |
 | `AppInternal.h` | 119 | 跨 TU 共享声明：路径工具、几何常量、探针色、`Pick()`、5 个 UI 助手 |
 | `UiCommon.cpp` | 127 | `ContentWidth` / `ConversationTitle` / `ConversationSubtitle` / `UnknownKindText` / `ReasoningTitle` / `AddLine` |
 | `ThemeUsing.h` | 66 | 52 个主题短名 `using harness::kXxx;` |
@@ -82,6 +85,8 @@
 | `ac9b4c9` | **Stage 3 刀①** `CliOptions` → `CliOptions.h` | 门 1+2+3+4（结构体不进函数指纹，天然安全） |
 | `f775a5e` | **Stage 3 刀②** 24 个探针结构体 → `ProbeTypes.h` | 门 1+3+4 + 逐行等价 + 3 行 diff（门 2 报 3 条返回类型 MISMATCH，归一后全等） |
 | `160b808` | **Stage 3 刀③** 控件类型改前置声明 | 门 1+2+3+4 + GL 抽测；重编半径实测见 §7.2③ |
+| `4528fb7` | **Stage 4** 103 个探针成员 → `ProbeState.h` | 门 1+3+4 + **改名后逐字节全等**（12 个 .cpp） |
+| `b167580` | **Stage 4** 收尾：`WriteSummary` 切段 + 派发表 | 门 1+3×2+4 + 24 段逐行等价 + 23 份摘要对账 |
 
 > 历史 commit message 与 `docs/P4*.md` 里的**行号引用已全部漂移**，这是接受的副作用
 > （见 plan §8），不要去建映射表。定位代码一律用「文件名 + 函数名」。
@@ -109,11 +114,36 @@ python tools/split_verify.py --check .scratch/split-baseline/fp-stage2.json  # �
 判据：`MISMATCH` / `MISSING` 判红；**新增函数名只提示不判红**（Stage 2 会新增 builder）。
 指纹 = 定义首行到配对右花括号的**原文**（含注释、含缩进），所以「只搬不改」连注释都要求一字不动。
 
-> ★ 2026-10-25：基线已换 `fp-stage3.json`（286 个函数，刀② 之后重建）。
+> ★ 2026-10-25：基线已换 `fp-stage4.json`（**310** 个函数，Stage 4 两刀都落完后重建）。
 > **基线是「当前状态的锚」，不是历史档案**——每落一刀就 `--save` 一次，下次才有可比对象。
 > 旧的 `fp-before.json` 是 **Stage 2 之前**存的，用它跑必然报
 > `BuildMainArea 980 → 36 MISMATCH` + 7 个 NEW —— 那是 Stage 2 的既定成果，不是回归。
 > **别拿旧基线判红，也别去"修"那个 MISMATCH。**
+
+### 门 2 的第二种替代 — 纯改名（Stage 4 那种）
+
+函数体里全是改名字符串时，指纹必然变，且「变了」这个信号**没有信息量**。
+替代判据是**逐文件正向映射后全等**：
+
+```bash
+# 映射文件：一行「旧名 新名」，# 开头为注释
+python tools/rename_verify.py --map .scratch/stage4-rename-map.txt --ref af7e505
+python tools/rename_verify.py --map m.txt --ref HEAD gui/src/App.cpp    # 也可只查单文件
+```
+
+输出 `RENAME-EQ` / `UNCHANGED`（未碰到，跳过）为绿，`DIFF` 判红并打印前 20 行 unified diff。
+全等 ⇒ 除映射命中的标识符外一个字符都没动，**覆盖面比函数指纹更广**（成员声明、
+初始化列表、注释、缩进全在范围内）。
+
+工具自带两条前置检查，不满足就判红——因为那时「逐字节全等」这个证明**不成立**：
+1. 旧名不得出现在**字符串字面量**里（字符串内容不会被映射，那里不等就是真的没改）。
+   `--allow-literal` 可放行确属巧合的情况。字面量扫描会跳过反斜杠转义，
+   `"a\\"` 后面的名字判在串**外**（曾用朴素引号计数把正常代码报成「名字在字符串里」）。
+2. 映射不得链式（新名又当旧名），否则一次替换的结果依赖匹配顺序。
+
+映射怎么来：`git show <ref>:gui/src/App.h` 里把成员声明逐行抽出来，套上「新容器 + 去前缀」
+即可（Stage 4 的 103 行映射就是这么生成的，见 §8.1a）。**别手抄**，抄错一个名字工具会
+安静地把它当「没改」放过。
 
 **只在纯搬运时有效。** 一旦动函数体（Stage 2 那种），门 2 失效，换 `build_order_check.py`。
 
@@ -143,7 +173,8 @@ volatile 白名单只有 4 个：`frameCount` / `paints` / `maxPaintUs` / `avgPa
 **`invalidations` 不在白名单里**——它是稳定锚（demo 恒 8 / cot 恒 20），漂移就是重绘链路被改坏。
 
 基线文件在 `.scratch/split-baseline/`：`demo` / `realistic` / `cot` / `scale` /
-`hostile-seq-gap` / `hostile-truncated` / `gl-demo` + `fp-before.json`。
+`hostile-seq-gap` / `hostile-truncated` / `gl-demo` + **`fp-stage4.json`（现行指纹基线）**。
+`fp-before` / `fp-stage2` / `fp-stage3` 只作历史存档，**不要拿来判红**（见 §3 门 2 的注）。
 
 ### 门 2 的替代 — 执行顺序校验（Stage 2 类改动）
 
@@ -228,12 +259,13 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 
 ## 7. Stage 3：头文件瘦身（✅ 三刀全部完成）
 
-`App.h` 2009 行 → **1488 行**（刀① -259 / 刀② -276 / 刀③ +11）。
+`App.h` 2009 行 → **1488 行**（刀① -259 / 刀② -276 / 刀③ +11）；Stage 4 再收到 **1395**。
 
 > ★ **「约 1100 行是仪器声明」这个估算偏高，别再拿它当目标依据**：把探针的 struct body
 > 全部搬走只砍了 276 行。剩下的大头是每条探针上方的「为什么必须有」注释块 +
-> `m_xxxProbeLog` 成员声明（85 行含探针成员）+ `Run*Probe()` 声明 —— 那些属 Stage 4（§8），
-> 不在 Stage 3。**「目标 ≈900 行」靠 Stage 3 达不到，实测落到 1488 就是它的天花板。**
+> `m_xxxProbeLog` 成员声明（85 行含探针成员）+ `Run*Probe()` 声明。
+> 成员声明部分后来由 **Stage 4 收走（-93 行）**；注释块**故意留下**（见 §8.1）。
+> **「目标 ≈900 行」始终没达到**，最终落点是 **1395**。
 
 ### 7.1 实测行号地图（**已过期，仅存档**）
 
@@ -336,6 +368,8 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 **净结果：2009 → 1488（-26%）。原目标 900 达不到**，原因见 §7 顶部：
 剩下的大头是探针注释块与 `m_*ProbeLog` 成员声明（85 行含探针成员）+ `Run*Probe()` 声明，
 要动它们得做 Stage 4（501 处引用），那不属于 Stage 3。
+**Stage 4 后来又砍了 93 行（1488 → 1395）**，但砍的是成员声明；探针注释块仍在 App.h
+——那是**故意留的**（注释讲判据，跟着 `Run*Probe()` 走），所以 1395 就是这条线的终点。
 
 **Stage 3 的三个真实结论**（三条都和原文档的预期不符，别照抄原文）：
 1. 刀① 不产生重编收益（`main.cpp` 仍要构造 `HarnessApp` 因而仍包 App.h）。
@@ -345,17 +379,144 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 
 ---
 
-## 8. Stage 4 / 5：先别做
+## 8. Stage 4（✅ 已完成）/ Stage 5（不建议做）
 
-**Stage 4（仪器收口）**：`m_*Probe*` 成员有 501 处引用，散在 `HarnessApp` 里。
-收益是「探针状态集中」，但 diff 噪声极大（几乎每个产品函数都要改），
-且必须在 Stage 3 之后做才有意义。可选，不阻塞。
-**Stage 3 做完之后，它是继续压缩 `App.h`（1488 行）的**唯一**杠杆**——
-剩下的大头就是探针注释块 + `m_*ProbeLog` 成员声明 + `Run*Probe()` 声明。
+### 8.1a Stage 4：仪器状态收口（`4528fb7`）
 
-**Stage 5（组件化）**：**明确不建议现在做**。探针需要**贯穿式访问**内部状态
-（`SnapshotUi` 要比对 rebuild 前后的四路快照），组件化会把私有成员封起来，
-探针只能靠友元或额外接口，等于用新耦合换旧耦合。除非决定「砍掉探针」，否则不做。
+**做了什么**：103 个探针状态成员从 `HarnessApp` 收进 `ProbeState.h`，类里只留
+`ProbeState m_probeState;`。569 处引用变成 `m_probeState.xxx`（12 个 `.cpp` + `App.h`）。
+`App.h` 1488 → **1395**（后因摘要段声明 +27，最终 **1422**）。
+
+Stage 4 共三件（方案文档 §Stage 4 原文的三条）：**8.1a 状态收口 / 8.1b 摘要切段 / 8.1c 派发表**。
+
+**范围判据**（写在 `ProbeState.h` 头注，三条，逐条 grep 核实）：
+
+| 规则 | 内容 |
+|---|---|
+| A | 名字含 `Probe` 的成员（**`m_measureProbe` 除外**——ECDI 的测量对象，属产品侧 HUD 读数链） |
+| B | `m_ap*` 家族（REQ-03 异步投递读数，名字没带 `Probe`） |
+| C | 名字不带 `Probe`、但**读写点全在探针门控内**的草稿：`m_reasoningTitleStreaming` / rebuild 七个快照字段 / theme 三个 before 快照 / `m_hudAudit` / `m_hudTouched` |
+
+**刻意不搬**（读写点在产品路径上，别顺手挪进来）：`m_measureProbe`、`m_uiRebuilds`
+（`RebuildUi` 无条件自增，探针只是读它）、`m_jumpLastOffsetY`、`m_tooltipAnchor`、
+`m_tooltipPending`、`m_evalPaints` / `m_evalFrames` / `m_evalMaxUs` / `m_evalSumUs` /
+`m_evalLastUs` / `m_invalidations` 等**产品**读数。
+
+**判据（★ 门 2 在这一步失效，替代品比指纹更强）**
+
+31 个函数报 `MISMATCH` —— 函数体里全是改名字符串，指纹必然变。替代判据是
+`.scratch/stage4_verify.py`：**取 HEAD 版每个 `.cpp`，套同一个映射，与工作区文件逐字节比**。
+12 个 `.cpp` 全部全等 ⇒ 除 `m_X` → `m_probeState.X` 之外**没有改动任何一个字符**
+（含注释、缩进、空行）。这比「函数体 sha256 相同」覆盖得更广（连函数外的代码也覆盖了）。
+
+配套的两条安全检查（脚本里写死，改不通过就退出）：
+1. 成员名**不得出现在字符串字面量里** —— 否则改名会改掉摘要的键或日志文本（引号计数要正确处理 `\"`）；
+2. 成员声明必须单行且名字只出现一次 —— 否则切片会切错。
+
+**额外验证：23 份摘要逐字节对账**（13 探针 + 6 夹具 + 4 异步，改前存 `.scratch/stage4-before/`）
+⇒ 18 份 `IDENTICAL`，5 份差异**全部**落在 `paints` / `invalidations` / `latencyP99Us`。
+按 §6 抖动协议各跑 3 次：async 相 `invalidations` = 253/246/210、`paints` = 164/136/125
+（±20% 抖动），而功能计数 `blocks/deltas/messages` 三跑恒为 `6/415/432` ⇒ 判定为时序抖动。
+
+**★ 已知的「不彻底」**：`m_measureProbe` 与 `m_eval*` 读数留在产品侧。若将来要把它们也收进去，
+先回答一个问题：**`WriteSummary` 里那些键是产品契约还是仪器读数？** 前者不该跟着探针走
+（84 份 evals 基线依赖它们）。
+
+### 8.1b `WriteSummary` 按探针切段（同 `b167580`）
+
+`WriteSummary` **1082 → 304 行**，`AppSummary.cpp` **1114 → 336 行**。
+
+27 个 `if (m_options.xProbe) { json += ... }` 块里，**≥6 行的 24 段**搬成
+`AppendXProbeSummary(json)`，实现在对应 `Probe*.cpp`：
+
+| 目标文件 | 段数 |
+|---|---|
+| `ProbeTranscript.cpp` | 7（hit / reasoning / order / rebuild / answer / select / delProv） |
+| `ProbeChrome.cpp` | 5（menu / empty / model / hud / resize） |
+| `ProbeSidebar.cpp` | 4（session / sidebar / theme / history） |
+| `ProbeFlow.cpp` | 4（jump / key / enter / grow） |
+| `ProbeSettings.cpp` | 2（settings / workspace） |
+| `AppHud.cpp` | 1（state —— 被动日志，由 `RefreshHud` 填） |
+| `ProbeSupport.cpp` | 1（async —— REQ-03） |
+
+**关键设计：守卫留在 `WriteSummary`。** 它现在是一份**摘要格式的目录**：哪个键在哪个
+`--xxx-probe` 下、按什么顺序输出，一眼看完；字段顺序（= 84 份 evals 的契约）就在这一处。
+把守卫也搬走就等于把顺序分散到 24 个文件里。
+
+3 行以下的小块（`reasoningStreamingTitle`）**留在原地**——搬走反而更难读。
+
+**★ 一个看着像重复代码、实则不能合并的坑**：`WriteSummary` 里有 **11 份转义 lambda**，
+实测是**三种行为**：
+
+| 变体 | 差异 | 位置 |
+|---|---|---|
+| 完整转义（9 份） | `"` → `\"`，且 `c < 0x20` → `\u00xx` | 多数探针段 |
+| 不转义引号（1 份，`escS`） | `case '"': out += "\""` | settings 相 |
+| 不转义控制字符（1 份，`escH2`） | `default: out += char(c)` | hud 相 |
+
+⇒ **别把它们合并成一个 `JsonEscape`**，那会改输出。lambda 随块体原样搬走。
+
+**判据**：24 段块体与 HEAD 原文**逐行比对**（只允许差缩进 + 注入的 `char buf[512];`）
+—— 24/24 相同；再叠加 23 份摘要逐字节对账（见下）。
+
+### 8.1c `OnReplayTick` 探针派发表（同 `b167580`）
+
+settle 分支里 19 个同构 if（`if (m_options.x && !m_probeState.xDone) RunX();`）
+→ `kSettleSteps[]` 表 + 一个循环，`AppStream.cpp` 817 → 775 行：
+
+```cpp
+struct ProbeStep {
+    bool CliOptions::*enabled;   // 哪个 --xxx-probe 开关
+    bool ProbeState::*done;      // 对应的「已跑过」标志
+    void (HarnessApp::*run)();   // 跑它
+};
+static constexpr ProbeStep kSettleSteps[] = { ... 19 行 ... };
+for (const ProbeStep& step : kSettleSteps) {
+    if (m_options.*step.enabled && !(m_probeState.*step.done)) (this->*step.run)();
+}
+```
+
+**行序 = 契约**，按两组排：
+
+- **同步组（16 条）**：跑完即 `Exit()`，所以这些探针**互斥使用**（同一进程只开一个）。
+- **跨 tick 组（3 条：settings / theme / history）**：靠后续 tick 推进，**必须排在同步组之后**
+  —— 前面任何一个同步探针 Exit，它们就永远等不到下一拍。
+
+加一个探针现在只改一行。生成脚本会断言「表的行序 == 原 if 的书写顺序」，改错顺序直接报错。
+
+★ **新增一个探针要碰 5 处，漏一处不会报错、只会静默不跑**：
+
+| # | 位置 | 改什么 |
+|---|---|---|
+| 1 | `CliOptions.h` | 加 `bool xProbe = false;` 开关 |
+| 2 | `ProbeState.h` | 加状态成员（日志 vector / `xDone` 标志） |
+| 3 | `AppStream.cpp` `kSettleSteps[]` | **加一行**（同步组还是跨 tick 组，见上面的行序契约） |
+| 4 | `App.h` | 加 `void AppendXProbeSummary(std::string& json);` 声明 |
+| 5 | 对应 `Probe*.cpp` | 写 `RunXProbe()` + `AppendXProbeSummary()` |
+
+**不要**在 settle 分支里新写一个 `if` —— 那会让「表就是全部探针」这个不变量失效，
+下一个人数表的行数会数少。
+
+### 8.1d Stage 4 的三条判据（汇总）
+
+| 判据 | 覆盖 | 结果 |
+|---|---|---|
+| 改名后逐字节全等（`tools/rename_verify.py`） | 12 个 `.cpp` 的全部内容 | 12/12 全等 |
+| 24 段块体逐行等价 | `WriteSummary` 切出的每一段 | 24/24 相同 |
+| 23 份摘要逐字节对账 | 13 探针 + 6 夹具 + 4 异步 | 18 份 IDENTICAL，5 份只差时序派生量 |
+
+外加门 1（0 error 0 warning）与门 3（regress **跑两次**：切段后一次、派发表后一次，
+各自单独过关——不拿上一次的绿顶）。
+
+### 8.2 Stage 5（组件化）：**明确不建议现在做**
+
+探针需要**贯穿式访问**内部状态（`SnapshotUi` 要比对 rebuild 前后的四路快照，
+`CompareRows` 要直接读 `m_sess->rows`）。组件化会把私有成员封起来，探针只能靠友元或
+额外接口，等于**用新耦合换旧耦合**。除非先决定「砍掉探针」，否则不做。
+
+> Stage 4 之后这条更清楚了：探针状态已经收成一个句柄，`m_probeState.*` 就是全部接触面。
+> 真要组件化，只需给组件开一个 `ProbeState&` 的友元通道——但那仍然是把组件的内部暴露给探针，
+> 并没有真的解耦。
 
 ---
 
@@ -366,7 +527,7 @@ cd /d/Project/ECDI_fake_harness
 git status --short                     # 应为空
 unset http_proxy https_proxy
 cmake --build gui/build --config Release        # 门 1，约 11s 增量
-python tools/split_verify.py --check .scratch/split-baseline/fp-stage3.json   # 门 2，应 286/286
+python tools/split_verify.py --check .scratch/split-baseline/fp-stage4.json   # 门 2，应 286/286
 python tools/regress.py                          # 门 3，约 6 分钟
 ```
 

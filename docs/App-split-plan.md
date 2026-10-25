@@ -402,7 +402,19 @@ App.cpp 的注释里写清了"若某天又想在这里建控件，先想想该�
 
 **Stage 3 后**：App.h 1995 → ≈900，且 App.cpp 侧不再因改一个探针开关而重编全部。
 
-### Stage 4 — 仪器收口（可选，收益中，diff 噪声大）
+### Stage 4 — 仪器收口（✅ 已完成，见 §8.1a–8.1d 与交接文档）
+
+> 落地于 `4528fb7`（状态收口）+ `b167580`（切段 + 派发表）。三项全部做完，实测值与本节估算有出入，见下方「实测 vs 估算」。**Stage 4 不改变任何可观测行为**：23 份摘要逐份对账，18 份 IDENTICAL，5 份差异全落在计时类键（`paints` / `invalidations` / `latencyP99Us` / `maxBlockedUs` / `linesViaWake`），属抖动而非回归（§6 判据）。
+
+**实测 vs 估算（差得比较多的三处，写在这里免得下一个人再按估算规划）：**
+
+| 项 | 本计划估算 | 实测 | 偏差原因 |
+|---|---|---|---|
+| `ProbeState.h` 行数 | ≈90 | **178** | 估算只算了字段行，漏了三条纳入规则的头注释 + 刻意排除项的说明 |
+| 收进 `ProbeState` 的成员 | 501 处 | **103 个** | 501 是**全部引用点**（含 `.cpp` 里的 `m_xProbeY` 读写），成员声明只有 103 个 |
+| `WriteSummary` 行数 | ≈120 | **304** | 1082 → 304 已经削掉 72%，但 24 个 `if` 守卫**故意留在原地**——它是摘要格式的「目录」，删了就看不出字段顺序契约 |
+
+另一个估算没覆盖的事实：`WriteSummary` 里 11 个转义 lambda **不是同一种行为**（`escS` 不转义引号、`escH2` 不转义控制字符），去重会改变输出，所以原样搬走，没有合并。
 
 1. `ProbeState.h`：把 501 处 `m_xxxProbe*` 成员收进 `struct ProbeState`，`HarnessApp` 里只留 `ProbeState p;`。
    机械替换：`sed -E 's/\bm_(state|hit|reasoning|rebuild|session|sidebar|answer|theme|history|menu|resize|hud|settings|enter|grow|jump|key|empty|model|select|delProv|workspace|ap|eval)Probe/m_probe_\1/g'` 后再整体前缀成 `p.`。
@@ -437,6 +449,19 @@ after : AppSummary.cpp:WriteSummary sha=ab12...  1083 行   ← 一致
 判据：**函数名集合相同，且每个函数体 sha256 相同**。任何一处 `MISMATCH` 都说明搬运时改到了代码（含注释）。这一步比人眼 review 可靠得多，而且能证明"我没有顺手改东西"。
 
 > 注意：Stage 2 会故意改变 `BuildMainArea` 的形态，所以门 2 在 Stage 2 只对**除 `BuildMainArea` 及其 6 个新函数之外**的函数生效；Stage 2 的等价性靠门 3 + 门 4。
+
+#### 门 2 的替代：纯改名（`tools/rename_verify.py`，2026-10-25 Stage 4 新增）
+
+改名类改动（`m_xProbeY` → `m_probeState.xProbeY`）会让**每个**函数体指纹都变，
+此时「变了」不含信息量。替代判据是**取 git ref 的旧文件，套同一映射，与工作区逐字节比**：
+
+```bash
+python tools/rename_verify.py --map .scratch/stage4-rename-map.txt --ref af7e505
+```
+
+全等 ⇒ 除映射命中的标识符外一个字符都没动，覆盖面比函数指纹更广（成员声明、初始化
+列表、注释、缩进都在范围内）。自带两条前置检查（旧名不得在字符串字面量里、映射不得
+链式），不满足就判红——那时逐字节证明不成立。
 
 ### 门 3：全量回归
 
