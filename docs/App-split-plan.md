@@ -278,6 +278,37 @@ done
 判据是机读的：`grep -E "SHGet|CoTaskMem|BROWSEINFO|OPENFILENAME|creds::"` 在 App.cpp 里已归零。
 现在 App.cpp **不再碰任何 Windows 壳对话框或 COM 初始化**——这条边界以前是混的。
 
+#### 1d 已完成（2026-10-25）——会话/转录/流式/HUD，App.cpp 只剩 UI 构建
+
+| 项 | 结果 |
+|---|---|
+| App.cpp | 5400 → **2346 行**（再切出 59 个函数，累计 -81%） |
+| 新文件 | `AppSession.cpp` 770 / `AppTranscript.cpp` 861 / `AppStream.cpp` 817 / `AppHud.cpp` 857 |
+| 前置 | `UiCommon.cpp` 96 行（5 个共享 helper 从匿名 ns 搬出） |
+| 门 1 | 零 error、零新增 warning |
+| 门 2 | PASS：279 一致 / 0 变 / 0 丢 |
+| 门 3 | PASS（regress 全绿 + GL 抽测 `backend=gl` 8/19/43） |
+| 门 4 | 7 份摘要 IDENTICAL |
+
+**四个文件的边界是"改它的理由"**，不是功能分类：
+
+- `AppSession` —— 会话有生命周期（core 子进程 + 写入端 + 工作区归属 + 行集合都挂在它上面）。
+- `AppTranscript` —— 只管"长什么样"，行宽一律 `ContentWidth(m_scroll)`，不许自己算。
+- `AppStream` —— 只管"收到什么"：解包 / 唤醒 / tick / 断流判定。`RouteLastMessage` 里不许直接摆控件。
+- `AppHud` —— 只管"摆在哪儿"：`Relayout`(184) + `RefreshHud`(350) 是三棵树的唯一摆位与读数出口。
+
+**这一步做了一次"函数上提"，值得单独记**：`Pick` / `ContentWidth` / `ConversationTitle` /
+`ConversationSubtitle` / `UnknownKindText` / `ReasoningTitle` 六个原本是 App.cpp 匿名命名空间的
+内部链接 helper，被转录与 HUD 同时需要 ⇒ 新建 `UiCommon.cpp`（声明进 `AppInternal.h`）。
+其中 `Pick` 破例写成**头内 inline**：一行谓词、AppTranscript 里 22 处调用点全在建行热路径上，
+为它多一个 TU 外调不值。头文件里"不许 inline 实现"那条针对的是有体量的函数。
+
+★ 门 2 在这里的用法值得记：搬函数到 `namespace harness::internal` 时，**定义行保持列 0**
+（不缩进），函数体逐字节不动 ⇒ 指纹仍然全等。这是"纯搬运"能被机器证明的关键细节。
+
+**顺手做的减法**：`UTF8.h` / `BackendFactory.h` / `MouseButton*.h` / `ScrollBar.h` 五个 include
+随代码搬走（`grep -c` 只剩 include 行本身）。App.cpp 现在只剩 UI 构建 + `Run` + 应用接线。
+
 ### Stage 2 — `BuildMainArea` 内部拆解（唯一要动函数体的一步）
 
 982 行按现有 `// ──` 分节注释切成 6 个 builder，`BuildMainArea` 只留组合：
@@ -418,7 +449,7 @@ cmake --build gui/build --config Release
 | 1a | 5 个 `Probe*.cpp` | 门 1+2+3+4 | App.cpp 12333 → 7800 |
 | 1b | `AppSummary.cpp` | 同上 | → 6700 |
 | 1c | 导出/历史/工作区/设置 | 同上 | → 5404 ✅ |
-| 1d | 会话/转录/流式/HUD | 同上 | → 1700 |
+| 1d | 会话/转录/流式/HUD | 同上 | → 2346 ✅ |
 | 1e | `AppUiChrome.cpp` / `AppUiMain.cpp` | 同上 | App.cpp ≈970 |
 | 2 | `BuildMainArea` 6 分解 | 门 1+3+4 | 最大文件 ≤1330 |
 | 3 | `CliOptions.h` / `ProbeTypes.h` / 前置声明 | 门 1+3 | App.h ≈900 |
