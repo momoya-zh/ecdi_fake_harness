@@ -79,11 +79,16 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 **② 构建 GUI**（需要已安装的 ECDI 前缀）
 
 ```bash
-cmake -S gui -B gui/build -DECDI_PREFIX=<ECDI 安装前缀>
-cmake --build gui/build --config Release
+# 生成器用 Ninja（2026-10-27 起；同一 cl.exe 工具链，静态库 ABI 不变，
+# 换库后增量链接可靠，不再依赖 msbuild 的 --clean-first 纪律）
+cmake -S gui -B gui/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DECDI_PREFIX=<ECDI 安装前缀>
+cmake --build gui/build
 ```
 
-`gui/build/Release/harness_gui.exe` 是产物。
+★ Ninja 是单配置生成器，**没有** `--config`：配置期就写死 `CMAKE_BUILD_TYPE=Release`
+（ECDI 前缀只有 Release，CMakeLists.txt 顶部的配置期守卫会拦住其他取值）。
+★ Ninja 下需要先有 MSVC 环境（`vcvars64.bat`）再跑 cmake，产物在 `gui/build/harness_gui.exe`
+（多配置生成器才落 `Release/` 子目录；`tools/regress.py` 两种布局都认）。
 
 ★ **`third_party/ecdi` 不入库**（在 `.gitignore` 里），clone 下来是**没有**的。
 本仓库**不随 ECDI 一起构建**，所以必须先自己在 ECDI 仓库里产出安装前缀：

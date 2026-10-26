@@ -190,7 +190,7 @@ python tools/regress.py     # 必须全绿（13 探针 + 6 夹具 + REQ-03 A/B�
 # 3. 存"拆前"摘要快照（6 夹具 × 固定参数）
 mkdir -p .scratch/split-baseline
 for f in demo realistic cot scale; do
-  gui/build/Release/harness_gui.exe --replay protocol/fixtures/... --instant --theme light \
+  gui/build/harness_gui.exe --replay protocol/fixtures/... --instant --theme light \
     --auto-close 40000 --out .scratch/split-baseline/$f.json
 done
 ```
@@ -473,7 +473,7 @@ python tools/regress.py     # RESULT: PASS
 **加一跑 GL 后端抽测**（2026-10-25 评审补充）：
 
 ```bash
-gui/build/Release/harness_gui.exe --replay protocol/fixtures/demo-session.jsonl \
+gui/build/harness_gui.exe --replay protocol/fixtures/demo-session.jsonl \
   --instant --theme light --backend gl --auto-close 20000 --out .scratch/_reg_gl.json
 ```
 

@@ -14,7 +14,7 @@
 2. **不动 ECDI 框架**。`third_party/ecdi/` 只是安装前缀（消费口）；框架源码仓在 `D:\Project\ECDI\ECDI`，**只读头文件当参考**。缺能力（如 tooltip）在 harness 侧用现有原语拼，同时评估是否登记 REQ。
 3. **评估读数不得被打坏**：`--out` 摘要的 `paints`/`frameCount` 与基线逐位可比是仓库纪律（见 `CountingPanel.h` 的 SeedCounters 注释、App.cpp:4292 的"仪器污染"教训）。每个 Phase 完成后跑一次基线回放并对比：
    ```bash
-   gui/build/Release/harness_gui.exe --replay protocol/fixtures/demo-session.jsonl --instant --out /tmp/p4-baseline-<phase>.json --auto-close 3000
+   gui/build/harness_gui.exe --replay protocol/fixtures/demo-session.jsonl --instant --out /tmp/p4-baseline-<phase>.json --auto-close 3000
    ```
    若某 Phase 使 paints 明显漂移，**必须**在摘要里记录该 Phase 的名字和漂移量，不许悄悄接受。
 4. **提交纪律**：每个 Phase 一个 commit，消息 `feat(p4.x): ...`/`fix(p4.x): ...`；precommit hook（`tools/precommit-check.py`：BOM/行尾/夹具）会拦，别 `--no-verify`。
@@ -34,7 +34,7 @@ python tools/regress.py                # 全量回归门（改完每个 Phase �
 冒烟（真子进程 + 免参数入口）：
 ```bash
 cd core && go build -o bin/ecdi-core.exe ./cmd/ecdi-core && cd ..
-gui/build/Release/harness_gui.exe --core core/bin/ecdi-core.exe --auto-prompt "hi"
+gui/build/harness_gui.exe --core core/bin/ecdi-core.exe --auto-prompt "hi"
 ```
 
 ## 2. 关键代码地图（已实地核对，行号=2026-10-25 的 HEAD `4abbc33`）

@@ -127,7 +127,9 @@ def main():
 
     print('\n=== 4. 构建产物状态 ===')
     import datetime
-    for rel_bin in ['gui/build/Release/harness_gui.exe']:
+    # 生成器决定产物落点：Ninja = gui/build/ 根；Visual Studio = gui/build/Release/。
+    # 两者都报（2026-10-27 构建器迁 Ninja，旧路径保留兜底）。
+    for rel_bin in ['gui/build/harness_gui.exe', 'gui/build/Release/harness_gui.exe']:
         full_bin = root / rel_bin
         try:
             st = full_bin.stat()

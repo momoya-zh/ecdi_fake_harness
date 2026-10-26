@@ -186,7 +186,7 @@ python tools/regress.py        # 无参数，约 6 分钟
 GL 后端抽测（include 集变了理论上不影响渲染，跑一次就证完）：
 ```bash
 # 与 .scratch/split-baseline/gl-demo.json 比对
-gui/build/Release/harness_gui.exe --gl --out .scratch/gl-demo-after.json ...
+gui/build/harness_gui.exe --gl --out .scratch/gl-demo-after.json ...
 python tools/summary_diff.py .scratch/split-baseline/gl-demo.json .scratch/gl-demo-after.json
 ```
 

@@ -20,7 +20,14 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-EXE = ROOT / "gui" / "build" / "Release" / "harness_gui.exe"
+# 生成器决定产物落点：Ninja（单配置）= gui/build/ 根；Visual Studio（多配置）= gui/build/Release/。
+# 两者都认，新布局优先——2026-10-27 构建器已迁 Ninja（同一 cl.exe，ABI 不变）。
+_EXE_CANDIDATES = [
+    ROOT / "gui" / "build" / "harness_gui.exe",
+    ROOT / "gui" / "build" / "Release" / "harness_gui.exe",
+]
+EXE = next(p for p in _EXE_CANDIDATES if p.exists()) if any(
+    p.exists() for p in _EXE_CANDIDATES) else _EXE_CANDIDATES[0]
 OUT = ROOT / ".scratch"
 
 FIXTURES = [
