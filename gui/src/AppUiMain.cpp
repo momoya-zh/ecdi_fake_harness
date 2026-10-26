@@ -331,12 +331,12 @@ void HarnessApp::BuildConversationHead() {
         //   `(void)tip; return;`（空回调）。加动作就得加枚举——否则第三个布尔参
         //   会变成 `mkAct("···", "更多", false, true)` 那种读不懂的调用。
         enum class HeadAct { Export, Inspector, Menu };
-        auto mkAct = [&head, this](const std::string& text, const std::string& tip,
+        auto mkAct = [&head, this](uikit::Icon icon, const std::string& tip,
                                    HeadAct act) {
             // ★★ P4 E：tip 参数终于有了去处（此前 `(void)tip` 闲置——ECDI 无
             //   tooltip 控件，mkAct 一直带着它等今天）。
-            auto b = std::make_unique<uikit::TipButton>(
-                text, tip,
+            auto b = std::make_unique<uikit::IconButton>(
+                icon, tip,
                 [this](uikit::TipButton* tb) { ShowTooltipFor(tb, tb->tip()); },
                 [this](uikit::TipButton*) { HideTooltip(); });
             b->SetTextColor(kDarkMuted);
@@ -362,20 +362,23 @@ void HarnessApp::BuildConversationHead() {
                 switch (act) {
                 case HeadAct::Export:
                     (void)ExportTranscript();
-                    return;
+                    break;
                 case HeadAct::Menu:
                     ToggleMoreMenu();
-                    return;
+                    break;
                 case HeadAct::Inspector:
+                    ToggleInspector();   // ★ P4 B：唯一入口（原内联逻辑抽出，Ctrl+I 共用）
                     break;
                 }
-                ToggleInspector();   // ★ P4 B：唯一入口（原内联逻辑抽出，Ctrl+I 共用）
+                if (m_window && m_promptBar) {
+                    m_window->SetFocusedWidget(m_promptBar->input());
+                }
             });
             head->AddChild(std::move(b));
         };
-        mkAct("↗", "导出转录", HeadAct::Export);
-        mkAct("≡", "检查器", HeadAct::Inspector);
-        mkAct("···", "更多", HeadAct::Menu);
+        mkAct(uikit::Icon::Share, "导出转录", HeadAct::Export);
+        mkAct(uikit::Icon::PanelRight, "检查器（Ctrl+I）", HeadAct::Inspector);
+        mkAct(uikit::Icon::Dots, "更多", HeadAct::Menu);
         m_counting->AddChild(std::move(head));
     }
 }

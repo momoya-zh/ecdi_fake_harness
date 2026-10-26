@@ -518,9 +518,9 @@ void HarnessApp::ApplyDevModeVisibility() {
         }
     };
     if (m_devMode) {
-        setActBtn(m_hud.exportToggle, "↗", 28);
-        setActBtn(m_hud.inspectorToggle, "≡", 28);
-        setActBtn(m_hud.moreToggle, "···", 28);
+        setActBtn(m_hud.exportToggle, "", 28);
+        setActBtn(m_hud.inspectorToggle, "", 28);
+        setActBtn(m_hud.moreToggle, "", 28);
     } else {
         setActBtn(m_hud.exportToggle, "导出", 44);
         setActBtn(m_hud.inspectorToggle, "详情", 44);

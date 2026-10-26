@@ -326,8 +326,8 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     //     的默认），而 Button 的水平位置由 `ButtonStyle.textAlignment` 驱动、主题
     //     缺省是 **Center**（ButtonStyle.h:36 的 C30-3）——所以这里显式写 Left，
     //     否则字形会从 22px 宽的左边缘挪到中间，与改前的截图对不上。
-    auto menu = std::make_unique<uikit::TipButton>(
-        "≡", "侧栏显隐（Ctrl+B）",
+    auto menu = std::make_unique<uikit::IconButton>(
+        uikit::Icon::Hamburger, "侧栏显隐（Ctrl+B）",
         [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
         [this](uikit::TipButton*) { HideTooltip(); });
     menu->SetTextColor(kDarkMuted);

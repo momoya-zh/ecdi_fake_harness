@@ -23,7 +23,9 @@
 // ★ P4 E：TipButton 需要 Button 完整类型 + 合成鼠标事件（override 形参）。
 #include "ECDI/Widget/Button.h"
 #include "ECDI/EventSystem/Input/Mouse/MouseButtonDownEvent.h"
+#include "ECDI/Render/PaintContext.h"
 
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -184,6 +186,106 @@ private:
     std::string m_tip;
     std::function<void(TipButton*)> m_onEnter;
     std::function<void(TipButton*)> m_onLeave;
+};
+
+// ── 矢量图标按钮（docs/vector-icons.md §4）────────────────────────────────────
+// 为什么继承 TipButton 而不是 Button：tooltip 的 enter/leave 回调只有 TipButton 有。
+// 为什么继承 Button 系而不是像 ThemedCaptionButton 那样纯 Widget：
+//   按钮的圆角底 / hover 120ms 色过渡 / pressed 态 / 点击消费 全在 Button 里实现了，
+//   纯 Widget 派生要把这些重写一遍（ThemedCaptionButton 那么做是因为系统 CaptionButton
+//   是 final 且无样式 API，它必须整体替换——**不是**通用范式）。
+enum class Icon { None, Hamburger, PanelLeft, PanelRight, Share, Dots, Sun, Moon, ChevronDown };
+
+class IconButton : public TipButton {
+public:
+    using EnterFn = std::function<void(TipButton*)>;
+    using LeaveFn = std::function<void(TipButton*)>;
+
+    IconButton(Icon icon, std::string tip, EnterFn onEnter, LeaveFn onLeave)
+        : TipButton("", std::move(tip), std::move(onEnter), std::move(onLeave)),
+          m_icon(icon) {}
+
+    void SetIcon(Icon icon) {
+        if (icon == m_icon) return;      // 同值守卫：否则每帧 Invalidate 自激励
+        m_icon = icon;
+        Invalidate();
+    }
+    Icon GetIcon() const noexcept { return m_icon; }
+
+    // ★ 文本模式仍然可用：SetText 非空 ⇒ §5.4 的"文本优先"分支生效。
+protected:
+    void OnPaint(ECDI::PaintContext& ctx, int x, int y) override {
+        TipButton::OnPaint(ctx, x, y);   // 底色 / 圆角 / 焦点框 / 文本 全归基类
+        if (m_icon == Icon::None || !GetText().empty()) return;
+        DrawGlyph(ctx, x, y, m_hovered ? m_inkHot : m_ink);
+    }
+
+    // ★ Button 的 m_pressed / m_hovered 是 private ⇒ 图标色只能自己记
+    void OnMouseEnter() override { m_hovered = true;  TipButton::OnMouseEnter(); }
+    void OnMouseLeave() override { m_hovered = false; TipButton::OnMouseLeave(); }
+
+private:
+    static constexpr float kBox = 7.0f;  // 半框 = 14/2
+
+    void DrawGlyph(ECDI::PaintContext& ctx, int x, int y, const ECDI::Color& ink) const {
+        const float cx = static_cast<float>(x) + GetWidth()  * 0.5f;
+        const float cy = static_cast<float>(y) + GetHeight() * 0.5f;
+        const ECDI::Point c{ cx, cy };
+        auto pt = [&](float dx, float dy) { return ECDI::Point{ cx + dx, cy + dy }; };
+        auto line = [&](float x1, float y1, float x2, float y2) {
+            ctx.DrawLine(pt(x1, y1), pt(x2, y2), 1.0f, ink);
+        };
+        switch (m_icon) {
+        case Icon::Hamburger:
+            line(-6, -4, 6, -4); line(-6, 0, 6, 0); line(-6, 4, 6, 4);
+            break;
+        case Icon::PanelLeft:
+        case Icon::PanelRight: {
+            const float sx = (m_icon == Icon::PanelLeft) ? -2.0f : 2.0f;
+            line(-6, -4.5f, 6, -4.5f);
+            line(6, -4.5f, 6, 4.5f);
+            line(6, 4.5f, -6, 4.5f);
+            line(-6, 4.5f, -6, -4.5f);
+            line(sx, -4.5f, sx, 4.5f);
+            break;
+        }
+        case Icon::Share:
+            line(-5.5f, -0.5f, -5.5f, 4.5f);
+            line(-5.5f, 4.5f, 5.5f, 4.5f);
+            line(5.5f, 4.5f, 5.5f, -0.5f);
+            line(0, 2, 0, -5);
+            line(-3, -2, 0, -5);
+            line(0, -5, 3, -2);
+            break;
+        case Icon::Dots:
+            for (float dx : { -4.5f, 0.0f, 4.5f }) {
+                ctx.DrawRoundedRect(ECDI::Rect{ cx + dx - 1.3f, cy - 1.3f, 2.6f, 2.6f },
+                                    1.3f, ink);
+            }
+            break;
+        case Icon::Sun:
+            ctx.DrawArc(c, 3.0f, 0.0f, 360.0f, 1.0f, ink);
+            for (int i = 0; i < 8; ++i) {
+                const float rad = static_cast<float>(i) * 45.0f * 3.14159265f / 180.0f;
+                const float sn = std::sin(rad), cs = std::cos(rad);
+                line(cs * 4.6f, sn * 4.6f, cs * 6.2f, sn * 6.2f);
+            }
+            break;
+        case Icon::Moon:
+            ctx.DrawArc(c, 4.5f, 45.0f, 270.0f, 1.0f, ink);
+            break;
+        case Icon::ChevronDown:
+            line(-4, -1.5f, 0, 2.5f); line(0, 2.5f, 4, -1.5f);
+            break;
+        case Icon::None:
+            break;
+        }
+    }
+
+    Icon m_icon;
+    bool m_hovered = false;
+    ECDI::Color m_ink    = harness::kDarkMuted;   // 常态
+    ECDI::Color m_inkHot = harness::kDarkInk;     // hover
 };
 
 } // namespace uikit
