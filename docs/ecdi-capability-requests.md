@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v3.6**（2026-10-24；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v3.7**（2026-10-26；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -423,13 +423,13 @@ harness 侧补上了这份读数（属**评估数据**，不是要求 ECDI 补�
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮新立） |
-| 状态 | 📋 **已登记（推后）**——**当前零消费者**，不阻塞任何已规划功能；但形态已钉死，将来要用时不必重新取证。★ **2026-10-24 ECDI 侧对码核验属实**（一处行号订正见「覆盖面」行），登记 ECDI `roadmap-deferred` **#71**（推后口径一致：零消费者，触发条件 = 首个半透明文本/焦点框消费者出现） |
+| 状态 | 📋 **已登记（推后）**——**缺陷面零消费者**，不阻塞任何已规划功能；但形态已钉死，将来要用时不必重新取证。★ **2026-10-24 ECDI 侧对码核验属实**（一处行号订正见「覆盖面」行），登记 ECDI `roadmap-deferred` **#71**（推后口径一致：零消费者，触发条件 = 首个半透明文本/焦点框消费者出现）。★ **2026-10-26 订正消费者面**：P4 Phase F 的设置面板遮罩已成为**首个半透明绘制消费者**，但它走的是 `DrawRect` + `BlendAlphaSolid`——即「覆盖面」表里**已支持**的路径，**没碰到缺陷面**。⇒ 缺陷面（`DrawText` / `DrawFocusRect`）仍是零消费者，**触发条件未变**，本条状态不动 |
 | 归属 | **ECDI 侧**（后端能力不对等；`Color.h:19` 的注释只描述了 GDI 的现状，未声明这是**双链发散**） |
 | 现象 | **同一个 `Color` 在两后端合成结果不同**：GL 链**全部 9 个原语**都消费 `alpha`（`GLRenderer.cpp:731-734` `Shade()` → `glColor4f(r,g,b,**a**)`，混合模式 `:201` `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`，调用点 `:215`/`:246`/`:324`/`:329`/`:379`/`:412`/`:642`）；GDI 链**只有部分**消费 |
 | ★★ 实测读数（**只改 `Color.a`**，复刻 `GDIBackend::DrawTextImpl`：`SetBkMode(TRANSPARENT)` + `SetTextColor(ToColorRef(color))`） | 深底 `#16181D` 上画 `kDarkInk (230,233,239)`，取**最亮**字形像素：`a=255` → `#E6E9EF` · `a=128` → **`#E6E9EF`** · `a=64` → **`#E6E9EF`** · `a=16` → **`#E6E9EF`** ⇒ **四档输出逐位相同**，alpha 在光栅化前就被丢弃（`ToColorRef` 只有 RGB 三通道）。若 alpha 生效，`a=128` 应为 `~#7E8186` |
 | ★ 覆盖面（逐原语，GDI 侧） | `DrawRect` ✅（`GDIBackend.cpp:649` `if (color.a < 1.0f) BlendAlphaSolid(...)`）· `DrawRoundedRect` ✅（同款，`DrawRoundedRectBlendedAA` `:1492`）· `DrawArc` ✅（经 `RasterizeMask`，`CoverageRaster.cpp:71`/`:83`）· `DrawLine` ⚠️ **分流**：`:842-850` 若 `!m_antiAliasing \|\| (color.a >= 1.0f && IsAxisAlignedAfterRound(...))` → `DrawLineLegacy`（`:878` `CreatePen(PS_SOLID, penWidth, ToColorRef(color))` ⇒ **丢 alpha**），否则 `DrawLineCoverage` ✅ · **`DrawText` ❌ 恒丢**（`SetTextColor(ToColorRef(color))`——★ **2026-10-24 ECDI 侧订正：实为单点 `GDIBackend.cpp:746`**；`:682`/`:714` 系 ECDI Phase 34 量化统一动 `GDIBackend.cpp` 后的行漂移，现为其函数头行，实质判读不变）· **`DrawFocusRect` ❌ 恒丢**（`:1214`/`:1222` `CreatePen(PS_SOLID, 1, ToColorRef(color))`） |
 | ★ 已有测试面 | `ECDI/src/Tests/RendererTests.cpp:334-382` `TestDrawRectAlpha`（50% 透明红叠纯蓝底，断言 `\|R-128\|<=3` / `G<=3` / `\|B-127\|<=3`）+ `:214 TestGDIBackendAlphaBlend` ⇒ **只覆盖 `DrawRect`**，`DrawText` / `DrawFocusRect` 的 alpha **从未有用例**（不是回归，是从未覆盖） |
-| ★ 消费者 | **当前为零**：`gui/src` 全部 `Color::FromRGBA8(..., 255)`（`Theme.h` 全表 alpha=255）；`variant-c` 全文搜 `rgba\|opacity` **零命中**（6 处 `transparent` 都是 `background:transparent` = 不画底，不是半透明）⇒ **本条是「将来要用时才疼」的形态，不是当前阻塞项** |
+| ★ 消费者 | **2026-10-26 起不是零了，但要分清是哪一类**：① **半透明绘制**——P4 Phase F 的设置面板遮罩（`DrawRect` + `BlendAlphaSolid`，双后端实证，失败退不透明）⇒ 走**已支持**路径，本条缺陷面未被触碰；② **半透明文本 / 焦点框**——仍为零：`gui/src` 其余位置全部 `Color::FromRGBA8(..., 255)`（`Theme.h` 全表 alpha=255）；`variant-c` 全文搜 `rgba\|opacity` 零命中（6 处 `transparent` 都是 `background:transparent` = 不画底，不是半透明）⇒ **本条仍是「将来要用时才疼」的形态，不是当前阻塞项** |
 | ★ 附带缺口：**无虚线** | `RenderCommand::DrawLineCommand` **无 dash/style 字段**，GDI 侧两处 `CreatePen` 都硬编码 `PS_SOLID`（`:878`/`:1222`）⇒ 原型里的 `border:1px dashed`（variant-c `.gap` :119、`.sample-label` :130）**没有任何对应能力**。若要支持，最小面 = `DrawLine` 加一个 `dashPattern` 字段，或另立 `DrawDashedRect` |
 | ★ ECDI 侧修法候选 | ⓐ **`DrawText` 走 alpha 混合**：先按 `a` 把字形光栅化成 mask 再 `BlendAlphaSolid`（`DrawRoundedRectBlendedAA` `:1492` 已有现成先例，可复用同一套合成路径）· ⓑ **至少补测试**：把 `TestDrawRectAlpha` 的模式扩到 `DrawText` / `DrawFocusRect` / 非轴对齐 `DrawLine`，否则「GDI 丢 alpha」这条会随重构漂移 · ⓒ `DrawLine` 的 `PS_SOLID` 分流是**性能优化**（AA 关或轴对齐时走快路径），但**语义上不该在 a<1 时走快路径**——判据里已有 `color.a >= 1.0f`，实际只在「AA 关 + a<1」时漏，属**边角** |
 | ★ 我方本轮处置 | **不规避**（当前无消费者）。★ 但登记在案的理由：这是**继 `REQ-09` 之后第二处「同一输入两后端行为不同」**，形态同型，值得让 ECDI 知道这类发散不是孤例 |
@@ -727,6 +727,20 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v3.7（2026-10-26）★ `REQ-11` 消费者面订正 + 探针归门（评估结论的可复现性）**：
+  ① **消费者面**：P4 Phase F 的设置面板遮罩是**首个半透明绘制消费者**（`DrawRect` + `BlendAlphaSolid`，
+     属「覆盖面」表里已支持的路径，双后端实证、失败退不透明）⇒ 原文「当前零消费者」不再准确，已就地订正。
+     ★ **但缺陷面（`DrawText` / `DrawFocusRect` 恒丢 alpha）仍是零消费者**，触发条件
+     （首个半透明文本/焦点框消费者出现）**未变**，`REQ-11` 状态仍是 📋 推后。
+     —— 这里刻意不把「有消费者了」写成「该修了」：新消费者走的正是**已经对**的那条路。
+  ② **不新增 REQ**：P4（A–H）与 App.cpp 拆分（Stage 1–4）都是 harness 侧改造，`protocol/` / `core/` /
+     `evals/` 零改动，未发现新的 ECDI 侧能力缺口。
+  ③ **探针覆盖 13/25 → 25/25**（`tools/regress.py`），并把「不绿」拆成三类：
+     `designed-red`（结构上不可达）/ `skipped-*`（探针自述不适用）/ `UNEXPECTED`（真回归），
+     `unavailable` 不算跳过。记账本的理由：本仓对 ECDI 的评估结论**全部由探针读数支撑**，
+     探针没进门 = 结论不可复现；而 11 个探针此前正是「有实现、有判据、无门」。
+  ④ 头部 v3.6 → **v3.7**
+
 - **v3.6（2026-10-24）★ `REQ-10` 闭合翻转：ECDI 侧 Phase 36 全链收口完成**：
   ① **ECDI 侧收口提交 = `b1a32b5`**（deferred **v2.40** #70 关闭 + README Phase 36 行收口语 + docs/README 三行 + 详设 **v1.3** §9 收口记录）。
   ② **全链数字 = 五链 497/497**（MinGW / Clang / ClangCL / MSVC Debug / MSVC Release；MSVC 双配置与 ClangCL 本日重建补齐批三 T36-7）。

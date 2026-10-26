@@ -1,8 +1,12 @@
-# App.cpp 拆分交接文档（2026-10-25）
+# App.cpp 拆分交接文档（2026-10-25，行数账 2026-10-26 重建）
 
 > **给接手的人**：这份文档只讲「现在在哪、下一步怎么走、哪些坑已经踩过」。
 > 为什么拆、拆成什么样、体检数据，在 [`App-split-plan.md`](App-split-plan.md)，不重复。
 > 读法：§0 看现状 → §4/§5 记住硬约束 → §7 直接开干 Stage 3。
+>
+> ★ **2026-10-26 更正**：本文此前的行数账**加减不闭合**（§0 说 2009→1422，§1 表里却是
+> 1395 / 1233 等 Stage 3 时期的旧值）。已按 `git show <commit>:gui/src/App.h | wc -l`
+> 逐节点实测重建，见 §0 的账。错因写在 §0 下面，不是「数字刷新」而是口径错位。
 
 ---
 
@@ -11,12 +15,30 @@
 | 项 | 值 |
 |---|---|
 | HEAD | 以 `git log -1` 为准，工作区**干净**。最后一个**功能**提交是 `b167580`（Stage 4 收尾），之后只有文档与工具 |
-| `App.cpp` | 12,269 → **869 行**（-93%），只剩 10 个应用接线函数 |
-| `App.h` | 2,009 → **1,422 行**（-29%）：刀① -259 / 刀② -276 / 刀③ +11 / Stage 4 收口 -93 + 摘要段声明 +27 |
-| 最大的文件 | `ProbeSidebar.cpp` 1416 / `ProbeChrome.cpp` 1148 / `ProbeTranscript.cpp` 989 |
+| `App.cpp` | 12,333 → **869 行**（-93.0%），只剩 10 个应用接线函数 |
+| `App.h` | 1,995 → **1,422 行**（-28.7%），见下账 |
+| 最大的文件 | `ProbeSidebar.cpp` 1416 / `ProbeChrome.cpp` 1148 / `ProbeTranscript.cpp` 990 |
 | 四条验收门 | 全绿；门 2 基线 `fp-stage4.json`（**310/310**，见 §3） |
 | Stage 2 | `BuildMainArea` 980 行 → 36 行装配 + 7 个 builder，树序 83 条 / 句柄写入 34 条校验一致 |
 | Stage 4 | 103 个探针成员 → `ProbeState.h`（**552 处** `m_probeState.*`）；`WriteSummary` 1082→304；派发表 19 行 |
+
+### `App.h` 行数账（逐提交实测，闭合成 1,422）
+
+| 节点 | commit | 行数 | Δ | 做了什么 |
+|---|---|---|---|---|
+| 拆分起点（Stage 1 前） | `108d1d4` | **1,995** | — | 方案提交时的真实起点 |
+| Stage 2 之后 | `2fbe612` | 2,009 | **+14** | `BuildMainArea` 切分留下的声明 |
+| 刀① | `ac9b4c9` | 1,752 | **−257** | `CliOptions.h` 搬出 |
+| 刀② | `f775a5e` | 1,477 | **−275** | 24 个探针结构体 → `ProbeTypes.h` |
+| 刀③ | `160b808` | 1,488 | **+11** | 控件类型改前置声明（净增，收益在重编半径不在行数） |
+| Stage 4 收口 | `4528fb7` | 1,395 | **−93** | 103 个探针成员 → `ProbeState.h` |
+| Stage 4 收尾 | `b167580` | **1,422** | **+27** | 摘要段声明（`WriteSummary` 目录化必需的声明） |
+
+**错因（值得记，因为同类错误还会犯）**：旧文用 **2,009** 当起点、用 **1,395** 当终点——
+前者是 Stage 2 之后的峰值，后者是 Stage 4 第一刀之后、收尾之前的中间态。两头都取错位置，
+于是「-259/-276/+11/-93/+27」无论怎么加减都对不上实测值（只能凑到 1,419）。**判据是
+「账要闭合到实测值」**，不是「每个数字看起来合理」。同理 `App.cpp` 的起点是 `108d1d4`
+的 **12,333**；12,269 是前置提交 `e245999` 之后的数。
 
 **一句话**：**Stage 1 / 2 / 3 / 4 全部完成**。产品代码与仪器代码物理分开、单函数过大已解
 （`WriteSummary` 1082→304、`BuildMainArea` 980→36）、头文件 2009→1422、仪器状态收成一个
@@ -26,46 +48,50 @@
 
 ## 1. 文件清单（`wc -l` 实测，`gui/src/`）
 
+> 口径：**2026-10-26 实测**（含当日探针修复：`main.cpp` 的 `--settings-probe` 隔离强制、
+> `ProbeSettings.cpp` 的 cleanup 断言）。合计 53 文件 / **19,748 行**。
+> 旧的「19,718 / App.h 1395 / ProbeSidebar 1233 / ProbeTranscript 748」是 Stage 3 时期快照，已废弃。
+
 ### 产品代码
 
 | 文件 | 行 | 装什么 |
 |---|---|---|
 | `App.cpp` | 869 | **只剩接线**：`Run` / 构造析构 / `OnTimer` / 事件转发 / 侧栏显隐 / `HandleGlobalKeyDown` |
-| `AppUiMain.cpp` | 1089 | `BuildMainArea`(36) + 7 个分区 builder（侧栏/会话头/更多菜单/设置面板/转录视口/Composer/检查器） |
-| `AppUiChrome.cpp` | 509 | `BuildUi` / `RebuildUi` / `BuildTopBar` / `BuildBottom` / `HarnessRootLayout` |
-| `AppTranscript.cpp` | 861 | 转录行构建、增量追加 |
-| `AppHud.cpp` | 857 | 顶栏 HUD、用量、协议健康 |
+| `AppUiMain.cpp` | 1109 | `BuildMainArea`(36) + 7 个分区 builder（侧栏/会话头/更多菜单/设置面板/转录视口/Composer/检查器） |
+| `AppUiChrome.cpp` | 511 | `BuildUi` / `RebuildUi` / `BuildTopBar` / `BuildBottom` / `HarnessRootLayout` |
+| `AppTranscript.cpp` | 882 | 转录行构建、增量追加 |
+| `AppHud.cpp` | 880 | 顶栏 HUD、用量、协议健康 |
 | `AppStream.cpp` | 775 | 回放行消费、delta 合并、探针派发表（`kSettleSteps`） |
-| `AppSession.cpp` | 770 | 会话切换、回放控制 |
-| `AppSettings.cpp` | 565 | 设置面板读写、凭据 |
+| `AppSession.cpp` | 772 | 会话切换、回放控制 |
+| `AppSettings.cpp` | 591 | 设置面板读写、凭据 |
 | `AppWorkspace.cpp` | 362 | 工作区列表 |
-| `AppHistory.cpp` | 355 | 历史记录 |
+| `AppHistory.cpp` | 358 | 历史记录 |
 | `AppExport.cpp` | 198 | 导出 |
 
 ### 仪器（探针，与产品代码物理隔离）
 
 | 文件 | 行 | 装什么 |
 |---|---|---|
-| `ProbeSidebar.cpp` | 1233 | 侧栏对比探针（最大单文件，**唯一还超 1200 的**） |
+| `ProbeSidebar.cpp` | 1416 | 侧栏对比探针（最大单文件，**唯一还超 1200 的**） |
+| `ProbeChrome.cpp` | 1148 | 主题/重建/菜单/尺寸探针 |
+| `ProbeTranscript.cpp` | 990 | 转录相关探针 |
+| `ProbeFlow.cpp` | 858 | 会话/回放/历史探针 |
+| `ProbeSettings.cpp` | 831 | 设置/模型/删除供应商探针 |
+| `ProbeSupport.cpp` | 423 | 探针公共支撑 |
 | `AppSummary.cpp` | 336 | `WriteSummary` 304 行 = 摘要格式的**目录**（24 段实现在各 `Probe*.cpp`），见 §8.1 |
-| `ProbeChrome.cpp` | 977 | 主题/重建/菜单/尺寸探针 |
-| `ProbeTranscript.cpp` | 748 | 转录相关探针 |
-| `ProbeFlow.cpp` | 730 | 会话/回放/历史探针 |
-| `ProbeSettings.cpp` | 729 | 设置/模型/删除供应商探针 |
-| `ProbeSupport.cpp` | 366 | 探针公共支撑 |
 
 ### 头文件与新增前置
 
 | 文件 | 行 | 说明 |
 |---|---|---|
-| `App.h` | 1395 | 应用组装声明；Stage 3/4 之后不含 `CliOptions`、探针结构体、控件头与探针状态 |
-| `CliOptions.h` | 273 | **Stage 3 刀①**：命令行选项 47 字段（含 26 个探针开关），逐字节从 `App.h` 搬出 |
+| `App.h` | 1422 | 应用组装声明；Stage 3/4 之后不含 `CliOptions`、探针结构体、控件头与探针状态 |
 | `ProbeTypes.h` | 318 | **Stage 3 刀②**：24 个探针读数结构体（命名空间作用域） |
+| `CliOptions.h` | 273 | **Stage 3 刀①**：命令行选项 47 字段（含 26 个探针开关），逐字节从 `App.h` 搬出 |
 | `ProbeState.h` | 178 | **Stage 4**：103 个探针状态成员；`HarnessApp` 只留 `ProbeState m_probeState;` |
-| `AppInternal.h` | 119 | 跨 TU 共享声明：路径工具、几何常量、探针色、`Pick()`、5 个 UI 助手 |
 | `UiCommon.cpp` | 127 | `ContentWidth` / `ConversationTitle` / `ConversationSubtitle` / `UnknownKindText` / `ReasoningTitle` / `AddLine` |
+| `AppInternal.h` | 119 | 跨 TU 共享声明：路径工具、几何常量、探针色、`Pick()`、5 个 UI 助手 |
 | `ThemeUsing.h` | 66 | 52 个主题短名 `using harness::kXxx;` |
-| `PathUtil.cpp` | — | `Utf8FromWidePath` / `WideFromUtf8Path` / `PathToUtf8` |
+| `PathUtil.cpp` | 49 | `Utf8FromWidePath` / `WideFromUtf8Path` / `PathToUtf8` |
 
 ---
 
@@ -260,13 +286,14 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 
 ## 7. Stage 3：头文件瘦身（✅ 三刀全部完成）
 
-`App.h` 2009 行 → **1488 行**（刀① -259 / 刀② -276 / 刀③ +11）；Stage 4 再收到 **1395**。
+`App.h` 2009 行 → **1488 行**（刀① −257 / 刀② −275 / 刀③ +11）；Stage 4 再收到 **1395**，
+收尾补摘要段声明 +27 ⇒ **1422**（逐节点账见 §0）。
 
 > ★ **「约 1100 行是仪器声明」这个估算偏高，别再拿它当目标依据**：把探针的 struct body
-> 全部搬走只砍了 276 行。剩下的大头是每条探针上方的「为什么必须有」注释块 +
+> 全部搬走只砍了 275 行。剩下的大头是每条探针上方的「为什么必须有」注释块 +
 > `m_xxxProbeLog` 成员声明（85 行含探针成员）+ `Run*Probe()` 声明。
 > 成员声明部分后来由 **Stage 4 收走（-93 行）**；注释块**故意留下**（见 §8.1）。
-> **「目标 ≈900 行」始终没达到**，最终落点是 **1395**。
+> **「目标 ≈900 行」始终没达到**，最终落点是 **1422**。
 
 ### 7.1 实测行号地图（**已过期，仅存档**）
 
@@ -301,7 +328,8 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
   `HarnessApp app(...)` 因而仍包 `App.h`，19 个 TU 一个没少。本刀的真实收益是
   `App.h` 少 259 行 + `CliOptions` 的 47 个字段不必先拿到 1670 行的类定义才能读。
   **重编收益要等刀③（控件前置声明）才可能兑现。**
-- 门 2 对本刀天然安全：结构体不进函数指纹，指纹数仍是 286 且逐项不变。
+- 门 2 对本刀天然安全：结构体不进函数指纹，指纹数仍是 286 且逐项不变（Stage 4 收口后
+  基线已重建为 **310/310**，见 §3）。
 
 **② `ProbeTypes.h`** —— ✅ **已完成（`f775a5e`）**：24 个结构体搬到命名空间作用域，`App.h` 1752 → 1477。
 - 这是唯一有真实机械风险的一步：类内 `struct X` 提到外面后，类内引用同名可见不用改，
@@ -364,13 +392,14 @@ Stage 1e 出过一次真实事故：先删 144–205，再用**原始**行号删
 | 起点 | — | 2009 | — |
 | ① `CliOptions.h` | `ac9b4c9` | 1752 | 结构体 sha256 前后同 `42056bb5e22d8725`；门 2 逐项不变 |
 | ② `ProbeTypes.h` | `f775a5e` | 1477 | 逐行 lstrip 全等 + `git diff` 恰好 3 行 + 门 4 摘要全等 |
-| ③ 前置声明 | `160b808` | **1488** | 门 2 286/286 + 门 4 + GL 抽测全等；重编半径见 §7.2③ |
+| ③ 前置声明 | `160b808` | **1488** | 门 2 286/286（当时口径；Stage 4 收口后重建为 310/310）+ 门 4 + GL 抽测全等；重编半径见 §7.2③ |
 
 **净结果：2009 → 1488（-26%）。原目标 900 达不到**，原因见 §7 顶部：
 剩下的大头是探针注释块与 `m_*ProbeLog` 成员声明（85 行含探针成员）+ `Run*Probe()` 声明，
 要动它们得做 Stage 4（501 处引用），那不属于 Stage 3。
 **Stage 4 后来又砍了 93 行（1488 → 1395）**，但砍的是成员声明；探针注释块仍在 App.h
-——那是**故意留的**（注释讲判据，跟着 `Run*Probe()` 走），所以 1395 就是这条线的终点。
+——那是**故意留的**（注释讲判据，跟着 `Run*Probe()` 走）。1395 之后收尾补摘要段声明 +27，
+真正的终点是 **1422**；1395 只是「成员声明清空之后、摘要段还没补」的中间态。
 
 **Stage 3 的三个真实结论**（三条都和原文档的预期不符，别照抄原文）：
 1. 刀① 不产生重编收益（`main.cpp` 仍要构造 `HarnessApp` 因而仍包 App.h）。
@@ -528,7 +557,7 @@ cd /d/Project/ECDI_fake_harness
 git status --short                     # 应为空
 unset http_proxy https_proxy
 cmake --build gui/build --config Release        # 门 1，约 11s 增量
-python tools/split_verify.py --check .scratch/split-baseline/fp-stage4.json   # 门 2，应 286/286
+python tools/split_verify.py --check .scratch/split-baseline/fp-stage4.json   # 门 2，应 310/310
 python tools/regress.py                          # 门 3，约 6 分钟
 ```
 

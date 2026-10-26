@@ -360,8 +360,19 @@ void HarnessApp::RunSettingsProbe() {
             if (!creds::Delete(ECDI::UTF8ToWide(target), credError)) {
                 bad = "credential cleanup failed: " + credError;
             }
-            std::error_code ec;
-            std::filesystem::remove(AppConfig::DefaultPath(), ec);
+            // ★ 2026-10-26：删除目标必须是**隔离路径**。`AppConfig::DefaultPath()` 是
+            //   "本次进程生效路径"——没传 `--config` 时它就是用户的真实配置，删掉即丢全部提供商。
+            //   main.cpp 已拒绝无 `--config` 的启动，这里再断言一次：将来若有人绕过那道门
+            //   （或挪动 SetPathForTesting 的调用时机），本条会 red，而不是悄悄删掉用户配置。
+            //   ★ 这也是本仓"仪器藏了假设"的第 N 例：cleanup 曾靠 `remove` 不设 error 而恒绿。
+            const std::filesystem::path inUse = AppConfig::DefaultPath();
+            if (inUse == AppConfig::DefaultDir() / L"config.json") {
+                bad = "refused: cleanup target is the real config path"
+                      " (--config isolation not in effect)";
+            } else {
+                std::error_code ec;
+                std::filesystem::remove(inUse, ec);
+            }
             report("cleanup", bad);
         }
         m_probeState.settingsProbeDone = true;

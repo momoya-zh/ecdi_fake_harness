@@ -147,6 +147,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
     if (argv) LocalFree(argv);
 
+    // ★★ 2026-10-26（缺陷：settings 探针的 cleanup 相删配置文件）：
+    //   `AppConfig::DefaultPath()` 是"本次进程生效路径"——传了 `--config` 就是隔离路径，
+    //   没传就是用户的真实 `%APPDATA%\ecdi-fake-harness\config.json`。cleanup 无条件删它，
+    //   于是**一次无隔离的跑批会删掉用户的全部提供商配置**，而 cleanup 相仍报绿
+    //   （`std::filesystem::remove` 对不存在的文件不设 error）——仪器把破坏行为报成通过。
+    //   修法：不靠调用者记得传隔离参数，直接拒绝启动。exit 2 与 --help 同码，跑批可判；
+    //   原因写 stderr（GUI 子系统无控制台，但重定向时句柄有效）。
+    if (options.settingsProbe && options.configPath.empty()) {
+        static const char kMsg[] =
+            "harness_gui: --settings-probe requires --config <isolated-path>\n"
+            "  reason: its cleanup phase deletes the configuration file it ran against;\n"
+            "  without --config that path is the real %APPDATA%\\ecdi-fake-harness\\config.json,\n"
+            "  so an unisolated run would destroy the user's providers.\n";
+        DWORD written = 0;
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), kMsg,
+                  static_cast<DWORD>(sizeof(kMsg) - 1), &written, nullptr);
+        return 2;
+    }
+
     // ★★ P3.5（规格 §8.5 D7）：无参 = 正常入口——配置可用 ⇒ 直连默认提供商；
     //   否则首启引导（设置面板）。用法文档只挂在 --help 上。
     const bool haveSource = haveReplay || !options.corePath.empty();

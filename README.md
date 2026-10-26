@@ -167,7 +167,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 不钉 `paints/frames`（后者随字体与实现变化，钉死它会把一次合法收敛判成回归）。
 ★ 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
 
-### 探针（**18 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
+### 探针（**25 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
 
 | 探针 | 读什么 |
 |---|---|
@@ -187,13 +187,28 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--enter-probe` | Enter 发送 / Shift+Enter 换行 |
 | `--hud-probe` | HUD 字段**读写配对**（抓「只读不写」的死分支） |
 | `--grow-probe` | Composer 自动长高 7 相（含 `shrink` 与 `max-clamp`） |
+| `--jump-probe` | 「跳到最新」按钮：显隐状态机 + 点击回底（需长夹具，短夹具自述 `skipped-short-fixture`） |
+| `--key-probe` | 全局快捷键：Ctrl+B / I / , / N + Esc 逐层退出 |
+| `--empty-probe` | 空状态引导：回放负对照 + firstRun 正对照（含「卡在树里却被 `extent=0` 裁掉」这一相） |
+| `--model-probe` | 模型浮窗（Ctrl+M）+ v4 上下文分母上屏 |
+| `--select-probe` | 转录正文选中复制（**配 `--selectable-rows` 用**，否则自述 `skipped-no-selectable-row`） |
+| `--delprov-probe` | 删除提供商：拒绝删最后一个（需一份有 provider 的 `--config`） |
+| `--settings-probe` | 设置面板 + 凭据注入 + 模型热切换回执（★ **强制要求 `--config`**，见下） |
 | `--reasoning-probe` | 思维链折叠行为取证 |
 | `--async-probe` | **REQ-03**：投递 vs 轮询的 A/B（**live**）——`blockedUs` / 唤醒承载占比 / 单回调预算 / 送达延迟分位 |
 
 另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
 `--probe-contrast`（探针专用白底黑字）· `--row-mode autosize|listlayout`（布局 A/B）·
-`--scroll-sweep`。★ **`--reasoning-probe` / `--order-probe` / `--workspace-probe` 尚未接入
-`tools/regress.py` 的探针循环**——它们跑过，但还不是门（`--async-probe` 走的是 §2b 的 live 段，不在循环里）。
+`--scroll-sweep`。
+
+★ **2026-10-26：25 个探针全部接入 `tools/regress.py`**（此前 13/25）。门里分四类，
+不是「绿了 / 红了」两类：`designed-red`（结构上不可达，理由写在 `EXTRA_PROBES` 注释）·
+`skipped-*`（探针自述该跑法下不适用）· `UNEXPECTED`（其余一切 = 真回归）· `INSTRUMENT`
+（`--cull-probe` 只记读数、无断言面，显式声明而不是默默漏掉）。
+
+★ **`--settings-probe` 必须带 `--config <隔离路径>`**，否则**拒绝启动**（exit 2）。原因：
+它的 cleanup 相会删掉本轮跑的配置文件，没隔离时那就是用户真实的
+`%APPDATA%\ecdi-fake-harness\config.json`（2026-10-26 修，见 `status.txt`）。
 
 ## 交付物在哪
 
@@ -322,17 +337,19 @@ PY
 
 ## 当前状态
 
-> 时点：**2026-10-24**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
+> 时点：**2026-10-26**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
 
 ### 已收口
 
 | 项 | 读数 / 依据 |
 |---|---|
 | P1（GUI 骨架）· P1.5（子进程真路径，含反向通道） | 已收口 |
-| **协议 v3 三侧落地** | 契约层（`PROTOCOL.md` + `validate.py` + **9 份夹具** + 3 个生成器）· core（`hello protocol:3`，`caps=[tools,ask,workspace]`）· GUI（`kProtocolMaxSupported = 3`）。九份夹具全部声明 `protocol:3`，`validate.py` 退出码 **0** |
+| **协议 v3 基线 + v4 增补** | 契约层（`PROTOCOL.md` + `validate.py` + **9 份夹具** + 3 个生成器）· core（真 core `hello protocol:4` + `caps=[tools,ask,workspace,model]`；**假 core 恒 `protocol:3`**，回归基线不动）· GUI（`kProtocolMaxSupported = 4`，接受 ≤4；cap 缺失则隐藏切换器）。九份夹具全部声明 `protocol:3`，`validate.py` 退出码 **0** |
 | ECDI 消费前缀 | **`0.1.0` MSVC Release 静态**，安装于 2026-10-23 21:09；对应 ECDI 仓 **`096991b`**（含 `REQ-13` 的 `Window::SetMinimumSize`）；`ECDI.lib` **11,063,564 B** / sha256 `68247cd0…` |
 | ECDI 自带套件 | `490 passed / 0 failed`（`REQ-13` 闭合时点；早期 `445/445` 见 `status.txt`） |
-| 回归门 | `python tools/regress.py` = 6 夹具结构基线 + 13 探针 + **2b live A/B（REQ-03）** + `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
+| **P3 真 core + P3.5 无参启动 + P3.6 多提供商** | `core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 `read_file`/`list_dir`/`grep` + 默认全 ask）+ `core/internal/wire` 线层下沉（假 core 逐位回归 PASS）。**两个真端点全链验收**：云知声 `u2-flash`（`evals/p3-u2flash-live-1.json`）与 DeepSeek 官方**无参启动**（`evals/p35-deepseek-noarg-live-1.json`）。协议 v4 = 模型热切换（等当前轮跑完再切）+ `usage.context` 逐轮分母 + 容量挡位；凭据只进 Windows 凭据管理器，配置文件**没有** key 字段（类型层面放不下） |
+| 回归门 | `python tools/regress.py` = 6 夹具结构基线 + **24 个探针**（13 原有 + 11 补齐）+ 1 个仪器声明 + 3 段 live（REQ-03 A/B · workspace · 无 core 时显式 SKIP）+ `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
+| **P4 可用性（A–H）** | 跳到最新 / 全局快捷键 / 空状态引导 / ask 已答留痕 / 设置改模态浮层（**半透明遮罩 = ECDI 首个半透明绘制消费者**）/ tooltip / 顶栏模型 chip + 用量常驻 / 转录可选中（尖峰）。**Phase I（路径可点 + 只读预览）未开工** |
 | **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
 
 ### 现在能做什么（都有探针与负对照）
@@ -347,24 +364,31 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 
 | 缺什么 | 状态 |
 |---|---|
-| ★ **真 agent core** | **第一批已实施（2026-10-24，离线判据全过）**：`core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 + 默认全 ask）+ `core/internal/wire` 线层下沉（假 core 逐位回归 PASS）。离线 E2E（脚本化 SSE）已验协议全链；**真 API 验收（A3–A6/A8）等 BaseURL/Key**。见 `docs/P3-real-core-spec.md` §8 |
-| MCP host | 决策 **A**（harness 管配置）已于 2026-10-14 拍板，**零实现**；排在真 core 之后——没有 core，host 没有可授予的对象 |
+| ★ **MCP host** | 决策 **A**（harness 管配置）已于 2026-10-14 拍板，**零实现**。P3 落地后「没有 core 就没有可授予的对象」这个前置障碍已消失——它可以开工了 |
+| **P4 Phase I：路径可点 + 只读预览** | **未开工**（A–H 已落地）。P4 方案 §11，硬边界仍是「只改 `gui/src/**`」 |
+| **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
+| **`--settings-probe` 的 4 相** | `first-run` / `save` / `session-live` / `switch-ok` 只能在「无参启动 + 真实配置 + 真凭据 + protocol 4」下验收 ⇒ 是**人工验收**，不进回归门（门守住其余 4 相，含 cleanup 的隔离断言） |
 
 ### `evals/` 的口径（★ 待定，别把它当「仍在更新」）
 
-`evals/` 现有 82 份读数，**最新一份是 2026-10-16**（`p33-b4-cullprobe.json`）。
-2026-10-17 起的读数（DPI 矩阵、`REQ-12`/`REQ-13` 的探针）都落在 `.scratch/`（**gitignored**）。
+`evals/` 现有 **84** 份读数，**最新一份是 2026-10-24**（`p35-deepseek-noarg-live-1.json`）。
+**P3.6（多提供商热切换）、P4（可用性 A–H）、App.cpp 拆分这几轮都没有归档**——读数只在
+`.scratch/`（**gitignored**）里，所以账面上看不出这几轮发生过。
 ⇒ 两种口径必居其一，目前**两边都没写**，所以它看起来像停摆：① `evals/` 是**钉住的发布基线**，
-`.scratch/` 是工作读数；② `evals/` 就是全部读数，那就该把新读数补进去。**待拍板。**
+`.scratch/` 是工作读数；② `evals/` 就是全部读数，那就该把新读数补进去。
+**待拍板（2026-10-26 复核：仍未定，条目继续挂着，不假装已解决）。**
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
-**P3 真 core + P3.5 无参启动 + P3.6 多提供商热切换（均已落地）→ MCP host**。
-`core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 + 默认全 ask）+ GUI 设置界面与无参启动
-（Windows 凭据管理器存 key、配置文件只存引用）；云知声与 DeepSeek 官方两个真端点全链验收通过
-（A8 归档 `evals/p3-u2flash-live-1.json`、`evals/p35-deepseek-noarg-live-1.json`，浮动标注）。
-其后是 **MCP host**：**没有 core，host 没有可授予的对象**——现在有了。
+**2026-10-26 这批收的是债务，不是功能**：25 个探针全部进门（13/25 → 25/25）· 门面文档按
+`git show | wc -l` 实测重建（`App.h` 的账此前**加减不闭合**）· 关闭「`--settings-probe` 会删
+用户真实配置」的缺陷（现在无 `--config` 直接拒绝启动）。
+
+其后两条并列，取舍看你想先补哪一侧：
+
+1. **P4 Phase I：路径可点 + 只读预览**——产品侧最后一块半成品（A–H 已落地，G 只到尖峰）。
+2. **MCP host**——能力侧；P3 落地后「没有 core 就没有可授予的对象」这个前置障碍已消失。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
