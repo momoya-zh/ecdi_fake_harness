@@ -568,12 +568,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             //     `else if (radius > 0)` 分支（圆角生效、描边零）。当时"实测可辨"
             //     验的是灰底那一半，描边那半从来没被看见过——典型「设了参数以为它在」。
             //   ⇒ 补 `.borderColor`；`.border` 保留（聚焦点线框不至于跳回默认黑）。
+            //   ★ REQ-14（Phase 37 verticalAlign）：30 高 / padding 0 / lineH 17
+            //     ⇒ Top 时行箱贴上沿、下方空 13px；居中走框架入口（REQ-14 闭合）。
             (*slot)->SetStyle(ECDI::TextBoxStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
                 .cornerRadius = harness::kRadiusBtn,
                 .borderWidth = 1.0f,
-                .borderColor = kLine});
+                .borderColor = kLine,
+                .verticalAlign = ECDI::VerticalAlignment::Center});
             (*slot)->SetSize(500, 30);
             content->AddChild(std::move(box));
         };
@@ -615,7 +618,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
                 .border = kLine,
                 .cornerRadius = harness::kRadiusBtn,
                 .borderWidth = 1.0f,
-                .borderColor = kLine});   // ★ 同上一处：恒显描边色缺了 ⇒ drawBorder 恒 false
+                .borderColor = kLine,   // ★ 同上一处：恒显描边色缺了 ⇒ drawBorder 恒 false
+                .verticalAlign = ECDI::VerticalAlignment::Center});   // ★ REQ-14（Phase 37）
             (*slot)->SetSize(120, 26);
             row->AddChild(std::move(box));
             for (const char* p : presets) {
@@ -922,6 +926,10 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
         auto search = std::make_unique<ECDI::TextBox>();
         m_hud.modelSearch = search.get();
         search->SetSingleLine(true);
+        // ★ REQ-14（Phase 37 verticalAlign）：26 高 / padding 0 ⇒ Top 时行箱贴上沿、
+        //   下方空 9px。只覆写对齐一项，其余全吃主题缺省（视觉零改动面）。
+        search->SetStyle(ECDI::TextBoxStyleOverride{
+            .verticalAlign = ECDI::VerticalAlignment::Center});
         search->SetSize(320, 26);
         search->SetPosition(10, 8);
         search->SetOnTextChanged([this](const std::string&) { RebuildModelPopupList(); });

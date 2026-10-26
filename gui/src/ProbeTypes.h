@@ -262,6 +262,28 @@ struct GrowProbeRec {
     std::string firstDivergence;
 };
 
+// ★ REQ-14 / ECDI Phase 37（--valign-probe）：单行 TextBox 垂直居中的机读证据。
+//   读回仪器 = GetCaretClientGeometry()（公开；其 rect.h == GetLineHeight() 同源，
+//   rect.y − 控件绝对 y == GetTextTopInset()——Phase 37 △8 的 Y 原点，X/Y 单一来源）。
+//   判据（跑批脚本执行，见 RunValignProbe 头注）：
+//     · 每相 matched == true：交付态（Center）读数 == (H − lineH)/2
+//       ——单行居中时 padding 在代数上消去：p + (H−2p−lineH)/2 = (H−lineH)/2。
+//     · 翻转臂（Top 强制）：读数记录为剂量对照；Content 不超屏时 Top < Center，
+//       恰满（composer 29 = 17+6×2）时相等——相等**本身**就是「Top 时也居中」的读数。
+//     · 恢复臂：翻回 Center 后读数必须与首测一致（状态确被还原）。
+struct ValignProbeRec {
+    std::string phase;        // composer-flip / settings-fields / settings-steppers / model-search
+    std::string box;          // 哪个框（composer/base/key/model-name/ctx/max-out/search）
+    int boxH = 0;             // 控件高
+    int lineH = 0;            // 行高（caret rect.h——GetLineHeight 同源，不硬编码）
+    int relYTop = -1;         // Top 强制臂读数（-1 = 本相未做翻转）
+    int relYCenter = -1;      // 交付态（Center）读数
+    int relYRestored = -1;    // 翻回 Center 后读数（-1 = 未做翻转）
+    int expectedCenter = 0;   // (H − lineH) / 2（四舍五入；与读数同用 lround）
+    bool matched = true;
+    std::string firstDivergence;
+};
+
 struct JumpProbeRec {
     std::string phase;        // initial-consistency / after-click-tail /
                               // after-wheel-up / after-click-again / skipped

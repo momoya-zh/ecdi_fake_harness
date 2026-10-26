@@ -252,6 +252,13 @@ struct CliOptions {
     //     · shrink：删掉换行后高度**必须变矮**（★ 唯一能打红 max(0,·) 陷阱的方向）
     //     · exact-fit：恰好装下时不出现内部滚动条（取整方向判据）
     bool growProbe = false;            // --grow-probe：多行自动长高
+    // ★★ REQ-14（2026-10-27，ECDI Phase 37 verticalAlign）：单行 TextBox 垂直居中。
+    //   判据（跑批脚本执行，见 `RunValignProbe` 头注）：
+    //     · 每相交付态（Center）读数 == (H − lineH)/2（padding 代数消去后的居中律）
+    //     · 翻转臂（Top 强制）= 剂量对照：设置框 0 → 6.5/4.5 是真跳变；
+    //       composer 恰满（29 = 17+6×2）两读数相等——相等就是「Top 时也居中」的读数
+    //     · 恢复臂：翻回 Center 与首测一致（状态确被还原）
+    bool valignProbe = false;          // --valign-probe：单行垂直居中判据
     // ★★ 2026-10-21：`Hud` 覆盖率自检（--hud-probe）。
     //   ★ 为什么必须有：`RefreshHud` 里有二十来处 `if (m_hud.X)`，而
     //     **建树时漏掉某个字段**这件事在任何既有读数里都不可见——
@@ -288,6 +295,6 @@ struct CliOptions {
                reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || resizeProbe || enterProbe ||
-               growProbe || hudProbe || legacyPoll || asyncProbe;
+               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe;
     }
 };

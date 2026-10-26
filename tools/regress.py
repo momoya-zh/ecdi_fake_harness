@@ -98,6 +98,10 @@ EXTRA_PROBES = [
     # P4 Phase I：全部判据写在 RunPreviewProbe 内（regex 抽取 / IO 纪律 / 双闸 /
     # Esc）。工作区与样本文件由探针在 %TEMP% 自建，回放模式即可全绿；无 designed-red。
     ("--preview-probe", "previewProbe", DEMO, [], []),
+    # REQ-14（ECDI Phase 37 verticalAlign）：单行 TextBox 垂直居中。回放即可全绿
+    # （读回走公开 GetCaretClientGeometry，设置面板/模型浮窗用产品入口真开真关）；
+    # 无 designed-red——翻转臂（Top 强制）就是剂量对照，没有结构性不可达的相。
+    ("--valign-probe", "valignProbe", DEMO, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"

@@ -139,7 +139,13 @@ private:
             .padding = 6.0f,
             .cornerRadius = harness::kRadiusInput,
             .borderWidth = 1.0f,
-            .borderColor = focused ? harness::kDarkAccent : harness::kInputBorder});
+            .borderColor = focused ? harness::kDarkAccent : harness::kInputBorder,
+            // ★ REQ-14（ECDI Phase 37 verticalAlign）：单行内容垂直居中。
+            //   Composer 29 = lineH 17 + padding 6×2，Top 与 Center 读数相同
+            //   （--valign-probe 的 composer 相会记录 delta=0）——这里选 Center
+            //   是把「恰好居中」钉成「契约居中」：将来 padding 或行高漂移
+            //   （DPI/字体），行箱仍按几何中心落，不再依赖 29=17+6×2 的巧合。
+            .verticalAlign = ECDI::VerticalAlignment::Center});
     }
 
     PromptBar* m_enterSink = nullptr;   // 非拥有

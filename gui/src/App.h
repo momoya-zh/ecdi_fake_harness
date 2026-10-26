@@ -1021,6 +1021,7 @@ private:
     void AppendSettingsProbeSummary(std::string& json);   // ProbeSettings.cpp
     void AppendEnterProbeSummary(std::string& json);   // ProbeFlow.cpp
     void AppendGrowProbeSummary(std::string& json);   // ProbeFlow.cpp
+    void AppendValignProbeSummary(std::string& json);   // ProbeFlow.cpp
     void AppendResizeProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendThemeProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendHistoryProbeSummary(std::string& json);   // ProbeSidebar.cpp
@@ -1400,6 +1401,12 @@ private:
     //   这种实现在"长高"相里是**全绿**的，只有在"变矮"相才会红。故 `shrink` 相不是补充，
     //   它是这个功能唯一的负对照方向。
     void RunGrowProbe();
+
+    // ★★ REQ-14（--valign-probe，2026-10-27）：单行 TextBox 垂直居中判据。
+    //   形状同 RunGrowProbe：settle 后同步跑完即 Exit。读回仪器 = 公开的
+    //   GetCaretClientGeometry()（行箱 Y 原点，Phase 37 △8 同源）；判据见
+    //   RunValignProbe 头注与 ValignProbeRec。
+    void RunValignProbe();
 
     // ★★ P4 Phase A（--jump-probe，2026-10-25）：「跳到最新」按钮判据。
     //   形状同 RunGrowProbe：同步跑完即 Exit。

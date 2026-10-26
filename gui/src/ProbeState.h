@@ -143,6 +143,9 @@ struct ProbeState {
     std::vector<GrowProbeRec> growProbeLog;
     bool growProbeDone = false;
 
+    std::vector<ValignProbeRec> valignProbeLog;
+    bool valignProbeDone = false;
+
     std::vector<JumpProbeRec> jumpProbeLog;
     bool jumpProbeDone = false;
 

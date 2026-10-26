@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v3.8**（2026-10-26；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v3.9**（2026-10-27；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 已登记开放（2026-10-26 新立：单行 `TextBox` 无垂直对齐 + `padding` 三耦合；消费者 4 处已实测）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 已登记推后（2026-10-18 新立，alpha 双链不对等；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #71）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -595,8 +595,8 @@ ECDI 侧基线：收敛前 `487 passed / 0 failed` → 加三条用例后 `490 p
 | 项 | 内容 |
 |---|---|
 | 原编号 | （无——本轮新立。★ 登记前枚举过全集：`REQ-07` 已复核否决、`REQ-12` 是另一件事（多行 `GetPreferredSize` 语义，已闭合）、`REQ-13` 已闭合 ⇒ 编号顺延至 **14**） |
-| 状态 | 🔄 **开放** |
-| 归属 | **ECDI 侧**（能力缺项；非 harness 用法问题——但「是否算缺陷」需 ECDI 侧先裁决契约，见下方专行） |
+| 状态 | ✅ **已闭合（2026-10-27，ECDI Phase 37 `verticalAlign` 当日落地 + 本仓 7 框收敛，见下方闭合专行）** |
+| 归属 | **ECDI 侧**（能力缺项；非 harness 用法问题——ECDI 侧已裁决并按 ⓐ 落地） |
 | 现象 | ① 单行 `TextBox` 的文本**恒贴顶**：`textY = fy + inset`（`TextBox.cpp:1338`）、`inset = m_style.padding`（`GetTextLeftInset()`，`:493-498`）——`OnPaint` **没有单行分支**，与多行走同一条顶部对齐路径（多行顶部对齐是对的，单行不是）；② 文本**左内缩只有一个来源**（`textX = fx + inset`，`:1337`），而 `cornerRadius` 只参与**绘制**（`:1281`），与内缩**互不知道** ⇒ 想让文字躲开圆角，只能加大 `padding` |
 | ★ 唯一旋钮的**三耦合** | `padding` 一个值同时决定三件事：**X 内缩**（`textX`，`:1337`）· **Y 内缩**（`textY`，`:1338`）· **裁切高**（`PushClip` 用 `GetTextAreaHeight() = H − padding×2`，`:1343` / `:500-503`）。⇒ ① 想只调一个轴**必然动另一个**；② **越界即裁字**：`padding×2 > H − lineH` 时裁切框比行还矮，字形被上下切掉——这是「唯一旋钮」自带的可触发缺陷，不是假想 |
 | ★ 与 ECDI 自家契约的关系（**请 ECDI 侧裁决这一行**） | `TextBox.h:79` 写明单行契约：「内容测量 + padding×2（§3.6 验证项：**height = lineH + padding×2 → 自然垂直居中**）」⇒ 框架立场是**由调用方把尺寸做对**，顶部对齐 + 等分 padding 恰好等价于居中。★ 本条的诉求不是「算错了」，而是**这个契约在 UI 里不可用**：输入框高度通常由视觉/布局目标决定（本仓实测 29 / 30 / 26 px），一旦偏离 `lineH + 2×padding` 就**没有任何合法手段**居中。反过来说：`GetPreferredSize()` 给的正是那个「恰好」值 ⇒ **只有采用 preferred 高的调用方才是安全的**，其余一律偏心 |
@@ -627,6 +627,52 @@ baseline（29 = 17+6×2 / 46 = 17×2+12 / 63 = 17×3+12）。
 **`REQ-14` = 两者混合**：`TextBox` 无对齐能力（缺项），而框架用一个**文档化的等价契约**（尺寸做对即居中）把缺项
 掩盖成了「设计」。⇒ 请 ECDI 侧**先裁决契约是否可接受**，再谈实现：若认定「调用方必须用 preferred 高」成立，
 本条应结案为**已知现状**（同 `REQ-06` ③ 的处理），本仓改为全量改用 preferred 高并接受布局代价。
+
+### ★ REQ-14 闭合专行（2026-10-27，ECDI Phase 37 + 本仓收敛）
+
+> **ECDI 侧裁决 = 采纳 ⓐ，且形态比登记稿更完整**（三批 `074b8aa` / `ac80645` / `6a3807b`，MinGW→MSVC
+> 五链 513/513，详设 v1.2 全链收口，deferred #76 关闭）：
+> ① **新公共头 `Core/VerticalAlignment.h`**：`Top = 0`（缺省 = Phase 37 前逐位不变）/ `Center = 1`
+>   ——与登记稿 ⓐ 的「显式缺省 Top ⇒ 零行为变更」一致；与 C30-3 **不同**（这里缺省与零值相同，
+>   显式注入只是纪律），且文档写明前瞻契约：将来改主题缺省为 Center 会立即触发 C30-3。
+> ② **`TextBoxStyle::verticalAlign` + override 字段**（置于 `borderColor` 之后规避 C7560 乱序）。
+> ③ **`GetTextTopInset()`**（protected，「不扩公开面」；不变量 1 = `Top` ⇒ 恒等于 `GetTextLeftInset()`
+>   的**结构性保证**——快路径根本不读行数；不变量 2 = 超屏退化 `max(0,·)` ⇒ 与改前逐位同）。
+> ④ **X/Y 单一来源拆分**（`OnPaint` insetX/insetY、`CalculateCaretPosition` △8、
+>   `CaretIndexFromPosition` △9，守卫注释明写「禁止合并回一个函数——那正是三耦合的根因 N1」）；
+>   **clip 顶不随居中外缩**（`areaTop = fy + insetX`，C37-3）⇒ 居中不会把字推进焦点环。
+> ⑤ 登记里请补的 `GetPadding()` **没加**（公开面不变）——但不需要：单行居中时 padding 在代数上
+>   消去（`p + (H−2p−lineH)/2 = (H−lineH)/2`），居中判据**不依赖 padding 访问器**即可断言
+>   （见下）。「内缩 ≥ 圆角」仍无公开断言口，登记原样保留。
+
+**本仓收敛（同日）**：7 个单行消费者 `SetStyle(.verticalAlign = Center)`——composer（`PromptBar.cpp`
+ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 · 两个挡位框（`AppUiMain.cpp`）·
+模型浮窗搜索框（只覆写对齐一项，其余吃主题缺省）。composer 29 = 17+6×2 本是**巧合居中**，Center 化
+把它钉成**契约居中**——将来 padding/行高漂移（DPI/字种）不再依赖 29=17+6×2。多处实测行高读数
+**16**（设置框默认字体）而非登记估算的 17——正是登记自己警告的「17 只是 96dpi/聊天字体的读数，
+必须测量不得写死」；本仓判据用 `GetCaretClientGeometry().rect.height` 同源推导，未硬编码。
+
+**机读判据 = 新探针 `--valign-probe`（7/7 green，已进门 regress.py EXTRA_PROBES）**：
+- **读回仪器 = 公开 API `GetCaretClientGeometry()`**（非探针后门）：`rect.y − 控件绝对 y ==
+  GetTextTopInset()`（Phase 37 △8 的 Y 原点，与绘制/点击同源）；`rect.height == GetLineHeight()`。
+  绝对坐标相减相消 ⇒ 隐藏浮层里的搜索框同样可读，且读的是**行箱**（登记的自我订正：墨迹包围盒
+  不能判居中）。★ `Widget::GetWindow()` 是 protected——探针第一次接线在那里撞了 C2248，
+  去掉越权守卫后由探针顶部的 `m_window` 前置守卫兜住。
+- **判据**（无需知道 padding）：交付态（Center）读数 == `(H − lineH)/2`；**翻转臂**（SetStyle 只覆写
+  `verticalAlign = Top`，读完即翻回）给出**剂量对照**：设置挡位框 26px 读数 **Top=0 → Center=5**，
+  恢复臂 == 首测；**composer 恰满盒两臂相等（6 == 6）**——相等本身就是「Top 时也居中」的交付事实，
+  两臂差异 = 内容是否超屏的函数，判别力直接可读。
+- **回归**：6 夹具逐位、25 探针仅设计红、`--grow-probe` 9/9 且 baseline **逐位不动**
+  （inputH=29/barH=81/hintY=43）——composer Center 化在 preferred 精确配高下**几何零扰动**
+  （精确配高 ⇒ 余量恒 0；30 行封顶时 `max(0,·)` 退化回 Top）。
+- **人验截图**：设置面板四框文本居中可见（URL/模型名/挡位/API Key 掩码点列）——改动前文本贴顶、
+  下方空 13px。`.scratch/req14-settings.png` 等 3 张。
+- **换库**：MSVC Release lib（SHA256 `a8822fbc…b7fbcb`，11,696,664 B）经 `cmake --install`
+  入 `third_party/ecdi`，含新头 `VerticalAlignment.h`；库内符号抽查（`GetTextTopInset` ×3 /
+  `VerticalAlignment` ×4）。同日**构建器迁 Ninja**（同一 cl.exe 工具链，静态库 ABI 不变；
+  msbuild `--clean-first` 纪律由 Ninja 依赖追踪 + 全量重建替代，全量日志 62 行零警告）。
+- **顺手发现（不属本条，未修）**：模型浮窗搜索框从未设 `.background`（P4 H 起缺省）⇒ 深色主题下
+  白底——与 2026-10-26 修设置框「灰底+描边」同族的一处漏网，待用户定夺是否单独修。
 
 ---
 
@@ -776,6 +822,20 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v3.9（2026-10-27）★ `REQ-14` 闭合：ECDI Phase 37 `verticalAlign` 当日落地 + 本仓 7 框收敛**：
+  ① ECDI 三批 `074b8aa`/`ac80645`/`6a3807b`（五链 513/513，deferred #76 关闭）采纳登记稿 ⓐ——
+     `VerticalAlignment{Top=0 缺省逐位不变, Center=1 内容不超屏才生效}` + `TextBoxStyle::verticalAlign`
+     + `GetTextTopInset()`（protected；Top 快路径不读行数 = A1 结构性保证）+ X/Y 单一来源拆分
+     （OnPaint/光标/点击定位 △7/△8/△9）+ clip 顶不随居中外缩（C37-3）。
+  ② 本仓 7 个单行框 `Center` 化（composer / 设置×5 / 模型搜索）；composer 巧合居中钉成契约居中，
+     `--grow-probe` baseline 逐位不动（29/81/43）= 几何零扰动。
+  ③ 新探针 `--valign-probe` 7/7 进门：判据走公开 `GetCaretClientGeometry()`（行箱 Y 原点同源），
+     单行居中 padding 代数消去 ⇒ 判据 `(H−lineH)/2` 不依赖 padding 访问器；翻转臂 Top=0 → Center=5
+     给出剂量对照，恢复臂 == 首测；composer 恰满盒两臂相等（6==6）即「Top 时也居中」的交付事实。
+     实测设置框行高 16（≠ 登记估算 17）——「行高必须测量」的自我警告兑现。
+  ④ 换库 MSVC Release lib `a8822fbc…`（11,696,664 B）+ 同日构建器迁 Ninja（同 cl.exe，ABI 不变）。
+  ⑤ 顺手发现（未修）：模型浮窗搜索框无 `.background` ⇒ 深色主题白底（P4 H 漏网，待定夺）。
+  头部 v3.8 → **v3.9**。
 - **v3.8（2026-10-26）★ 新立 `REQ-14`：单行 `TextBox` 无垂直对齐（`padding` 三耦合 + 圆角无感知）**：
   ① **触发**：用户报「输入框文字需上下居中」+「最左侧文字撞圆角」⇒ 查证两者在框架侧**都没有入口**。
   ② **归属 = ECDI 侧（能力缺项）**，判据是「能力存不存在」：基类公共头 + ECDI 源码仓全树 grep

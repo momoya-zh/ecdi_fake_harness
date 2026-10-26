@@ -314,6 +314,7 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::resizeProbe, &ProbeState::resizeProbeDone, &HarnessApp::RunResizeProbe},
                 {&CliOptions::enterProbe, &ProbeState::enterProbeDone, &HarnessApp::RunEnterProbe},
                 {&CliOptions::growProbe, &ProbeState::growProbeDone, &HarnessApp::RunGrowProbe},
+                {&CliOptions::valignProbe, &ProbeState::valignProbeDone, &HarnessApp::RunValignProbe},
                 {&CliOptions::hudProbe, &ProbeState::hudProbeDone, &HarnessApp::RunHudProbe},
                 {&CliOptions::jumpProbe, &ProbeState::jumpProbeDone, &HarnessApp::RunJumpProbe},
                 {&CliOptions::keyProbe, &ProbeState::keyProbeDone, &HarnessApp::RunKeyProbe},

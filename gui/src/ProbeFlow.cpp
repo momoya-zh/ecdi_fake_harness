@@ -38,7 +38,9 @@
 #include "ECDI/Layout/Layout.h"
 #include "ECDI/Platform/PlatformWindow.h"
 #include "ECDI/Theme/PanelStyle.h"
+#include "ECDI/Theme/TextBoxStyle.h"
 #include "ECDI/Widget/Button.h"
+#include "ECDI/Widget/CaretGeometry.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/ScrollBar.h"
 #include "ECDI/Widget/ScrollView.h"
@@ -491,6 +493,113 @@ void HarnessApp::RunGrowProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ REQ-14（--valign-probe，2026-10-27）：单行 TextBox 垂直居中的取证。
+//
+// 【它要回答什么】REQ-14 在框架侧落地（ECDI Phase 37 `verticalAlign`）后，
+//   harness 的 7 个单行消费者（composer / 设置 BaseURL+API-key+模型名 /
+//   两个挡位框 / 模型浮窗搜索框）改为 Center。本探针证明两件事：
+//   ① 交付态**真的居中了**（不只是"样式设了"——那正是 2026-10-26 描边色
+//     `borderWidth` 缺伴的教训：设了参数以为它在）；② 读数仪器**有判别力**
+//   （Top 强制臂给出剂量对照，而非只有"全绿"一种可能）。
+// 【读回仪器】`GetCaretClientGeometry()`——TextBox 的**公开** API，非探针后门：
+//   rect.y − 控件绝对 y == `GetTextTopInset()`（Phase 37 △8：Y 恒用 TopInset，
+//   与绘制/点击定位同一来源）；rect.h == `GetLineHeight()`（8.5.2 唯一行高来源）。
+//   绝对坐标在相减中消去 ⇒ 隐藏浮层里的搜索框同样可读，无需截屏或像素比对
+//   （REQ-14 登记里的教训：墨迹包围盒不能判居中，行箱可以——这里读的正是行箱）。
+// 【判据】单行框空文本行缓存恒 1 行（RecalculateLines 首行恒 push 0），
+//   Center 读数 = p + (H−2p−lineH)/2 = **(H−lineH)/2**——padding 代数消去，
+//   判据不需要知道 padding（框架没有公开 GetPadding()，REQ-14 登记的那条
+//   缺口就此绕开）。翻转臂 = SetStyle 只覆写对齐一项：Top 读数 = padding；
+//   恢复臂要求与首测一致（状态确被还原）。设置框（30/26 高、padding 0）
+//   Top=0 < Center=6.5/4.5，判别力直接可读；composer 恰满（29 = 17+6×2）
+//   两臂相等——相等本身就是「Top 时也居中」的交付事实，Center 化是把它
+//   从巧合钉成契约（将来 padding/行高漂移时不再依赖 29=17+6×2）。
+// 【状态纪律】设置面板/模型浮窗用**产品唯一入口**（SetSettingsVisible /
+//   SetModelPopupOpen）真开真关；探针在 settle 后同步跑完即 Exit。
+void HarnessApp::RunValignProbe() {
+    if (!m_sess || !m_sess->replay || !m_window) {
+        m_probeState.valignProbeDone = true;
+        return;
+    }
+    auto relCaretY = [](ECDI::TextBox* box) -> int {
+        // 只挡空指针：GetWindow() 是 protected，不该（也不能）从这里摸——
+        // 窗口在不在由 RunValignProbe 顶部的 m_window 守卫保证。
+        if (!box) return -1;
+        const ECDI::CaretGeometry g = box->GetCaretClientGeometry();
+        const ECDI::Point abs = box->GetAbsolutePosition();
+        return static_cast<int>(std::lround(g.rect.y - abs.y));
+    };
+    auto record = [&](const char* phase, const char* name, ECDI::TextBox* box,
+                      bool withFlip) {
+        ValignProbeRec rec;
+        rec.phase = phase;
+        rec.box = name;
+        std::string bad;
+        if (!box) {
+            bad = "box pointer is null";
+        } else {
+            rec.boxH = box->GetHeight();
+            rec.relYCenter = relCaretY(box);
+            if (rec.relYCenter < 0) {
+                bad = "caret geometry unavailable";
+            } else {
+                rec.lineH = static_cast<int>(std::lround(
+                    box->GetCaretClientGeometry().rect.height));
+                rec.expectedCenter = static_cast<int>(
+                    std::lround((rec.boxH - rec.lineH) / 2.0f));
+                if (rec.relYCenter != rec.expectedCenter) {
+                    bad = "delivered reading != (H-lineH)/2";
+                }
+            }
+            if (withFlip && bad.empty()) {
+                box->SetStyle(ECDI::TextBoxStyleOverride{
+                    .verticalAlign = ECDI::VerticalAlignment::Top});
+                rec.relYTop = relCaretY(box);
+                box->SetStyle(ECDI::TextBoxStyleOverride{
+                    .verticalAlign = ECDI::VerticalAlignment::Center});
+                rec.relYRestored = relCaretY(box);
+                if (rec.relYTop < 0 || rec.relYRestored < 0) {
+                    bad = "flip-arm caret geometry unavailable";
+                } else if (rec.relYRestored != rec.relYCenter) {
+                    bad = "restore reading != delivered reading";
+                } else if (rec.relYTop > rec.relYCenter) {
+                    // Top inset = padding；Center = padding + max(0, 余量/2) ≥ Top。
+                    bad = "Top reading exceeds Center reading";
+                }
+            }
+        }
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+        m_probeState.valignProbeLog.push_back(std::move(rec));
+    };
+
+    // ① composer：翻转臂（恰满盒子两臂预期相等——相等即居中事实）。
+    if (m_promptBar) record("composer-flip", "composer", m_promptBar->input(), true);
+    // ② 设置面板（产品唯一入口真开真关）：三个字段框（30 高）。
+    {
+        const bool was = m_hud.settingsPanel && m_hud.settingsPanel->IsVisible();
+        SetSettingsVisible(true);
+        record("settings-fields", "base-url", m_hud.settingsBase, false);
+        record("settings-fields", "api-key", m_hud.settingsKey, false);
+        record("settings-fields", "model-name", m_hud.settingsModel, false);
+        // ③ 挡位框（26 高）：翻转臂放这里——内容不超屏，Top/Center 必然分离，
+        //    剂量对照（0 → 4.5）由本相给出。
+        record("settings-steppers", "ctx", m_hud.settingsContext, true);
+        record("settings-steppers", "max-out", m_hud.settingsMaxOut, false);
+        SetSettingsVisible(was);
+    }
+    // ④ 模型浮窗搜索框（26 高；隐藏态下相对读数同样成立——绝对坐标相消）。
+    {
+        const bool was = m_hud.modelPopup && m_hud.modelPopup->IsVisible();
+        SetModelPopupOpen(true);
+        record("model-search", "search", m_hud.modelSearch, false);
+        SetModelPopupOpen(was);
+    }
+
+    m_probeState.valignProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
 // ★★ P4 Phase A（--jump-probe，2026-10-25）：「跳到最新」按钮判据。
 //
 // 【它要回答什么】① 按钮显隐与贴底态**恒一致**（不变量）；② 点击**真的回底**；
@@ -851,6 +960,48 @@ void HarnessApp::AppendGrowProbeSummary(std::string& json) {
                       r.hintY, r.buttonY,
                       r.matched ? "true" : "false",
                       escG(r.firstDivergence).c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
+void HarnessApp::AppendValignProbeSummary(std::string& json) {
+    json += "  \"valignProbe\": [";
+    auto escV = [](const std::string& in) {
+        std::string out;
+        out.reserve(in.size() + 8);
+        for (unsigned char c : in) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char e[8];
+                        std::snprintf(e, sizeof(e), "\\u%04x", c);
+                        out += e;
+                    } else {
+                        out += static_cast<char>(c);
+                    }
+            }
+        }
+        return out;
+    };
+    for (size_t i = 0; i < m_probeState.valignProbeLog.size(); ++i) {
+        const ValignProbeRec& r = m_probeState.valignProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"box\": \"%s\", \"boxH\": %d, "
+                      "\"lineH\": %d, \"relYTop\": %d, \"relYCenter\": %d, "
+                      "\"relYRestored\": %d, \"expectedCenter\": %d, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      r.phase.c_str(), r.box.c_str(), r.boxH, r.lineH,
+                      r.relYTop, r.relYCenter, r.relYRestored, r.expectedCenter,
+                      r.matched ? "true" : "false",
+                      escV(r.firstDivergence).c_str());
         json += b;
     }
     json += "],\n";

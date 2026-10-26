@@ -128,6 +128,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.previewProbe = true;    // ★ P4 Phase I：路径可点 + 只读预览判据
         } else if (arg == L"--grow-probe") {
             options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
+        } else if (arg == L"--valign-probe") {
+            options.valignProbe = true;     // ★ REQ-14：单行 TextBox 垂直居中判据
         } else if (arg == L"--async-probe") {
             options.asyncProbe = true;      // ★ REQ-03：投递 vs 轮询的机读 A/B 读数
         } else if (arg == L"--legacy-poll") {
@@ -211,6 +213,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --selectable-rows                转录正文行改只读 TextBox（可选中复制）\n"
                     L"  --select-probe                   选中复制判据（配 --selectable-rows 用）\n"
                     L"  --grow-probe                     输入框多行自动长高判据\n"
+                    L"  --valign-probe                   REQ-14：单行输入框垂直居中判据\n"
                     L"  --preview-probe                  P4 I：路径可点 + 只读预览判据\n"
                     L"  --async-probe                    REQ-03：PostToUi 投递 vs 8ms 轮询的读数\n"
                     L"  --legacy-poll                    REQ-03 对照世界：恢复每 tick 等 8ms 的旧路径\n"
