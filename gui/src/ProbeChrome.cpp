@@ -917,7 +917,8 @@ void HarnessApp::RunModelProbe() {
     // ② chip 接线。
     {
         ModelProbeRec& r = snap("chip-text");
-        r.matched = r.chipText.find("\xE2\x96\xBE") != std::string::npos;   // ▾
+        r.matched = r.chipText.find("\xEF\xB9\x80") != std::string::npos ||
+                    r.chipText.find("\xE2\x96\xBE") != std::string::npos;   // ﹀ / ▾
         if (!r.matched) r.note = "chip text lacks dropdown marker";
     }
     // ③ Ctrl+M 开 → Esc 关（优先级：设置 > 浮窗 > 菜单——浮窗层独立可关）。

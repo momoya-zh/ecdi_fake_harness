@@ -349,6 +349,13 @@ bool HarnessApp::OpenHistorySession(const std::filesystem::path& file) {
     // 抽干后再重建一次：此刻 timeline 才有内容，且 sidecar 已写进模型与视图。
     RebuildTranscriptView();
     Relayout();
+    // ★★ 2026-10-26（缺陷修复）：打开历史会话的契约是「直接跳到末尾」（Step 5 注释）。
+    //   但 `RebuildTranscriptView` 把 offset 恢复到建会话时的 `prevOffset=0`，随后
+    //   `FollowTailIfPinned` 判 `0 >= maxY - 60` 对长会话恒为 false ⇒ 视图停在最顶部、
+    //   右下角浮出「↓ 跳到最新」，与「打开即在末尾」相悖。显式滚到底部再刷新跳转钮。
+    if (m_scroll) {
+        m_scroll->SetContentOffset(0, m_scroll->GetMaxOffsetY());
+    }
     FollowTailIfPinned();
     m_sidebarDirty = true;    // 会话列表要多出一行
     m_hudDirty = true;

@@ -53,6 +53,8 @@ public:
     void SetStateDrivenEnabled(bool enabled);
     // v3 workspace handshake can disable Send without falsely enabling Stop.
     void SetButtonStates(bool sendEnabled, bool stopEnabled);
+    // 用户模式下更新底部提示文案与颜色（如等待授权时提示先点击允许/拒绝）。
+    void SetHint(const std::string& text, const ECDI::Color& color);
 
     // ★★ 2026-10-21：**Enter 发送的单一入口**（按钮点击与按键最终都走这里）。
     //   ★ 为什么不把 `m_onSend` 直接交给 `ComposerBox`：那会让"按 Enter"与

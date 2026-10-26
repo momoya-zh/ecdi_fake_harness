@@ -166,7 +166,35 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
         root.AddChild(m_scroll->RemoveChild(m_hud.settingsPanel));
         rootLayoutRaw->Exempt(m_hud.settingsPanel);
     }
+    // ★★ P4 Phase I（2026-10-26）：预览 mask/sheet 同款转移（盖全窗；几何归
+    //   LayoutPreviewOverlay——root.Arrange 跳过浮层子，布局与浮层互不干扰）。
+    if (m_hud.previewMask && m_hud.previewMask->GetParent() == m_scroll) {
+        root.AddChild(m_scroll->RemoveChild(m_hud.previewMask));
+        rootLayoutRaw->Exempt(m_hud.previewMask);
+    }
+    if (m_hud.previewPanel && m_hud.previewPanel->GetParent() == m_scroll) {
+        root.AddChild(m_scroll->RemoveChild(m_hud.previewPanel));
+        rootLayoutRaw->Exempt(m_hud.previewPanel);
+    }
+    // ★★ 2026-10-26（按模式分流）：首帧与重建都在 root.Arrange() 之前把
+    //   `m_devMode` 投影到所有开发者专属控件上——在开发者模式下所有控件本身已是
+    //   可见的，同值守卫下零额外 Arrange、零额外 Invalidate。
+    ApplyDevModeVisibility();
     root.Arrange();
+
+    // ★★ 2026-10-26：输入框高度在这里**由测量**定下，不留手抄常数。
+    //   ★ 为什么必须在这个位置（三条都不可换）：
+    //     ① 构造期不行——`PromptBar::~` 之前没有窗口 ⇒ `GetPreferredSize()` 退回
+    //        当前尺寸（默认 20），量了等于没量；
+    //     ② `root.Arrange()` 之前不行——`LayoutChildren` 用 `PromptBar` 的**实际宽度**
+    //        摆子控件，宽度要到父布局分完才有值；
+    //     ③ `Show()` 之后不行——首帧已经画出去了，用户会看见压扁的那一瞬。
+    //   ★ 为什么放在 `BuildUi` 而不是 `Run()` 里建窗之后：换主题走 `RebuildUi` →
+    //     `BuildUi` 同一条路，两条路径共用一处入口（`RebuildUi` ⑧ 的调用只负责
+    //     **草稿**的多行高度，与这里的单行初值不冲突：先本函数定单行，再恢复草稿长高）。
+    //   实测口径：单行 29（行高 17 + padding 6×2），见 `--grow-probe` 的 baseline 相
+    //   `inputH=29 / barH=81 / hintY=43`。
+    if (m_promptBar) m_promptBar->SyncInputHeight();
 }
 
 // ★★ Step 4 / 0e（2026-10-19）：整树重建——运行期切主题的唯一可行路径。
@@ -236,13 +264,13 @@ void HarnessApp::RebuildUi() {
             m_promptBar->input()->SetText(draft);
             m_promptBar->input()->MoveCaretToEnd();
         }
-        // ★★ 2026-10-21：草稿恢复**必须显式重算高度**。
-        //   `SetText` 不走 `RaiseTextChanged`（D7 契约），而 `ComposerBox` 的自动长高
-        //   挂在 `OnTextChanged` 上 ⇒ 这里若不同步，一个 3 行的草稿会在重建后
-        //   被塞回单行高（垂直压扁、光标跑到框外）——而 `CompareUi` 的
-        //   `inputText` 通道**读的是文本，看不见高度**，所以这个缺陷在整树重建
-        //   探针里是全绿的。这正是"读文本看不见几何"那条老账。
-        m_promptBar->SyncInputHeight();
+    //   ★★ 2026-10-21：草稿恢复**必须显式重算高度**。
+    //     `SetText` 不走 `RaiseTextChanged`（D7 契约），而 `ComposerBox` 的自动长高
+    //     挂在 `OnTextChanged` 上 ⇒ 这里若不同步，一个 3 行的草稿会在重建后
+    //     被塞回单行高（垂直压扁、光标跑到框外）——而 `CompareUi` 的
+    //     `inputText` 通道**读的是文本，看不见高度**，所以这个缺陷在整树重建
+    //     探针里是全绿的。这正是"读文本看不见几何"那条老账。
+    m_promptBar->SyncInputHeight();
         // ⑨ 焦点交还输入框：既恢复 caret 闪烁（证明焦点真的回来了），
         //    也让 `Application::OnTimer` 重新有派发目标（否则 tick 停摆）。
         m_window->SetFocusedWidget(m_promptBar->input());
@@ -371,8 +399,18 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
 
     auto sessChipLabel = chipLabel("s-____", kAccentInk, 84);
     m_hud.sessChip = sessChipLabel.get();
-    bar->AddChild(makeChip(std::move(sessChipLabel), 84, true));
-    bar->AddChild(makeChip(chipLabel("replay", kDarkMuted, 64), 64, false));
+    {
+        auto pill = makeChip(std::move(sessChipLabel), 84, true);
+        m_hud.sessChipPill = pill.get();
+        bar->AddChild(std::move(pill));
+    }
+    {
+        auto modeChipLabel = chipLabel("replay", kDarkMuted, 64);
+        m_hud.modeChip = modeChipLabel.get();
+        auto pill = makeChip(std::move(modeChipLabel), 64, false);
+        m_hud.modeChipPill = pill.get();
+        bar->AddChild(std::move(pill));
+    }
 
     auto grow = std::make_unique<ECDI::Panel>();
     grow->SetStretch(1);
@@ -382,7 +420,11 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     // ★ 同为胶囊 ⇒ 同样居中（见上方 `chipLabel` 注释）
     auto rowLabel = uikit::Centered("autosize", 80, 20, kDarkMuted, 11.0f, /*mono=*/false);
     m_hud.rowChip = rowLabel.get();
-    bar->AddChild(makeChip(std::move(rowLabel), 80, false));
+    {
+        auto pill = makeChip(std::move(rowLabel), 80, false);
+        m_hud.rowChipPill = pill.get();
+        bar->AddChild(std::move(pill));
+    }
 
     // ★★ 2026-10-21：后端读数胶囊（`gdi` / `gl`）。
     //
@@ -405,7 +447,9 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     {
         auto backendLabel = chipLabel(m_backendName, kDarkMuted, 52);
         m_hud.backendChip = backendLabel.get();
-        bar->AddChild(makeChip(std::move(backendLabel), 52, false));
+        auto pill = makeChip(std::move(backendLabel), 52, false);
+        m_hud.backendChipPill = pill.get();
+        bar->AddChild(std::move(pill));
     }
 
     bar->AddChild(uikit::DotCell(8, kOkDark, 20, &m_hud.statusDot));
@@ -422,7 +466,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip（`提供商 › 模型 · N% ▾`）。
     //   数据常驻（RefreshHud 里 UpdateModelChip）；点击开下拉浮窗（Ctrl+M 同）。
     auto modelChip = std::make_unique<uikit::TipButton>(
-        "— ▾", "模型切换（Ctrl+M）——仅 idle 发出，运行中自动排队",
+        "— ﹀", "模型切换（Ctrl+M）——仅 idle 发出，运行中自动排队",
         [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
         [this](uikit::TipButton*) { HideTooltip(); });
     m_hud.modelChip = modelChip.get();
@@ -481,6 +525,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
 // 状态栏（hi-fi .statusbar）：圆点+状态 | 消息数 | tokens | 重绘（Composer 已收进中栏）
 void HarnessApp::BuildBottom(ECDI::Widget& root) {
     auto status = std::make_unique<ECDI::Panel>();
+    m_hud.statusBar = status.get();
     status->SetSize(1000, 26);
     status->SetStyle(ECDI::PanelStyleOverride{
         .background = harness::kDarkTopBg,

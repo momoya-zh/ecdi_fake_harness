@@ -218,6 +218,15 @@ void HarnessApplication::OnKeyDown(const ECDI::KeyDownEvent& event) {
 
 HarnessApp::HarnessApp(CliOptions options)
     : m_options(std::move(options)) {
+    // ★★ 2026-10-26（按模式分流）：无参启动且未挂任何探针/未传 `--dev` ⇒ 进入用户模式。
+    //   · 开发者模式（`m_devMode == true`）：`--replay` / `--core` / 任一 `--*-probe` / `--dev`，
+    //     保持既有树、布局与读数口径 100% 不变；
+    //   · 用户模式（`m_devMode == false`）：默认收起右侧检视栏（`m_inspectorVisible = false`），
+    //     隐藏评估胶囊、底栏、渲染探针卡与测试夹具历史区。
+    m_devMode = m_options.devMode || !m_options.firstRun || m_options.HasAnyProbe();
+    if (!m_devMode) {
+        m_inspectorVisible = false;
+    }
     // ★★ P4 H：配置**无条件**先加载一次——此前只在 firstRun 直连路径里 Load，
     //   回放/--replay 模式的 providers 恒空（模型浮窗/右栏只读卡全 "—"）。
     //   失败只记日志：文件不存在 = 干净首启（TryAutoConnectFromConfig 语义不变）。
@@ -390,6 +399,10 @@ bool HarnessApp::HandleGlobalKeyDown(const ECDI::KeyDownEvent& event) {
         return false;
     }
     if (!event.IsCtrlDown()) return false;
+    if (event.IsShiftDown() && key == ECDI::KeyCode::D) {
+        SetDevMode(!m_devMode);
+        return true;
+    }
     switch (key) {
         case ECDI::KeyCode::B:
             SetSidebarVisible(!m_sidebarVisible);

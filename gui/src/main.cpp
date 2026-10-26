@@ -143,6 +143,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.settingsKey = Utf8FromWide(next());
         } else if (arg == L"--settings-model") {
             options.settingsModel = Utf8FromWide(next());
+        } else if (arg == L"--dev") {
+            options.devMode = true;         // ★ 强制进入开发者视图（无参启动下也可看评估 HUD）
         } else if (arg == L"--help" || arg == L"-h") {
             showUsage = true;
         }

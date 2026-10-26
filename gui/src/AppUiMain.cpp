@@ -217,6 +217,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     //   退化为「一行元信息」，既保住读数又不破坏 C 的节奏。
     {
         auto row = uikit::Row(172, 16, 8);
+        m_hud.sessProgressRow = row.get();
         auto prog = std::make_unique<ECDI::Label>("0 / 0");
         m_hud.sessProgress = prog.get();
         prog->SetTextColor(kDarkMuted);
@@ -239,7 +240,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     //     这里是**还没打开的文件**。点一行会多出一个已打开会话。
     //   ★ 只列不删：`protocol/fixtures/` 下每个文件都有 sha256 基线，
     //     删除 UI 一旦能碰它们，所有回归基线就都开口子了。
-    AddLine(*side, "历史", kDarkMuted, true, 172, harness::kFontMicro);
+    m_hud.historyHeader = AddLine(*side, "历史", kDarkMuted, true, 172, harness::kFontMicro);
     {
         auto list = std::make_unique<ECDI::ScrollView>();
         m_hud.historyList = list.get();
@@ -312,9 +313,10 @@ void HarnessApp::BuildConversationHead() {
             m_hud.convSub = sub.get();
             sub->SetTextColor(m_options.probeContrast ? kProbeInk : kDarkMuted);
             sub->SetFont(harness::SansFont(harness::kFontMicro));
-            sub->SetSize(300, 14);
+            sub->SetSize(m_devMode ? 300 : 480, 14);
             titles->AddChild(std::move(sub));
         }
+        titles->SetSize(m_devMode ? 300 : 480, 36);
         head->AddChild(std::move(titles));
 
         auto grow = std::make_unique<ECDI::Panel>();
@@ -479,6 +481,25 @@ void HarnessApp::BuildMoreMenu() {
         //     而 `timeline` 是历史会话/重建/导出的唯一来源，删了就找不回来。
         //     这里要的是「视图错乱了就重画一遍」，模型的作者不是这个按钮。
         mkMenuItem("清空视图", "从模型重画视图", [this] { RebuildTranscriptView(); });
+        {
+            auto b = std::make_unique<ECDI::Button>(m_devMode ? "简洁视图" : "开发者视图");
+            m_hud.devModeMenuBtn = b.get();
+            b->SetTextColor(kDarkInk);
+            b->SetFont(harness::SansFont(harness::kFontSmall));
+            b->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b->SetSize(96, 24);
+            b->SetOnClick([this] {
+                SetMoreMenuOpen(false);
+                SetDevMode(!m_devMode);
+            });
+            menu->AddChild(std::move(b));
+        }
         m_counting->AddChild(std::move(menu));
     }
 }
@@ -536,11 +557,20 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             }
             // ★★ P4 修复（实测反馈）：白卡上无边框的输入框与背景融为一体、
             //   几乎不可辨——灰底 + 描边（与挡位钮同款对比），实测可辨。
+            //   ★★ 2026-10-26 订正：这里原本只给了 `.borderWidth = 1.0f`，
+            //     **边框一直没画出来**。`TextBox::OnPaint`（TextBox.cpp:1282）的判据是
+            //     `drawBorder = borderWidth > 0 && borderColor.a > 0`——`.border` 是
+            //     **焦点点线框**的颜色，不是恒显描边色；恒显描边归 `.borderColor`，
+            //     而它的默认值是**透明** ⇒ 这半个 AND 恒假，走的是
+            //     `else if (radius > 0)` 分支（圆角生效、描边零）。当时"实测可辨"
+            //     验的是灰底那一半，描边那半从来没被看见过——典型「设了参数以为它在」。
+            //   ⇒ 补 `.borderColor`；`.border` 保留（聚焦点线框不至于跳回默认黑）。
             (*slot)->SetStyle(ECDI::TextBoxStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
                 .cornerRadius = harness::kRadiusBtn,
-                .borderWidth = 1.0f});
+                .borderWidth = 1.0f,
+                .borderColor = kLine});
             (*slot)->SetSize(500, 30);
             content->AddChild(std::move(box));
         };
@@ -577,6 +607,12 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             auto box = std::make_unique<ECDI::TextBox>();
             *slot = box.get();
             (*slot)->SetSingleLine(true);
+            (*slot)->SetStyle(ECDI::TextBoxStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .cornerRadius = harness::kRadiusBtn,
+                .borderWidth = 1.0f,
+                .borderColor = kLine});   // ★ 同上一处：恒显描边色缺了 ⇒ drawBorder 恒 false
             (*slot)->SetSize(120, 26);
             row->AddChild(std::move(box));
             for (const char* p : presets) {
@@ -729,15 +765,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
             auto save = std::make_unique<ECDI::Button>("保存并连接");
             m_hud.settingsSave = save.get();
-            save->SetTextColor(kDarkInk);
+            save->SetTextColor(harness::kBtnPrimaryInk);
             save->SetFont(harness::SansFont(14.0f));
             save->SetStyle(ECDI::ButtonStyleOverride{
-                .background = kPanel2,
-                .border = kLine,
+                .background = harness::kBtnPrimary,
+                .border = harness::kBtnPrimary,
                 .borderWidth = 1.0f,
                 .cornerRadius = kRadiusBtn,
-                .pressedBackground = kToolHeaderPressed,
-                .hoverBackground = kToolHeaderHover});
+                .pressedBackground = harness::kBtnPrimaryPressed,
+                .hoverBackground = harness::kBtnPrimaryHover});
             save->SetSize(140, 30);
             save->SetOnClick([this] { OnSettingsSave(); });
             row->AddChild(std::move(save));
@@ -991,6 +1027,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     // 卡片白底和内置标题对齐原型 C 的信息层级；统计项仍保留 harness 专用读数。
     {
         auto card = makeCard(108);
+        m_hud.inspProbeCard = card.get();
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
         cardTitle(*card, "渲染探针");
         kvRow(*card, "重绘", &m_hud.evalPaints);
@@ -1092,6 +1129,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
 
     {
         auto card = makeCard(100);
+        m_hud.inspHealthCard = card.get();
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
         cardTitle(*card, "协议健康");
         // ★ 第三行（2026-10-13）：未知 kind 单独一行。

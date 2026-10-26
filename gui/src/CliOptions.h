@@ -273,4 +273,21 @@ struct CliOptions {
     //   这是「拉」的代价；`linesViaWake` / `linesViaTick` 是两条通路各自吃了多少行；
     //   `latencyP50/P99` 是「读线程入队 → HandleLine」的墙钟差（需要开戳）。
     bool asyncProbe = false;           // --async-probe：REQ-03 机读读数
+    // ★★ 2026-10-26（按模式分流）：开发者视图开关。
+    //   · 无参启动（`firstRun && !HasAnyProbe()`）默认进入「用户模式」（隐藏评估胶囊、
+    //     底栏、渲染探针卡、夹具历史列表，默认收起右侧检视栏，状态与提示改人类可读文案）；
+    //   · 显式传 `--replay` / `--core` / 任一探针 / `--dev` 则进入「开发者模式」（100%
+    //     保持既有树、布局与读数口径，所有回归探针零扰动）。
+    //   · 运行期可通过 `Ctrl+Shift+D` 或 `···` 菜单随时切换。
+    bool devMode = false;              // --dev：无参启动也强制进入开发者模式
+
+    [[nodiscard]] bool HasAnyProbe() const {
+        return cullProbe || scrollSweepStep > 0 || settingsProbe || jumpProbe ||
+               keyProbe || emptyProbe || modelProbe || selectProbe || delProvProbe ||
+               previewProbe || probeContrast || stateProbe || hitProbe ||
+               reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
+               sidebarProbe || answerProbe || themeProbe || historyProbe ||
+               workspaceProbe || menuProbe || resizeProbe || enterProbe ||
+               growProbe || hudProbe || legacyPoll || asyncProbe;
+    }
 };

@@ -149,8 +149,25 @@ private:
     struct Hud {
         ECDI::Label* title = nullptr;        // 顶栏：harness — fixture
         ECDI::Label* rowChip = nullptr;      // 顶栏：autosize | listlayout
-        ECDI::Label* backendChip = nullptr;  // 顶栏：gdi ▾ / gl ▾
+        ECDI::Label* backendChip = nullptr;  // 顶栏：gdi / gl
         ECDI::Label* sessChip = nullptr;     // 顶栏：会话 id chip
+        ECDI::Label* modeChip = nullptr;     // 顶栏：replay / live / empty（修硬编码 "replay"）
+        // ★★ 2026-10-26（按模式分流）：开发者专属控件/容器的句柄。
+        //   ★ 为什么在用户模式下仍然把所有 HUD 控件**建出来**、只用 `SetVisible(false)` 隐藏：
+        //     ① `--hud-probe` 的 `HudUnbuilt()` 断言 `RefreshHud` 摸过的每一个 `m_hud.X`
+        //        都非空；若建树时跳过，切换到用户模式或探针下会触发死分支报红；
+        //     ② 运行期按 `Ctrl+Shift+D` 或点 `···` 菜单切换模式时，只需调一次
+        //        `ApplyDevModeVisibility()` + 父容器 `Arrange()`，无需整树拆建。
+        ECDI::Panel* sessChipPill = nullptr;     // 顶栏会话 id 药丸壳
+        ECDI::Panel* modeChipPill = nullptr;     // 顶栏来源模式药丸壳
+        ECDI::Panel* rowChipPill = nullptr;      // 顶栏行模式药丸壳
+        ECDI::Panel* backendChipPill = nullptr;  // 顶栏后端药丸壳
+        ECDI::Panel* statusBar = nullptr;        // 底栏（26px 评估状态栏）
+        ECDI::Panel* sessProgressRow = nullptr;  // 左栏：回放进度计数行容器
+        ECDI::Label* historyHeader = nullptr;    // 左栏：「历史」分区标题
+        ECDI::Panel* inspProbeCard = nullptr;    // 右栏：「渲染探针」卡片
+        ECDI::Panel* inspHealthCard = nullptr;   // 右栏：「协议健康」卡片
+        ECDI::Button* devModeMenuBtn = nullptr;  // ··· 菜单：「开发者视图 / 简洁视图」切换钮
         ECDI::Panel* statusDot = nullptr;    // 顶栏状态圆点（ok/dim 随 state 翻色）
         ECDI::Panel* sbDot = nullptr;        // 状态栏圆点
         // ★★ P3.5（2026-10-24）：设置面板（首启引导 / `···` 菜单「设置」入口）。
@@ -875,6 +892,12 @@ private:
     //     菜单条消失的位置会留着一条 34px 空洞。
     void ToggleMoreMenu();
     void SetMoreMenuOpen(bool open);
+    // ★★ 2026-10-26（按模式分流）：用户模式 vs 开发者模式。
+    //   `SetDevMode(bool)` 切换模型态 `m_devMode`，同步 `m_inspectorVisible`
+    //   （切入用户模式默认收起检视栏，切入开发者模式默认展开），并调用唯一的投影入口
+    //   `ApplyDevModeVisibility()` + 重排 + 刷 HUD。
+    void SetDevMode(bool dev);
+    void ApplyDevModeVisibility();
 
     // ── ★★ P3.5（2026-10-24）：设置面板 / 无参启动 / 凭据注入（规格 §8.5）──
     // 显隐切换 = 瞬时 SetVisible + 父容器 Arrange（无动画，理由同 SetSidebarVisible）；
@@ -1074,6 +1097,10 @@ private:
     ECDI::Widget* m_caption = nullptr;             // 非拥有
     std::vector<PendingPromptView> m_pendingPromptViews; // 当前活动会话的 UI-only 气泡视图
     bool m_inspectorVisible = true;
+    // ★★ 2026-10-26（按模式分流）：开发者视图开关（模型侧状态，重建后按它恢复）。
+    //   · true  = 开发者模式（`--replay` / `--core` / 任一探针 / `--dev` 启动时的默认）；
+    //   · false = 用户模式（无参启动时的默认：收起评估噪音，展示人类友好文案）。
+    bool m_devMode = true;
     // ★★ 2026-10-20：`···` 菜单条的开合状态。
     //   ★ 为什么这个 bool 必须住在模型侧而不是控件里：`RebuildUi()`（主题切换）
     //     会把整棵树拆掉重建。若开合态只活在 `ecdi::Panel::IsVisible()` 上，

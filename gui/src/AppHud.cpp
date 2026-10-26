@@ -451,6 +451,112 @@ void HarnessApp::CacheEvalMetrics() {
 //
 //   ★ 开销：默认 `m_probeState.hudAudit == false` ⇒ `HudTouch` 只做一次 bool 判断就返回，
 //     不分配、不记录。只有探针打开它之后才登记。
+void HarnessApp::ApplyDevModeVisibility() {
+    auto setVis = [](ECDI::Widget* w, bool vis, bool& parentDirty) {
+        if (!w) return;
+        if (w->IsVisible() != vis) {
+            w->SetVisible(vis);
+            parentDirty = true;
+        }
+    };
+
+    // ① 顶栏：会话 id / 来源模式 / 行布局 / 渲染后端 四个评估胶囊仅在开发者模式显示。
+    bool topDirty = false;
+    setVis(m_hud.sessChipPill, m_devMode, topDirty);
+    setVis(m_hud.modeChipPill, m_devMode, topDirty);
+    setVis(m_hud.rowChipPill, m_devMode, topDirty);
+    setVis(m_hud.backendChipPill, m_devMode, topDirty);
+    if (topDirty && m_hud.sessChipPill) {
+        if (ECDI::Widget* bar = m_hud.sessChipPill->GetParent()) bar->Arrange();
+    }
+
+    // ② 底栏（26px 评估状态栏）：用户模式隐藏，把垂直空间让给对话视口。
+    bool rootDirty = false;
+    setVis(m_hud.statusBar, m_devMode, rootDirty);
+    if (rootDirty && m_hud.statusBar) {
+        if (ECDI::Widget* root = m_hud.statusBar->GetParent()) root->Arrange();
+    }
+
+    // ③ 侧栏：回放进度条与测试夹具「历史」区仅在开发者模式显示；
+    //   用户模式下若尚未连接真实工作区，把多余的 `workspaceStatus`（「等待 core 确认」）收起。
+    bool sideDirty = false;
+    setVis(m_hud.sessProgressRow, m_devMode, sideDirty);
+    setVis(m_replayBar, m_devMode, sideDirty);
+    setVis(m_hud.historyHeader, m_devMode, sideDirty);
+    setVis(m_hud.historyList, m_devMode, sideDirty);
+    setVis(m_hud.historyCount, m_devMode, sideDirty);
+    const bool showWsStatus = m_devMode || (m_sess && !m_sess->workspacePath.empty());
+    setVis(m_hud.workspaceStatus, showWsStatus, sideDirty);
+    if (sideDirty && m_hud.sidebar) {
+        m_hud.sidebar->Arrange();
+    }
+
+    // ④ 右侧检视栏：「渲染探针」卡仅在开发者模式显示；「协议健康」卡在开发者模式
+    //   或出现真实协议异常（缺口 / 违规 / 未知类型 / 未知 kind）时显示。
+    bool inspDirty = false;
+    setVis(m_hud.inspProbeCard, m_devMode, inspDirty);
+    const bool hasHealthIssue = m_sess && (m_sess->transcript.SeqGaps() > 0 ||
+                                           m_sess->transcript.Violations() > 0 ||
+                                           m_sess->transcript.UnknownTypes() > 0 ||
+                                           m_sess->transcript.UnknownKinds() > 0);
+    setVis(m_hud.inspHealthCard, m_devMode || hasHealthIssue, inspDirty);
+    if (inspDirty && m_hud.inspector) {
+        m_hud.inspector->Arrange();
+    }
+
+    // ⑤ 中栏头部操作钮与 ··· 菜单项：用户模式下给更直观的中文标签。
+    if (m_hud.devModeMenuBtn) {
+        m_hud.devModeMenuBtn->SetText(m_devMode ? "简洁视图" : "开发者视图");
+    }
+    bool headDirty = false;
+    auto setActBtn = [&](ECDI::Button* b, const char* text, int w) {
+        if (!b) return;
+        if (b->GetText() != text) b->SetText(text);
+        if (b->GetWidth() != w) {
+            b->SetSize(w, 24);
+            headDirty = true;
+        }
+    };
+    if (m_devMode) {
+        setActBtn(m_hud.exportToggle, "↗", 28);
+        setActBtn(m_hud.inspectorToggle, "≡", 28);
+        setActBtn(m_hud.moreToggle, "···", 28);
+    } else {
+        setActBtn(m_hud.exportToggle, "导出", 44);
+        setActBtn(m_hud.inspectorToggle, "详情", 44);
+        setActBtn(m_hud.moreToggle, "更多", 44);
+    }
+    if (m_hud.convSub) {
+        const int tw = m_devMode ? 300 : 480;
+        if (m_hud.convSub->GetWidth() != tw) {
+            m_hud.convSub->SetSize(tw, 14);
+            if (ECDI::Widget* titles = m_hud.convSub->GetParent()) {
+                titles->SetSize(tw, 36);
+                headDirty = true;
+            }
+        }
+    }
+    if (headDirty && m_hud.exportToggle) {
+        if (ECDI::Widget* head = m_hud.exportToggle->GetParent()) head->Arrange();
+    }
+}
+
+void HarnessApp::SetDevMode(bool dev) {
+    if (m_devMode == dev) return;
+    m_devMode = dev;
+    // 切换到用户模式时默认收起检视栏；切换到开发者模式时默认展开检视栏。
+    m_inspectorVisible = dev;
+    if (m_hud.inspector) {
+        m_hud.inspector->SetVisible(m_inspectorVisible);
+        if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
+    }
+    ApplyDevModeVisibility();
+    Relayout();
+    m_hudDirty = true;
+    RefreshHud();
+    RequestRepaint();
+}
+
 void HarnessApp::HudTouch(const char* name) {
     if (!m_probeState.hudAudit) return;
     m_probeState.hudTouched.emplace_back(name);
@@ -465,6 +571,7 @@ std::vector<std::string> HarnessApp::HudUnbuilt() const {
         if (n == "rowChip") return h.rowChip != nullptr;
         if (n == "backendChip") return h.backendChip != nullptr;
         if (n == "sessChip") return h.sessChip != nullptr;
+        if (n == "modeChip") return h.modeChip != nullptr;
         if (n == "statusDot") return h.statusDot != nullptr;
         if (n == "sbDot") return h.sbDot != nullptr;
         if (n == "stateChip") return h.stateChip != nullptr;
@@ -524,6 +631,27 @@ void HarnessApp::RefreshHud() {
     if (HudTouch("sessChip"), m_hud.sessChip) {
         m_hud.sessChip->SetText(m_sess->sessionId.empty() ? "s-____" : m_sess->sessionId);
     }
+    if (HudTouch("modeChip"), m_hud.modeChip) {
+        // ★★ 2026-10-26（订正）：判据是**会话自述的 `originKind`**，不是指针推断。
+        //   ★ 上一版写的是 `if (live) ... else if (replay != nullptr) "replay"`——
+        //     而 `App.h` 的 `originKind` 注释（Step 5 就写下的）明确说过
+        //     **`replay != nullptr` 不能当来源判据**：历史会话 `s.replay` 也非空
+        //     （`AppHistory.cpp` 里 `s.replay = replay.get()` 与
+        //     `s.originKind = "replay-history"` 是同时赋的），于是从磁盘点开的会话
+        //     会被报成 "replay"，恰好把这一版想修掉的"来源恒显示 replay"换个理由重现。
+        //   ⇒ 四类来源一对一投影，`originKind` 是唯一真相。
+        //     "replay-history" 缩成 "history"（胶囊只有 64px，7 码点装得下）。
+        const std::string& origin = m_sess->originKind;
+        const char* modeText = "empty";
+        if (origin == "live") {
+            modeText = "live";
+        } else if (origin == "replay") {
+            modeText = "replay";
+        } else if (origin == "replay-history") {
+            modeText = "history";
+        }
+        m_hud.modeChip->SetText(modeText);
+    }
     if (HudTouch("backendChip"), m_hud.backendChip) {
         // ★★ 2026-10-21：**不再拼 `▽`**。后端在 `Create` 时定死，运行期没有切换
         //   路径（全仓唯一赋值处是 GL 就绪检查之后）⇒ 箭头会承诺一个不存在的菜单。
@@ -541,13 +669,30 @@ void HarnessApp::RefreshHud() {
         m_hud.convTitle->SetText(m_sess->label.empty() ? ConversationTitle() : m_sess->label);
     }
     if (HudTouch("convSub"), m_hud.convSub) {
-        std::string sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
-        if (!m_sess->sessionId.empty()) sub += " · " + m_sess->sessionId;
-        sub += " · protocol " + std::to_string(m_sess->protocolVer);
-        // ★ 0d：会话计数——让用户看见"现在有几个会话、我在第几个"。
-        sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
-               std::to_string(m_sessions.size());
-        m_hud.convSub->SetText(sub);
+        if (m_devMode) {
+            std::string sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
+            if (!m_sess->sessionId.empty()) sub += " · " + m_sess->sessionId;
+            sub += " · protocol " + std::to_string(m_sess->protocolVer);
+            // ★ 0d：会话计数——让用户看见"现在有几个会话、我在第几个"。
+            sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
+                   std::to_string(m_sessions.size());
+            m_hud.convSub->SetText(sub);
+        } else {
+            std::string sub;
+            if (!m_sess->workspacePath.empty()) {
+                sub = "工作区：" + m_sess->workspacePath;
+            } else if (!m_sess->providerId.empty()) {
+                sub = m_sess->providerId + " › " +
+                      (m_sess->modelName.empty() ? "?" : m_sess->modelName);
+            } else {
+                sub = "未连接模型 — 点击右上角模型胶囊或按 Ctrl+, 配置";
+            }
+            if (m_sessions.size() > 1) {
+                sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
+                       std::to_string(m_sessions.size());
+            }
+            m_hud.convSub->SetText(sub);
+        }
     }
     const std::string stateText =
         m_sess->coreState.empty() ? std::string("idle") : m_sess->coreState;
@@ -567,7 +712,18 @@ void HarnessApp::RefreshHud() {
            m_sess->pendingWorkspaceId.empty() && !HasUnconfirmedPrompt())
         : !active;
     const bool stopEnabled = live ? (liveReady && active) : active;
-    if (m_promptBar) m_promptBar->SetButtonStates(sendEnabled, stopEnabled);
+    if (m_promptBar) {
+        m_promptBar->SetButtonStates(sendEnabled, stopEnabled);
+        if (m_devMode) {
+            m_promptBar->SetHint("Enter 发送 · Shift+Enter 换行", kDarkMuted);
+        } else if (stateText == "waiting" || m_sess->waitForAnswer) {
+            m_promptBar->SetHint("● 请先在上方对话中点击「允许」或「拒绝」", kWarn);
+        } else if (stateText == "running") {
+            m_promptBar->SetHint("● 正在生成回复… 可点击右侧「停止」中断", kDarkMuted);
+        } else {
+            m_promptBar->SetHint("Enter 发送 · Shift+Enter 换行 · Ctrl+Shift+D 切换视图", kDarkMuted);
+        }
+    }
     const bool pickerEnabled = m_sess->workspaceCap && liveReady &&
                                m_sess->coreState == "idle" &&
                                m_sess->pendingWorkspaceId.empty();
@@ -596,10 +752,29 @@ void HarnessApp::RefreshHud() {
         }
     }
     if (HudTouch("workspacePath"), m_hud.workspacePath) {
-        m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
-            ? "core 实际工作区：尚未确认" : "core 实际工作区：" + m_sess->workspacePath);
+        if (m_devMode) {
+            m_hud.workspacePath->SetFont(harness::MonoFont(10.0f));
+            m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
+                ? "core 实际工作区：尚未确认" : "core 实际工作区：" + m_sess->workspacePath);
+        } else {
+            m_hud.workspacePath->SetFont(harness::SansFont(harness::kFontMicro));
+            m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
+                ? "尚未选择工作区目录" : m_sess->workspacePath);
+        }
     }
-    if (HudTouch("workspaceStatus"), m_hud.workspaceStatus) m_hud.workspaceStatus->SetText(m_sess->workspaceStatus);
+    if (HudTouch("workspaceStatus"), m_hud.workspaceStatus) {
+        if (m_devMode) {
+            m_hud.workspaceStatus->SetText(m_sess->workspaceStatus);
+        } else {
+            const bool hasPath = !m_sess->workspacePath.empty();
+            if (m_hud.workspaceStatus->IsVisible() != hasPath) {
+                m_hud.workspaceStatus->SetVisible(hasPath);
+                if (m_hud.sidebar) m_hud.sidebar->Arrange();
+            }
+            const bool synced = hasPath && m_sess->workspaceStatus.find("已确认") == 0;
+            m_hud.workspaceStatus->SetText(synced ? "已就绪" : m_sess->workspaceStatus);
+        }
+    }
     if (HudTouch("workspacePick"), m_hud.workspacePick) {
         m_hud.workspacePick->SetEnabled(pickerEnabled);
         m_hud.workspacePick->SetTextColor(pickerEnabled ? kDarkInk : kDarkMuted);
@@ -633,7 +808,14 @@ void HarnessApp::RefreshHud() {
         }
     }
     if (HudTouch("stateChip"), m_hud.stateChip) {
-        m_hud.stateChip->SetText(stateText);
+        if (m_devMode) {
+            m_hud.stateChip->SetText(stateText);
+        } else {
+            const char* friendly = "就绪";
+            if (stateText == "running") friendly = "思考中…";
+            else if (stateText == "waiting") friendly = "等待授权";
+            m_hud.stateChip->SetText(friendly);
+        }
         m_hud.stateChip->SetTextColor(kDarkMuted);
     }
     if (HudTouch("statusDot"), m_hud.statusDot) {
@@ -716,6 +898,17 @@ void HarnessApp::RefreshHud() {
             //   （本身就是警示语义，且 `▲` 同族已在用），配琥珀色。
             m_hud.healthKind->SetText("未知 kind · " + std::to_string(uk) + " △");
             m_hud.healthKind->SetTextColor(kWarn);
+        }
+    }
+    // 用户模式下若出现真实协议健康异常，自动浮现「协议健康」卡片（不静默吞错）。
+    if (!m_devMode && m_hud.inspHealthCard) {
+        const bool hasIssue = (m_sess->transcript.SeqGaps() > 0 ||
+                               m_sess->transcript.Violations() > 0 ||
+                               m_sess->transcript.UnknownTypes() > 0 ||
+                               m_sess->transcript.UnknownKinds() > 0);
+        if (m_hud.inspHealthCard->IsVisible() != hasIssue) {
+            m_hud.inspHealthCard->SetVisible(hasIssue);
+            if (m_hud.inspector) m_hud.inspector->Arrange();
         }
     }
     if (HudTouch("evalPaints"), m_hud.evalPaints) {

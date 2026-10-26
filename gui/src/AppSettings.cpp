@@ -465,7 +465,8 @@ void HarnessApp::UpdateModelChip() {
             (m_sess->usageIn * 100 + m_sess->ctxCapacity / 2) / m_sess->ctxCapacity;
         text += " · " + std::to_string(pct) + "%";
     }
-    text += " ▾";
+    // ★ 用 `﹀`(U+FE40，与思维链卡同款，Microsoft YaHei 有字形，不画 `□` 缺字块)。
+    text += " \xEF\xB9\x80";
     m_hud.modelChip->SetText(text);
 }
 

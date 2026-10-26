@@ -141,12 +141,93 @@ P3.6 已把模型列表放右栏（App.cpp:2700 起，行由 `RebuildModelList` 
 
 ## 11. Phase I —— 文件路径可点 + 只读预览（三层渲染的后两层）
 
+> ✅ **已实施（2026-10-26）**。两处与原文的偏差（均经用户确认）：
+> ① **入口形态**：原文「把标题按钮的点击绑到预览」不可行——实测标题按钮点击已被
+>    折叠占用（`BindCollapsible` → `ToggleRow`，AppTranscript.cpp）；改为**标题旁
+>    「⤢」小按钮**（仅当标题文本匹配路径形态时出现，`PreviewPathFromText` 与探针
+>    共用同一实现）。② **Esc 关闭**（原文未提，用户拍板加，Esc 链最前）。
+> 实现落点：`AppPreview.cpp`（面板 + IO 纪律 + 判定函数）· `ProbePreview.cpp`
+> （`--preview-probe` 8 相，判据在相内）· 已入 `regress.py` EXTRA_PROBES（8/8 绿）。
+> 「在资源管理器中显示」为首个 shell 调用（`ShellExecuteW`），**探针不断言**（用户手测）。
+> ③ 正文「`Monospace` 字体已有」的名字不对：实为 `Theme.h` 的 **`kMonoFamily = "Consolas"`**
+> （Cascadia 不保证在场）；「复制路径」走 ECDI `PlatformWindow::SetClipboardText`（不需直调 Win32）。
+
 - **识别**：tool_call/tool_result 文本与 assistant 正文里的路径形态（`[\\w./-]+\\.(go|cpp|py|md|json|jsonl|html|h)` 起步，正则放常量）渲染成可点击段。ECDI Label 无富文本 ⇒ 务实做法：tool 卡片头部（`ToolTitle`，App.cpp:3722）已经是「名 · 摘要」，摘要若匹配路径形态就把标题按钮的点击绑到预览；正文级富文本**本期不做**（依赖 Phase G 的行渲染换代，避免双重构）。
 - **预览面板**：右侧浮层 Panel（挂 CountingPanel，宽 `min(420, rootW-80)`），头=「只读」徽标+文件名+×，体=`ScrollView` + 等宽 `Label` 行列表（`Monospace` 字体已有），改动行不做特判（v1 只给全文）；底=「在资源管理器中显示」（**净新代码**——2026-10-25 核实 gui/src **无** `ShellExecuteW`/shell 先例，`Credentials.cpp` 走的是凭据 API 不是 shell；用 `ShellExecuteW` 打 `explorer.exe /select,<path>` 一类实现，新写即注释说明）+「复制路径」（Phase G 的剪贴板口）。
 - **IO 纪律**：读文件只允许当前会话 `workspace` 响应回的实际路径（规范化绝对路径，协议 §3.9 已有语义）**之下**——拼接后必须校验 `weakly_canonical` 仍在 workspace 内（防 `..` 逃逸）；文件上限 ~512KB，超了显示截断 notice（与 transcript 截断先例同措辞习惯）。**绝不**因为 UI 上出现路径就去读任意盘路径。
 - 检视栏「本会话改动文件」聚合卡依赖协议里没有的结构化信息，**本期不做**（等真实数据形态再说，投机抽象禁止）。
 
-## 12. 建议时间线（一晚，按额度收口）
+## 12. Phase J —— 开发者视图 / 用户模式分流（第三方实现，本轮复核 + 收口）
+
+> ⚠️ **这条 § 是事后补写的规格**（2026-10-26）。实现由 opus 5.5 + gemini 4 落地时
+> **文档为零**：`grep '开发者模式|用户模式|--dev' docs/ README.md` = **0 命中**，
+> status.txt 也无条目 ⇒ 账面看不出这一轮发生过（与本仓 `evals/` 未归档同族。
+> 本次复核按**代码事实**回填，不事后美化设计意图）。
+
+**判据（哪些启动算哪个模式）**——`App.cpp:222`：
+
+```cpp
+m_devMode = m_options.devMode || !m_options.firstRun || m_options.HasAnyProbe();
+```
+
+| 启动方式 | 模式 | 理由 |
+|---|---|---|
+| 无参（双击） | **用户模式** | 这是产品面；`TryAutoConnectFromConfig()` 直达真 core |
+| `--dev` | 开发者 | 无参下也要看评估 HUD 的唯一口子 |
+| `--replay` / `--core` | 开发者 | 有来源 = 在跑夹具/联调 |
+| 任一 `--*-probe`（`HasAnyProbe()`） | 开发者 | ★ **全部 25 个探针的读数必须在同一棵树上**，否则既有基线集体失效 |
+
+**做法（照纪律 10：显隐住模型侧，投影只有一处）**：
+- 状态 = `m_devMode`（模型侧 bool），投影 = `ApplyDevModeVisibility()`（`AppHud.cpp:454`），
+  调用点只有两个：`BuildUi` 收尾（`root.Arrange()` 之前，`AppUiChrome.cpp:182`）与 `SetDevMode`。
+  ⇒ 首建 / 换主题重建 / 运行期切换三条路共用一处，`RebuildUi` 不需要额外补投影。
+- **控件照建、只 `SetVisible(false)`**：`--hud-probe` 的 `HudUnbuilt()` 断言 `RefreshHud` 摸过的
+  每个句柄非空——建树时跳过会立刻翻红；且运行期切换只需一次投影 + 一次父容器 `Arrange()`。
+- 运行期入口两个：`Ctrl+Shift+D`（`App.cpp:402`，在**基类派发之前**判，打字中途也成立）与
+  `···` 菜单「开发者视图 / 简洁视图」。
+- 用户模式隐藏：顶栏四胶囊（会话 id / 来源 / 行布局 / 后端）、26px 底栏、侧栏回放进度与
+  测试夹具「历史」区、右栏「渲染探针」卡；检视栏默认收起。**保留**：模型胶囊、状态圆点、
+  侧栏 ≡、文件预览、设置。
+- 用户模式文案换人类可读：`stateChip` → 就绪/思考中…/等待授权；`convSub` → 工作区路径或
+  `提供商 › 模型`（不再露出 protocol/core 版本）；`workspacePath` 去等宽字体；
+  「协议健康」卡**只在真有缺口/违规/未知类型时浮现**（不静默吞错，这是刻意保留的例外）。
+
+**验收（本轮实测，2026-10-26）**：`tools/regress.py` **PASS** —— 6 夹具结构基线逐位一致
+（demo 8/19/43 · realistic 220/717/1213 · cot 44/934/1044 · scale 2000/4590/8906 · 两个 hostile）、
+25/25 探针绿、`--preview-probe` 8/8、`validate.py` exit 0。
+**这条是 Phase J 的关键判据**：分流对开发者模式**零扰动**——否则全部既往读数作废。
+
+**★ 复核时订正的三条**（实现里错的地方，已改）：
+
+| 位置 | 病 | 证据 | 改法 |
+|---|---|---|---|
+| `AppHud.cpp:634`（modeChip） | 用 `replay != nullptr` 推来源 ⇒ 从磁盘点开的会话（`originKind="replay-history"`，`s.replay` 也非空）显示成 **replay**，恰好把想修掉的"来源恒 replay"换个理由重现 | `App.h:613` 早就写下「★ 为什么不用 `replay != nullptr` 判来源」；`AppHistory.cpp:308` 两个字段同时赋 | 直接投射 `originKind`（live / replay / history / empty） |
+| `PromptBar.cpp:167`（输入框初值） | 手抄 `SetSize(400, 36)`——**36 是估的**。框架实测单行 = **29**（行高 17 + padding 6×2） | `--grow-probe` 的 baseline 相：`inputH=29 / barH=81 / hintY=43`；两行 46、三行 63 ⇒ 行高恒 17 | 常数删掉，改由**唯一入口** `SyncInputHeight()` 在 `BuildUi` 收尾（`root.Arrange()` 之后——宽度到那一刻才有值）量出来。构造期调不了：没窗口 ⇒ `GetPreferredSize()` 退回当前尺寸。同纪律 14 |
+| `AppUiMain.cpp:560/601`（设置框描边） | 只给 `.borderWidth = 1.0f` ⇒ **边框从来没画出来**。`.border` 是**焦点点线框**色，恒显描边归 `.borderColor`，而它默认透明 | `TextBox.cpp:1282`：`drawBorder = borderWidth>0 && borderColor.a>0`；前半真后半假 ⇒ 走 `else if (radius>0)` 分支（圆角生效、描边零） | 两处都补 `.borderColor = kLine` |
+
+> ★ 输入框那条的**诚实边界**：改前改后 `--resize-probe` 的 `scrollH` 都是 **523**，
+> 说明探针看到之前已经有 `WM_SIZE` 把高度纠正成 29 —— 所以「首帧压扁」和「键入时跳 7px」
+> 在本环境**都没能被证伪，也没能被证实**（`ProbeFlow.cpp:276-280` 在记 baseline **之前**
+> 就 `SyncInputHeight()`，门对初值结构性不可见）。本轮的结论只能是：**常数是错的**（29 不是 36），
+> 高度不该依赖 `WM_SIZE` 这条旁路纠正。不主张"修掉了一个可见跳变"。
+
+**★ 已知缺口（不在本轮授权范围，明写出来）**：
+1. **用户模式零探针**——25 个探针全在开发者模式下跑，这次真正的产品面一行机器判据都没有。
+   最小补法：给 `--rebuild-probe` 或新 `--mode-probe` 加两相——① 用户模式下那几个句柄逐个
+   必须不可见；② 切回开发者模式后快照与基线一致（证明切换可逆、无残留隐藏）。
+2. 中栏头部 `titles` 在用户模式放宽到 **480**，与 3 个 44px 按钮共存时固定宽 = **676**；
+   默认窗口中栏只有 **690**（`--resize-probe` 实测 `midW=690`）⇒ 只剩 14px。开「详情」
+   （检视栏 230）后窗口 < **1106** 就溢出（`HorizontalLayout` 的 `remaining` 钳 0、固定宽子照排，
+   按钮被挤出右边界）。建议回收 480 或让副标题自己省略。
+3. `CliOptions.h:281` 的 `HasAnyProbe()` **手抄 28 个 flag**：新探针忘登记 ⇒ 那个探针会跑在
+   用户模式下、读数对着一套不同的树，且没有任何东西会红。应收敛到 `main.cpp` 解析期一个
+   `anyProbeSeen`。
+4. `PromptBar::SetHint` 无条件 `SetTextColor` ⇒ 每次 `RefreshHud` 多一次 `Invalidate`
+   （`TextWidget::SetStyle` 内无条件失效；`Widget.cpp:431` 与 `AppStream.cpp:282` 都写着这条坑）。
+   `GetTextColor()` 在，加一行同值守卫即可。
+5. `SetDevMode` 里 `m_inspectorVisible = dev` 会覆盖用户手动的检视栏开关。
+
+## 13. 建议时间线（一晚，按额度收口）
 
 | 时段 | 内容 |
 |---|---|
@@ -160,7 +241,7 @@ P3.6 已把模型列表放右栏（App.cpp:2700 起，行由 `RebuildModelList` 
 
 **中途编译不过/回归红 = 停在最后一个绿 commit 上报，不许带着红灯继续。**
 
-## 13. 明确不做
+## 14. 明确不做
 
 - 协议/夹具/core 任何改动；`validate.py` 判据改动
 - ECDI 框架侧实现（tooltip、SelectableLabel 之类）——只允许查源码+登记 REQ

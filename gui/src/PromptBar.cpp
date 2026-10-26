@@ -164,6 +164,22 @@ PromptBar::PromptBar() {
     //     ⇒ 高度由 `LayoutChildren` 固定给 44px，内容超出时 TextBox 自己滚动
     //     （`EnsureCaretVisible` + 内部滚动条）。这是**已知边界**，不是缺陷。
     m_input->SetSingleLine(false);
+    // ★★ 2026-10-26（首帧压扁的**正解**，订正同日更早的一版）：
+    //   症状是真的——`TextBox` 默认高 20，而 `LayoutChildren` 把提示行/按钮的 Y
+    //   全部**由输入框高推导**（`hintY = 8 + inputH + 6`），⇒ 没量过之前它们悬在 y=34，
+    //   输入框下半截空出 30px。
+    //   ★ 但**修法不能是手抄一个常数**。此前那版写 `SetSize(400, 36)`，36 是估的：
+    //     框架实测单行 = **29**（`TextBox::GetPreferredSize` 单行分支 =
+    //     行高 17 + padding 6×2，`--grow-probe` 的 baseline 相读数
+    //     `inputH=29 / barH=81 / hintY=43` 可复核），于是 36 比真值高 7px，
+    //     第一次键入 / 第一次 resize 触发 `SyncInputHeight()` 时会**当场缩回 29**
+    //     ——那就是"首帧对齐"改成"首次按键跳一下"，缺陷只是搬了个时刻。
+    //     （本仓纪律 14：凡是「常数 × 逐单位度量 ⇒ 像素」的预算都必须实测，不许手抄。）
+    //   ⇒ 常数删掉，高度交给**唯一入口** `SyncInputHeight()`：调用点在
+    //     `AppUiChrome.cpp` 的 `BuildUi` 收尾（`root.Arrange()` 之后——宽度要到那一刻
+    //     才有值），首帧即由测量给出，且首建/换主题重建两条路共用同一处。
+    //   ★ 构造期不能调：那会儿还没有窗口/测量器，`GetPreferredSize()` 会退回当前尺寸
+    //     （= 默认 20），量了等于没量。这就是常数曾经存在的唯一理由。
     // Phase 30 caretColor：深底输入框可用（光标 = accent），hi-fi 时代的"浅井"退役。
     // ★ 样式（含焦点描边色）已由 ComposerBox 自管，此处不再 SetStyle。
     AddChild(std::move(input));
@@ -177,7 +193,7 @@ PromptBar::PromptBar() {
     // ★ 必须给尺寸：`Label` 默认 0×0 且不参与布局（`PromptBar` 是裸 `Panel`，
     //   没有 Layout）⇒ 不给就是**可见但零尺寸**的静默消失
     //   （正是 `uikit::WarnZeroSized` 在巡检的那类缺陷）。
-    m_hint->SetSize(220, 16);
+    m_hint->SetSize(340, 16);
     AddChild(std::move(hint));
 
     auto send = std::make_unique<ECDI::Button>("发送");
@@ -280,6 +296,14 @@ void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
     if (m_stop) m_stop->SetEnabled(stopEnabled);
     ApplySendStyle(sendEnabled);
     ApplyStopStyle(stopEnabled);
+}
+
+void PromptBar::SetHint(const std::string& text, const ECDI::Color& color) {
+    if (!m_hint) return;
+    if (m_hint->GetText() != text) {
+        m_hint->SetText(text);
+    }
+    m_hint->SetTextColor(color);
 }
 
 int PromptBar::MaxInputHeight() {

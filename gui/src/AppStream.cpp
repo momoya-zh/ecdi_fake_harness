@@ -638,9 +638,11 @@ void HarnessApp::RouteLastMessage() {
             }
         }
         m_hudDirty = true;
-        AddNoticeRow("core " + msg.GetString("core") + " · session " +
-                         msg.GetString("session") + " · protocol " +
-                         std::to_string(m_sess->protocolVer), kDarkMuted);
+        if (m_devMode) {
+            AddNoticeRow("core " + msg.GetString("core") + " · session " +
+                             msg.GetString("session") + " · protocol " +
+                             std::to_string(m_sess->protocolVer), kDarkMuted);
+        }
         // The v3 core starts in idle and does not emit a redundant initial state line.
         if (m_sess->coreState.empty()) m_sess->coreState = "idle";
         MaybeStartWorkspaceSync();

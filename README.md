@@ -349,7 +349,7 @@ PY
 | ECDI 自带套件 | `490 passed / 0 failed`（`REQ-13` 闭合时点；早期 `445/445` 见 `status.txt`） |
 | **P3 真 core + P3.5 无参启动 + P3.6 多提供商** | `core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 `read_file`/`list_dir`/`grep` + 默认全 ask）+ `core/internal/wire` 线层下沉（假 core 逐位回归 PASS）。**两个真端点全链验收**：云知声 `u2-flash`（`evals/p3-u2flash-live-1.json`）与 DeepSeek 官方**无参启动**（`evals/p35-deepseek-noarg-live-1.json`）。协议 v4 = 模型热切换（等当前轮跑完再切）+ `usage.context` 逐轮分母 + 容量挡位；凭据只进 Windows 凭据管理器，配置文件**没有** key 字段（类型层面放不下） |
 | 回归门 | `python tools/regress.py` = 6 夹具结构基线 + **24 个探针**（13 原有 + 11 补齐）+ 1 个仪器声明 + 3 段 live（REQ-03 A/B · workspace · 无 core 时显式 SKIP）+ `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
-| **P4 可用性（A–H）** | 跳到最新 / 全局快捷键 / 空状态引导 / ask 已答留痕 / 设置改模态浮层（**半透明遮罩 = ECDI 首个半透明绘制消费者**）/ tooltip / 顶栏模型 chip + 用量常驻 / 转录可选中（尖峰）。**Phase I（路径可点 + 只读预览）未开工** |
+| **P4 可用性（A–J）** | 跳到最新 / 全局快捷键 / 空状态引导 / ask 已答留痕 / 设置改模态浮层（**半透明遮罩 = ECDI 首个半透明绘制消费者**）/ tooltip / 顶栏模型 chip + 用量常驻 / 转录可选中（尖峰）/ **I 路径可点 + 只读预览**（`--preview-probe` 8/8）/ **J 开发者视图 ↔ 用户模式分流**（无参启动=用户模式，`--replay`/`--core`/任一探针=开发者模式，`Ctrl+Shift+D` 或 `···` 切换。方案 §12） |
 | **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
 
 ### 现在能做什么（都有探针与负对照）
@@ -365,7 +365,7 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 | 缺什么 | 状态 |
 |---|---|
 | ★ **MCP host** | 决策 **A**（harness 管配置）已于 2026-10-14 拍板，**零实现**。P3 落地后「没有 core 就没有可授予的对象」这个前置障碍已消失——它可以开工了 |
-| **P4 Phase I：路径可点 + 只读预览** | **未开工**（A–H 已落地）。P4 方案 §11，硬边界仍是「只改 `gui/src/**`」 |
+| ★ **用户模式的机器判据** | **零覆盖**。25 个探针全部跑在开发者模式下（那是刻意的：分流必须对既有基线零扰动），于是 P4 Phase J 新增的产品面——无参启动那一侧——一个断言都没有。最小补法：两相加进 `--rebuild-probe` 或新开 `--mode-probe`（用户模式下指定句柄逐个必须不可见 / 切回开发者后快照与基线一致）。方案 §12「已知缺口」 |
 | **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
 | **`--settings-probe` 的 4 相** | `first-run` / `save` / `session-live` / `switch-ok` 只能在「无参启动 + 真实配置 + 真凭据 + protocol 4」下验收 ⇒ 是**人工验收**，不进回归门（门守住其余 4 相，含 cleanup 的隔离断言） |
