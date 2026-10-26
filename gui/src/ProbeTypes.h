@@ -162,6 +162,13 @@ struct ReplayDigest {
     size_t messages = 0;
 };
 
+struct PreviewProbeRec {
+    std::string phase;      // regex-cases / open-ok / escape-rejected / missing /
+                            // no-workspace / too-large / line-cap / close-esc
+    bool matched = true;    // 判据（写在 RunPreviewProbe 内，探针即门）
+    std::string detail;     // matched=false 时的原因（其余相 = 关键读数）
+};
+
 struct WorkspaceProbeRec {
     std::string phase;
     std::string clientId;

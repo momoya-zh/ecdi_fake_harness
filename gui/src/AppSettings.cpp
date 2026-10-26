@@ -62,6 +62,8 @@ void HarnessApp::ApplySettingsVisibility() {
     // 三件套互斥（menu/settings）：开设置合菜单——菜单还是槽位控件，两者同开
     //   会一个占槽一个浮层，视觉关系说不清。
     if (m_settingsVisible && m_moreMenuOpen) SetMoreMenuOpen(false);
+    // ★ P4 Phase I：开设置合预览（两套模态不同开；反向在 ApplyPreviewVisibility）。
+    if (m_settingsVisible && m_previewOpen) SetPreviewVisible(false);
     LayoutSettingsOverlay();
 }
 

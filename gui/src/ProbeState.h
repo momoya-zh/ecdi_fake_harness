@@ -102,6 +102,9 @@ struct ProbeState {
 
     std::vector<WorkspaceProbeRec> workspaceProbeLog;
 
+    std::vector<PreviewProbeRec> previewProbeLog;
+    bool previewProbeDone = false;
+
     std::string workspaceProbeBubbleText;
     bool workspaceProbeBubbleShapeOk = false;
     int workspaceProbeStep = 0;

@@ -369,8 +369,12 @@ void HarnessApp::ToggleInspector() {
 bool HarnessApp::HandleGlobalKeyDown(const ECDI::KeyDownEvent& event) {
     const ECDI::KeyCode key = event.GetKeyCode();
     if (key == ECDI::KeyCode::Escape) {
-        // 逐层关：设置 > 模型浮窗（P4 H）> ···菜单。
+        // 逐层关：预览（P4 I）> 设置 > 模型浮窗（P4 H）> ···菜单。
         // 无层可关 ⇒ 返回 false 让事件照常派发（Esc 不悬空拦截）。
+        if (m_previewOpen) {
+            SetPreviewVisible(false);
+            return true;
+        }
         if (m_settingsVisible) {
             SetSettingsVisible(false);
             return true;

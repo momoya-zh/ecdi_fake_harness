@@ -94,11 +94,14 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     BuildMoreMenu();
 
     auto settingsSheet = BuildSettingsSheet();
-    BuildTranscriptViewport(std::move(settingsSheet));
+    auto previewSheet = BuildPreviewSheet();
+    BuildTranscriptViewport(std::move(settingsSheet), std::move(previewSheet));
     BuildComposer();
 
     // ★ P3.5：设置面板的显隐投影（中栏三件都建完了，唯一投影路径此刻可用）。
     ApplySettingsVisibility();
+    // ★ P4 Phase I：预览 sheet 显隐投影（同上——重建后按模型位恢复）。
+    ApplyPreviewVisibility();
     // ★★ P4 H：模型浮窗显隐投影（重建后按模型位恢复——同 ApplySettingsVisibility
     //   的「投影只存在于一条路径」纪律）+ chip 首帧数据。
     SetModelPopupOpen(m_modelPopupOpen);
@@ -783,7 +786,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
 }
 
 // ── 转录视口：ScrollView + 四个浮层（跳转钮 / 遮罩 / 设置 sheet / 模型浮窗 / tooltip）──
-void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet) {
+void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet,
+                                         std::unique_ptr<ECDI::Widget> previewSheet) {
     auto scroll = std::make_unique<ECDI::ScrollView>();
     m_scroll = scroll.get();
     m_scroll->SetStretch(1);
@@ -844,6 +848,26 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
     if (settingsSheet) {
         m_hud.settingsPanel->SetVisible(false);   // 显隐统一走 ApplySettingsVisibility
         scroll->AddChild(std::move(settingsSheet));
+    }
+    // ★★ P4 Phase I（2026-10-26）：文件预览 sheet——与设置同款模态浮层机制
+    //   （scroll 直子：无布局接管；BuildUi 尾部转移 root 末尾盖全窗）。
+    //   z 序：preview 的 mask/sheet 加在 settings 的后面 ⇒ 同开时 preview 在上，
+    //   但互斥逻辑（两边的 Apply*Visibility）保证不同开——z 序只是兜底。
+    {
+        auto pmask = std::make_unique<ECDI::Button>();
+        m_hud.previewMask = pmask.get();
+        pmask->SetVisible(false);
+        pmask->SetOnClick([] {});   // 吞点击（同 settings mask；关闭走 Esc/×）
+        pmask->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(15, 17, 23, 150),
+            .cornerRadius = 0.0f,
+            .pressedBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150),
+            .hoverBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150)});
+        scroll->AddChild(std::move(pmask));
+        if (previewSheet) {
+            m_hud.previewPanel->SetVisible(false);   // 显隐统一走 ApplyPreviewVisibility
+            scroll->AddChild(std::move(previewSheet));
+        }
     }
     // ★★ P4 Phase H（2026-10-25）：模型下拉浮窗——顶部下拉（视口坐标系内
     //   右上角），z 序在 mask/sheet 之上、tooltip 之下。搜索框 + 行列表 + 底注。

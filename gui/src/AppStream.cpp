@@ -321,6 +321,7 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::modelProbe, &ProbeState::modelProbeDone, &HarnessApp::RunModelProbe},
                 {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
+                {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 // ── 跨 tick 组：靠后续 tick 推进，必须排在同步组之后 ──
                 {&CliOptions::settingsProbe, &ProbeState::settingsProbeDone, &HarnessApp::RunSettingsProbe},
                 {&CliOptions::themeProbe, &ProbeState::themeProbeDone, &HarnessApp::RunThemeProbe},

@@ -203,6 +203,12 @@ void HarnessApp::WriteSummary() {
     if (m_options.delProvProbe && !m_probeState.delProvProbeLog.empty()) {
         AppendDelProvProbeSummary(json);
     }
+    // ★★ P4 Phase I（--preview-probe）判据：regex-cases 全对 · open-ok 行内容
+    //   逐字节 · escape-rejected / no-workspace 拒读（IO 纪律核心相）· missing
+    //   有 notice · too-large / line-cap 双闸 · close-esc 关闭。
+    if (m_options.previewProbe && !m_probeState.previewProbeLog.empty()) {
+        AppendPreviewProbeSummary(json);
+    }
     // ★★ 2026-10-21：HUD 覆盖率（--hud-probe）。
     //   判据：hud-built.matched == true（读过的字段全部建过）
     //         ∧ hud-built-negative.matched == true（打掉一个指针必须被看见）

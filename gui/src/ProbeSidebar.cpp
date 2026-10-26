@@ -480,10 +480,16 @@ void HarnessApp::RunSidebarProbe() {
                 shown.empty() ? 0.0f : measurer.MeasureText(font, shown).width;
             const float availW = title0 ? static_cast<float>(title0->GetWidth()) : 0.0f;
             const float rawW = wsB ? measurer.MeasureText(font, wsB->path).width : 0.0f;
+            // ★ 2026-10-26：翻红时只有定性 detail 没法诊断（昨晚绿今稳定红的环境漂移
+            //   就是这么卡住的）——宽值三条全进 detail，数值可见才谈得上归属。
+            char winfo[220];
+            std::snprintf(winfo, sizeof(winfo),
+                          "group title is wider than its label (paint layer would clip the "
+                          "tail) [shownW=%.1f availW=%.1f rawW=%.1f over=%.1f]",
+                          shownW, availW, rawW, shownW - availW);
             expect("group-title-fit",
                    {{title0 != nullptr, "row 0 has no title label"},
-                    {shownW <= availW,
-                     "group title is wider than its label (paint layer would clip the tail)"},
+                    {shownW <= availW, winfo},
                     {endsWith(shown, "workspace-beta"),
                      "the distinguishing tail did not survive elision"},
                     {shown.size() < (wsB ? wsB->path.size() : 0u),

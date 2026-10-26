@@ -30,6 +30,9 @@
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
 #include "ECDI/Widget/ScrollView.h"
 
+#include <cmath>   // std::floor（ElideBudgetCp 预算算术）
+#include <string>
+
 #include <algorithm>
 #include <filesystem>
 #include <string>
@@ -49,13 +52,15 @@ using harness::internal::kSidebarRowW;
 //   为什么必须保留尾部：`ECDI::Label` 对超宽文本是**尾部丢弃**（单行 DrawText 裁剪），
 //     而两个工作区的区别几乎总在叶子段（`.../proj` vs `.../other`）——尾部一丢，
 //     两个分组标题在屏幕上就是同一行，“按工作区区分”退化成“按前缀区分”。
-//   为什么这里**不**测量：本函数在 `RebuildSessionList` 的建树路径上，任何
+//   为什么这里**不**逐行测量：本函数在 `RebuildSessionList` 的建树路径上，任何
 //     `MeasureText` 都会进 `m_evalMeasureCalls`（评估仪器）⇒ 每次侧栏重建都会
 //     污染 measure/paints 读数（既有基线里就有 measureCalls/measureChars）。
-//     这里改用**码点预算**（分组标题恒为等宽字体，ASCII 每码点同宽），
-//     再由 `--sidebar-probe` 侧的实测（`MeasureText` 后比对可用宽）证明真的放得下；
-//     探针跑批不产基线，故那次测量不污染任何既有读数。
-constexpr size_t kSidebarGroupTitleCp = 22;   // 22 码点 ≈ 11px Consolas 下 150px 宽
+//     ⇒ 改用**一次性校准 + 码点预算**（分组标题恒为等宽字体，ASCII 每码点同宽）：
+//     首次建行时量一次参考串求出单码点宽与省略号宽（`ElideBudgetCp()`，走
+//     `m_window->GetTextMeasurer()`，仅 +2 次调用且在 cull-probe 读数快照处补偿），
+//     之后每行的省略都是纯算术。`--sidebar-probe` 侧的实测（MeasureText 后比对
+//     可用宽）仍是设计中的验证器——2026-10-26 它第一次真正咬住了东西：固定预算
+//     `22 码点` 在 125% 缩放下量出 134.4px > 128px（详见 App.h 修法 D 注释）。
 
 std::string ElideMiddleByCodepoints(const std::string& text, size_t maxCp) {
     if (text.empty()) return text;
@@ -65,14 +70,46 @@ std::string ElideMiddleByCodepoints(const std::string& text, size_t maxCp) {
         // 退化：连 `X…Y` 都放不下，只能留尾部（尾部是唯一有信息量的一端）
         return text.substr(ECDI::CodepointIndexToByteOffset(text, total - maxCp));
     }
-    // 头 1/4、尾 3/4：尾部信息更密（末级目录 + 叶子段）。
-    const size_t headCp = maxCp / 4;
+    // 头 1/4、尾 3/4 的**修正版**（2026-10-26）：头部封顶 3 码点 = 盘根 "D:/"。
+    //   原因：修法 D 让预算随真实度量收缩（125% 缩放下 128px 宽 → 19），固定 1/4
+    //   会把尾部压到 14 < 15（`workspace-alpha` 的长度）⇒ 叶子段被切——而「尾部
+    //   至少保留叶子段」是中间省略的**存在理由**（见上方 ★★ 注释），不是可牺牲项。
+    //   封顶 3 后：19 预算 → tail 15（叶子恰好整体存活）；100% 的 24 预算 →
+    //   tail 20（比旧规则还多留）。尾部信息更密（末级目录 + 叶子段），多偏尾合理。
+    const size_t headCp = std::min<size_t>(3, maxCp / 4);
     const size_t tailCp = maxCp - headCp - 1;   // 减 1 = 省略号本身占一个码点
     const std::string head =
         text.substr(0, ECDI::CodepointIndexToByteOffset(text, headCp));
     const std::string tail =
         text.substr(ECDI::CodepointIndexToByteOffset(text, total - tailCp));
     return head + "\xe2\x80\xa6" + tail;   // U+2026 HORIZONTAL ELLIPSIS
+}
+
+// 侧栏标题的省略预算（码点数）——修法 D 的落点（背景见 App.h 成员注释）。
+//   预算推导：shown = (cp−1) 个等宽字符 + 1 个省略号，约束 (cp−1)·w + w… ≤ labelW
+//   ⇒ cp = floor((labelW − w…) / w) + 1。再留 1px 安全余量吸收浮点/GDI 取整误差
+//   （125% 实测正好压线 128.0，不余量就会被 0.1px 级误差翻红——探针已验证过一次）。
+size_t HarnessApp::ElideBudgetCp(int labelW) {
+    if (m_elideCharW < 0.0f) {   // 惰性校准：整个进程生命周期只走一次
+        if (m_window) {
+            ECDI::TextMeasurer& measurer = m_window->GetTextMeasurer();
+            const ECDI::Font font = harness::MonoFont(harness::kFontMicro);
+            const size_t before = m_measureProbe ? m_measureProbe->MeasureCalls() : 0;
+            const float w10 = measurer.MeasureText(font, "MMMMMMMMMM").width;
+            m_elideEllipsisW = measurer.MeasureText(font, "\xe2\x80\xa6").width;
+            const size_t after = m_measureProbe ? m_measureProbe->MeasureCalls() : 0;
+            m_elideMeasureOverhead = after - before;
+            if (w10 > 0.0f) m_elideCharW = w10 / 10.0f;   // 量 10 个求均值，抗单字取整
+        }
+        if (m_elideCharW <= 0.0f) m_elideCharW = 0.0f;   // 校准失败 ⇒ 走兜底常数
+    }
+    if (m_elideCharW <= 0.0f) {
+        // 兜底（量不到测量器，理论不可达）：回到旧固定预算，宁多省不溢出。
+        return labelW >= 150 ? 22 : 21;
+    }
+    const float budget =
+        std::floor((static_cast<float>(labelW) - m_elideEllipsisW - 1.0f) / m_elideCharW) + 1.0f;
+    return budget < 4.0f ? 4 : static_cast<size_t>(budget);   // 4 = ElideMiddle 的 X…Y 下限
 }
 
 // 按当前 CLI 选项建一个会话，push 进 m_sessions 并返回（**不**激活）。
@@ -437,9 +474,9 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string
     //     工作区在屏幕上会是同一行。把省略放在中间，尾部至少保留叶子段。
     // ★ 有「＋」按钮时标题宽度让出 22px（按钮 18 + 间隙 4）。
     const int labelW = workspaceId.empty() ? (kSidebarRowW - 8) : (kSidebarRowW - 30);
-    // ★★ 省略预算必须跟着 labelW 走：有按钮时可用宽度少了 22px，
-    //   若仍用 22 码点（≈132px）而 labelW 只有 128px，绘制层会裁掉尾部。
-    const size_t elideCp = workspaceId.empty() ? kSidebarGroupTitleCp : (kSidebarGroupTitleCp - 1);
+    // ★★ 省略预算 = 实测校准（修法 D，DPI 可移植）：预算天然跟着 labelW 走——
+    //   有按钮时可用宽少 22px，预算自动少 ~3-4 码点，不再需要手工 −1 补丁。
+    const size_t elideCp = ElideBudgetCp(labelW);
     const std::string shown = ElideMiddleByCodepoints(title, elideCp);
     auto label = uikit::Label(shown, labelW, kSidebarGroupH - 4, kDarkMuted,
                               harness::kFontMicro, true);

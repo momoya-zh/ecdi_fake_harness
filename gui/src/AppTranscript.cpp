@@ -307,7 +307,37 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         .pressedBackground = kToolHeaderPressed,
         .hoverBackground = kToolHeaderHover,
         .textAlignment = ECDI::TextAlignment::Left});   // Phase 30 △3：卡头贴左（hi-fi .tool>.h）
-    panel->AddChild(std::move(header));
+    // ── P4 Phase I：标题旁「⤢」预览按钮（§11 入口经评审修订——标题按钮的点击
+    //   已被折叠占用，BindCollapsible → ToggleRow）。仅当标题文本匹配路径形态时
+    //   才创建（PreviewPathFromText 与探针共用同一实现——判据只有一份）。
+    const std::string previewTarget = PreviewPathFromText(ToolTitle(block, call));
+    if (!previewTarget.empty()) {
+        auto headRow = std::make_unique<ECDI::Panel>();
+        headRow->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, true, 0));
+        // 底色与卡头一致（Panel 有自己的 style，不透明——贴齐上下卡片观感）
+        headRow->SetStyle(ECDI::PanelStyleOverride{
+            .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
+            .cornerRadius = kRadiusBtn,
+            .borderWidth = 0.0f,
+            .borderColor = kCardBorder});
+        header->SetStretch(1);   // 标题弹性吃剩余宽，⤢ 靠右
+        headRow->AddChild(std::move(header));
+        auto pv = std::make_unique<ECDI::Button>("⤢");
+        pv->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+        pv->SetFont(harness::SansFont(12.0f));
+        pv->SetStyle(ECDI::ButtonStyleOverride{
+            .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
+            .border = kCardBorder,
+            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kToolHeaderHover});
+        pv->SetOnClick([this, target = previewTarget] { OpenPreview(target); });
+        headRow->AddChild(std::move(pv));
+        panel->AddChild(std::move(headRow));
+    } else {
+        panel->AddChild(std::move(header));
+    }
     auto body = std::make_unique<ECDI::CollapsiblePanel>();
     rec.body = body.get();
     rec.body->SetExpandDirection(ECDI::ExpandDirection::Down);

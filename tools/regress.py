@@ -88,6 +88,9 @@ EXTRA_PROBES = [
     # ctx-denominator 要求右栏上下文百分比不是 "—"，即需要真分母；
     # fake-core 的 hello.context 恒为 0（实测 contextLimit=0）⇒ 结构上不可达。
     ("--model-probe", "modelProbe", DEMO, [], ["ctx-denominator"]),
+    # P4 Phase I：全部判据写在 RunPreviewProbe 内（regex 抽取 / IO 纪律 / 双闸 /
+    # Esc）。工作区与样本文件由探针在 %TEMP% 自建，回放模式即可全绿；无 designed-red。
+    ("--preview-probe", "previewProbe", DEMO, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"

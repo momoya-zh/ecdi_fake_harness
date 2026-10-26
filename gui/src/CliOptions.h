@@ -59,6 +59,9 @@ struct CliOptions {
     // ★★ P4 修复验证（2026-10-25，实测反馈：删除所选崩溃）：--config 隔离配置
     //   下合成「选中提供商 → 点删除所选」全链。默认 false ⇒ 零行为变化。
     bool delProvProbe = false;            // --delprov-probe：删除所选不崩判据
+    // ★★ P4 Phase I（2026-10-26）：--preview-probe 预览链判据（regex 抽取 /
+    //   workspace 纪律 / 截断闸 / Esc 关闭——各相 matched 写在 RunPreviewProbe 内）。
+    bool previewProbe = false;            // --preview-probe：路径可点 + 只读预览判据
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。

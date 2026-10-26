@@ -312,6 +312,8 @@ void HarnessApp::Relayout() {
     RefreshEmptyGuide();
     // ★★ P4 Phase F：设置浮层几何跟随（视口尺寸变了，遮罩/sheet 重摆）。
     LayoutSettingsOverlay();
+    // ★★ P4 Phase I：预览浮层几何跟随（同一条 Relayout 几何路径）。
+    LayoutPreviewOverlay();
 }
 
 void HarnessApp::FollowTailIfPinned() {
@@ -428,7 +430,9 @@ void HarnessApp::CacheEvalMetrics() {
         m_evalAvgExecUs = m_probe->AvgExecuteUs();
     }
     if (m_measureProbe) {
-        m_evalMeasureCalls = m_measureProbe->MeasureCalls();
+        // ★ 修法 D（2026-10-26）：侧栏标题省略的惰性校准也走这条测量链（仅 +2 次），
+        //   从读数里减掉，保证 measureCalls 与修法 D 之前同口径。
+        m_evalMeasureCalls = m_measureProbe->MeasureCalls() - m_elideMeasureOverhead;
         m_evalMeasureTotalUs = m_measureProbe->TotalUs();
         m_evalMeasureMaxUs = m_measureProbe->MaxUs();
     }

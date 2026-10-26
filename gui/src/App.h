@@ -167,6 +167,13 @@ private:
         //   递归摆字段后，还需 UpdateContentExtent 重算内容范围（否则 extent=0，
         //   字段区不可见/不可滚）。
         ECDI::ScrollView* settingsSv = nullptr;  // 设置面板内部滚动区
+        // ★★ P4 Phase I（2026-10-26）：文件预览 sheet（模态浮层，与设置同款机制，
+        //   贴右不居中）。显隐是模型侧状态 `m_previewOpen`（重建后按它恢复）。
+        ECDI::Button* previewMask = nullptr;     // 遮罩（点击吞掉；关闭走 Esc/×）
+        ECDI::Panel* previewPanel = nullptr;     // 预览 sheet
+        ECDI::ScrollView* previewSv = nullptr;   // 预览体滚动区
+        ECDI::Label* previewTitle = nullptr;     // 文件名行
+        ECDI::Widget* previewBody = nullptr;     // 行容器（GetContentView，OpenPreview 后重建）
         ECDI::TextBox* settingsBase = nullptr;   // BaseURL（单行）
         ECDI::TextBox* settingsKey = nullptr;    // API Key（单行 + Password 掩码）
         ECDI::TextBox* settingsModel = nullptr;  // 模型名（单行）
@@ -305,7 +312,8 @@ private:
     void BuildConversationHead();
     void BuildMoreMenu();
     std::unique_ptr<ECDI::Widget> BuildSettingsSheet();
-    void BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet);
+    void BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet,
+                                 std::unique_ptr<ECDI::Widget> previewSheet);
     void BuildComposer();
     void BuildInspector(ECDI::Panel& main);
     // ★★ 2026-10-21：**HUD 覆盖自检**——`Hud` 里被 `RefreshHud` 读的指针，
@@ -748,6 +756,18 @@ private:
     //   ★ `index` 只是**建行时**的下标，回调里**不捕获它**——删除会让下标整体前移，
     //     捕获下标就会"点了第 2 行却切到第 3 个会话"。回调捕获的是 `Session*`（稳定，
     //     `unique_ptr` 持有），点击时再线性查一次它的当前下标（见 `SwitchToSessionByPtr`）。
+    // ★★ P4 修法 D（2026-10-26）：侧栏标题省略预算 = **实测校准**，不是固定码点数。
+    //   固定预算（旧 kSidebarGroupTitleCp=22）是「校准环境」的产物：码点→像素要过
+    //   GDI 度量，系数随 DPI/缩放漂移（125% 下 21 码点 = 134.4px > 128px 可用宽，
+    //   `--sidebar-probe` 的 group-title-fit 稳定红；100% 外接屏全绿）——与 REQ-06
+    //   同族（度量口径依赖环境）。修法 = 首次建行时量一次参考串求单码点宽 +
+    //   省略号宽，预算=纯算术；之后每行零测量，不碰评估仪器。
+    [[nodiscard]] size_t ElideBudgetCp(int labelW);
+    float m_elideCharW = -1.0f;            // <0 = 未校准（惰性，首次 ElideBudgetCp 时校准）
+    float m_elideEllipsisW = 0.0f;         // U+2026 的实测宽（同字体同字号）
+    size_t m_elideMeasureOverhead = 0;     // 校准消耗的 MeasureCalls（仅 cull-probe 下非零，
+                                           //   读数快照处补偿，见 AppHud.cpp RefreshHud）
+
     std::unique_ptr<ECDI::Widget> BuildSessionRow(size_t index, bool active);
     // `BuildSessionGroupRow()`：建**一个工作区分组标题行**（纯函数，不改状态）。
     //   ★ 行根是 `Panel` 而不是 `Button`——这正是“标题行点不动”的**结构性**保证：
@@ -875,6 +895,23 @@ private:
     // 返回 true（构造函数随后照常建 live 会话）；否则 false + 面板打开。
     bool TryAutoConnectFromConfig();
     void RunSettingsProbe();
+    // ── P4 Phase I 探针（--preview-probe）：预览链的相判据在 RunPreviewProbe 内 ──
+    void RunPreviewProbe();
+    // ── ★★ P4 Phase I（2026-10-26）：文件路径可点 + 只读预览 ─────────
+    //   规格住在 docs/P4-gui-usability-plan.md §11；入口形态经评审修订：
+    //   标题按钮点击已被折叠占用（BindCollapsible）⇒ 入口 = 标题旁小按钮
+    //   （仅当标题文本匹配路径形态时出现）。
+    // 从文本里抽第一个路径形态匹配（正则常量与判据说明在 AppPreview.cpp）。
+    // 探针与卡片头构建共用这一个函数——「判据只有一份实现」同 ToggleRow 纪律。
+    static std::string PreviewPathFromText(const std::string& text);
+    // 打开预览：IO 纪律全过 ⇒ 填 m_previewLines + 开面板；任何一步不过 ⇒
+    // m_previewError 落因，面板**仍然打开**（体内显示 notice——不静默）。
+    bool OpenPreview(const std::string& rawPath);
+    std::unique_ptr<ECDI::Widget> BuildPreviewSheet();   // 所有权交 BuildTranscriptViewport
+    void ApplyPreviewVisibility();   // 唯一投影路径（BuildUi 首帧 + RebuildUi 共用）
+    void LayoutPreviewOverlay();     // 贴右几何（无父布局 ⇒ 自己 Arrange）
+    void SetPreviewVisible(bool visible);
+    void RebuildPreviewContent();    // 按模型态（path/lines/error）重建体内行
     // ── ★★ P3.6（协议 v4）：模型热切换 ─────────────────────────
     void RebuildModelList();            // 检查器模型卡片行重建（tick 执行）
     void RebuildSettingsProviderList(); // 设置面板提供商行重建（编辑目标选择）
@@ -956,6 +993,7 @@ private:
     void AppendModelProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendSelectProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendDelProvProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendPreviewProbeSummary(std::string& json);   // ProbePreview.cpp
     void AppendHudProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendSettingsProbeSummary(std::string& json);   // ProbeSettings.cpp
     void AppendEnterProbeSummary(std::string& json);   // ProbeFlow.cpp
@@ -1086,6 +1124,14 @@ private:
     // ★★ P3.5（2026-10-24）：设置面板显隐是**模型侧状态**（与 m_sidebarVisible
     //   同一条纪律：只存在于控件上的显隐会被任何重建丢掉）。首启无配置 ⇒ true。
     bool m_settingsVisible = false;
+    // ★★ P4 Phase I（2026-10-26）：预览 sheet 的模型侧状态（与 m_settingsVisible
+    //   同一条纪律——只活在控件上的显隐会被任何重建丢掉）。内容（lines/error）
+    //   也在模型侧：OpenPreview 时读一次盘，重建按它重新投影，**重建不读盘**。
+    bool m_previewOpen = false;
+    std::string m_previewPath;                    // 打开时解析过的绝对路径（显示/复制用）
+    std::vector<std::string> m_previewLines;      // 打开时一次读入的行（≤512KB 上限内）
+    bool m_previewTruncated = false;              // 超 512KB ⇒ true（体内截断 notice）
+    std::string m_previewError;                   // 非空 = 体内显示错误 notice（面板仍开）
     // 注入 core 的 API key（env block 通道，规格 §8.5 D5）。
     // ★ 不"用完即清"：每个新会话（＋按钮/临时会话）都要再拉一个 core，
     //   env 注入是每次 spawn 都走同一条路。key 留在 GUI 进程内存属可接受形态
