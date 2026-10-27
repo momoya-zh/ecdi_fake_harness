@@ -23,6 +23,7 @@
 #include "ECDI/Widget/Panel.h"
 #include "ECDI/Widget/ScrollView.h"
 
+using harness::internal::ApplyCompactScrollBars;
 using harness::internal::kProbeBg;
 using harness::internal::kProbeInk;
 using harness::internal::PathToUtf8;
@@ -216,6 +217,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
     sv->SetSize(390, 360);   // 基准尺寸（F2/D9 契约，同设置面板写法）；stretch=1 吃剩余高
     sv->SetStretch(1);
     sv->SetScrollStep(18);
+    ApplyCompactScrollBars(*sv);   // ★ 条宽全仓统一（kScrollBarThickness）
     ECDI::Widget* content = &sv->GetContentView();
     m_hud.previewBody = content;
     content->SetLayout(std::make_unique<ECDI::VerticalLayout>(1, true, 2));

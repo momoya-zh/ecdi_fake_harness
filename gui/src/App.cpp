@@ -357,7 +357,26 @@ void HarnessApp::SetSidebarVisible(bool visible) {
     Relayout();
     m_hudDirty = true;
     RefreshHud();
+    // ★★ 2026-10-27：侧栏一藏，中栏变宽 200 ⇒ titles 可以吃更多（上限 480）。
+    SyncHeadTitlesWidth();
     RequestRepaint();
+}
+
+// ★★ 2026-10-27：检视栏可见性的**唯一落地口**（Ctrl+I 与中栏头「详情」按钮、
+//   `SetDevMode` 的模式切换共用）。
+//   ★ 为什么还要收成一个函数（只有一个控件要切了）：`m_inspectorVisible` 有三条
+//     写路径，而「模型态翻了吗」与「控件跟着翻了吗」必须永远同进同退——分散写
+//     就会出现「模型说收起了、屏幕还在」这类只在视觉上暴露的缺陷（`--sidebar-probe`
+//     的 `model still says visible` 判据专门盯这一条）。
+//   ★ 注意本函数**不负责宽度**：中栏控件会随检视栏收起而变宽（视口该变），
+//     排版宽另由 `TranscriptLayoutWidth()` 单独算。两件事分开管，是因为
+//     「视口满宽」和「版心按 max-width 封顶」在视觉上必须同时成立。
+//   ★★ 2026-10-27 更正：上一版这里写的是"版心不变（永远扣掉 230）"——那条模型
+//     已经被 max-width 取代。现在的真实语义：**视口变宽 ⇒ 版心跟着变宽，直到
+//     `kMaxTranscriptW` 封顶**；只有窗口宽到"扣掉 230 之后仍 ≥ 封顶"才免疫。别
+//     再按"零重测"理解它（见 `TranscriptLayoutWidth` 的性能注记）。
+void HarnessApp::ApplyInspectorVisibility() {
+    if (m_hud.inspector) m_hud.inspector->SetVisible(m_inspectorVisible);
 }
 
 // ★★ P4 Phase B（2026-10-25）：检视栏显隐的唯一入口（中栏头 `≡` 按钮与 Ctrl+I
@@ -366,9 +385,26 @@ void HarnessApp::SetSidebarVisible(bool visible) {
 void HarnessApp::ToggleInspector() {
     if (!m_hud.inspector) return;
     m_inspectorVisible = !m_inspectorVisible;
-    m_hud.inspector->SetVisible(m_inspectorVisible);
+    // ★★ 2026-10-27：中栏视口随检视栏显隐变宽/窄 230（这是**该**变的：滚动条、
+    //   中栏边界必须贴到窗口右边缘，见实测反馈「收起后边框停在原位」）。
+    //   ★ 版心（行宽）随之走 max-width 模型：**未封顶时真的会变**（wrapW 变 ⇒
+    //     换行缓存失效 ⇒ 一次重测），封顶后一位不变。上一版注释说"扣回那 230
+    //     ⇒ 零重测"，那是"永远扣 230"旧模型的结论，已作废——别拿它当性能承诺。
+    //   ★ 顺序仍是先 `Arrange` 再 `Relayout`：宽度由布局分配，必须在父容器重排之后
+    //     才能读到新的 `m_scroll` 宽（版心正是读它算出来的）。
+    ApplyInspectorVisibility();
     if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
     Relayout();
+    // ★★ 2026-10-27 修复（实测反馈「点详情后那三个键没了」）：
+    //   检视栏出现 ⇒ 中栏**窄 230**，而会话头的 `titles` 原来是固定 480、三钮各 44
+    //   ⇒ 总需 ≈ 700 > 中栏 570 ⇒ 后两钮被排到父边界外（布局不压缩、Panel 不裁子），
+    //   屏幕上就是"消失"。修法两半，缺一不可：
+    //     ① `SyncHeadTitlesWidth()` 让 titles 吃剩余宽（上限仍 480，宽窗口零变化）；
+    //     ② 本函数要**真的调用**它——原实现在这里既不置 `m_hudDirty` 也不刷 HUD，
+    //        与对称的 `SetSidebarVisible`（置脏 + RefreshHud + 重算）不一致，
+    //        正是这处不对称让宽度一直停在旧值。
+    //   ★ 顺序：`parent->Arrange()` 之后才有新的中栏宽可读。
+    SyncHeadTitlesWidth();
     RequestRepaint();
 }
 
@@ -657,6 +693,10 @@ void HarnessApp::OnWindowResized(int width, int height) {
 
     // ④ 贴底保持 + ⑤ 重画
     FollowTailIfPinned();
+    // ★★ 2026-10-27：窗口变窄 ⇒ 中栏变窄 ⇒ 会话头三钮可能被挤出可视区
+    //   （实测 1000 宽 + 详情开只剩「导出」半截）。同值守卫 ⇒ 宽度没变时零成本，
+    //   故放在高频的 resize 链上安全（不动 HUD 读数、不额外 Invalidate）。
+    SyncHeadTitlesWidth();
     RequestRepaint();
 }
 

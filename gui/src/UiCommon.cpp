@@ -20,6 +20,7 @@
 #include "Transcript.h"   // Block 完整类型（UnknownKindText / ReasoningTitle 读它的字段）
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/Panel.h"
+#include "ECDI/Widget/ScrollBar.h"   // 瘦身：ScrollBarStyleOverride（ApplyCompactScrollBars）
 #include "ECDI/Widget/ScrollView.h"
 
 #include <memory>
@@ -31,6 +32,25 @@ namespace internal {
 int ContentWidth(const ECDI::ScrollView* scroll) {
     const int w = scroll ? scroll->GetWidth() : 0;
     return w > 80 ? w - 40 : 600;   // 扣除滚动条与边距；未布局前给初值
+}
+
+// ★★ 2026-10-27：滚动条瘦身（`kScrollBarThickness`，默认 12 的 1/3）。
+//   ★ 一处实现、全仓 ScrollView 共用——中栏条 4px 而侧栏 12px 会比"4px 本身"更显眼。
+//   ★ 三个坑都在这三行里处理：
+//     ① `SetStyle` 只 `Invalidate` 自身，**不重排**（条几何/viewport/maxOffset 都在
+//        `ApplyLayout` 里算，只由 `SetSize`/`SetContentExtent`/`SetScrollBarVisible` 触发）
+//        ⇒ 末尾补一次 `SetSize` 等价调用；
+//     ② `BarThickness()` 只读**垂直**条 ⇒ 两条同设，否则一轴的"画出的厚度"与
+//        "扣掉的厚度"不一致，内容压在条底下；
+//     ③ 实际占位 = `thickness + 2`（`kBarInset` 四边内缩）⇒ 改厚度会连带改
+//        `GetMaxOffsetY()`，所以必须在**建树期**设，别在运行期偷偷改。
+void ApplyCompactScrollBars(ECDI::ScrollView& sv) {
+    const ECDI::ScrollBarStyleOverride compact{ .thickness = kScrollBarThickness };
+    if (ECDI::ScrollBar* v = sv.GetVerticalScrollBar()) v->SetStyle(compact);
+    if (ECDI::ScrollBar* h = sv.GetHorizontalScrollBar()) h->SetStyle(compact);
+    // 守卫：建树期宽高还是 0，此刻重排只会算出负 viewport（`w - t - inset`）；
+    // 随后布局分配的第一次 `SetSize` 自然会带新厚度走一遍 `ApplyLayout`。
+    if (sv.GetWidth() > 0 && sv.GetHeight() > 0) sv.SetSize(sv.GetWidth(), sv.GetHeight());
 }
 
 // ★★ 中栏会话头的标题/副标（2026-10-18，原型 C 的 `.conversation-head`）——
@@ -99,6 +119,64 @@ std::string ReasoningTitle(const Block& block, bool expanded) {
     if (block.tokens > 0) {
         out += " \xC2\xB7 " + std::to_string(block.tokens) + " tokens";
     }
+    return out;
+}
+
+// ★★ 2026-10-27：权限门折叠的三件套（声明与设计理由见 AppInternal.h）。
+//   ★ 只做**列宽估算**（ASCII 记 1 列、多字节记 2 列），**不做像素测量**：
+//     权限门在流式路径上可能高频重建，任何 `MeasureText` 都会计入
+//     `m_evalMeasureCalls`（评估仪器口径）；而摘要只需"大致占半行"，
+//     不必像侧栏标题那样精确贴边（修法 D 那套是给"必须填满"的标题用的）。
+//   ★ UTF-8 按首字节判长，**不引第三方、不构造 wstring**：截断点永远落在码点
+//     边界上——劈开一个多字节字符，屏幕上就是一串乱码方块。
+namespace {
+
+// 首字节 ⇒ 该码点的字节数（非法首字节按 1 处理：宁可不截，也不越界）。
+std::size_t Utf8SeqLen(unsigned char lead) {
+    if ((lead & 0x80) == 0x00) return 1;
+    if ((lead & 0xE0) == 0xC0) return 2;
+    if ((lead & 0xF0) == 0xE0) return 3;
+    if ((lead & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+}  // namespace
+
+std::string AskSummary(const std::string& question, int maxCols) {
+    std::string out;
+    int cols = 0;
+    for (std::size_t i = 0; i < question.size();) {
+        const std::size_t len = Utf8SeqLen(static_cast<unsigned char>(question[i]));
+        if (i + len > question.size()) break;   // 尾部残缺序列：就地停（不补不猜）
+        const int w = (len == 1) ? 1 : 2;
+        if (cols + w > maxCols) {
+            out += "\xE2\x80\xA6";              // … U+2026
+            return out;
+        }
+        out.append(question, i, len);
+        cols += w;
+        i += len;
+    }
+    return out;
+}
+
+bool AskNeedsFold(const std::string& question, int maxCols) {
+    // 与 AskSummary 同源判据：摘要装不下原文 ⇔ 出现了截断。
+    //   ★ 不做"长度 > N"的独立算术——两份阈值实现迟早对不上（一个算列一个算字节），
+    //     那时症状是"折叠了但摘要没省略号"这类只在视觉上暴露的怪象。
+    return AskSummary(question, maxCols) != question;
+}
+
+std::string AskTitle(const std::string& question, bool expanded, bool foldable) {
+    std::string out;
+    if (foldable) {
+        // 箭头字节照抄 ReasoningTitle（同一对：︿ U+FE3F / ﹀ U+FE40）——
+        // 那两个转义是 Python 反查得到的，**别手写**（ReasoningTitle 上有踩坑注释）。
+        out = expanded ? "\xEF\xB8\xBF " : "\xEF\xB9\x80 ";
+    }
+    out += "权限 ";
+    // 装得下 ⇒ 直接用全文（此时摘要等于原文，压根不折叠，也就不存在"同一句话显示两遍"）。
+    out += foldable ? AskSummary(question) : question;
     return out;
 }
 

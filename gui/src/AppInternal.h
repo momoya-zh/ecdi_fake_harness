@@ -65,6 +65,45 @@ inline constexpr int kRowPadX = 10;
 inline constexpr int kCanvasPadX = 16;
 inline constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C 的 39px
 
+// ── 转录版心的最大宽度（2026-10-27，对齐参考载体的 max-width 模型）──
+//   ★ 模型（照 WorkBuddy 客户端的实际表现归纳，5 张不同窗口宽度的截图）：
+//       · 可用宽 < 该值 ⇒ 内容列**占满**（只留 `kCanvasPadX` 画布边）；
+//       · 可用宽 > 该值 ⇒ 内容列**固定在最大宽**，余量**左右平分**（居中版心）。
+//     这 ≠「永远扣掉检视栏的 230px」——那样小窗口里也会平白留白，观感是"布局坏了"。
+//   ★ 取值理由：`kRowGap`/气泡 78% 上限的前提下，760 让气泡最宽 ≈ 593（一行 40+ 汉字），
+//     在 1080 宽窗口 + 侧栏 195 + 检视栏收起时（可用 ≈ 845）左右各剩 ≈ 42 —— 饱满而不贴边。
+inline constexpr int kMaxTranscriptW = 760;
+
+// ── 右栏检视栏宽度（2026-10-27）──
+//   ★ 定宽的**唯一真相源**，消费者只有 `BuildInspector`（设检视栏本体宽）。
+//   ★ 版心**不再**按它扣减：那版"永远扣 230"会让小窗口里也平白窄一条，
+//     观感像布局坏了（实测）。版心改走 `kMaxTranscriptW` 的 max-width 模型。
+inline constexpr int kInspW = 230;
+
+// ── 滚动条厚度（2026-10-27）──
+//   ★ 默认主题值是 12（`DefaultTheme` 的 `ScrollBarStyle::thickness`），实测反馈"太宽、
+//     视觉上突兀"⇒ 取 1/3。
+//   ★ 它**不是纯视觉量**：`ScrollView` 的 viewport = `厚度 + 2`（`kBarInset` 四边内缩），
+//     所以改它连带改 `GetMaxOffsetY()` 与内容可视宽——是几何量，必须单点可查。
+//   ★ 全仓所有 `ScrollView` 统一走 `ApplyCompactScrollBars()`，不许各处散写：中栏与
+//     侧栏列表条宽不一致会比"条宽"本身更显眼。
+//   ★ 下限自觉：`thickness <= 0` 时 ECDI 侧无断言保护（条宽 0 但仍扣 inset=2 ⇒
+//     "看不见却占位"），别调成 0。
+inline constexpr int kScrollBarThickness = 4;
+
+// ── 侧栏目录列表的**内容宽**（2026-10-27）──
+//   ★★ 病因（用户实测：文件夹列表"永远挂着横向滚动条，哪怕没超出"）：
+//     `ScrollView` 的横向条判定是 `contentW > ViewportWidth()`，而
+//     `ViewportWidth() = 控件宽 − 条厚 − kBarInset`（条可见时）。此前目录列表把
+//     **extent 宽设成控件宽**（`kSidebarListW`）⇒ 垂直条出现的同一刻，横向就被
+//     判成溢出（172 > 166）⇒ 恒出条。这是"两轮判定"的必然结果，**不是 ECDI 缺陷**。
+//     （会话列表 / 历史列表 extent 用 `kSidebarRowW`=158 < 166，所以它们从不出条——
+//       这也反证了根因在这一处。）
+//   ★ 取值：控件宽 − 条厚 − 4。多扣的那 2px 是**余量**：ECDI 侧 `kBarInset` 是内部
+//     常量、本仓读不到，留 2px 就不怕它边界相等（相等时判定用严格 `>`，仍会出条）。
+//   ★ 行宽与 extent 共用这一个数：内容宽 = 内容真实需要的宽，不撒谎。
+inline constexpr int kSidebarListInnerW = kSidebarListW - kScrollBarThickness - 4;
+
 // ── 「跳到最新」按钮 + tooltip 延时（Stage 1d 上提）──
 inline constexpr int kJumpBtnW = 104;
 inline constexpr int kJumpBtnH = 30;
@@ -94,10 +133,35 @@ inline ECDI::Color Pick(bool probe, const ECDI::Color& normal, const ECDI::Color
 //   这四个都是**单一真相源**：同一段文本/宽度在多处生成，各写一份必然漂移
 //   （本项目踩过两次：UnknownKindText 首版两处各写一份、ReasoningTitle 三处各写一份）。
 int ContentWidth(const ECDI::ScrollView* scroll);
+// ── 滚动条瘦身（2026-10-27）：把两条都设成 `kScrollBarThickness` 并补一次重排 ──
+//   ★ 为什么必须**两条都设**：`ScrollView::BarThickness()` 只读**垂直**条来扣 viewport，
+//     只改一条 ⇒ 另一轴"画出来的厚度"与"扣掉的厚度"不一致（内容压在条底下）。
+//   ★ 为什么必须补重排：`ScrollBar::SetStyle` 只 `Invalidate()` 自身，而条几何 /
+//     viewport / maxOffset 全在 `ApplyLayout` 里算，它只被 `SetSize` /
+//     `SetContentExtent` / `SetScrollBarVisible` 触发 ⇒ 光设样式不重排 = 条变窄了、
+//     视口还按旧厚度让位。函数内已做"宽高为 0 就跳过"的守卫（建树期尺寸未定，
+//     随后布局分配的第一次 `SetSize` 自然会用新厚度）。
+void ApplyCompactScrollBars(ECDI::ScrollView& sv);
 std::string ConversationTitle();
 std::string ConversationSubtitle();
 std::string UnknownKindText(const Block& block);
 std::string ReasoningTitle(const Block& block, bool expanded);
+
+// ── 权限门折叠（2026-10-27）──
+//   ★★ 形态与思维链同机制（`CollapsiblePanel` + header 按钮 + 折叠体），但两处
+//     刻意不同，别照抄：
+//     ① **默认展开**——思维链是"可选阅读"，收起无害；权限门是"必须决策"，
+//        收起等于把决策依据藏起来；
+//     ② **按钮不进折叠体**——`--answer-probe` 用控件的绝对中心点合成点击
+//        （`ProbeTranscript.cpp` 的 `clickCentreOf`），按钮一旦随折叠体隐藏，
+//        探针必红，真用户也可能收起后找不到"允许"。
+//   ★ 摘要**纯列宽估算**（ASCII 1 列 / 多字节 2 列），零测量：权限门可能在流式
+//     路径上高频重建，任何 `MeasureText` 都会进评估读数口径（同"修法 D"纪律）。
+//   ★ 三件套必须是**单一真相源**：建行、重建、点开收起三处都要生成同一段标题
+//     文本（本仓已因"两处各写一份"踩过两次：UnknownKindText 与 ReasoningTitle）。
+std::string AskSummary(const std::string& question, int maxCols = 48);
+bool AskNeedsFold(const std::string& question, int maxCols = 48);
+std::string AskTitle(const std::string& question, bool expanded, bool foldable);
 
 // 「一行小标签」的唯一建法：返回裸指针（树拥有），供 HUD 动态 SetText。
 //   ★ 2026-10-25（Stage 1e）上提：AppUiChrome（顶栏/底栏）与 AppUiMain（检查器）

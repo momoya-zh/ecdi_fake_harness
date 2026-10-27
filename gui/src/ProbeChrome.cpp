@@ -399,6 +399,23 @@ void HarnessApp::RunMenuProbe() {
     if (m_application) m_application->Exit();
 }
 
+// ★★ 2026-10-27（版心重构后二改）：判据换代。
+//   旧判据的核心不变量是 `scrollW − rowWMax`（"通栏行与视口之差"）恒为一个常数
+//   —— 那成立的前提是「行宽 = 视口宽 − 固定留白」。**版心改成 max-width 模型
+//   （`min(可视带宽, kMaxTranscriptW)`）之后，这条不变量按设计就不成立了**：
+//   窗口宽到封顶后，差值必然随窗口变大。所以 grow/shrink/roundtrip 三相变红
+//   **不是回归，是判据过期**（旧判据守的是一个已经不存在的性质）。
+//   新版判据换成正面的几何命题，逐条都能变红：
+//     ① 居中    内容列左右留白相等（`rowX` vs `scrollW − rowX − rowWMax`）。
+//               这是版心模型唯一的视觉承诺，且**与窗口宽无关** ⇒ 四相断言同一句话。
+//     ② 封顶    行宽 ≤ `kMaxTranscriptW − 2×pad`：窗口再宽也不许变宽。
+//     ③ 跟随    还没封顶时，窗口变宽/变窄 ⇒ 行宽必须跟着变（否则版心是死的）。
+//     ④ 确定    同一窗口尺寸只对应一个布局（roundtrip 逐位相等）。
+//   ★ ②③ 必须同时存在：只有 ② 可以"行宽恒为 1px"，只有 ③ 可以"无限变宽"；
+//     ① 排除整列贴左/贴右（上一版算式就是贴左：左 16 / 右 48，差 32 = 2×pad）。
+//   ★ ④ 这一相在重构后**真的抓到过缺陷**：旧实现的版心宽依赖"条是否可见"，
+//     而条可见性又依赖内容高 ⇒ 回环 ⇒ 同一尺寸有两个自洽解（626 / 622）。
+//     修法见 `TranscriptAvailWidth` 的注释（恒扣条厚断环）。
 void HarnessApp::RunResizeProbe() {
     if (!m_window || !m_sess || !m_scroll || !m_content) {
         m_probeState.resizeProbeDone = true;
@@ -406,6 +423,11 @@ void HarnessApp::RunResizeProbe() {
     }
     // 只在回放模式：live 的转录在持续增长，两次快照之间行数会变（同 `RunMenuProbe`）。
     if (!m_sess->replay) { m_probeState.resizeProbeDone = true; return; }
+
+    // 行宽上限（版心封顶 − 左右画布留白）。★ 这是**产品常数**，不是重算实现：
+    //   断言"行宽 ≤ 上限"是判据，不是把 `TranscriptLayoutWidth()` 抄一遍。
+    constexpr int kCapRowW =
+        harness::internal::kMaxTranscriptW - 2 * harness::internal::kCanvasPadX;
 
     auto snap = [&](const char* phase) {
         ResizeProbeRec rec;
@@ -420,18 +442,24 @@ void HarnessApp::RunResizeProbe() {
         rec.maxOffsetX = m_scroll->GetMaxOffsetX();
         rec.rows = m_sess->rows.size();
         // 行宽的极值：所有可见行必须一起变宽。空表时留 0（判据会因此变红，如实）。
+        // ★ 同时记下**最宽那一行的左边界**（`rowX`）——版心居中的判据要它。
         rec.rowWMin = 0;
         rec.rowWMax = 0;
+        rec.rowX = 0;
         bool first = true;
         for (const RowRec& r : m_sess->rows) {
             if (!r.panel) continue;
             const int w = r.panel->GetWidth();
             if (first) {
                 rec.rowWMin = rec.rowWMax = w;
+                rec.rowX = r.panel->GetX();
                 first = false;
             } else {
-                rec.rowWMin = std::min(rec.rowWMin, w);
-                rec.rowWMax = std::max(rec.rowWMax, w);
+                if (w < rec.rowWMin) rec.rowWMin = w;
+                if (w > rec.rowWMax) {
+                    rec.rowWMax = w;
+                    rec.rowX = r.panel->GetX();
+                }
             }
         }
         m_probeState.resizeProbeLog.push_back(std::move(rec));
@@ -449,6 +477,28 @@ void HarnessApp::RunResizeProbe() {
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
     };
+    // 版心几何的两条公共判据（居中 / 封顶），四相共用；返回空串 = 全绿。
+    auto geometry = [&](const ResizeProbeRec& r) {
+        std::string bad;
+        const int gapL = r.rowX;
+        const int gapR = r.scrollW - (r.rowX + r.rowWMax);
+        // 容差 1px：`(scrollW − 行宽)/2` 整除在奇数宽下两侧差 1，那不是缺陷。
+        if (std::abs(gapL - gapR) > 1) {
+            bad += "the content column is not centred (left gap " + std::to_string(gapL) +
+                   ", right gap " + std::to_string(gapR) +
+                   ") -- the column must be centred, not left-aligned";
+        }
+        if (r.rowWMax > kCapRowW) {
+            if (!bad.empty()) bad += "; ";
+            bad += "row width " + std::to_string(r.rowWMax) + " exceeds the reading cap " +
+                   std::to_string(kCapRowW) + " -- the max-width model is broken";
+        }
+        return bad;
+    };
+    auto appendBad = [](std::string& bad, const std::string& s) {
+        if (!bad.empty()) bad += "; ";
+        bad += s;
+    };
 
     const ECDI::Size baseSize = m_window->GetPlatformWindow().GetClientSize();
     // ★ `Size` 是 float（`Core/Size.h`）⇒ 全程按 int 用，先量化一次。
@@ -457,11 +507,20 @@ void HarnessApp::RunResizeProbe() {
                          static_cast<int>(baseSize.height)};
 
     // ① baseline：前置条件 —— 必须有行可测，否则"一起变宽"是空真。
+    //   同时断言版心的两条静态性质（居中 / 不超上限）——后面三相都要复述它们。
     expect("baseline", {{m_sess->rows.size() >= 1, "no transcript row to measure"},
                         {base.width > 0, "client size is zero"}});
+    {
+        ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
+        std::string bad = rec.firstDivergence;
+        const std::string geo = geometry(rec);
+        if (!geo.empty()) appendBad(bad, geo);
+        rec.matched = bad.empty();
+        rec.firstDivergence = bad;
+    }
     const ResizeProbeRec baseRec = m_probeState.resizeProbeLog.back();
 
-    // ② grow：客户区 +280/+140。每一行都必须变宽，且标题栏跟上。
+    // ② grow：客户区 +280/+140。
     ProbeResizeClient(base.width + 280, base.height + 140);
     expect("grow", {{m_window->GetRootWidget().GetWidth() == base.width + 280,
                      "root did not take the new width"},
@@ -470,34 +529,34 @@ void HarnessApp::RunResizeProbe() {
     {
         ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
-        auto add = [&](const std::string& s) {
-            if (!bad.empty()) bad += "; ";
-            bad += s;
-        };
-        // ★★ 判据是「行宽**跟随**视口宽」，不是「最小行宽必须变大」。
+        const std::string geo = geometry(rec);
+        if (!geo.empty()) appendBad(bad, geo);
+        // ★ 判据是「行宽**跟随**视口，直到封顶」，不是「最小行宽必须变大」。
         //   第一版写的是 `rowWMin` 必须变大，实测立刻红了（148 -> 148），
-        //   而**错的是判据**：短行（如 `› read_file`）是**按内容定宽**的，
+        //   而**错的是判据**：短行（如 `› read_file`）是按内容定宽的，
         //   视口变宽时它本来就不该变——那正是"气泡贴合文字"的正确外观。
-        //   ⇒ 改成量**通栏行**（rowWMax）与视口的关系：两者之差是内容宽度里
-        //     固定的那部分留白（画布留白 + 滚动条），它必须**不随窗口变化**。
-        //     实测该差值在 1120/1400/800 三种宽度下都是 72，是一个不变量。
-        const int baseSlack = baseRec.scrollW - baseRec.rowWMax;
-        const int nowSlack = rec.scrollW - rec.rowWMax;
-        if (nowSlack != baseSlack) {
-            add("the full-width row stopped following the viewport (slack " +
-                std::to_string(baseSlack) + " -> " + std::to_string(nowSlack) + ")");
-        }
-        if (rec.rowWMax <= baseRec.rowWMax) {
-            add("the full-width row did not get wider (" + std::to_string(baseRec.rowWMax) +
-                " -> " + std::to_string(rec.rowWMax) + ")");
+        //   ⇒ 只看通栏行（rowWMax）。而且它只在**未封顶**时必须变宽：
+        //     一旦钉在 `kCapRowW`，"再宽也不变宽"才是对的（这正是本次重构的目的）。
+        if (baseRec.rowWMax < kCapRowW) {
+            if (rec.rowWMax <= baseRec.rowWMax) {
+                appendBad(bad, "the full-width row did not get wider while still below the cap (" +
+                             std::to_string(baseRec.rowWMax) + " -> " +
+                             std::to_string(rec.rowWMax) + ")");
+            }
+        } else if (rec.rowWMax != baseRec.rowWMax) {
+            // 已经在封顶档 ⇒ 变宽就是破了 max-width。
+            appendBad(bad, "the full-width row changed width although it was already capped (" +
+                         std::to_string(baseRec.rowWMax) + " -> " +
+                         std::to_string(rec.rowWMax) + ")");
         }
         if (rec.captionW != rec.rootW) {
-            add("caption width " + std::to_string(rec.captionW) +
-                " != root width " + std::to_string(rec.rootW));
+            appendBad(bad, "caption width " + std::to_string(rec.captionW) +
+                         " != root width " + std::to_string(rec.rootW));
         }
         if (rec.scrollH <= baseRec.scrollH) {
-            add("transcript viewport did not grow taller (" + std::to_string(baseRec.scrollH) +
-                " -> " + std::to_string(rec.scrollH) + ")");
+            appendBad(bad, "transcript viewport did not grow taller (" +
+                         std::to_string(baseRec.scrollH) + " -> " +
+                         std::to_string(rec.scrollH) + ")");
         }
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
@@ -515,34 +574,33 @@ void HarnessApp::RunResizeProbe() {
     {
         ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
-        auto add = [&](const std::string& s) {
-            if (!bad.empty()) bad += "; ";
-            bad += s;
-        };
-        const int baseSlack = baseRec.scrollW - baseRec.rowWMax;
-        const int nowSlack = rec.scrollW - rec.rowWMax;
-        if (nowSlack != baseSlack) {
-            add("the full-width row did not shrink with the viewport (slack " +
-                std::to_string(baseSlack) + " -> " + std::to_string(nowSlack) + ")");
-        }
+        const std::string geo = geometry(rec);
+        if (!geo.empty()) appendBad(bad, geo);
+        // 880 宽这一档一定在封顶之下（可视带宽 ≈ 446）⇒ 必须真的变窄。
         if (rec.rowWMax >= baseRec.rowWMax) {
-            add("the full-width row did not get narrower (" + std::to_string(baseRec.rowWMax) +
-                " -> " + std::to_string(rec.rowWMax) + ")");
+            appendBad(bad, "the full-width row did not get narrower (" +
+                         std::to_string(baseRec.rowWMax) + " -> " +
+                         std::to_string(rec.rowWMax) + ")");
         }
         // ★ 这条是本次缺陷的机器可读直检：横滚条 = 行比视口宽。
+        //   ★ 版心二改后它还有第二重意义：extent 若按"版心"（含两侧 pad）而不是
+        //     "行右边界"喂给 ScrollView，占满档会多算 2×pad ⇒ 恒出横条。
         if (rec.maxOffsetX != 0) {
-            add("horizontal scrollbar appeared (maxOffsetX=" +
-                std::to_string(rec.maxOffsetX) + ") -- rows are wider than the viewport");
+            appendBad(bad, "horizontal scrollbar appeared (maxOffsetX=" +
+                         std::to_string(rec.maxOffsetX) +
+                         ") -- rows are wider than the viewport");
         }
         if (rec.captionW != rec.rootW) {
-            add("caption width " + std::to_string(rec.captionW) +
-                " != root width " + std::to_string(rec.rootW));
+            appendBad(bad, "caption width " + std::to_string(rec.captionW) +
+                         " != root width " + std::to_string(rec.rootW));
         }
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
     }
 
     // ④ roundtrip：回到原尺寸 ⇒ 逐位等于 baseline（不是"差不多"）。
+    //   ★ 这一相守的是**确定性**：同一窗口尺寸只许有一个布局。旧实现（版心宽
+    //     依赖条可见性）在这里实测 626 → 622，差一个条厚——回环的两个自洽解。
     ProbeResizeClient(base.width, base.height);
     expect("roundtrip", {{m_window->GetRootWidget().GetWidth() == baseRec.rootW,
                           "root width did not return"},
@@ -553,29 +611,26 @@ void HarnessApp::RunResizeProbe() {
     {
         ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
         std::string bad = rec.firstDivergence;
-        auto add = [&](const std::string& s) {
-            if (!bad.empty()) bad += "; ";
-            bad += s;
-        };
+        const std::string geo = geometry(rec);
+        if (!geo.empty()) appendBad(bad, geo);
         if (rec.rowWMax != baseRec.rowWMax || rec.rowWMin != baseRec.rowWMin) {
-            add("row widths did not return bit-for-bit (was " +
-                std::to_string(baseRec.rowWMin) + ".." + std::to_string(baseRec.rowWMax) +
-                ", now " + std::to_string(rec.rowWMin) + ".." +
-                std::to_string(rec.rowWMax) + ")");
+            appendBad(bad, "row widths did not return bit-for-bit (was " +
+                         std::to_string(baseRec.rowWMin) + ".." +
+                         std::to_string(baseRec.rowWMax) + ", now " +
+                         std::to_string(rec.rowWMin) + ".." + std::to_string(rec.rowWMax) + ")");
         }
-        if (rec.rowWMin != baseRec.rowWMin) {
-            // ★ 短行也必须逐位回来：它们按内容定宽，**不该**被视口宽度影响。
-            //   若这一条红了，说明重排把短行也拉成了通栏（气泡不再贴合文字）。
-            add("the content-sized row changed width across a roundtrip (" +
-                std::to_string(baseRec.rowWMin) + " -> " + std::to_string(rec.rowWMin) + ")");
+        if (rec.rowX != baseRec.rowX) {
+            // 左边界也必须逐位回来：版心宽回来了而偏移没回来 = 整列平移了。
+            appendBad(bad, "the column origin did not return bit-for-bit (" +
+                         std::to_string(baseRec.rowX) + " -> " + std::to_string(rec.rowX) + ")");
         }
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
     }
 
     // ⑤ negative（单变量纪律）：只把 root 改窄，**不**走 `OnWindowResized` 那条链。
-    //   判据 = 视口窄了，而行宽**没**跟着变（`scrollW - rowWMax` 不再等于 baseline
-    //   的那个不变量）。若这一条红了，说明行宽是 `Arrange` 顺手改的，而不是我们
+    //   判据 = 视口窄了，而行宽**没**跟着变 ⇒ **居中被打破**（右留白塌成负的）。
+    //   若这一条红了（仍然居中），说明行宽是 `Arrange` 顺手改的，而不是我们
     //   那条重排链做的 ⇒ 上面三条证明不了任何事。
     //   ★ 用 `root.SetSize` 而不是 `ProbeResizeClient`：后者会派发真事件。
     {
@@ -594,12 +649,15 @@ void HarnessApp::RunResizeProbe() {
         if (rec.scrollW >= baseRec.scrollW) {
             add("setup: the viewport did not narrow, so the negative control has no variable");
         }
-        const int baseSlack = baseRec.scrollW - baseRec.rowWMax;
-        const int nowSlack = rec.scrollW - rec.rowWMax;
-        if (nowSlack == baseSlack) {
+        // ★★ 版心二改：观测量从"slack 不变量"换成"居中是否被打破"。
+        //   视口窄了而行宽没跟着变 ⇒ 左边界还在原地 ⇒ 右留白塌成负的 ⇒ **不再居中**。
+        //   若仍然居中，说明行宽是 `Arrange` 顺手改的（不是那条重排链做的）。
+        const int gapL = rec.rowX;
+        const int gapR = rec.scrollW - (rec.rowX + rec.rowWMax);
+        if (std::abs(gapL - gapR) <= 1) {
             add("rows followed the viewport WITHOUT OnWindowResized "
-                "(slack stayed " + std::to_string(baseSlack) +
-                ") -- the earlier criteria prove nothing");
+                "(still centred at left " + std::to_string(gapL) + " / right " +
+                std::to_string(gapR) + ") -- the earlier criteria prove nothing");
         }
         rec.matched = bad.empty();
         rec.firstDivergence = bad;
@@ -659,6 +717,11 @@ void HarnessApp::RunResizeProbe() {
                 add("root height " + std::to_string(rec.rootH) + " != floor " +
                     std::to_string(kMinClientH));
             }
+            // ★ 版心几何在这一相也要成立：最小尺寸是"最窄的合法窗口"，
+            //   此时版心应当**占满**（只留两侧留白）且仍居中——这是最容易
+            //   露出"整列贴左"的一档（旧算式在这里实测左 16 / 右 48）。
+            const std::string geo = geometry(rec);
+            if (!geo.empty()) add(geo);
             rec.matched = bad.empty();
             rec.firstDivergence = bad;
         }
@@ -686,6 +749,9 @@ void HarnessApp::RunResizeProbe() {
             if (rec.rootH != 360) {
                 add("root height " + std::to_string(rec.rootH) + " != 360 with the floor cleared");
             }
+            // ★ 640 宽这一档是最窄的世界：版心仍必须居中（左右留白相等）。
+            const std::string geo = geometry(rec);
+            if (!geo.empty()) add(geo);
             rec.matched = bad.empty();
             rec.firstDivergence = bad;
         }
@@ -1136,11 +1202,11 @@ void HarnessApp::AppendResizeProbeSummary(std::string& json) {
                       "{\"phase\": \"%s\", \"rootW\": %d, \"rootH\": %d, "
                       "\"scrollW\": %d, \"scrollH\": %d, \"midW\": %d, "
                       "\"captionW\": %d, \"maxOffsetX\": %d, "
-                      "\"rowWMin\": %d, \"rowWMax\": %d, \"rows\": %zu, "
+                      "\"rowWMin\": %d, \"rowWMax\": %d, \"rowX\": %d, \"rows\": %zu, "
                       "\"matched\": %s, \"firstDivergence\": \"%s\"}",
                       r.phase.c_str(), r.rootW, r.rootH, r.scrollW, r.scrollH,
-                      r.midW, r.captionW, r.maxOffsetX, r.rowWMin, r.rowWMax, r.rows,
-                      r.matched ? "true" : "false",
+                      r.midW, r.captionW, r.maxOffsetX, r.rowWMin, r.rowWMax, r.rowX,
+                      r.rows, r.matched ? "true" : "false",
                       escR(r.firstDivergence).c_str());
         json += b;
     }

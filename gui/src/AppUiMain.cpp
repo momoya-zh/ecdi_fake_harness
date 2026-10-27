@@ -45,11 +45,13 @@
 
 // 跨 TU 共享符号（定义见 AppInternal.h / UiCommon.cpp）
 using harness::internal::AddLine;
+using harness::internal::ApplyCompactScrollBars;
 using harness::internal::ContentWidth;
 using harness::internal::ConversationSubtitle;
 using harness::internal::ConversationTitle;
 using harness::internal::kCanvasPadX;
 using harness::internal::kHeaderH;
+using harness::internal::kInspW;
 using harness::internal::kJumpBtnH;
 using harness::internal::kJumpBtnW;
 using harness::internal::kListRowHeight;
@@ -182,6 +184,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
         list->SetSize(kSidebarListW, kSidebarRowH);
         list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
         list->SetScrollBarVisible(true);
+        ApplyCompactScrollBars(*list);   // ★ 条宽全仓统一（kScrollBarThickness）
         side->AddChild(std::move(list));
     }
 
@@ -199,6 +202,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
         list->SetSize(kSidebarListW, kSidebarRowH);
         list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
         list->SetScrollBarVisible(true);
+        ApplyCompactScrollBars(*list);   // ★ 条宽全仓统一（kScrollBarThickness）
         side->AddChild(std::move(list));
     }
     {
@@ -247,6 +251,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
         list->SetSize(kSidebarListW, kSidebarRowH);
         list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
         list->SetScrollBarVisible(true);
+        ApplyCompactScrollBars(*list);   // ★ 条宽全仓统一（kScrollBarThickness）
         side->AddChild(std::move(list));
     }
     {
@@ -540,6 +545,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
         sv->SetSize(520, 400);   // 基准尺寸（F2/D9 契约）；stretch=1 吃剩余高
         sv->SetStretch(1);
         sv->SetScrollStep(28);
+        ApplyCompactScrollBars(*sv);   // ★ 条宽全仓统一（kScrollBarThickness）
         ECDI::Widget* content = &sv->GetContentView();
         content->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 4));
         panel->AddChild(std::move(sv));
@@ -840,6 +846,9 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
     m_scroll = scroll.get();
     m_scroll->SetStretch(1);
     m_scroll->SetScrollStep(40);
+    // ★ 必须在 `SetContentExtent`/首次布局**之前**设：条厚参与 viewport 计算
+    //   （`thickness + kBarInset`），运行期再改会与已算出的 maxOffset 脱钩。
+    ApplyCompactScrollBars(*m_scroll);
     m_content = &m_scroll->GetContentView();
     if (m_options.rowModeList) {
         // listlayout 模式：固定行高、不测量（规格 §5.3 的 B 组）
@@ -1024,7 +1033,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     auto insp = std::make_unique<ECDI::Panel>();
     m_hud.inspector = insp.get();
     insp->SetVisible(m_inspectorVisible);
-    insp->SetSize(230, 100);
+    insp->SetSize(kInspW, 100);
     insp->SetStyle(ECDI::PanelStyleOverride{
         .background = kInspBg,
         .borderWidth = 1.0f, .borderColor = kLine});

@@ -388,7 +388,7 @@ inline const ECDI::Color& kCaptionClosePressed  = g_theme.captionClosePressed;
 
 // ── 圆角（与主题无关，仍是编译期常量）────────────────────────
 inline constexpr float kRadiusCard  = 12.0f;   // 消息气泡
-inline constexpr float kRadiusTool  = 10.0f;   // 工具卡 / 权限门
+inline constexpr float kRadiusTool  = 10.0f;   // 工具卡 / 权限门（2026-10-27 去卡片化后仅留作回退）
 inline constexpr float kRadiusCard2 = 8.0f;    // 检查器小卡
 inline constexpr float kRadiusBtn   = 7.0f;    // 按钮
 inline constexpr float kRadiusInput = 9.0f;    // 输入框

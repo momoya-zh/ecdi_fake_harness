@@ -45,9 +45,12 @@ using harness::internal::kHeaderH;
 using harness::internal::kJumpBtnH;
 using harness::internal::kJumpBtnW;
 using harness::internal::kListRowHeight;
+using harness::internal::kMaxTranscriptW;
 using harness::internal::kPinThreshold;
 using harness::internal::kRowGap;
 using harness::internal::kRowPadX;
+using harness::internal::kScrollBarThickness;
+using harness::internal::kSidebarListInnerW;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
 using harness::internal::kTooltipDelayMs;
@@ -71,7 +74,7 @@ void HarnessApp::RebuildProjectList() {
 
     if (wsPath.empty()) {
         // 回放会话 / 无工作区：诚实显示。
-        auto lbl = uikit::Label("无工作区", kSidebarListW, rowH, kDarkMuted,
+        auto lbl = uikit::Label("无工作区", kSidebarListInnerW, rowH, kDarkMuted,
                                 harness::kFontMicro);
         lbl->SetPosition(0, y);
         content.AddChild(std::move(lbl));
@@ -97,21 +100,21 @@ void HarnessApp::RebuildProjectList() {
         std::sort(files.begin(), files.end());
 
         for (const auto& d : dirs) {
-            auto lbl = uikit::Label("▽ " + d, kSidebarListW, rowH, kDarkInk,
+            auto lbl = uikit::Label("▽ " + d, kSidebarListInnerW, rowH, kDarkInk,
                                     harness::kFontMicro, true);
             lbl->SetPosition(0, y);
             content.AddChild(std::move(lbl));
             y += rowH + gap;
         }
         for (const auto& f : files) {
-            auto lbl = uikit::Label("· " + f, kSidebarListW, rowH, kDarkMuted,
+            auto lbl = uikit::Label("· " + f, kSidebarListInnerW, rowH, kDarkMuted,
                                     harness::kFontMicro, true);
             lbl->SetPosition(0, y);
             content.AddChild(std::move(lbl));
             y += rowH + gap;
         }
         if (dirs.empty() && files.empty()) {
-            auto lbl = uikit::Label("（空目录）", kSidebarListW, rowH, kDarkMuted,
+            auto lbl = uikit::Label("（空目录）", kSidebarListInnerW, rowH, kDarkMuted,
                                     harness::kFontMicro);
             lbl->SetPosition(0, y);
             content.AddChild(std::move(lbl));
@@ -122,26 +125,86 @@ void HarnessApp::RebuildProjectList() {
     const int totalH = y > 0 ? y - gap : 0;
     const int visibleH = std::min(totalH, kSidebarMaxRows * (rowH + gap) - gap);
     m_hud.projectList->SetSize(kSidebarListW, std::max(visibleH, rowH));
-    m_hud.projectList->SetContentExtent(kSidebarListW, std::max(totalH, rowH));
+    // ★★ 2026-10-27：extent **宽**必须比控件宽小（= 视口宽），否则横向条恒出。
+    //   判定是 `contentW > ViewportWidth()`，而 viewport = 控件宽 − 条厚 − kBarInset；
+    //   此前这里传的是 `kSidebarListW`（控件宽）⇒ 172 > 166 恒真 ⇒「没超出也挂横向条」。
+    //   改传 `kSidebarListInnerW`（行宽同值）⇒ 内容宽 == 行宽 == 真实需要，不再撒谎。
+    m_hud.projectList->SetContentExtent(kSidebarListInnerW, std::max(totalH, rowH));
     m_hud.projectList->SetContentOffset(0, m_hud.projectList->GetScrollOffsetY());
 
 
     if (ECDI::Widget* parent = m_hud.projectList->GetParent()) parent->Arrange();
 }
 
+// ★★ 2026-10-27：版心**可视带宽**的唯一计算口（下面两个函数都读它）。
+//   ★ 为什么不用 `ContentWidth(m_scroll)`：它是 `scrollW - 40`，那个 40 是
+//     「滚动条 + 右侧内边距」的**单侧**扣除（UiCommon.cpp:31）⇒ 左 16 / 右 24，
+//     且不随主题联动（条厚一变，差就变，没有任何断言会红）。
+//     判据改成正面的形式：**内容列到左右可视边界的距离相等**。
+//   ★★ 恒扣条厚，**不看 `IsVisible()`**。这不是保守取值，是断一个回环：
+//        条可见性 ← 内容高（是否需要滚动）
+//        内容高   ← 换行结果
+//        换行结果 ← 版心宽
+//        版心宽   ← 条可见性        （上一版：条可见才扣）
+//     ⇒ 同一个窗口尺寸存在**两个自洽解**（条隐藏 / 条可见各一个）。
+//       `--resize-probe` 的 roundtrip 相实测抓到：同一尺寸下通栏行 626 → 622
+//       （正好一个条厚），"回到原尺寸"却回不到原布局——这正是"布局不确定"。
+//     恒扣之后版心宽与条状态无关，回环断开，同一尺寸只有一个解。
+//   ★ 代价（诚实写出来）：条**隐藏**时右侧多 4px（`kScrollBarThickness`）的
+//     不可见留白。上一版为了省这 4px 选择了回环，而回环的代价是布局不确定；
+//     4px 与旧版那 40px 的单侧扣除不是一个量级，取确定性。
+int HarnessApp::TranscriptAvailWidth() const {
+    if (!m_scroll) return 600;
+    return std::max(160, m_scroll->GetWidth() - kScrollBarThickness);
+}
+
+// ★★ 2026-10-27：转录列**版心宽**的唯一计算口（声明注释见 App.h）。
+//   ★ 模型 = 参考载体的 max-width：`min(可用宽, kMaxTranscriptW)`。
+//       · 窗口窄 ⇒ 占满（不再像上一版那样平白扣掉检视栏的 230px）；
+//       · 窗口宽 ⇒ 钉在最大阅读宽，余量由 `TranscriptCanvasX()` 左右平分。
+//   ★ 性能含义（必须写明，别让人以为零成本）：检视栏开/关会改变**可用宽**，
+//     因而在"可用宽 < 最大宽"的窗口里，版心宽会真的变化 ⇒ 行内换行缓存失效 ⇒
+//     一次全文档重测。只有窗口宽到「扣掉 230 之后仍 ≥ kMaxTranscriptW」时才免疫
+//     （≈ 1225px 以上的窗口）。这是"内容占满"必须付的账——上一版用"永远扣 230"
+//     换零重测，代价是小窗口里永远窄一条，观感上更糟。
+int HarnessApp::TranscriptLayoutWidth() const {
+    return std::min(TranscriptAvailWidth(), kMaxTranscriptW);
+}
+
+// ★★ 2026-10-27：版心左偏移的唯一计算口（声明注释见 App.h）。
+//   ★ 为什么"只放右侧"不行：检视栏收起后视口比版心宽 230，若把余量全丢给右边，
+//     正文就贴着侧栏、右侧空一大口——**观感是布局坏了，不是留白**（实测反馈）。
+//   ★★ 二改（2026-10-27，探针抓到）：上一版算的是
+//       `x = pad + (可用宽 − 版心宽)/2`，而**行宽 = 版心宽 − 2×pad**
+//     ⇒ 行在"版心"里右贴 2×pad、左贴 0 ⇒ 实测左 16 / 右 48（差 32 = 2×pad）。
+//     注释写着"两侧严格相等"，算出来的不是。这版直接按**行宽**居中：
+//       `x = (scrollW − 行宽)/2` ⇒ 左右恒等（含「占满」档：18/18）。
+//   ★ 为什么除以 scrollW 而不是可视带宽：条是 4px 的**覆盖层**（贴右缘、不参与
+//     行排版），把它算进分母会把整列左推 2px，反而破坏对称。行右边界与条之间
+//     始终留有 `pad − 条厚/2` 的空隙（占满档实测 14px），不会压到条上。
+int HarnessApp::TranscriptCanvasX() const {
+    if (!m_scroll) return kCanvasPadX;
+    const int rowW = TranscriptLayoutWidth() - 2 * kCanvasPadX;
+    return std::max(0, (m_scroll->GetWidth() - rowW) / 2);
+}
+
 void HarnessApp::Relayout() {
-    const int contentW = ContentWidth(m_scroll);
+    // 版心宽 = min(可视带宽, 最大阅读宽)。两种行模式共用同一个数，
+    // 免得「list 模式满宽、autosize 版本心宽」这种只在某个模式下露出来的不一致。
+    const int layoutW = TranscriptLayoutWidth();
+    // 行左边界：按**行宽**居中（`(scrollW − 行宽)/2`），两侧留白恒等。
+    const int canvasX = TranscriptCanvasX();
 
     if (m_options.rowModeList) {
         // listlayout：行高固定、不测量；Arrange 由 ListLayout 完成
         for (RowRec& r : m_sess->rows) {
             if (r.panel->GetHeight() != kListRowHeight) {
-                r.panel->SetSize(contentW, kListRowHeight);
+                r.panel->SetSize(layoutW, kListRowHeight);
             }
         }
         for (PendingPromptView& view : m_pendingPromptViews) {
             if (view.row.panel && view.row.panel->GetHeight() != kListRowHeight) {
-                view.row.panel->SetSize(contentW, kListRowHeight);
+                view.row.panel->SetSize(layoutW, kListRowHeight);
             }
         }
         m_content->Arrange();
@@ -150,13 +213,17 @@ void HarnessApp::Relayout() {
     }
 
     // autosize：每行按内容测量（文本测量成本正是本模式要暴露的指标 ④）
-    // ★ 行可用宽 = 内容宽 − 左右画布留白；行本身从 kCanvasPadX 起排。
-    const int innerW = std::max(120, contentW - 2 * kCanvasPadX);
+    // ★ 行可用宽 = **版心宽** − 左右画布留白；行本身从 `canvasX` 起排。
+    //   ★★ 2026-10-27：这里读的是 `TranscriptLayoutWidth()`（版心，= min(对称可用宽, 760)）
+    //     **不是**视口宽。视口宽会随检视栏开合变 ⇒ 行若跟着变，wrapW / maxTextW 就变
+    //     ⇒ 换行缓存（C29-10，指纹含宽度）全失效 ⇒ 全文档文本重测（「点详情卡一下、
+    //     会话越长越卡」的根因）。版心封顶后，宽窗口里 toggle 是零重测的。
+    const int innerW = std::max(120, layoutW - 2 * kCanvasPadX);
     int y = 0;
     for (RowRec& r : m_sess->rows) {
         int rowH = 0;
         // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
-        if (r.tool || r.reasoning) {
+        if (r.tool || r.reasoning || r.ask) {
             const int bodyW = innerW - 2 * kRowPadX;
             const int wrapW = std::max(40, bodyW - 20);
             int bodyH = 0;
@@ -187,7 +254,12 @@ void HarnessApp::Relayout() {
             }
             r.bodyH = bodyH;
             if (r.headerBtn) {
-                r.headerBtn->SetSize(innerW - 2 * kRowPadX, kHeaderH);
+                // ★★ 2026-10-27：权限门的 header 必须给右侧两钮**让位**（按钮不进折叠体，
+                //   见 BuildAskRow 的注释）。168 = 按钮区 160（`innerW-160` 起到右边缘）
+                //   + 8 间隙；不留这一段，摘要文字会被不透明按钮盖掉一截。
+                const int headW = r.ask ? std::max(80, innerW - kRowPadX - 168)
+                                        : innerW - 2 * kRowPadX;
+                r.headerBtn->SetSize(headW, kHeaderH);
                 r.headerBtn->SetPosition(kRowPadX, 2);
             }
             if (r.body) {
@@ -201,61 +273,68 @@ void HarnessApp::Relayout() {
                 r.body->SetPosition(kRowPadX, 2 + kHeaderH + 2);
             }
             rowH = 2 + kHeaderH + 2 + (r.expanded ? bodyH : 0);
+            // ★★ 2026-10-27：权限门的两钮与已答结论锚在 **header 行**（垂直居中）。
+            //   · 按钮**不随折叠体走**：折叠体一收，按钮必须还在（`--answer-probe`
+            //     用控件绝对中心点合成点击，按钮一隐藏它就必红；真用户也会找不到）。
+            //   · 结论沿用 P4 D 的右对齐位，纵坐标从固定的 10 换成 header 行中线——
+            //     `kHeaderH=32`、结论高 16 ⇒ 仍是 10，与改造前逐像素一致。
+            if (r.ask) {
+                const int btnY = 2 + (kHeaderH - 28) / 2;
+                if (r.allowBtn) {
+                    r.allowBtn->SetSize(70, 28);
+                    r.allowBtn->SetPosition(innerW - 160, btnY);
+                }
+                if (r.denyBtn) {
+                    r.denyBtn->SetSize(70, 28);
+                    r.denyBtn->SetPosition(innerW - 82, btnY);
+                }
+                if (r.conclusion && r.conclusion->IsVisible()) {
+                    r.conclusion->AutoSize();
+                    const int cw = r.conclusion->GetWidth();
+                    const int ch = r.conclusion->GetHeight();
+                    r.conclusion->SetPosition(innerW - cw - 14, 2 + (kHeaderH - ch) / 2);
+                }
+            }
         } else {
             const int maxBubbleW = std::max(120, innerW * 78 / 100);
             const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
             if (r.label) {
-                if (r.ask) {
-                    r.label->AutoSize();   // 权限问句保持单行
-                    if (r.allowBtn) {
-                        r.allowBtn->SetSize(70, 28);
-                        r.allowBtn->SetPosition(innerW - 160, 5);
+                // ★★ 2026-10-27：权限门已并入上面的折叠分支（`r.ask` 走 header + 折叠体，
+                //   两钮与结论锚在 header 行）⇒ 原来这里的 `if (r.ask) {...}` 整支删除。
+                //   本块现在只剩真正的聊天气泡。
+                // 聊天气泡（Phase 29 wrap）：单行放得下 → 气泡收缩；
+                // 超上限 → 按上限宽断行（高度 = 行数×行高，布局驱动）
+                if (!r.wrapped) {
+                    r.label->AutoSize();   // 单行 extent
+                }
+                // ★ REQ-01（2026-10-13）：含**显式 `\n`** 的文本也必须走 wrap 路径。
+                //   非 wrap ⇒ `TextWidget` 走 Phase 28 的「单条 DrawText、布局引擎零接触」
+                //   路径（`TextWidget.h:62-63`）⇒ **`\n` 不被消费**，整段被拼成一行，
+                //   再由宽度重新断行（断点与原意不符）。ECDI 侧本身正确（`TextWidget.cpp:235-248`
+                //   显式切硬段、段数 = `\n` 数 + 1），此前误判为 ECDI 缺陷，实为本行只看了宽度。
+                const bool hasNewline =
+                    r.label->GetText().find('\n') != std::string::npos;
+                const bool needWrap =
+                    r.wrapped || hasNewline || r.label->GetWidth() > maxTextW;
+                if (needWrap != r.wrapped) {
+                    r.wrapped = needWrap;
+                    r.label->SetWordWrap(needWrap);
+                }
+                if (r.wrapped) {
+                    if (r.lastWrapW != maxTextW) {
+                        r.label->SetSize(maxTextW, r.label->GetHeight());
+                        r.lastWrapW = maxTextW;
                     }
-                    if (r.denyBtn) {
-                        r.denyBtn->SetSize(70, 28);
-                        r.denyBtn->SetPosition(innerW - 82, 5);
-                    }
-                    // ★★ P4 D：已答结论行占两钮原来的位置（右对齐、垂直居中）。
-                    if (r.conclusion && r.conclusion->IsVisible()) {
-                        r.conclusion->AutoSize();
-                        const int cw = r.conclusion->GetWidth();
-                        r.conclusion->SetPosition(innerW - cw - 14, 10);
-                    }
-                } else {
-                    // 聊天气泡（Phase 29 wrap）：单行放得下 → 气泡收缩；
-                    // 超上限 → 按上限宽断行（高度 = 行数×行高，布局驱动）
-                    if (!r.wrapped) {
-                        r.label->AutoSize();   // 单行 extent
-                    }
-                    // ★ REQ-01（2026-10-13）：含**显式 `\n`** 的文本也必须走 wrap 路径。
-                    //   非 wrap ⇒ `TextWidget` 走 Phase 28 的「单条 DrawText、布局引擎零接触」
-                    //   路径（`TextWidget.h:62-63`）⇒ **`\n` 不被消费**，整段被拼成一行，
-                    //   再由宽度重新断行（断点与原意不符）。ECDI 侧本身正确（`TextWidget.cpp:235-248`
-                    //   显式切硬段、段数 = `\n` 数 + 1），此前误判为 ECDI 缺陷，实为本行只看了宽度。
-                    const bool hasNewline =
-                        r.label->GetText().find('\n') != std::string::npos;
-                    const bool needWrap =
-                        r.wrapped || hasNewline || r.label->GetWidth() > maxTextW;
-                    if (needWrap != r.wrapped) {
-                        r.wrapped = needWrap;
-                        r.label->SetWordWrap(needWrap);
-                    }
-                    if (r.wrapped) {
-                        if (r.lastWrapW != maxTextW) {
-                            r.label->SetSize(maxTextW, r.label->GetHeight());
-                            r.lastWrapW = maxTextW;
-                        }
-                        r.label->AutoSize();   // 稳定期命中 wrap 布局缓存，不逐帧重建
-                    }
+                    r.label->AutoSize();   // 稳定期命中 wrap 布局缓存，不逐帧重建
                 }
                 r.label->SetPosition(kRowPadX, 8);
             }
-            rowH = std::max(r.label ? r.label->GetHeight() + 16 : 0, r.ask ? 38 : 0);
+            rowH = r.label ? r.label->GetHeight() + 16 : 0;
         }
         if (r.tool || r.reasoning || r.ask) {
             // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
             r.panel->SetSize(innerW, rowH);
-            r.panel->SetPosition(kCanvasPadX, y);
+            r.panel->SetPosition(canvasX, y);
         } else {
             // 聊天气泡（hi-fi .msg max-width:78%）：user 右对齐、assistant 左对齐
             const int maxBubbleW = std::max(120, innerW * 78 / 100);
@@ -267,8 +346,8 @@ void HarnessApp::Relayout() {
                                          r.label->GetWidth() + 2 * kRowPadX + 2);
             }
             r.panel->SetSize(bubbleW, rowH);
-            r.panel->SetPosition(r.alignRight ? kCanvasPadX + innerW - bubbleW
-                                              : kCanvasPadX,
+            r.panel->SetPosition(r.alignRight ? canvasX + innerW - bubbleW
+                                              : canvasX,
                                  y);
         }
         y += rowH + kRowGap;
@@ -300,10 +379,18 @@ void HarnessApp::Relayout() {
             ? (r.wrapped ? maxBubbleW : std::min(maxBubbleW, r.label->GetWidth() + 2 * kRowPadX + 2))
             : maxBubbleW;
         r.panel->SetSize(bubbleW, rowH);
-        r.panel->SetPosition(kCanvasPadX + innerW - bubbleW, y);
+        r.panel->SetPosition(canvasX + innerW - bubbleW, y);
         y += rowH + kRowGap;
     }
-    m_scroll->SetContentExtent(contentW, std::max(0, y - kRowGap));
+    // 横向 extent 至少覆盖到**内容列右边界**（= canvasX + 行宽）。★ 它已不再与
+    // `ContentWidth()` 同源：后者是 `scrollW − 40` 的单侧扣除。取两者较大：
+    // 既保留旧行为的下限，也不裁内容；两者都远小于视口宽，不会引出横向滚动条。
+    // ★★ 2026-10-27 二改：右边界用 **canvasX + innerW**，不是 `canvasX + layoutW`。
+    //   后者是"版心"（含两侧 pad），比行右边界多出 2×pad ⇒ 占满档实测 extent 704
+    //   > 视口 684 ⇒ **恒出一条横向滚动条**（`--resize-probe` 的 maxOffsetX 判据会红）。
+    //   extent 的职责只是"别裁内容"，多算的那 32px 既不是内容也不该被滚。
+    m_scroll->SetContentExtent(std::max(ContentWidth(m_scroll), canvasX + innerW),
+                               std::max(0, y - kRowGap));
     // ★★ P4 Phase A：内容范围变了 ⇒ maxOffset/滚动条可见性都可能变——
     //   「跳到最新」的几何与显隐跟着刷新一次（Relayout 覆盖 resize/侧栏/菜单/
     //   设置切换等全部几何路径）。
@@ -338,13 +425,19 @@ void HarnessApp::RefreshJumpButton() {
     const int offset = m_scroll->GetScrollOffsetY();
     m_jumpLastOffsetY = offset;   // 脏检查基准同步更新
     // 几何：视口右下角、贴滚动条一侧（原型 F 条）。条厚不猜——垂直条可见时按
-    // 其实际宽度让位（kSidebarListW 注释里的 BarFootprint=14 是侧栏的观测值，
-    // 这里直接读控件，条隐藏/显示切换时几何自然跟随）。
+    // 其实际宽度让位，条隐藏/显示切换时几何自然跟随。
+    // ★ 2026-10-27：条厚 12→4（`kScrollBarThickness`），旧注释里的
+    //   「BarFootprint=14」是 12+2 的观测值，已作废；现在真实占位 = 4+2 = 6。
+    //   这里仍按 `GetWidth() + 6` 让位：`GetWidth()` 是条控件宽（=thickness），
+    //   再加 6 是**视觉间隙**，不属于占位账。
     int barW = 0;
     if (ECDI::ScrollBar* bar = m_scroll->GetVerticalScrollBar()) {
         if (bar->IsVisible()) barW = bar->GetWidth() + 6;
     }
     m_hud.jumpLatest->SetSize(kJumpBtnW, kJumpBtnH);
+    // ★★ 2026-10-27（订正）：横向回到**贴视口右下角**，不再跟版心。
+    //   它是浮层按钮（FAB），贴视口角才是正确语义；跟版心走会让它在检视栏收起时
+    //   悬在内容右侧 230px 处——既不贴边也不贴内容，两头不靠。
     m_hud.jumpLatest->SetPosition(m_scroll->GetWidth() - barW - kJumpBtnW - 16,
                                   m_scroll->GetHeight() - kJumpBtnH - 10);
     const bool pinned = offset >= maxY - kPinThreshold;
@@ -526,19 +619,55 @@ void HarnessApp::ApplyDevModeVisibility() {
         setActBtn(m_hud.inspectorToggle, "详情", 44);
         setActBtn(m_hud.moreToggle, "更多", 44);
     }
-    if (m_hud.convSub) {
-        const int tw = m_devMode ? 300 : 480;
-        if (m_hud.convSub->GetWidth() != tw) {
-            m_hud.convSub->SetSize(tw, 14);
-            if (ECDI::Widget* titles = m_hud.convSub->GetParent()) {
-                titles->SetSize(tw, 36);
-                headDirty = true;
-            }
-        }
-    }
     if (headDirty && m_hud.exportToggle) {
         if (ECDI::Widget* head = m_hud.exportToggle->GetParent()) head->Arrange();
     }
+    // ★★ 2026-10-27：titles 宽度不再是常数 300/480 —— 固定值会把三钮挤出中栏
+    //   （实测 1000 宽 + 详情开只剩「导出」半截）。收口到唯一计算口。
+    //   ★ 必须排在 `setActBtn` **之后**：预留量按 btnW 现值算（用户模式 44 / 开发 28），
+    //     先换钮宽再算，才不会差一个钮宽。
+    SyncHeadTitlesWidth();
+}
+
+// ★★ 2026-10-27：会话头 titles 宽的**唯一**计算口（病因与取舍见 App.h 声明注释）。
+//   为什么是「吃剩余」而不是「按文本量」：本函数会被 resize / 侧栏显隐 / 检视栏显隐 /
+//   模式切换四条路径调用，任何 `MeasureText` 都会进 `m_evalMeasureCalls`（评估仪器，
+//   与 AppSession.cpp:55-63 「修法 D」同一条纪律）；而三钮占的费用是纯算术 ⇒ 稳态
+//   零测量、零 SetSize（同值守卫），只在宽度真变时动几何。
+void HarnessApp::SyncHeadTitlesWidth() {
+    if (!m_hud.exportToggle) return;
+    ECDI::Widget* head = m_hud.exportToggle->GetParent();
+    if (!head) return;
+
+    // 预留 = 左右 padding + 三钮 + **四道**间距 + grow 的最小宽。
+    //   间距数：`head` 有 5 个可见子（titles / grow / 三钮）⇒ 4 道（AppUiMain.cpp:295 起）。
+    //   grow 是 `SetStretch(1)` 的填充块，但 HorizontalLayout 算「会不会溢出」时
+    //   仍用它的 10px 占位 ⇒ 必须留出来，否则到头来还是差 10px 把末钮挤出去。
+    const int btnW = m_devMode ? 28 : 44;
+    const int cap = m_devMode ? 300 : 480;
+    const int reserved = 2 * harness::kPadFrame + btnW * 3 + 8 * 4 + 10;
+
+    int tw = head->GetWidth() - reserved;
+    if (tw > cap) tw = cap;
+    if (tw < 120) tw = 120;   // 兜底：宁可标题被裁，也不让三钮消失
+
+    bool dirty = false;
+    if (m_hud.convTitle && m_hud.convTitle->GetWidth() != tw) {
+        m_hud.convTitle->SetSize(tw, 18);
+        dirty = true;
+    }
+    if (m_hud.convSub && m_hud.convSub->GetWidth() != tw) {
+        m_hud.convSub->SetSize(tw, 14);
+        dirty = true;
+    }
+    ECDI::Widget* titles = m_hud.convSub ? m_hud.convSub->GetParent() : nullptr;
+    if (titles && titles->GetWidth() != tw) {
+        titles->SetSize(tw, 36);
+        dirty = true;
+    }
+    if (!dirty) return;
+    if (titles) titles->Arrange();   // 子宽变了 → 竖排先归位
+    head->Arrange();                 // 再让 HorizontalLayout 按新 titles 宽排三钮
 }
 
 void HarnessApp::SetDevMode(bool dev) {
@@ -546,8 +675,10 @@ void HarnessApp::SetDevMode(bool dev) {
     m_devMode = dev;
     // 切换到用户模式时默认收起检视栏；切换到开发者模式时默认展开检视栏。
     m_inspectorVisible = dev;
+    // ★★ 2026-10-27：显隐改走唯一落地口（模型态与控件永远同进同退）。
+    //   排版宽不放这里管——那是 `TranscriptLayoutWidth()` 的账，Relayout 会跟着算。
+    ApplyInspectorVisibility();
     if (m_hud.inspector) {
-        m_hud.inspector->SetVisible(m_inspectorVisible);
         if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
     }
     ApplyDevModeVisibility();

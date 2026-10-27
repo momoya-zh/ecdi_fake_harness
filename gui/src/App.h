@@ -131,6 +131,33 @@ public:
     // ★★ P4 Phase B：检视栏显隐的唯一入口（中栏头 `≡` 按钮与 Ctrl+I 共用；
     //   抽出前逻辑内联在按钮回调里，全局键没有可复用的路径）。
     void ToggleInspector();
+    // ★★ 2026-10-27：检视栏可见性的**唯一落地口**（`ToggleInspector` /
+    //   `SetDevMode` 两条路径共用）。
+    void ApplyInspectorVisibility();
+    // ★★ 2026-10-27：版心**可视带宽**的唯一计算口（下面两个几何函数都读它）。
+    //   = 视口宽 − 滚动条厚。★ **恒扣条厚**，不看条是否可见——条可见性 ← 内容高
+    //   ← 换行结果 ← 版心宽 ← 条可见性 是一个回环，取"可见才扣"就有两个自洽解
+    //   （`--resize-probe` roundtrip 实测：同一尺寸下通栏行 626 → 622）。
+    //   ★ 为什么不用 `ContentWidth()`：它扣的 40 全在**右侧**（条 + 右边距），
+    //     左留白 16、右留白 24 ⇒ 最小尺寸下右侧明显比左侧宽（实测反馈）。
+    [[nodiscard]] int TranscriptAvailWidth() const;
+    // ★★ 2026-10-27：转录列**版心宽**的唯一计算口（`Relayout` / 「跳到最新」/ 空态卡共用）。
+    //   模型 = 参考载体的 max-width：`min(可用宽, kMaxTranscriptW)`。
+    //     · 窗口窄 ⇒ 内容列**占满**（只留画布边）；
+    //     · 窗口宽 ⇒ 钉在最大阅读宽，余量由 `TranscriptCanvasX()` **左右平分**。
+    //   ★ 别再退回"扣掉检视栏宽"那版：那会让小窗口里也永远窄一条（实测：观感像布局坏了）。
+    //   ★ 代价必须知道：检视栏开合会改变可用宽 ⇒ 在"可用宽 < 最大宽"的窗口里版心会真的
+    //     变化 ⇒ 换行缓存失效 ⇒ 一次全文档重测。窗口宽到 ≈1225px 以上才免疫。
+    [[nodiscard]] int TranscriptLayoutWidth() const;
+    // ★★ 2026-10-27：版心在视口内的**左偏移**（唯一计算口）。
+    //   为什么要有它：检视栏收起后视口比版心宽 230px，这段余量**必须左右平分**——
+    //   只放右侧就是"内容贴左边、右边空一大口"，视觉上明显失衡（实测反馈）。
+    //   公式 `(scrollW − 行宽)/2`，行宽 = 版心宽 − 2×kCanvasPadX。
+    //   ★★ 二改：上一版是 `(可用宽 − 版心宽)/2 + kCanvasPadX`，而**行宽 = 版心宽 −
+    //     2×pad** ⇒ 行在版心里右贴 2×pad、左贴 0 ⇒ 实测左 16 / 右 48（差 32）。
+    //     注释写"两侧严格相等"、算式却不是——这类"算式与注释不符"只能靠探针抓。
+    //   现在按**行宽**居中，左右恒等（占满档 18/18，封顶档两侧相等）。
+    [[nodiscard]] int TranscriptCanvasX() const;
     // ★★ P4 Phase E：tooltip 单例浮层。ShowTooltipFor 记锚点 + 起 400ms 定时器
     //   （kTooltipTimer 到点才显示——TipButton::OnMouseEnter 调）；leave/点击
     //   即 HideTooltip。浮层挂 m_scroll（最后子 = 最上层）。
@@ -743,7 +770,10 @@ private:
     //     否则重建一次就等于把用户做过的决策重放一次。
     void MaterializeOne(size_t idx, const TimelineEntry& entry);
     // 可折叠行的点击回调绑定（构建期与重建期共用；含「写回条目」这一步）。
-    void BindCollapsible(const Block& block, RowRec& stored);
+    //   ★★ 2026-10-27：形参从 `(const Block&, RowRec&)` 收成 `(RowRec&)`——
+    //     `Block` 那一版只被 `(void)` 掉，而权限门行没有 Block（来自
+    //     `TimelineEntry::Kind::Ask`），带着它就没法让 ask 行走同一条绑定路径。
+    void BindCollapsible(RowRec& stored);
     // 展开/收起一行的**唯一入口**（点击与探针共用）。
     //   ★ 为什么抽出来：0c 的重建探针要造"已展开"的前置状态，而它不能合成点击
     //     （要造状态的行可能在视口外、HitTest 命不中）；若探针自己再写一遍
@@ -1001,6 +1031,18 @@ private:
     void RequestRepaint();
     void CacheEvalMetrics();
     void RefreshHud();
+    // ★★ 2026-10-27：中栏会话头「标题区」宽度的**唯一**计算口。
+    //   病因（实测复现：窗口 1000 宽 + 详情开）：`head` 是 HorizontalLayout，
+    //   `titles` 固定 480、三钮各 44 + 间距 ⇒ 总需 ≈ 700，而中栏只剩 570
+    //   ⇒ 后两个钮被排到父边界之外（布局**不压缩**、Panel **不裁子**），
+    //   屏幕上就是「点详情后那三个键没了」。
+    //   ⇒ titles 改为**吃剩余宽**：head 宽 − padding − 三钮 − 间距 − grow 最小宽；
+    //   上限仍是原来的 480（窗口 ≥1120 时逐位零变化），下限 120。
+    //   ★ 不额外做文本省略：`ECDI::Label` 单行超宽是 DrawText **尾部裁剪**
+    //     （AppSession.cpp:52 同款事实），只要 Label 宽一起收到预算宽，
+    //     文字就不会越过 titles 边界——本次的观感问题正是「Label 宽仍是自然宽」。
+    //   ★ 自己 Arrange（变化时才）：调用方不必记得补，同值守卫保证稳态零成本。
+    void SyncHeadTitlesWidth();
     void WriteSummary();
 
     // ★ 2026-10-25（Stage 4）：摘要各段搬进对应的 Probe*.cpp。

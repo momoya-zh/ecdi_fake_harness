@@ -6,7 +6,11 @@
 //   它和流式解包（AppStream）是两件事：那边只管"收到什么"，这边只管
 //   "长什么样"。混在一起时，改一个气泡圆角要滚过 300 行协议分支。
 // ★ 纪律：本文件**只碰中栏转录树**（`m_content` / `m_rows` / `m_pendingPromptViews`）；
-//   会话列表归 AppSession.cpp。行宽一律走 `ContentWidth(m_scroll)`（不许自己算）。
+//   会话列表归 AppSession.cpp。
+//   ★★ 2026-10-27：**行宽不在这里算**。唯一口是 `TranscriptLayoutWidth()`（版心宽）
+//     与 `TranscriptCanvasX()`（居中左边界），摆位在 `Relayout`（AppHud.cpp）。
+//     本文件只在 list 模式下给新行一个**初始**宽度（`ContentWidth`），随后由
+//     `Relayout` 统一改成版心宽——别把它当第二份真相源。
 // ★ 2026-10-25：从 App.cpp 切出（Stage 1d）。函数体逐字节相同。
 // ============================================================
 
@@ -40,6 +44,8 @@
 #include <vector>
 
 // 跨 TU 共享符号（定义见 AppInternal.h / UiCommon.cpp）
+using harness::internal::AskNeedsFold;
+using harness::internal::AskTitle;
 using harness::internal::ContentWidth;
 using harness::internal::Pick;
 using harness::internal::ReasoningTitle;
@@ -152,11 +158,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     }
 
     if (block.kind == "assistant" || block.kind == "system" || block.kind == "error") {
+        // ★★ 2026-10-27：智能体正文（及 system/error）改为透明无边框纯文本直出样式
+        //   （底色对齐画布 kContentBg、0 描边、0 圆角）。同一刀随后把工具行与权限门
+        //   也拍平 ⇒ 整份转录里**只有用户消息**保留气泡（那是"我说的"，需要区分）。
+        const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
         panel->SetStyle(ECDI::PanelStyleOverride{
-            .background = Pick(m_options.probeContrast, kCardBg, kProbeBg),
-            .cornerRadius = kRadiusCard,
-            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
-            .borderColor = kCardBorder});
+            .background = plainBg,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = plainBg});
         // ★★ P4 G 尖峰（--selectable-rows）：assistant 正文行用只读 TextBox——
         //   「编辑 no-op 但方向键/选区/Ctrl+A/C 照常」（TextBox.h:50 契约）⇒ 转录
         //   可选中/复制不需要框架新能力。视觉与 Label 版同形：透明底/无边框/
@@ -169,7 +179,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
             box->SetFont(harness::SansFont(harness::kFontBody));
             box->SetStyle(ECDI::TextBoxStyleOverride{
-                .background = Pick(m_options.probeContrast, kCardBg, kProbeBg),
+                .background = plainBg,
                 .caretWidth = 0.0f,
                 .padding = 0.0f,
                 .cornerRadius = 0.0f,
@@ -194,15 +204,17 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     //     换个方式复活**（思维链又一次伪装成"正在等的工具结果"）。加 kind 必须同时加分支。
     //   ★ 复用 `CollapsiblePanel`（与工具卡同机制，不新造控件）：
     //     折叠动画、内容可见性、展开基准全由框架既有能力承担。
+    //   ★★ 2026-10-27：思维链改为透明无边框、无悬停变暗、无点击按下变色的纯文本样式。
     if (block.kind == "reasoning") {
         rec.reasoning = true;
         rec.ended = block.ended;
         rec.blockId = block.id;
+        const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
         panel->SetStyle(ECDI::PanelStyleOverride{
-            .background = Pick(m_options.probeContrast, kReasoningBg, kProbeBg),
-            .cornerRadius = kRadiusTool,
-            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
-            .borderColor = kReasoningBorder});
+            .background = plainBg,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = plainBg});
 
         // 标题 = 单一真相源（箭头两态）
         // ★ 0c：箭头取自 `rec.expanded`（重建时先由条目回填）——否则重建出来的行
@@ -215,18 +227,23 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             header->SetFont(f);
         }
         header->SetStyle(ECDI::ButtonStyleOverride{
-            .background = Pick(m_options.probeContrast, kReasoningHeaderBg, kProbeBg),
-            .border = kReasoningBorder,
-            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
-            .cornerRadius = kRadiusBtn,
-            .pressedBackground = kToolHeaderPressed,
-            .hoverBackground = kReasoningHover,
+            .background = plainBg,
+            .border = plainBg,
+            .borderWidth = 0.0f,
+            .cornerRadius = 0.0f,
+            .pressedBackground = plainBg,
+            .hoverBackground = plainBg,
             .textAlignment = ECDI::TextAlignment::Left});
         panel->AddChild(std::move(header));
 
         auto body = std::make_unique<ECDI::CollapsiblePanel>();
         rec.body = body.get();
         rec.body->SetExpandDirection(ECDI::ExpandDirection::Down);
+        rec.body->SetStyle(ECDI::PanelStyleOverride{
+            .background = plainBg,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = plainBg});
         auto label = std::make_unique<ECDI::Label>(block.text);
         rec.label = label.get();
         // 展开后是**用户主动要读**的内容 ⇒ 用常规 ink（不再弱化）
@@ -270,14 +287,24 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         return panel;
     }
 
-    // tool_call / tool_result：可折叠卡片（默认折叠；标题按钮 + CollapsiblePanel 展开体）
+    // tool_call / tool_result：可折叠行（默认折叠；标题按钮 + CollapsiblePanel 展开体）
+    // ★★ 2026-10-27：**去卡片化**。此前这里是"底色 + 圆角 + 1px 描边"的卡片，
+    //   而同一轮改造已经把 assistant/reasoning 改成透明无边框纯文本 ⇒ 转录里
+    //   只剩下工具行和权限门还浮着一层卡，读起来像两套设计语言。
+    //   现在整份转录是**一篇文档**：只有用户消息保留气泡（那是"我说的"，
+    //   需要与智能体的输出区分），工具调用/思维链/正文一律平铺。
+    //   ★ 可识别性没丢：`›` 前缀 + 折叠体缩进 + 等宽正文仍是工具行的特征，
+    //     只是不再靠"描边 + 圆角 + 底色"这三件卡片外衣。
+    //   ★ 为什么连 hover/pressed 也去掉：见 reasoning 分支——整行通栏变暗比
+    //     "没有 hover"更刺眼；点击的反馈是**展开体真的出现**，那比配色更明确。
     rec.tool = true;
     rec.blockId = block.id;
+    const ECDI::Color toolPlainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
     panel->SetStyle(ECDI::PanelStyleOverride{
-        .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
-        .cornerRadius = kRadiusTool,
-        .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
-        .borderColor = kCardBorder});
+        .background = toolPlainBg,
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f,
+        .borderColor = toolPlainBg});
 
     std::string bodyText;
     if (block.kind == "tool_call") {
@@ -300,12 +327,12 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         header->SetFont(f);
     }
     header->SetStyle(ECDI::ButtonStyleOverride{
-        .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
-        .border = kCardBorder,
-        .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
-        .cornerRadius = kRadiusBtn,
-        .pressedBackground = kToolHeaderPressed,
-        .hoverBackground = kToolHeaderHover,
+        .background = toolPlainBg,
+        .border = toolPlainBg,
+        .borderWidth = 0.0f,
+        .cornerRadius = 0.0f,
+        .pressedBackground = toolPlainBg,
+        .hoverBackground = toolPlainBg,
         .textAlignment = ECDI::TextAlignment::Left});   // Phase 30 △3：卡头贴左（hi-fi .tool>.h）
     // ── P4 Phase I：标题旁「⤢」预览按钮（§11 入口经评审修订——标题按钮的点击
     //   已被折叠占用，BindCollapsible → ToggleRow）。仅当标题文本匹配路径形态时
@@ -314,21 +341,24 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     if (!previewTarget.empty()) {
         auto headRow = std::make_unique<ECDI::Panel>();
         headRow->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, true, 0));
-        // 底色与卡头一致（Panel 有自己的 style，不透明——贴齐上下卡片观感）
+        // 底色与标题一致（Panel 自带不透明底 ⇒ 不显式覆盖就会露主题默认色）
         headRow->SetStyle(ECDI::PanelStyleOverride{
-            .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
-            .cornerRadius = kRadiusBtn,
+            .background = toolPlainBg,
+            .cornerRadius = 0.0f,
             .borderWidth = 0.0f,
-            .borderColor = kCardBorder});
+            .borderColor = toolPlainBg});
         header->SetStretch(1);   // 标题弹性吃剩余宽，⤢ 靠右
         headRow->AddChild(std::move(header));
         auto pv = std::make_unique<ECDI::Button>("⤢");
         pv->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
         pv->SetFont(harness::SansFont(12.0f));
+        // ★★ 去卡片化后这里**刻意保留 hover**（与文本标题不同）：`⤢` 是个只有字形
+        //   的图标钮，没有文字语义、没有箭头可读，hover 是它唯一的"可点"信号。
+        //   文本标题不需要 hover —— 它左边有 `›`/`︿` 箭头，点下去展开体真的出现。
         pv->SetStyle(ECDI::ButtonStyleOverride{
-            .background = Pick(m_options.probeContrast, kContentBg, kProbeBg),
-            .border = kCardBorder,
-            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .background = toolPlainBg,
+            .border = toolPlainBg,
+            .borderWidth = 0.0f,
             .cornerRadius = kRadiusBtn,
             .pressedBackground = kToolHeaderPressed,
             .hoverBackground = kToolHeaderHover});
@@ -341,6 +371,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     auto body = std::make_unique<ECDI::CollapsiblePanel>();
     rec.body = body.get();
     rec.body->SetExpandDirection(ECDI::ExpandDirection::Down);
+    // ★ 折叠体自带 Panel 底（默认主题色，不是画布色）⇒ 显式抹平，否则展开后
+    //   会在平铺的转录里露出一块"主题默认色"的矩形（去卡片化后尤其明显）。
+    rec.body->SetStyle(ECDI::PanelStyleOverride{
+        .background = toolPlainBg,
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f,
+        .borderColor = toolPlainBg});
     auto label = std::make_unique<ECDI::Label>(bodyText);
     rec.label = label.get();
     label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
@@ -359,14 +396,18 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
 // 可折叠行的点击绑定（**构建期与重建期共用**）。
 //   ★ 0c 的关键变化：展开态**先写回模型**（`timeline[idx].expanded`），再动控件。
 //     在此之前展开态只活在 `RowRec` 上 ⇒ 任何重建都会把用户的展开操作静默回退。
-void HarnessApp::BindCollapsible(const Block& block, RowRec& stored) {
+//   ★★ 2026-10-27：去掉 `const Block& block` 形参——它自始至终只被 `(void)block` 掉
+//     （标题重算发生在 `ToggleRow` 里回查块），而权限门行**没有 Block**（它来自
+//     `TimelineEntry::Kind::Ask`）。带着一个"假装需要"的形参，就没法让 ask 行走同一条
+//     绑定路径，结果必然是"另写一份 lambda"= 第二份切换实现（不写回模型、不设
+//     `m_relayoutPulse` ⇒ 展开了行高不跟、重建即回退）。
+void HarnessApp::BindCollapsible(RowRec& stored) {
     if (!stored.headerBtn) return;
     const bool reasoning = stored.reasoning;
     stored.headerBtn->SetOnClick([this, &stored, reasoning] {
         if (m_options.rowModeList) return;   // 固定行高模式：展开体被后续行覆盖，v1 禁用
         ToggleRow(stored, reasoning);
     });
-    (void)block;
 }
 
 // 展开/收起一行（**点击路径与探针共用的唯一入口**）。
@@ -383,7 +424,16 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
     // 箭头随展开态翻转（﹀ ⇄ ︿）；文案与 token 副标由**单一真相源**决定，
     // 故回查块（`block_end` 可能已到达 ⇒ 文案应为「已完成」+ tokens）
     if (stored.headerBtn) {
-        if (const Block* b = m_sess->transcript.FindBlock(stored.blockId)) {
+        if (stored.ask) {
+            // ★★ 2026-10-27 权限门：标题 = 箭头 + 「权限 · 摘要」，由**模型里的问句**
+            //   重算（理由同工具卡那一支：不能置空、也不能凭 `RowRec` 拼一份——两份必漂移）。
+            //   ★ 摘要走 `AskSummary` 的列宽截断，与建行时同一个函数 ⇒ 展开/收起
+            //     只是箭头翻转，文本一位不变。
+            if (stored.timelineIdx < m_sess->timeline.size()) {
+                const TimelineEntry& e = m_sess->timeline[stored.timelineIdx];
+                stored.headerBtn->SetText(AskTitle(e.text, stored.expanded, AskNeedsFold(e.text)));
+            }
+        } else if (const Block* b = m_sess->transcript.FindBlock(stored.blockId)) {
             if (reasoning) {
                 stored.headerBtn->SetText(ReasoningTitle(*b, stored.expanded));
             } else {
@@ -426,7 +476,7 @@ void HarnessApp::CreateBlockRow(const Block& block) {
         m_probeState.reasoningTitleStreaming = stored.headerBtn->GetText();
     }
     // 只有可折叠行需要绑回调（普通气泡/未知 kind 无展开体）
-    if (stored.body && stored.headerBtn) BindCollapsible(block, stored);
+    if (stored.body && stored.headerBtn) BindCollapsible(stored);
 }
 
 // 视图 → 模型：把 `rows` 上的临场状态（展开/已答）写回 `timeline`。
@@ -460,7 +510,7 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             RowRec& stored = m_sess->rows.back();
             stored.expanded = entry.expanded;
             if (stored.body && stored.headerBtn) {
-                BindCollapsible(*block, stored);
+                BindCollapsible(stored);
                 // ★ 展开态要真的落到控件上（`expanded` 标志只影响行高计算，
                 //   折叠体的内容可见性由控件自己管）
                 if (entry.expanded) stored.body->SetExpanded(true);
@@ -473,8 +523,17 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             AddRow(std::move(panel), rec, entry.id, idx);
             if (m_sess->rows.empty()) return;
             RowRec& stored = m_sess->rows.back();
+            stored.expanded = entry.expanded;   // 与 Block 行同款：展开态只认模型
             stored.allowBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "allow"); });
             stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
+            // ★★ 2026-10-27：折叠头绑定走与建行期**同一个入口**——否则重建出来的
+            //   权限门点了没反应（外观一样、行为没了，是最难发现的一类重建缺陷）。
+            //   `SetExpanded` 是幂等的（`BuildAskRow` 已按 `entry.expanded` 建过），
+            //   这里再下发一次只是把"折叠体呈现"与"行高计算用的标志"钉在同一处。
+            if (stored.body && stored.headerBtn) {
+                BindCollapsible(stored);
+                stored.body->SetExpanded(entry.expanded);
+            }
             // ★ 已答状态**静默回填**：只置灰、不重发 answer（否则重建 = 重放一次决策，
             //   在 live 会话里就是往 core 又答了一遍 —— 那是会改协议状态的真副作用）。
             // ★★ Step 3：走**同一条**视觉路径（`ApplyAnsweredLook`），答案取
@@ -547,7 +606,7 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
             AddRow(std::move(panel), rec, block->id, kNoTimeline);
             if (m_sess->rows.empty()) continue;
             RowRec& stored = m_sess->rows.back();
-            if (stored.body && stored.headerBtn) BindCollapsible(*block, stored);
+            if (stored.body && stored.headerBtn) BindCollapsible(stored);
         }
     }
     MaterializePendingPrompts();
@@ -560,22 +619,86 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
 
 // 权限门行：**纯构造**（重建可重放）。问句与 id 都来自模型条目，不是来自"刚到的消息"
 //   ——重建时那条消息早已不存在，若从消息取就等于"重建不出问句"。
+// ★★ 2026-10-27：长问句改折叠卡（实测反馈「权限门遇上长参数十分混乱」）。
+//   病因：问句原来是一条**不换行的 `Label`**——`Relayout` 里 `AutoSize()` 取单行
+//   extent，两个按钮又绝对定位在 `innerW-160` / `innerW-82` ⇒ 问句一长就穿过按钮、
+//   冲出卡片右边界、再被 ScrollView 裁掉。三个病灶叠在同一条不换行的文本上。
+//   修法借思维链那一整套（`CollapsiblePanel` + header 按钮 + 折叠体），零新机制；
+//   但两处**刻意不同**（理由见 AppInternal.h 的 AskTitle 注释）：
+//     · **默认展开**——权限门是"必须决策"，收起等于把决策依据藏起来；
+//     · 两个按钮留在 header 行、**不进折叠体**——`--answer-probe` 靠控件的绝对中心点
+//       合成点击（`ProbeTranscript.cpp` 的 `clickCentreOf`），按钮一旦随折叠体隐藏就必红，
+//       真用户也可能收起后找不到「允许」。
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry, RowRec& rec) {
+    // ★★ 2026-10-27：**去卡片化**（与工具行同一刀）。原来这里是"暖色底 + 圆角 +
+    //   1px 描边"的卡片；现在与工具行/正文一样平铺在画布上。
+    //   ★ 权限门凭什么还"跳出来"？靠三件**非卡片**的东西，它们才是决策信号：
+    //     ① 暖色问句文字（`kAskQInk`，整份转录里只有它和错误行不是灰/黑）；
+    //     ② 两个**带底色的按钮**（允许 = 暖黄实心，拒绝 = 描边）——控件可以留圆角，
+    //        它们是按钮不是卡片；
+    //     ③ 折叠体里是完整的原始问句（长参数），不再被单行裁掉。
+    //   ★ 刻意**不**保留一个"淡淡的底"：半吊子的底色会同时失去卡片的边界感和
+    //     文档的干净，实测观感最差。要回退成卡片只需把下面三行换回
+    //     `kAskBg / kRadiusTool / 1px kAskBorder`（token 仍在 Theme.h 里）。
     auto panel = std::make_unique<ECDI::Panel>();
+    const ECDI::Color askPlainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
     panel->SetStyle(ECDI::PanelStyleOverride{
-        .background = kAskBg, .cornerRadius = kRadiusTool,
-        .borderWidth = 1.0f, .borderColor = kAskBorder});
+        .background = askPlainBg, .cornerRadius = 0.0f,
+        .borderWidth = 0.0f, .borderColor = askPlainBg});
     rec.ask = true;
     rec.askId = entry.id;   // P1.5：answer 回执要带 id
 
-    auto label = std::make_unique<ECDI::Label>("权限 " + entry.text);
-    rec.label = label.get();
-    label->SetTextColor(kAskQInk);
-    {
-        ECDI::Font f = harness::SansFont(13.0f);
-        label->SetFont(f);
+    // 短问句 ⇒ **不建折叠体**：此时摘要即全文，建了就是把同一句话显示第二遍。
+    //   ★ 判据是纯列宽估算（`AskNeedsFold`），**零测量**——权限门可能在流式路径上
+    //     高频重建，任何 `MeasureText` 都会进 `m_evalMeasureCalls`（评估仪器口径）。
+    //   ★ 这也保证了"只有一套几何"：`bodyH` 为 0 时 `Relayout` 那条折叠分支自然退化，
+    //     不需要"短问句走另一支"的第二套摆位。
+    const bool foldable = AskNeedsFold(entry.text);
+    rec.expanded = entry.expanded;   // 展开态**只认模型**（默认值由 CreateAskRow 定）
+
+    auto header = std::make_unique<ECDI::Button>(AskTitle(entry.text, rec.expanded, foldable));
+    rec.headerBtn = header.get();
+    header->SetTextColor(kAskQInk);
+    header->SetFont(harness::SansFont(13.0f));
+    header->SetStyle(ECDI::ButtonStyleOverride{
+        .background = askPlainBg,
+        .border = askPlainBg,
+        .borderWidth = 0.0f,
+        .cornerRadius = kRadiusBtn,
+        // ★ 去卡片化后**保留** hover/pressed 的暖色（与工具行不同）：
+        //   权限门是"必须决策"的阻断点，hover 一亮等于再说一次"这里要你点"；
+        //   而工具行的点击反馈是展开体出现，不需要靠变色。
+        //   借用同色系的 `kAskBorder`：换成 `kPanel2` 那种冷灰，hover 一瞬整行
+        //   会从暖色跳成冷色——色相跳比"没有 hover"更刺眼。
+        .pressedBackground = kAskBorder,
+        .hoverBackground = kAskBorder,
+        .textAlignment = ECDI::TextAlignment::Left});
+    // ★ 短问句：没有折叠体可开合 ⇒ 头**不可点**。否则它是个「按下去有反馈、
+    //   松开什么都不发生」的假按钮——比不可点更让人困惑。
+    //   （`Button` 不画 disabled 态，所以视觉与可点态一致，只是退出命中。）
+    if (!foldable) header->SetEnabled(false);
+    panel->AddChild(std::move(header));
+
+    if (foldable) {
+        auto body = std::make_unique<ECDI::CollapsiblePanel>();
+        rec.body = body.get();
+        body->SetExpandDirection(ECDI::ExpandDirection::Down);
+        // ★ 同工具行：折叠体自带主题默认底，不抹平就会在平铺的转录里露一块异色。
+        body->SetStyle(ECDI::PanelStyleOverride{
+            .background = askPlainBg,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = askPlainBg});
+        auto label = std::make_unique<ECDI::Label>("权限 " + entry.text);
+        rec.label = label.get();
+        label->SetTextColor(kAskQInk);
+        label->SetFont(harness::SansFont(13.0f));
+        label->SetWordWrap(true);   // ★ 换行是本轮改造的核心：原来这条路径上完全没有
+        // 内容容器（裸 Widget，不画底），与工具卡/思维链同一挂法
+        body->GetContent()->AddChild(std::move(label));
+        body->SetExpanded(rec.expanded);   // 未挂树时瞬时生效（无动画）
+        panel->AddChild(std::move(body));
     }
-    panel->AddChild(std::move(label));
 
     auto allow = std::make_unique<ECDI::Button>("允许");
     rec.allowBtn = allow.get();
@@ -623,6 +746,12 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     entry.kind = TimelineEntry::Kind::Ask;
     entry.id = msg.GetString("id");
     entry.text = msg.GetString("question");
+    // ★★ 2026-10-27：默认展开态**在这里**定（不放在 BuildAskRow 里推导）——
+    //   重建路径走 `BuildAskRow(entry, rec)` 时只认 `entry.expanded`，若两处各自
+    //   推一次"默认值"，模型与视图就会在建行那一瞬不一致：重建探针会读到
+    //   `expanded` 从 1 变 0（= 收起了），而屏幕上其实先展开后收起。
+    //   ★ 短问句 `AskNeedsFold == false` ⇒ 恒收起，且 BuildAskRow 干脆不建折叠体。
+    entry.expanded = AskNeedsFold(entry.text);
     m_sess->timeline.push_back(entry);
 
     RowRec rec;
@@ -632,6 +761,10 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     RowRec& stored = m_sess->rows.back();
     stored.allowBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "allow"); });
     stored.denyBtn->SetOnClick([this, &stored] { MarkAnswered(stored, "deny"); });
+    // ★★ 2026-10-27：折叠头与工具卡/思维链走**同一条**绑定路径（`BindCollapsible`
+    //   → `ToggleRow`）。若在这里另写一份 lambda，就成了第二份"切换实现"——
+    //   它不会写回模型、不会设 `m_relayoutPulse`，表现为"展开了但行高没变、重建即回退"。
+    if (stored.body && stored.headerBtn) BindCollapsible(stored);
 
     if (!m_options.autoAnswer.empty()) {
         MarkAnswered(stored, m_options.autoAnswer);   // 无人值守：立即回答（协议 §8.3）
@@ -722,7 +855,15 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
             m_sess->writer->Answer(rec.askId, choice);
         }
     }
-    m_sess->askHist.emplace_back(choice, rec.label ? rec.label->GetText() : std::string());
+    // ★★ 2026-10-27：问句文本的来源从**控件**改成**模型**。权限门改造后，短问句
+    //   不再建折叠体 ⇒ `rec.label` 为 null（旧写法会往权限历史里塞一串空字符串）；
+    //   长问句的 label 在折叠体里，拿它当"标题"语义也不对。模型里的 `text` 才是
+    //   原始问句，两条路径都能取到，且不带重复的「权限 」前缀（卡片标题已经叫权限历史）。
+    std::string asked = rec.label ? rec.label->GetText() : std::string();
+    if (rec.timelineIdx < m_sess->timeline.size()) {
+        asked = m_sess->timeline[rec.timelineIdx].text;
+    }
+    m_sess->askHist.emplace_back(choice, asked);
     if (m_sess->askHist.size() > 16) m_sess->askHist.pop_front();
     // ★★ Step 5：把结论落到 sidecar（**只有历史打开的会话**才写——启动时 `--replay`
     //   的会话是跑批基线，写它等于让"再跑一次"与"第一次跑"不同）。
@@ -872,8 +1013,13 @@ void HarnessApp::RefreshEmptyGuide() {
     }
     // 宽度跟随（resize/侧栏切换/设置开合）：空转录时 Relayout 的行循环零迭代，
     // extent 收敛到 0——本卡不进 extent，由这里自己摆。
-    const int w = std::max(200, ContentWidth(m_scroll) - 2 * kCanvasPadX);
+    // ★★ 2026-10-27：宽走 `TranscriptLayoutWidth()`（版心）而不是 `ContentWidth`
+    //   （视口）——检视栏收起时视口宽出 230px，若让这张卡跟着变宽，它就会与正文
+    //   列宽不一致、并压到右侧留白区里（切换检视栏时肉眼可见的宽度跳变）。
+    const int w = std::max(200, TranscriptLayoutWidth() - 2 * kCanvasPadX);
     m_hud.emptyGuide->SetSize(w, 128);
+    // 横向与正文列同一左偏移（按行宽居中，两侧留白恒等）
+    m_hud.emptyGuide->SetPosition(TranscriptCanvasX(), 0);
     // ★ 必须显式 Arrange：本卡是浮在 content 里的独立块（不进内容流），
     //   没有父布局会替它摆位——`SetSize` 只改自身矩形，子控件仍停在上一轮的
     //   坐标上（首帧即 (0,0) 全叠在一起）。此前卡片被 extent=0 裁掉、从没真正
@@ -889,8 +1035,11 @@ void HarnessApp::RefreshEmptyGuide() {
         const ECDI::Size ext = m_scroll->GetContentExtent();
         const int needH = 128;
         if (static_cast<int>(ext.height) < needH) {
-            m_scroll->SetContentExtent(std::max(ContentWidth(m_scroll), w + 2 * kCanvasPadX),
-                                       needH);
+            // ★★ 2026-10-27：宽用 `canvasX + w`（内容列右边界），不是 `w + 2×pad`。
+            //   后者比真实右边界多出 2×pad − canvasX ⇒ 占满档会超出视口 ⇒ 恒出一条
+            //   横向滚动条（空态下最刺眼：整屏没内容却有横条）。
+            m_scroll->SetContentExtent(
+                std::max(ContentWidth(m_scroll), TranscriptCanvasX() + w), needH);
         }
     }
 }

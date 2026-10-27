@@ -217,6 +217,10 @@ struct ResizeProbeRec {
     int maxOffsetX = 0;       // > 0 ⇒ 出现横向滚动条（行比视口宽）
     int rowWMin = 0;          // 行宽的**最小值/最大值**：所有行必须一起变宽
     int rowWMax = 0;
+    // ★★ 2026-10-27：**最宽那一行**的左边界。版心模型的判据是"内容列居中"，
+    //   即 `rowX == scrollW − rowX − rowWMax`——没有这个读数就只能断言"变宽了"，
+    //   而"整列贴左但确实变宽了"照样能骗过旧判据（上一版实测左 16 / 右 48）。
+    int rowX = 0;
     size_t rows = 0;
     bool matched = true;
     std::string firstDivergence;

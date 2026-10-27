@@ -33,16 +33,30 @@ using harness::internal::Utf8FromWidePath;
 
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
 void HarnessApp::SendPrompt(const std::string& text) {
+    // ★★ 2026-10-27 修复（实测反馈「点空态卡的建议，发出去的气泡是空的」）：
+    //   **进函数第一件事是拷贝**。调用方之一是空状态引导卡里的建议按钮，而发送
+    //   路径会在本函数的**栈内**就把它拆掉：
+    //     SendPrompt → PostPrompt → MaterializePendingPrompts → RefreshEmptyGuide
+    //     （判定「已不空」⇒ `RemoveChild(emptyGuide)` ⇒ 按钮与它的 lambda 一起析构）
+    //   ⇒ 形参 `text` 引用的是那个 lambda 的捕获串，走到 `writer->Prompt(text, …)`
+    //     时它已经悬空 ⇒ 发给 core 的是垃圾字节 ⇒ core 回显的 `user` 块没有内容
+    //     ⇒ 正式气泡是空的（而 `pending.text` 早一步拷贝过，所以"发送中"那个
+    //     临时气泡**有**字——正是实测看到的先后两个样子）。
+    //   ★ 这是**一直存在**的悬空引用，不是新引入：以前读到的是尚未被覆盖的旧字节，
+    //     "碰巧"正确；今天的内存布局一变（新增的临时串/局部量）就现形了。
+    //   ★ 一处拷贝覆盖全部调用方，比每个回调各自 `std::string owned = text;` 可靠
+    //     （后者漏一个就是同一类 bug 复发）。
+    const std::string owned = text;
     // ★ --hit-probe：探针合成点击时只计数、零副作用，保持旧读数。
     if (m_probeState.hitProbeActive) {
         ++m_probeState.hitProbeSendCalls;
         return;
     }
     if (m_sess->writer) {
-        (void)PostPrompt(text);
+        (void)PostPrompt(owned);
         return;
     }
-    AddNoticeRow("[prompt 仅记录] " + text, kDarkMuted);   // 回放：只记录
+    AddNoticeRow("[prompt 仅记录] " + owned, kDarkMuted);   // 回放：只记录
     Relayout();
     RequestRepaint();
 }
