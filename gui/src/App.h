@@ -941,8 +941,12 @@ private:
     void RequestModelSwitch(const std::string& providerId);
     void SendModelSwitch(const std::string& providerId);   // 立即发（调用方保证 idle）
     void SendPendingModelSwitchIfIdle();                   // state=idle 时的排队兑现点
-    void CacheProviderKeys();           // 凭据库 → m_providerKeys（全部提供商）
+    void CacheProviderKeys();           // 凭据库 → m_providerKeys（全部提供商；env 兜底见下）
     static std::string EnvSanitizeProviderId(const std::string& id);
+    // ── ★★ §8.5.6（2026-10-27）：环境变量作为 key 的**兜底来源**（不是存储）
+    //   凭据库缺失时才看它；优先级恒为「凭据库 > 环境变量」（见规格 §8.5.6）。
+    static std::string ProviderKeyEnvName(const std::string& providerId);
+    static bool ReadEnvProviderKey(const std::string& providerId, std::string& out);
     // ── ★★ P4 Phase H（2026-10-25）：顶栏 chip + 模型下拉浮窗 ─────────────
     //   浮窗挂 m_scroll（F 同款浮层口）；显隐 = m_modelPopupOpen 模型侧状态。
     void SetModelPopupOpen(bool open);   // 唯一入口（chip 点击 / Ctrl+M / 行点击关）

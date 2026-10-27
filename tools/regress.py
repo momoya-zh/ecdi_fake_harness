@@ -90,6 +90,10 @@ EXTRA_PROBES = [
     #                （P3.6 明文：回归基线不动），回放夹具也声明 protocol 3。
     # ⇒ 这四相只能在「无参启动 + 真实配置 + 真凭据 + protocol 4 的 core」下验收，
     #   那是人工验收，不是回归门。门守住它剩下的 env-check / switch-bad / cleanup。
+    # ★ 2026-10-27（§8.5.6）：env-key-ok / env-key-missing 两相**不在 designed-red 里**
+    #   ——它们自己 SetSettingsVisible(true) 把面板打开，不依赖 first-run 分支，
+    #   所以在回放跑法下真的能绿。它们是门，不是登记项（负对照实测：把
+    #   ReadEnvProviderKey 打成恒 false ⇒ env-key-ok 红、env-key-missing 仍绿）。
     ("--settings-probe", "settingsProbe", DEMO, ["--config", "@SETTINGS@"],
      ["first-run", "save", "session-live", "switch-ok"]),
     # ctx-denominator 要求右栏上下文百分比不是 "—"，即需要真分母；

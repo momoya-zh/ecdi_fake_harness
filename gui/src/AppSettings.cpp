@@ -225,7 +225,12 @@ void HarnessApp::OnSettingsSave() {
     const std::string providerId = AppConfig::ProviderIdFromBaseUrl(baseUrl);
     const std::string target = AppConfig::CredentialTargetFor(providerId);
 
-    // ① 凭据：key 非空 → 覆盖写；key 为空且已有 → 保持不变（轮换语义）。
+    // ① 凭据：key 非空 → 覆盖写；key 为空且已有 → 保持不变（轮换语义）；
+    //    key 为空且凭据库无 → 环境变量兜底（§8.5.6）。
+    //    ★ 顺序即优先级：凭据库永远先于环境变量。反过来的话，用户在面板里填的值
+    //      会被一个他自己都忘了的 env 静默盖掉——那是最难诊断的一类失效。
+    bool keyFromEnv = false;
+    std::string envKey;
     if (!key.empty()) {
         std::string credError;
         if (!creds::Write(ECDI::UTF8ToWide(target), key, credError)) {
@@ -233,8 +238,14 @@ void HarnessApp::OnSettingsSave() {
             return;
         }
     } else if (!creds::Exists(ECDI::UTF8ToWide(target))) {
-        setHint("API Key 为空（凭据库中也没有该提供商的记录）", kErrorDark);
-        return;
+        if (!ReadEnvProviderKey(providerId, envKey)) {
+            // ★ 文案长度受 `settingsHint` 限制（520×18 单行、不换行、超长直接裁）：
+            //   既有提示最长 476px，这里按同一预算写（实测 464px）。把变量名放在
+            //   **最前**——它是唯一可执行的信息，被裁掉的必须是后缀。
+            setHint("缺少环境变量 " + ProviderKeyEnvName(providerId), kErrorDark);
+            return;
+        }
+        keyFromEnv = true;
     }
 
     // ② 解析 core 可执行文件（结果写进配置 ⇒ 下次无参启动不依赖 cwd）。
@@ -258,7 +269,13 @@ void HarnessApp::OnSettingsSave() {
     if (!m_coreApiKey.empty() && m_providerKeys.find(providerId) == m_providerKeys.end()) {
         // 旧配置迁移路径：m_coreApiKey 属于原默认提供商时不得张冠李戴
     }
-    if (!key.empty()) m_providerKeys[providerId] = key;
+    if (!key.empty()) {
+        m_providerKeys[providerId] = key;
+    } else if (keyFromEnv) {
+        // env 来的 key 也进缓存：spawn 时要靠它注入 ECDI_CORE_KEY（无 key 的 core 直接
+        // exit 2），「切走再切回」也靠它。只在内存，不落任何文件。
+        m_providerKeys[providerId] = envKey;
+    }
     m_appConfig.corePath = coreExe.generic_string();
     std::string saveError;
     if (!m_appConfig.Save(saveError)) {
@@ -269,19 +286,29 @@ void HarnessApp::OnSettingsSave() {
 
     // ④ 连接：无 live 会话 ⇒ 新建（env 注入走统一路径）；已有支持热切换的
     //    live 会话 ⇒ 发 model 切换请求（I11：排队语义由 RequestModelSwitch 处理）。
+    // ★ 提示语带 key 来源（§8.5.6）：env 兜底是**隐式**来源，不写出来的话，
+    //   用户下次打开面板只会看到「key 框是空的」却连得上，无从判断为什么。
+    // ★ 文案预算 520px（hint 是 520×18 单行、不换行、超长直接裁；既有最长 476px）。
+    //   带来源的三条实测 239 / 490 / 453px —— 已到预算边缘，所以 env 分支连
+    //   「/ 模型名」「当前…会话」都省掉；再加修饰词就会被裁。
     const bool hasLive = m_sess && m_sess->originKind == "live" && m_sess->writer;
     if (hasLive && m_sess->hasModelCap) {
         auto keyIt = m_providerKeys.find(providerId);
         if (keyIt != m_providerKeys.end()) {
             m_coreApiKey = keyIt->second;   // 新 provider 成为默认 ⇒ ECDI_CORE_KEY 跟随
         }
-        setHint("已保存；正在切换到 " + providerId + " / " + model, kDarkMuted);
+        setHint(keyFromEnv ? "已保存；正在切换到 " + providerId + "（key 来自环境变量）"
+                           : "已保存；正在切换到 " + providerId + " / " + model,
+                kDarkMuted);
         SetSettingsVisible(false);
         RequestModelSwitch(providerId);
         return;
     }
     if (hasLive && !m_sess->hasModelCap) {
-        setHint("已保存；当前 core 不支持热切换（cap 未声明），重启会话后生效", kDarkMuted);
+        setHint(keyFromEnv
+                    ? "已保存；core 不支持热切换，重启后生效（key 来自环境变量）"
+                    : "已保存；当前 core 不支持热切换（cap 未声明），重启会话后生效",
+                kDarkMuted);
         SetSettingsVisible(false);
         return;
     }
@@ -300,7 +327,9 @@ void HarnessApp::OnSettingsSave() {
         }
         SwitchToSessionByPtr(live);
     }
-    setHint("已保存并连接：" + providerId + " / " + model, kDarkMuted);
+    setHint(keyFromEnv ? "已保存并连接；key 来自环境变量"
+                       : "已保存并连接：" + providerId + " / " + model,
+            kDarkMuted);
     SetSettingsVisible(false);
     m_modelListDirty = true;
 }
@@ -318,14 +347,48 @@ std::string HarnessApp::EnvSanitizeProviderId(const std::string& id) {
     return out;
 }
 
+std::string HarnessApp::ProviderKeyEnvName(const std::string& providerId) {
+    // 与 core 的启动扫描同名（main.go 扫 `ECDI_PROVIDER_*_KEY`）——core 侧零改动。
+    // 名字里带 sanitize 后的 id：这就是 §9.5 那条「唯一性要按 sanitize 后判」的同一处约束。
+    return "ECDI_PROVIDER_" + EnvSanitizeProviderId(providerId) + "_KEY";
+}
+
+bool HarnessApp::ReadEnvProviderKey(const std::string& providerId, std::string& out) {
+    // ★ 只读**本进程继承来的**环境变量，不读注册表：用户设了但当前进程没继承到
+    //   （setx 之后旧 shell 起的 GUI）时，这里必须返回 false——让上层如实报缺失，
+    //   而不是给一个「看起来配好了」的假象（陈旧值陷阱，规格 §8.5.6）。
+    // ★ 已知边界：`AppSession` 每次 spawn 也会把这些变量写进**本进程**环境
+    //   （R-5 的启动环境层，值取自凭据库）。所以「凭据库里的 key 被外部删掉、
+    //   但本进程早先注入过」时，这里仍能读到——值是对的、spawn 也确实会用它，
+    //   故判据不受影响；只是「来源」标签描述的是**spawn 时用哪里的值**，
+    //   不是这条值最初由谁录入。不做来源追踪是刻意的：那需要启动快照 + 探针钩子，
+    //   而收益只覆盖一个自愈场景（重启后该变量自然消失）。
+    const std::wstring name = ECDI::UTF8ToWide(ProviderKeyEnvName(providerId));
+    wchar_t buf[1024];
+    const DWORD n = GetEnvironmentVariableW(name.c_str(), buf, 1024);
+    if (n == 0 || n >= 1024) return false;   // 不存在 / 超长（setx 的 1024 截断同源）
+    std::string value = ECDI::WideToUTF8(std::wstring(buf, n));
+    if (value.empty()) return false;
+    out = std::move(value);
+    return true;
+}
+
 void HarnessApp::CacheProviderKeys() {
     // 凭据库 → m_providerKeys（已有缓存的不覆盖——设置面板刚写入的值更新）。
+    // ★ 2026-10-27（§8.5.6）：凭据库没有时回落到环境变量。否则「只用环境变量供 key」
+    //   的提供商永远进不了这张表 ⇒ AppSession 不注入它的 URL ⇒ core 注册表里没有它
+    //   ⇒ 切过去恒回「未知提供商」。兜底必须在**同一处**发生，不能只修保存路径。
     for (const auto& pc : m_appConfig.providers) {
         if (m_providerKeys.count(pc.id)) continue;
         std::string key;
         std::string err;
         if (creds::Read(ECDI::UTF8ToWide(pc.credentialTarget), key, err)) {
             m_providerKeys[pc.id] = key;
+            continue;
+        }
+        std::string envKey;
+        if (ReadEnvProviderKey(pc.id, envKey)) {
+            m_providerKeys[pc.id] = envKey;
         }
     }
 }
@@ -509,8 +572,20 @@ void HarnessApp::RebuildSettingsProviderList() {
                     }
                     if (m_hud.settingsKey) m_hud.settingsKey->SetText("");
                     if (m_hud.settingsHint) {
+                        // ★ 2026-10-27（§8.5.6）：把 key 来源写在提示里。凭据库与环境变量
+                        //   是两个不同去处，「空输入框但能连上」必须能解释得清；
+                        //   「无」也要明说——否则用户看不出保存会失败。
+                        // ★ 这里只报**类别**不报变量全名：hint 是 520px 单行，
+                        //   带全名会被裁（全名在保存失败的提示里给）。
+                        std::string src = "无（保存前需填 key）";
+                        if (creds::Exists(ECDI::UTF8ToWide(sel->credentialTarget))) {
+                            src = "凭据库";
+                        } else {
+                            std::string envKey;
+                            if (ReadEnvProviderKey(sel->id, envKey)) src = "环境变量";
+                        }
                         m_hud.settingsHint->SetText(
-                            "编辑 " + pid + "——key 留空保持已存凭据不变");
+                            "编辑 " + pid + "——key 留空保持不变；来源：" + src);
                     }
                 }
             }

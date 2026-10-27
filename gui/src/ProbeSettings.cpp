@@ -76,6 +76,21 @@ using harness::internal::PathToUtf8;
 //   `--core`/`--replay` ⇒ 应用必然从首启分支进来（设置面板可见）。
 //   跨 tick：save 相之后 hello 要下一 tick 才从队列里出来（与 theme-probe 同因）。
 //   ★ 相位设计见规格 §8.5.4；负对照在 .scratch/probe_settings_negctl.py。
+namespace {
+// §8.5.6「环境变量作为兜底来源」的两个假端点：`.invalid` 是 RFC 2606 保留 TLD，
+//   永不解析到真实服务；两个 host 不同 ⇒ sanitize 后的变量名不同 ⇒ 正负对照互不污染。
+constexpr const char* kProbeEnvKeyUrl = "https://probe-env-key.invalid/v1";
+constexpr const char* kProbeEnvMissingUrl = "https://probe-env-missing.invalid/v1";
+constexpr const char* kProbeEnvModel = "probe-env-model";
+
+std::string ReadWholeFile(const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+}   // namespace
 void HarnessApp::RunSettingsProbe() {
     auto report = [this](const char* phase, const std::string& bad) {
         SettingsProbeRec rec;
@@ -348,6 +363,91 @@ void HarnessApp::RunSettingsProbe() {
             }
             report("switch-bad", bad);
         }
+        // ⑥ key-env（正对照，§8.5.6）：凭据库无该提供商、**只**设环境变量
+        //   ⇒ 保存必须被接受，且 key 不得被写进凭据库（env 是来源，不是存储）。
+        //   ★ 面板在 save 相之后是隐藏的（模态浮层）。必须先重新打开再填字段，
+        //     否则点击落在一个不可见控件上，判据会静默变成「保存没生效」——
+        //     那是最难分辨的一种假红。
+        SetSettingsVisible(true);
+        const std::string envProviderId = AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl);
+        SetEnvironmentVariableW(ECDI::UTF8ToWide(ProviderKeyEnvName(envProviderId)).c_str(),
+                                L"sk-probe-env-source-not-a-real-key");
+        m_hud.settingsBase->SetText(kProbeEnvKeyUrl);
+        m_hud.settingsModel->SetText(kProbeEnvModel);
+        m_hud.settingsKey->SetText("");   // 关键：key 框留空，只靠环境变量
+        m_probeState.settingsProbeStage = 4;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 4: {
+        // ★ 前置断言：面板必须真的可见。不可见时点击落在转录上，判据会退化成
+        //   「保存没生效」——把「仪器没摆好」误报成「功能坏了」（假红）。
+        const bool panelUp = m_hud.settingsPanel && m_hud.settingsPanel->IsVisible();
+        if (panelUp) {
+            const ECDI::Point abs = m_hud.settingsSave->GetAbsolutePosition();
+            SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.settingsSave->GetWidth() / 2,
+                              static_cast<int>(abs.y) + m_hud.settingsSave->GetHeight() / 2);
+        }
+        const std::string envProviderId = AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl);
+        {
+            std::string bad;
+            if (!panelUp) {
+                bad = "settings panel not visible before env-key save (probe precondition)";
+            }
+            const std::string hint = m_hud.settingsHint ? m_hud.settingsHint->GetText() : "";
+            if (ReadWholeFile(AppConfig::DefaultPath()).find(kProbeEnvKeyUrl) == std::string::npos) {
+                bad = "save rejected an env-sourced key (config has no such provider)";
+            }
+            if (creds::Exists(ECDI::UTF8ToWide(
+                    AppConfig::CredentialTargetFor(envProviderId)))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "env-sourced save wrote a credential (env must stay a source, not storage)";
+            }
+            if (!m_providerKeys.count(envProviderId)) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "env key was not cached (spawn would start core without a key)";
+            }
+            if (hint.find("环境变量") == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "hint does not name the key source (source must be visible)";
+            }
+            report("env-key-ok", bad);
+        }
+        // ⑦ key-env（负对照）：清掉环境变量 ⇒ 同样的空 key 必须**被拒**，
+        //   且配置里不得留下这个提供商（失败点在建表之前，不许有半成品）。
+        SetSettingsVisible(true);
+        SetEnvironmentVariableW(
+            ECDI::UTF8ToWide(ProviderKeyEnvName(envProviderId)).c_str(), nullptr);
+        m_hud.settingsBase->SetText(kProbeEnvMissingUrl);
+        m_hud.settingsModel->SetText(kProbeEnvModel);
+        m_hud.settingsKey->SetText("");
+        m_probeState.settingsProbeStage = 5;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 5: {
+        if (m_hud.settingsPanel && m_hud.settingsPanel->IsVisible() && m_hud.settingsSave) {
+            const ECDI::Point abs = m_hud.settingsSave->GetAbsolutePosition();
+            SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.settingsSave->GetWidth() / 2,
+                              static_cast<int>(abs.y) + m_hud.settingsSave->GetHeight() / 2);
+        }
+        {
+            std::string bad;
+            const std::string hint = m_hud.settingsHint ? m_hud.settingsHint->GetText() : "";
+            // 判据用**变量全名**而不是「也未设置」这种措辞：措辞会随文案调整而漂移，
+            // 变量名是用户唯一能照着做的信息，它必须原样出现。
+            const std::string missingName = ProviderKeyEnvName(
+                AppConfig::ProviderIdFromBaseUrl(kProbeEnvMissingUrl));
+            if (hint.find(missingName) == std::string::npos) {
+                bad = "missing-key hint does not name " + missingName + " (hint=" + hint + ")";
+            }
+            if (ReadWholeFile(AppConfig::DefaultPath()).find(kProbeEnvMissingUrl) !=
+                std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "config accepted a provider with no key at all";
+            }
+            report("env-key-missing", bad);
+        }
         // ⑥ cleanup：删探针建的凭据与配置文件（幂等）。
         {
             std::string bad;
@@ -360,6 +460,18 @@ void HarnessApp::RunSettingsProbe() {
             if (!creds::Delete(ECDI::UTF8ToWide(target), credError)) {
                 bad = "credential cleanup failed: " + credError;
             }
+            // 正对照那条**不该**有凭据（env 来源不落库）；留着就是泄漏，必须报出来。
+            const std::string envTarget = AppConfig::CredentialTargetFor(
+                AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl));
+            if (creds::Exists(ECDI::UTF8ToWide(envTarget))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "env-sourced credential left behind in the vault";
+                std::string ignored;
+                creds::Delete(ECDI::UTF8ToWide(envTarget), ignored);
+            }
+            SetEnvironmentVariableW(
+                ECDI::UTF8ToWide(ProviderKeyEnvName(
+                    AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl))).c_str(), nullptr);
             // ★ 2026-10-26：删除目标必须是**隔离路径**。`AppConfig::DefaultPath()` 是
             //   "本次进程生效路径"——没传 `--config` 时它就是用户的真实配置，删掉即丢全部提供商。
             //   main.cpp 已拒绝无 `--config` 的启动，这里再断言一次：将来若有人绕过那道门
