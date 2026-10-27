@@ -261,6 +261,16 @@ void HarnessApp::OnReplayTick() {
         } else {
             DrainActiveLive(false);   // 非阻塞兜底（含 EOF 检测）
         }
+        // ★★ 2026-10-27：live 分支也要吃 `m_hudDirty`。
+        //   以前只有下面「replay 已 settle」那条分支（`if (m_hudDirty) RefreshHud()`）
+        //   消费这个脏位 ⇒ live 空闲（core 不再吐行）时，**纯 UI 驱动**的模型变化没有
+        //   任何人刷 HUD：点会话行的「×」删掉一个会话后，侧栏「N 个会话」和头栏
+        //   「会话 i/n」一直停在删除前的值（实测 1s 与 7s 两张截图逐字相同，
+        //   而 `--out` 摘要里的 `sessionCount` 已经是删后的值），要等 core 下一行才纠正。
+        if (m_hudDirty) {
+            CacheEvalMetrics();
+            RefreshHud();
+        }
         if (m_options.workspaceProbe && !m_probeState.workspaceProbeDone) RunWorkspaceProbe();
         // ★★ P3.5 设置探针跨 tick 的另一半：save 之后活动会话已是 live ⇒
         //   tick 走**本分支**（replay settle 分支走不到）——stage 0 在 save 那一 tick

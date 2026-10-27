@@ -238,7 +238,12 @@ void HarnessApp::NewTemporarySession(const std::string& workspaceId) {
 
     const size_t idx = m_sessions.size() - 1;
     SwitchToSession(idx);
-    Session& s = *m_sessions[idx];
+    // ★★ 2026-10-27：用 `created` 而不是 `m_sessions[idx]`。上一个活动会话若是
+    //   没发过 prompt 的临时会话，`SwitchToSession` 里的 `MaybeDeleteTemporarySession`
+    //   会把它摘掉 ⇒ 表短一格 ⇒ `m_sessions[idx]` 越界（实测 0xC0000005：
+    //   删掉最后一个非临时会话后再点工作区「＋」）。`created` 是新建的那个对象，
+    //   被摘掉的是**旧**活动会话，两者不可能是同一个 ⇒ 指针一定有效。
+    Session& s = *created;
     if (s.writer) s.writer->Hello("0.0.1");
     if (m_options.timed) s.timedAnchor = std::chrono::steady_clock::now();
     m_sidebarDirty = true;

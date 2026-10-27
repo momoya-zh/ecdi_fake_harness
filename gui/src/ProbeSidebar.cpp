@@ -302,6 +302,67 @@ void HarnessApp::RunSidebarProbe() {
                                   "transcript did not come back to survivor"}});
     }
 
+    // ⑧b ★★ 2026-10-27：删除臂 C——点**活动的临时会话**的 `×`。
+    //   这一臂之前**完全空缺**（全仓搜 `temporary` 在探针里零命中），而它正是用户
+    //   实测到的崩溃形态：`DeleteSessionAt(i)` → `SwitchToSession(邻居)` →
+    //   `MaybeDeleteTemporarySession` 把 **target 自己**摘掉（临时会话切走即消失）
+    //   ⇒ 传进来的 `i` 已失效，按下标再 erase 一次 = **双删**：删错会话 / erase(end())
+    //   ⇒ `size() - 1` 下溢成 SIZE_MAX ⇒ `m_sessions[SIZE_MAX]` 解引用，实测退出码
+    //   0xC0000005 与 0xC0000374。崩在探针里 ⇒ 这一次运行根本没有 JSON 输出，门直接红。
+    //   ★ 造临时会话用「直接置标志」而不是走工作区分组的「＋」：`temporary` 是
+    //     `NewTemporarySession` 设的唯一标志（AppWorkspace.cpp:230），而 demo 夹具
+    //     没有 workspace 能力，走 ＋ 需要先拉起 live core——那是人工验收，不是回放门。
+    //     被删的是哪个布尔值不影响被测的那条**派发链**（× → DeleteSessionAt）。
+    NewSession();
+    RebuildSessionList();
+    {
+        const bool activeIsTemp = (m_activeIndex == 1 && m_sessions.size() == 2);
+        m_sess->temporary = true;
+        ECDI::Button* delBtn = deleteButtonOf(1);
+        const bool clicked = delBtn && clickCentreOf(delBtn);
+        expect("delete-active-temporary",
+               {{activeIsTemp, "setup: new session not active"},
+                {clicked, "no delete button on row 1"},
+                {m_sessions.size() == 1, "sessionCount != 1 (double erase?)"},
+                {m_hud.sessList->GetContentView().GetChildCount() == 1, "rowCount != 1"},
+                {m_activeIndex == 0, "did not fall back to neighbour"},
+                {m_sess == m_sessions[m_activeIndex].get(), "m_sess and m_activeIndex disagree"},
+                {!m_sess->temporary, "survivor became the temporary one"},
+                {m_sess->rows.size() == baseRows, "transcript did not come back to survivor"}});
+    }
+
+    // ⑧c ★★ 2026-10-27：在**活动的临时会话**上点「＋ 新建会话」。
+    //   这是 ⑧b 的**同族另一半**：`NewSession()` 先算 `idx = size()-1`，再
+    //   `SwitchToSession(idx)`，**之后**用 `m_sessions[idx]` 补发 hello——而
+    //   `MaybeDeleteTemporarySession` 恰好在中间把表缩短了一格 ⇒ `idx` 越界。
+    //   回放模式下那条 hello 分支走不到，但 `SwitchToSession` 自己那句
+    //   `m_sess = m_sessions[index].get()` 同样吃旧下标 ⇒ 这一臂在回放里就有区分力
+    //   （旧实现：`m_activeIndex` 落在表外，`m_sessions[2]`（size 2）直接 0xC0000005）。
+    NewSession();
+    RebuildSessionList();
+    {
+        m_sess->temporary = true;              // 活动会话 = 临时且没发过 prompt
+        ECDI::Button* newBtn = nullptr;
+        if (m_hud.sidebar) {
+            for (size_t c = 0; c < m_hud.sidebar->GetChildCount(); ++c) {
+                auto* b = dynamic_cast<ECDI::Button*>(m_hud.sidebar->GetChildAt(c));
+                if (b && b->GetText() == "＋ 新建会话") { newBtn = b; break; }
+            }
+        }
+        const bool clicked = newBtn && clickCentreOf(newBtn);
+        expect("new-while-temporary-active",
+               {{clicked, "no 「＋ 新建会话」 button on sidebar"},
+                {m_sessions.size() == 2, "sessionCount != 2 (temp 未消失或多删)"},
+                {m_activeIndex == 1, "activeIndex 没跟着前移（旧下标残留）"},
+                {m_sess == m_sessions[m_activeIndex].get(), "m_sess and m_activeIndex disagree"},
+                {!m_sess->temporary, "新建的会话继承了 temporary"},
+                {m_sess->rows.size() == emptyRows, "transcript not the fresh empty session"},
+                {m_hud.sessList->GetContentView().GetChildCount() == 2, "rowCount != 2"}});
+        // 收尾：把这一臂新建的会话删掉，让 ⑨ 仍在「只剩 1 个会话」的前条件下跑。
+        DeleteSessionAt(m_sessions.size() - 1);
+        RebuildSessionList();
+    }
+
     // ⑨ ★ 最后一条：只有一个会话时**不允许删**（`DeleteSessionAt` 返回 false）。
     //   「删到零会话」会让 `m_sess == nullptr`，而全仓 200+ 处调用点假定非空。
     //   判据 = 点了也不掉行（不是"按钮不存在"——这里造的是"按钮在但删不动"，

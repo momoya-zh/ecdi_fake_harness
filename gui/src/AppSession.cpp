@@ -215,9 +215,10 @@ void HarnessApp::NewSession() {
     PauseActiveTimedClock();
 
     const bool live = !m_options.corePath.empty();
+    Session* created = nullptr;   // ★ 要活到 SwitchToSession **之后**再用（见下面的越界说明）
     if (live) {
         // 真新建：拉一个新 core。创建失败（nullptr）⇒ 如实提示，活动会话不变。
-        Session* created = CreateSessionFromOptions();
+        created = CreateSessionFromOptions();
         if (!created) {
             AddNoticeRow("[新建会话失败：core 启动失败，见日志]", kErrorDark);
             Relayout();
@@ -247,7 +248,12 @@ void HarnessApp::NewSession() {
     if (live) {
         // ★ 协议 §4：GUI 在收到 core 的 hello 之后回 hello（seq 0）。首会话在 Run() 里发；
         //   运行期新建的会话必须在这里补发，否则新 core 永远等不到握手。
-        Session& s = *m_sessions[idx];
+        // ★★ 2026-10-27：**不能**沿用上面那个 `idx`。`SwitchToSession` 内部会调
+        //   `MaybeDeleteTemporarySession`——若切走的活动会话是临时会话，表会短一格，
+        //   `m_sessions[idx]` 正好越界（与 `NewTemporarySession` 同族缺陷，
+        //   实测 0xC0000005）。`created` 是刚建的那个对象，被摘掉的是**旧**活动会话，
+        //   所以这个指针一定还有效。
+        Session& s = *created;
         if (s.writer) s.writer->Hello("0.0.1");
         if (m_options.timed) s.timedAnchor = std::chrono::steady_clock::now();
     } else {
@@ -269,6 +275,11 @@ void HarnessApp::SwitchToSession(size_t index) {
     // ★★ 2026-10-20：临时会话在切走时消失（用户裁决 m09443）。
     //   必须在改 `m_activeIndex` **之前**：此时 `m_sess` 还指着旧会话，
     //   才能判断"旧会话是不是临时的"。
+    // ★★ 2026-10-27：但那次摘除会让传进来的 `index` **漂**（它后面的元素整体前移；
+    //   若目标本来就是最后一项，`index` 直接越界）。所以先抓住目标对象的指针，
+    //   摘完之后按身份重解下标——不再假设 `index` 还有效。
+    Session* want = m_sessions[index].get();
+
     MaybeDeleteTemporarySession();
 
     // ① 冻结当前活动会话的 timed 时钟（切走 ⇒ 它不该继续"到期"）
@@ -282,8 +293,14 @@ void HarnessApp::SwitchToSession(size_t index) {
 
     // ② 切换活动指针。m_sess 是全部 200+ 处调用点的"当前会话"锚，
     //    改这一个指针，OnReplayTick/RefreshHud/… 立即指向新会话。
-    m_activeIndex = index;
-    m_sess = m_sessions[index].get();
+    //    `want` 不是旧 `m_sess`（`index != m_activeIndex`，否则上面已经早返回），
+    //    所以它一定没被 MaybeDeleteTemporarySession 摘掉 ⇒ 必然能在表里找到。
+    const auto wantIt = std::find_if(
+        m_sessions.begin(), m_sessions.end(),
+        [want](const std::unique_ptr<Session>& p) { return p.get() == want; });
+    if (wantIt == m_sessions.end()) return;
+    m_activeIndex = static_cast<size_t>(wantIt - m_sessions.begin());
+    m_sess = want;
 
     // ③ 按新会话的模型重建转录视图（复用 0c 的 RebuildTranscriptView）。
     //    ★ 这正是 0c 存在的全部理由：没有"从模型重建"，切会话就无处安放视图。
@@ -728,6 +745,7 @@ bool HarnessApp::DeleteSessionAt(size_t index) {
     //   "支持零会话"是一个独立的架构决定（每个调用点加判空），不该被一个删除按钮带进来。
     if (m_sessions.size() <= 1) return false;
 
+    Session* target = m_sessions[index].get();
     const bool deletingActive = (index == m_activeIndex);
     if (deletingActive) {
         // ★★ 顺序不能换：先把活动指针挪到邻居（SwitchToSession 内部会
@@ -738,14 +756,25 @@ bool HarnessApp::DeleteSessionAt(size_t index) {
         SwitchToSession(neighbor);
     }
 
-    m_sessions.erase(m_sessions.begin() + static_cast<std::ptrdiff_t>(index));
+    // ★★ 2026-10-27：删的是「当前活动的**临时**会话」时，上面那次 SwitchToSession
+    //   里的 MaybeDeleteTemporarySession 已经把 `target` 自己摘掉了（临时会话切走即消失）
+    //   ⇒ 进来时的 `index` 这时指向的是**另一个会话**（表短了 1）或干脆是 `end()`。
+    //   按下标继续 erase 会删错一个会话；表被清空后 `size() - 1` 下溢成 SIZE_MAX，
+    //   下一行 `m_sessions[SIZE_MAX]` 就是 0xC0000005。⇒ 一律按**对象身份**找，
+    //   找不到就说明已经删过了，什么都不做（用户点的 × 已经生效，不该再动别人）。
+    //   取证：`.scratch/_repro_tempdel3.py` 七条 live 序列，修前 5 条 0xC0000005，修后 0 条。
+    const auto it = std::find_if(m_sessions.begin(), m_sessions.end(),
+                                 [target](const std::unique_ptr<Session>& p) { return p.get() == target; });
+    if (it != m_sessions.end()) m_sessions.erase(it);
 
-    // erase 把后面的元素整体前移 ⇒ 活动下标可能要跟着减一。
-    // 注意 `m_sess` 本身仍指向**同一个 Session 对象**（unique_ptr 换的是所有权位置，
-    // 不是对象地址），故这里只需修正下标；用下标重取一遍指针是防御性写法。
-    if (m_activeIndex > index) --m_activeIndex;
-    if (m_activeIndex >= m_sessions.size()) m_activeIndex = m_sessions.size() - 1;
-    m_sess = m_sessions[m_activeIndex].get();
+    // 活动下标同样按身份重取：`m_sess` 一定还在这张表里（切换后指向邻居，或者本来就没切），
+    // 而 erase + MaybeDelete 一共可能前移一次，±1 算术扛不住两次变动。
+    for (size_t i = 0; i < m_sessions.size(); ++i) {
+        if (m_sessions[i].get() == m_sess) {
+            m_activeIndex = i;
+            break;
+        }
+    }
 
     // ★ 不在事件派发栈上拆树（见本段头注的 UAF 段）：只置脏，重建交给下一个 tick。
     m_sidebarDirty = true;
