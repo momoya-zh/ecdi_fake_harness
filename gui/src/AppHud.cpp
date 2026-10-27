@@ -702,7 +702,16 @@ void HarnessApp::RefreshHud() {
     //   「未声明 workspace 的 core，GUI 不得显示工作区选择器」，而不是「不能对话」。
     //   旧写法把 workspace 能力当成 live 就绪的前提，导致一份合法的不支持工作区的
     //   core 连一句 prompt 都发不出去（发送钮永久置灰）。
-    const bool liveReady = live && m_sess->protocolVer == 3 &&
+    // ★★ 2026-10-27 修：`== 3` 是协议 v4 升级后**最后一处没迁移**的版本守卫
+    //   （同族缺陷 2026-10-26 在 `ChooseWorkspaceFolder` 里修过，注释见
+    //   AppWorkspace.cpp:332「`protocolVer != 3` 是 P3.6 升 v4 后没更新的拦路守卫」，
+    //   当时只改了这一处，HUD 这处漏了）。v4 core 下 `liveReady` 恒假 ⇒
+    //   `pickerEnabled` 与 `sendEnabled` 一起恒假 ⇒ 无参数启动（默认连真 core，
+    //   `protocolDeclared: 4`）时「选择文件夹…」和「发送」**都是死钮**——
+    //   禁用钮在 ECDI 里吞掉点击（`--hit-probe` 已证：forced-disabled ⇒ 点击不送达），
+    //   所以症状是「点了没反应」而不是「点了报错」。
+    //   ⇒ 口径与其余五处一致：workspace/prompt 语义 v3 引入、v4 保留 ⇒ `>= 3`。
+    const bool liveReady = live && m_sess->protocolVer >= 3 &&
                            !m_sess->protocolIncompatible && !m_sess->disconnected &&
                            !m_sess->liveEof;
     // 只有「core 声明了 workspace 且初始同步未完成」才是阻塞条件；无此能力时直接放行。
