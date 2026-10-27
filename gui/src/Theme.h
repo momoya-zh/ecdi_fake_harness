@@ -32,7 +32,8 @@ struct Theme {
     ECDI::Color sidebarBg;    // 左栏
     ECDI::Color inspBg;       // 右栏/Composer
     ECDI::Color contentBg;    // 转录画布（窗口兜底）
-    ECDI::Color panel2;       // chip / 卡片 / 工具卡头 / 输入框底
+    ECDI::Color panel2;       // chip / 卡片 / 工具卡头 / 输入框底（2026-10-27 起输入框统一用它，
+                              //   原 inputBg 令牌深色下是纯白一块 ⇒ 白字落不上去，已删）
     ECDI::Color line;         // 描边
 
     // 文字
@@ -92,7 +93,6 @@ struct Theme {
     ECDI::Color trackBg;
     ECDI::Color ringTrack;    // 环形进度条的轨道色（★ 不能复用 line：浅色下 line 压在白卡上会消失）
     ECDI::Color darkPillBg;
-    ECDI::Color inputBg;
     ECDI::Color inputBorder;
     ECDI::Color inputCaret;
 
@@ -178,7 +178,6 @@ inline Theme MakeDark() {
     t.trackBg     = ECDI::Color::FromRGBA8(35, 38, 47, 255);
     t.ringTrack   = ECDI::Color::FromRGBA8(46, 51, 62, 255);   // = line，既有值原样保留
     t.darkPillBg  = ECDI::Color::FromRGBA8(35, 38, 47, 255);
-    t.inputBg     = ECDI::Color::FromRGBA8(35, 38, 47, 255);
     t.inputBorder = ECDI::Color::FromRGBA8(46, 51, 62, 255);
     t.inputCaret  = ECDI::Color::FromRGBA8(91, 157, 255, 255);
     // ★★ 2026-10-21（用户裁决）：深色也换成雅黑，与浅色**同族**。
@@ -282,7 +281,6 @@ inline Theme MakeLight() {
     //   深色同一对是 1.19:1，勉强可见。浅色需独立更深的轨道色：1.24:1。
     t.ringTrack   = ECDI::Color::FromRGBA8(216, 220, 230, 255);   // #d8dce6
     t.darkPillBg  = ECDI::Color::FromRGBA8(241, 243, 247, 255);
-    t.inputBg     = ECDI::Color::FromRGBA8(255, 255, 255, 255);
     t.inputBorder = ECDI::Color::FromRGBA8(224, 227, 233, 255);
     t.inputCaret  = ECDI::Color::FromRGBA8(76, 96, 215, 255);
     // ★ 浅色下中文换成雅黑（原型 --font 里 "Microsoft YaHei" 就在第二顺位）。
@@ -375,7 +373,6 @@ inline const ECDI::Color& kBtnDisabledLine   = g_theme.btnDisabledLine;
 inline const ECDI::Color& kTrackBg     = g_theme.trackBg;
 inline const ECDI::Color& kRingTrack   = g_theme.ringTrack;
 inline const ECDI::Color& kDarkPillBg  = g_theme.darkPillBg;
-inline const ECDI::Color& kInputBg     = g_theme.inputBg;
 inline const ECDI::Color& kInputBorder = g_theme.inputBorder;
 inline const ECDI::Color& kInputCaret  = g_theme.inputCaret;
 

@@ -67,6 +67,11 @@ public:
         //   ★ 这不只是观感：自动长高的行高正是由字体算出来的（见 `PromptBar::
         //     DesiredInputHeight`）——字体未钉死时，长高量测的是一个与用户所见不同的 face。
         SetFont(harness::SansFont(harness::kFontBody));
+        // ★★ 2026-10-27：文字色从未 Set ⇒ ECDI TextStyle 缺省黑；叠加下方 ApplyBorder
+        //   的 kPanel2 深灰底后黑字不可读。输入框文字与 Label 同族，吃 kDarkInk
+        //   （深色≈白字，浅色仍是深墨）。SetTextColor 内部走 TextStyleOverride，
+        //   与 ApplyBorder 的 TextBoxStyleOverride 是两个互不干扰的覆盖通路。
+        SetTextColor(harness::kDarkInk);
         ApplyBorder(false);
     }
 
@@ -134,7 +139,10 @@ protected:
 private:
     void ApplyBorder(bool focused) {
         SetStyle(ECDI::TextBoxStyleOverride{
-            .background = harness::kInputBg,
+            // ★ 2026-10-27：kInputBg 是「白底输入」令牌——深色主题下纯白一块，
+            //   白字落不上去。与设置面板/浮窗搜索框同款：kPanel2 作底，浅色下
+            //   它仍是亮面（241,243,247），观感不回退。
+            .background = harness::kPanel2,
             .caretColor = harness::kInputCaret,
             .padding = 6.0f,
             .cornerRadius = harness::kRadiusInput,

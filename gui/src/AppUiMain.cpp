@@ -570,6 +570,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             //   ⇒ 补 `.borderColor`；`.border` 保留（聚焦点线框不至于跳回默认黑）。
             //   ★ REQ-14（Phase 37 verticalAlign）：30 高 / padding 0 / lineH 17
             //     ⇒ Top 时行箱贴上沿、下方空 13px；居中走框架入口（REQ-14 闭合）。
+            //   ★ 2026-10-27：文字色从未 Set ⇒ ECDI TextStyle 缺省黑（Theme.h 注释
+            //     「全局默认 Black」）压在 kPanel2 深灰底上不可读。输入框与 Label
+            //     是同一文字族，改吃 kDarkInk（深色≈白字，浅色仍是深墨）。
+            (*slot)->SetTextColor(kDarkInk);
             (*slot)->SetStyle(ECDI::TextBoxStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
@@ -613,6 +617,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             auto box = std::make_unique<ECDI::TextBox>();
             *slot = box.get();
             (*slot)->SetSingleLine(true);
+            (*slot)->SetTextColor(kDarkInk);   // ★ 同上游标框：黑字压深灰底不可读（2026-10-27）
             (*slot)->SetStyle(ECDI::TextBoxStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
@@ -927,8 +932,19 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
         m_hud.modelSearch = search.get();
         search->SetSingleLine(true);
         // ★ REQ-14（Phase 37 verticalAlign）：26 高 / padding 0 ⇒ Top 时行箱贴上沿、
-        //   下方空 9px。只覆写对齐一项，其余全吃主题缺省（视觉零改动面）。
+        //   下方空 9px ⇒ Center。
+        // ★★ 2026-10-27 修（台账「待定夺」落定）：REQ-14 落地时这里「只覆写对齐一项，
+        //   其余全吃主题缺省」——吃缺省吃的正是缺陷：ECDI TextBoxStyle 缺省 background=白
+        //   ⇒ 深色主题下一块白底（P4 H 起漏网）。⇒ 与设置面板输入框同款：kPanel2 底 +
+        //   kLine 描边（borderColor 必须显式给，缺省透明 ⇒ drawBorder 恒假）+
+        //   kDarkInk 文字（缺省黑，深底不可读）。
+        search->SetTextColor(kDarkInk);
         search->SetStyle(ECDI::TextBoxStyleOverride{
+            .background = kPanel2,
+            .border = kLine,
+            .cornerRadius = kRadiusBtn,
+            .borderWidth = 1.0f,
+            .borderColor = kLine,
             .verticalAlign = ECDI::VerticalAlignment::Center});
         search->SetSize(320, 26);
         search->SetPosition(10, 8);

@@ -671,8 +671,23 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
   入 `third_party/ecdi`，含新头 `VerticalAlignment.h`；库内符号抽查（`GetTextTopInset` ×3 /
   `VerticalAlignment` ×4）。同日**构建器迁 Ninja**（同一 cl.exe 工具链，静态库 ABI 不变；
   msbuild `--clean-first` 纪律由 Ninja 依赖追踪 + 全量重建替代，全量日志 62 行零警告）。
-- **顺手发现（不属本条，未修）**：模型浮窗搜索框从未设 `.background`（P4 H 起缺省）⇒ 深色主题下
-  白底——与 2026-10-26 修设置框「灰底+描边」同族的一处漏网，待用户定夺是否单独修。
+- **顺手发现（同日闭合，2026-10-27）**：模型浮窗搜索框从未设 `.background`（P4 H 起缺省）⇒ 深色主题下
+  白底——与 2026-10-26 修设置框「灰底+描边」同族的一处漏网。**已修**：用户定夺「补背景 + 所有输入框
+  深色下白字」。落法（全在 harness 侧，零框架改动）——
+  ① 搜索框与设置面板输入框**同款**：`.background=kPanel2 / .border=kLine / .borderColor=kLine /
+     .cornerRadius=kRadiusBtn / 1px`（`.borderColor` 必须显式给，缺省透明 ⇒ drawBorder 恒假，
+     即 2026-10-26 那条「设了 borderWidth 以为描边在」的同因）；上方 REQ-14 段里「其余全吃主题缺省」
+     一句的**缺陷面**由此订正——吃缺省吃的就是白底黑字。
+  ② **文字色**：ECDI `TextStyle.foreground` 全局缺省 **Black**（Theme.h 头注 + ButtonStyle.h:13），
+     而本仓 5 个输入框（composer · 设置 BaseURL/模型名/API Key · 两挡位框 · 浮窗搜索框）**没有一个**
+     调过 `SetTextColor` ⇒ 深底黑字。全部补 `SetTextColor(kDarkInk)`（深色 230,233,239≈白 ·
+     浅色 35,38,46 仍深墨）——按令牌纪律不写死白，浅色主题自动不回归。
+  ③ composer 底从 `kInputBg`（深色=纯白一块）换 `kPanel2`，与其余输入框同族；`inputBg` 令牌
+     自此零消费者 ⇒ 从 Theme.h 删除（引用别名纪律：令牌表只活在主题里的字段不留）。
+  **回归**：`tools/regress.py` RESULT: PASS（6 夹具逐位 · 探针仅设计红 · `--valign-probe` 7/7
+  读数与颜色无关不受扰动）。**人验截图**：深色 `req14-modelpopup/settings/composer` 同款机位重拍
+  （`.scratch/inputfix-*.png`）⇒ 搜索框/挡位框/composer 全部深灰底白字带描边；浅色同法
+  （`.scratch/lightfix-*.png`）⇒ 浅灰底深墨字，无回归。
 
 ---
 
@@ -834,7 +849,8 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
      给出剂量对照，恢复臂 == 首测；composer 恰满盒两臂相等（6==6）即「Top 时也居中」的交付事实。
      实测设置框行高 16（≠ 登记估算 17）——「行高必须测量」的自我警告兑现。
   ④ 换库 MSVC Release lib `a8822fbc…`（11,696,664 B）+ 同日构建器迁 Ninja（同 cl.exe，ABI 不变）。
-  ⑤ 顺手发现（未修）：模型浮窗搜索框无 `.background` ⇒ 深色主题白底（P4 H 漏网，待定夺）。
+  ⑤ 顺手发现（同日修）：模型浮窗搜索框无 `.background` ⇒ 深色主题白底（P4 H 漏网）；
+     连带「所有输入框文字色吃 ECDI 缺省黑」一并闭合，见上方收敛段。
   头部 v3.8 → **v3.9**。
 - **v3.8（2026-10-26）★ 新立 `REQ-14`：单行 `TextBox` 无垂直对齐（`padding` 三耦合 + 圆角无感知）**：
   ① **触发**：用户报「输入框文字需上下居中」+「最左侧文字撞圆角」⇒ 查证两者在框架侧**都没有入口**。
