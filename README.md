@@ -224,6 +224,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | **评估读数**（机器可读 JSON） | `evals/`（口径见 §当前状态）· 工作读数在 `.scratch/`（gitignored） |
 | **协议契约** | `protocol/PROTOCOL.md`（v3） |
 | 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` |
+| **会话持久化方案（未实现）** | `docs/session-persistence-plan.md`（现状事实 · 三档方案 · 三个待裁决点） |
 | GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
 
 ## 能力账本现状
