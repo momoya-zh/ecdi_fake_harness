@@ -129,6 +129,24 @@ void AppConfig::Upsert(const ProviderConfig& pc) {
     providers.push_back(pc);
 }
 
+void AppConfig::AddKnownWorkspace(const std::string& path) {
+    if (path.empty()) return;
+    for (const auto& existing : knownWorkspaces) {
+        if (existing == path) return;
+    }
+    knownWorkspaces.push_back(path);
+}
+
+void AppConfig::RemoveKnownWorkspace(const std::string& path) {
+    if (path.empty()) return;
+    for (auto it = knownWorkspaces.begin(); it != knownWorkspaces.end(); ++it) {
+        if (*it == path) {
+            knownWorkspaces.erase(it);
+            return;
+        }
+    }
+}
+
 bool AppConfig::Load(std::string& error) {
     const auto path = DefaultPath();
     std::ifstream in(path, std::ios::binary);
@@ -165,6 +183,15 @@ bool AppConfig::Load(std::string& error) {
     }
     if (const auto* core = root.Find("corePath"); core && core->IsString()) {
         corePath = core->text;
+    }
+
+    knownWorkspaces.clear();
+    if (const auto* kw = root.Find("knownWorkspaces"); kw && kw->IsArray()) {
+        for (const auto& item : kw->array) {
+            if (item.IsString() && !item.text.empty()) {
+                knownWorkspaces.push_back(item.text);
+            }
+        }
     }
 
     // 单提供商的载入/自愈逻辑 v1 与 v2 共用（"credentialTarget 缺失 ⇒ 从
@@ -353,6 +380,17 @@ bool AppConfig::Save(std::string& error) const {
         v.type = json::Value::Type::String;
         v.text = corePath;
         root.object["corePath"] = std::move(v);
+    }
+    {
+        json::Value kwArr;
+        kwArr.type = json::Value::Type::Array;
+        for (const auto& ws : knownWorkspaces) {
+            json::Value v;
+            v.type = json::Value::Type::String;
+            v.text = ws;
+            kwArr.array.push_back(std::move(v));
+        }
+        root.object["knownWorkspaces"] = std::move(kwArr);
     }
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);

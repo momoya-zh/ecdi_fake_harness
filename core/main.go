@@ -44,6 +44,12 @@ func main() {
 	burst := flag.Bool("burst", false,
 		"负载旋钮：关掉节奏等待并把一轮攒成一次写出（造队列积压；默认关 ⇒ 行为不变）")
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
+	resumeID := flag.String("resume", "", "恢复会话 ID（从 .ecdi/sessions/<id> 续接）")
+	sessionID := flag.String("session", "", "会话 ID（缺省为 s-live-1）")
+	workspace := flag.String("workspace", "", "初始工作区根目录（缺省为当前进程 cwd）")
+	contextTokens := flag.Int("context", 0, "上下文容量分母（token 数；0 = 不发 hello.context）")
+	failSummarize := flag.Bool("fail-summarize", false, "测试注入：强制模拟摘要压缩失败（用于负对照验证）")
+	globalMemory := flag.String("global-memory", "", "全局记忆目录（缺省为 exe 同级 data/memory）")
 	flag.Parse()
 
 	logf := wire.NewLogger("[fake-core] ", *quiet)
@@ -54,6 +60,7 @@ func main() {
 	go wire.ReadStdin(lines, &curState, logf)
 
 	s := newSession(*seed, *speed, *dropSeq, *dropBlockEnd, *wsDelay, *burst,
+		*resumeID, *sessionID, *workspace, *contextTokens, *failSummarize, *globalMemory,
 		lines, &curState, logf)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)

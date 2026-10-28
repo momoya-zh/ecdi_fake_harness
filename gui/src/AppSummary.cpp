@@ -209,6 +209,10 @@ void HarnessApp::WriteSummary() {
     if (m_options.previewProbe && !m_probeState.previewProbeLog.empty()) {
         AppendPreviewProbeSummary(json);
     }
+    // ★★ L1~L4 会话持久化与启动恢复（--persist-probe）
+    if (m_options.persistProbe && !m_probeState.persistProbeLog.empty()) {
+        AppendPersistProbeSummary(json);
+    }
     // ★★ 2026-10-21：HUD 覆盖率（--hud-probe）。
     //   判据：hud-built.matched == true（读过的字段全部建过）
     //         ∧ hud-built-negative.matched == true（打掉一个指针必须被看见）

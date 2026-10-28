@@ -144,14 +144,8 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     BuildTopBar(root);
     BuildMainArea(root);
     BuildBottom(root);
-    // ★ Step 1：列表的**首帧**填充。放在 `root.Arrange()` 之前是安全的——
-    //   `RebuildSessionList` 自己会把侧栏重排一遍（列表高度会变，下方分区要跟着让位）。
-    //   ★ 这里**直接**调而不是置 `m_sidebarDirty`：此刻还没有窗口定时器，
-    //     置脏要等第一个 tick 才生效 ⇒ 首帧会是空列表（用户会看到一闪而过的空栏）。
     RebuildSessionList();
-    // ★ Step 5：历史区同样要首帧填上（同一理由：此刻还没有定时器，置脏要等一 tick）。
     RebuildHistoryList();
-    // ★★ 2026-10-20：「项目」段同样要首帧填上（同理由）。
     RebuildProjectList();
     // ★★ P4 F 修复（实测反馈「变色应该是整个变色」）：遮罩 + sheet 转移到
     //   **root 末尾**（最后子 = 最上层，盖过 caption/counting 全窗——含顶栏/

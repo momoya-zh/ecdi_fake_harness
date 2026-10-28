@@ -38,6 +38,10 @@ func main() {
 	allowTools := flag.String("allow-tools", "", "免 ask 工具名单（逗号分隔）；空 = 全部 ask（默认）")
 	workspace := flag.String("workspace", "", "初始工作区；缺省 = 进程 cwd")
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
+	resumeID := flag.String("resume", "", "恢复会话 ID（从 .ecdi/sessions/<id> 续接）")
+	sessionID := flag.String("session", "", "会话 ID（缺省为 s-real-1）")
+	failSummarize := flag.Bool("fail-summarize", false, "测试注入：模拟摘要压缩失败")
+	globalMemory := flag.String("global-memory", "", "全局记忆目录（缺省为 exe 同级 data/memory）")
 	flag.Parse()
 
 	// 密钥：参数优先，环境变量兜底；都空 = 拒绝启动（stderr 说明）。
@@ -125,8 +129,8 @@ func main() {
 	s := newSession(
 		llmConfig{BaseURL: *baseURL, Model: *model, Key: secret,
 			ProviderID: *providerID, Context: *contextTokens, MaxOutput: *maxOutput},
-		strings.Split(*allowTools, ","), providerEnv, lines, &curState, logf,
-		os.Stdout)
+		strings.Split(*allowTools, ","), providerEnv, *resumeID, *sessionID, *workspace, *globalMemory, *failSummarize,
+		lines, &curState, logf, os.Stdout)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)
 		os.Exit(1)

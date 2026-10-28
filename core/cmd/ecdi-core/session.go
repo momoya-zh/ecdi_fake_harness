@@ -17,11 +17,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
+	"ecdi-fake-core/internal/contextlog"
+	"ecdi-fake-core/internal/memory"
 	"ecdi-fake-core/internal/wire"
 )
 
@@ -53,6 +57,17 @@ type session struct {
 	// maxOutput 同理（请求体 max_tokens）。
 	ctxCapacity int
 	maxOutput   int
+
+	// ── L2 上下文持久与压缩（docs/session-persistence-decisions.md §7.2）───
+	sessionID        string
+	resumeID         string
+	failSummarize    bool
+	lastCompressTurn int
+	ctxWriter        *contextlog.LogWriter
+
+	// ── L3 记忆文件（docs/session-persistence-decisions.md §8）────────
+	globalMemoryDir string
+	memResult       *memory.MemoryResult
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求（与假 core 同构）。
@@ -63,19 +78,27 @@ type pendingWorkspace struct {
 }
 
 func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmConfig,
+	resumeID, sessionID, workspace, globalMemory string, failSummarize bool,
 	in <-chan wire.StampedLine, stc *atomic.Int32, log func(string, ...any),
 	outW io.Writer) *session {
 
 	s := &session{
-		in:          in,
-		out:         wire.NewOut(outW, false),
-		log:         log,
-		stc:         stc,
-		llm:         newLLMClient(cfg, log),
-		allowTools:  map[string]bool{},
-		providers:   map[string]llmConfig{},
-		ctxCapacity: cfg.Context,
-		maxOutput:   cfg.MaxOutput,
+		in:              in,
+		out:             wire.NewOut(outW, false),
+		log:             log,
+		stc:             stc,
+		llm:             newLLMClient(cfg, log),
+		allowTools:      map[string]bool{},
+		providers:       map[string]llmConfig{},
+		ctxCapacity:     cfg.Context,
+		maxOutput:       cfg.MaxOutput,
+		sessionID:       sessionID,
+		resumeID:        resumeID,
+		failSummarize:   failSummarize,
+		globalMemoryDir: globalMemory,
+	}
+	if s.sessionID == "" {
+		s.sessionID = "s-real-1"
 	}
 	// 初始提供商注册进同一张表（切走再切回可用）；环境注入的其余提供商随后并入。
 	if cfg.ProviderID != "" {
@@ -92,23 +115,114 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 			s.allowTools[t] = true
 		}
 	}
-	if wd, err := os.Getwd(); err == nil {
-		if norm, err := wire.NormalizeWorkspace(wd); err == nil {
+	if workspace != "" {
+		if norm, err := wire.NormalizeWorkspace(workspace); err == nil {
 			s.cwd = norm
 		}
 	}
+	if s.cwd == "" {
+		if wd, err := os.Getwd(); err == nil {
+			if norm, err := wire.NormalizeWorkspace(wd); err == nil {
+				s.cwd = norm
+			}
+		}
+	}
 
-	// hello（协议 §3.1）：seq 0、caps 声明 tools/ask/workspace；
+	// L2 resume 处理：从 .meta.json 获取 lastSeq 续号，从 .context.jsonl 顺序重放历史
+	if s.resumeID != "" {
+		s.sessionID = s.resumeID
+		metaPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".meta.json")
+		if meta, err := contextlog.ReadMeta(metaPath); err == nil {
+			startSeq := meta.LastSeq + 1
+			s.out.SetSeq(startSeq)
+			s.log("resumed session %s: starting seq=%d (from lastSeq=%d)", s.sessionID, startSeq, meta.LastSeq)
+			if s.ctxCapacity == 0 && meta.ContextLimit > 0 {
+				s.ctxCapacity = int(meta.ContextLimit)
+			}
+		}
+		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
+		if msgs, err := contextlog.Replay(ctxPath); err == nil {
+			for _, m := range msgs {
+				var calls []apiToolCall
+				for _, tc := range m.ToolCalls {
+					calls = append(calls, apiToolCall{
+						ID: tc.ID, Type: tc.Type, Index: tc.Index,
+						Function: funcSpec{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+					})
+				}
+				s.history = append(s.history, chatMessage{
+					Role: m.Role, Content: m.Content, ToolCalls: calls, ToolCallID: m.ToolCallID,
+				})
+			}
+			s.log("replayed %d messages from %s", len(s.history), ctxPath)
+		}
+		if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
+			s.ctxWriter = w
+		}
+	} else if s.sessionID != "" && s.cwd != "" {
+		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
+		if _, err := os.Stat(filepath.Dir(ctxPath)); err == nil {
+			if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
+				s.ctxWriter = w
+			}
+		}
+	}
+
+	if s.globalMemoryDir == "" {
+		s.globalMemoryDir = memory.DefaultGlobalDir()
+	}
+	s.loadMemories()
+
+	// hello（协议 §3.1）：seq 0、caps 声明 tools/ask/workspace/model；
 	// context 按 D1 真值纪律——运行者没声明就**不发**（GUI 显示 —），不猜。
 	hello := map[string]any{"t": "hello", "protocol": 4, "core": "0.4.0",
-		"session": "s-real-1",
+		"session": s.sessionID,
 		"caps":    []string{"tools", "ask", "workspace", "model"}}
 	if s.ctxCapacity > 0 {
 		hello["context"] = s.ctxCapacity
 	}
+	if s.memResult != nil && len(s.memResult.Files) > 0 {
+		hello["memories"] = s.memResult.Files
+	}
 	s.emit(hello)
-	s.log("hello sent; initial workspace: %s; model=%s", s.cwd, cfg.Model)
+	s.log("hello sent (seq=%d, session=%s); initial workspace: %s; model=%s", s.out.Seq()-1, s.sessionID, s.cwd, cfg.Model)
+
+	// L3 记忆通知（§8.2 / §8.3）：
+	// 1. resume 且存在已加载记忆文件 ⇒ 发一条 kind:"system" 提示「记忆已更新」
+	if s.resumeID != "" && s.memResult != nil && len(s.memResult.LoadedFiles) > 0 {
+		nid := s.nextBlockID()
+		s.emit(map[string]any{"t": "block_start", "id": nid, "kind": "system", "text": "[记忆已更新]"})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
+	}
+	// 2. 超限跳过文件提示
+	if s.memResult != nil && len(s.memResult.SkippedFiles) > 0 {
+		var skippedNames []string
+		for _, f := range s.memResult.SkippedFiles {
+			skippedNames = append(skippedNames, f.Name)
+		}
+		nid := s.nextBlockID()
+		s.emit(map[string]any{
+			"t": "block_start", "id": nid, "kind": "system",
+			"text": fmt.Sprintf("[记忆文件超限已跳过: %s]", strings.Join(skippedNames, ", ")),
+		})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
+	}
+
 	return s
+}
+
+func (s *session) loadMemories() {
+	if s.cwd == "" {
+		return
+	}
+	wsMemDir := filepath.Join(s.cwd, ".ecdi", "memory")
+	res, err := memory.Load(s.globalMemoryDir, wsMemDir, s.ctxCapacity)
+	if err != nil {
+		s.log("failed to load memories: %v", err)
+		return
+	}
+	s.memResult = res
+	s.log("loaded memories: %d loaded, %d skipped", len(res.LoadedFiles), len(res.SkippedFiles))
 }
 
 // ── 出站薄包装（与假 core 同形；真 core 没有 drop-seq 旋钮）────────
@@ -129,6 +243,11 @@ func (s *session) nextBlockID() string {
 // ── 主循环 ──────────────────────────────────────────────────────
 
 func (s *session) run() error {
+	defer func() {
+		if s.ctxWriter != nil {
+			_ = s.ctxWriter.Close()
+		}
+	}()
 	s.log("waiting for gui hello")
 	for sl := range s.in {
 		if s.processLine(sl) {
@@ -186,6 +305,23 @@ func (s *session) handlePrompt(text, clientID string) {
 	s.turn++
 	s.setState(wire.StateRunning)
 
+	// ── L2 压缩触发检查（§7.2）────────────────────────────────────
+	if s.ctxCapacity > 0 && s.lastUsage != nil {
+		occupancy := s.lastUsage.PromptTokens
+		thresh := int(float64(s.ctxCapacity) * contextlog.CompressThresholdRatio)
+		if occupancy >= thresh && (s.turn-s.lastCompressTurn >= 2 || s.lastCompressTurn == 0) {
+			s.compressContext(occupancy)
+		}
+		if occupancy >= s.ctxCapacity {
+			s.emit(map[string]any{
+				"t": "error", "fatal": false,
+				"message": "上下文已达 100% 且压缩无法腾出足够空间，请新开会话",
+			})
+			s.setState(wire.StateIdle)
+			return
+		}
+	}
+
 	// ① 回显用户（协议 §4 + I9；缺失 client_id 补 auto- 前缀本地 id——
 	//    与假 core 同一条理由：core 声明了 v3，就不能由自己写出违规消息）。
 	echoID := clientID
@@ -200,6 +336,9 @@ func (s *session) handlePrompt(text, clientID string) {
 
 	// ② 历史追加用户消息（多轮累积；系统消息不进历史，见 buildRequestMessages）
 	s.history = append(s.history, chatMessage{Role: "user", Content: text})
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(contextlog.Message{Role: "user", Content: text})
+	}
 
 	// ③ 整轮期间的输入监听：cancel 打断 HTTP 流（A6）、answer 喂给 ask 门、
 	//    prompt/workspace 先进 deferred 队列（轮后按**到达态**处置——
@@ -354,12 +493,23 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 		// ① 追加 assistant 消息（content + tool_calls 原样回传——OpenAI 兼容
 		//    协议要求后续 tool 消息能对上这些 id）
 		var apiCalls []apiToolCall
+		var tcLog []contextlog.ToolCall
 		for i, c := range calls {
 			apiCalls = append(apiCalls, apiToolCall{ID: c.ID, Type: "function",
 				Index: i, Function: funcSpec{Name: c.Name, Arguments: c.Arguments}})
+			tcLog = append(tcLog, contextlog.ToolCall{
+				ID: c.ID, Type: "function", Index: i,
+				Function: contextlog.FuncSpec{Name: c.Name, Arguments: c.Arguments},
+			})
 		}
+		asstContent := textBlocks.assistantText.String()
 		s.history = append(s.history, chatMessage{Role: "assistant",
-			Content: textBlocks.assistantText.String(), ToolCalls: apiCalls})
+			Content: asstContent, ToolCalls: apiCalls})
+		if s.ctxWriter != nil {
+			_ = s.ctxWriter.AppendMsg(contextlog.Message{
+				Role: "assistant", Content: asstContent, ToolCalls: tcLog,
+			})
+		}
 
 		// ② 串行执行（I3 只允许一个未决 ask ⇒ 不并行，规格 §7）
 		for _, c := range calls {
@@ -368,6 +518,11 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 				//（否则下一轮请求会带一个没有 tool 响应的 tool_calls）。
 				s.history = append(s.history, chatMessage{Role: "tool",
 					ToolCallID: c.ID, Content: "（用户取消，未执行）"})
+				if s.ctxWriter != nil {
+					_ = s.ctxWriter.AppendMsg(contextlog.Message{
+						Role: "tool", Content: "（用户取消，未执行）", ToolCallID: c.ID,
+					})
+				}
 				continue
 			}
 			s.runToolCall(turnCtx, c, answerCh)
@@ -453,6 +608,122 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	// 结果回模型（GUI 渲染与模型输入同一份文本，§4.4）
 	s.history = append(s.history, chatMessage{Role: "tool",
 		ToolCallID: c.ID, Content: res.Output})
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(contextlog.Message{Role: "tool", Content: res.Output, ToolCallID: c.ID})
+	}
+}
+
+// ── L2 上下文压缩（docs/session-persistence-decisions.md §7.2）──────────
+
+func (s *session) compressContext(occupancy int) {
+	if s.failSummarize {
+		s.log("compression failed due to --fail-summarize")
+		nid := s.nextBlockID()
+		s.emit(map[string]any{
+			"t": "block_start", "id": nid, "kind": "system",
+			"text": "[上下文压缩失败: 摘要生成失败，本轮照常发送]",
+		})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
+		return
+	}
+
+	var cmsgs []contextlog.Message
+	for _, m := range s.history {
+		var tcs []contextlog.ToolCall
+		for _, tc := range m.ToolCalls {
+			tcs = append(tcs, contextlog.ToolCall{
+				ID: tc.ID, Type: tc.Type, Index: tc.Index,
+				Function: contextlog.FuncSpec{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
+			})
+		}
+		cmsgs = append(cmsgs, contextlog.Message{
+			Role: m.Role, Content: m.Content, ToolCalls: tcs, ToolCallID: m.ToolCallID,
+		})
+	}
+
+	cutTo, ok := contextlog.FindCompressionCutPoint(cmsgs, 2)
+	if !ok || cutTo < 0 {
+		return
+	}
+
+	var sb strings.Builder
+	for i := 0; i <= cutTo; i++ {
+		m := cmsgs[i]
+		sb.WriteString(fmt.Sprintf("[%s]: ", m.Role))
+		content := m.Content
+		if m.Role == "tool" && len([]rune(content)) > 200 {
+			content = string([]rune(content)[:200]) + "…(截断)"
+		}
+		sb.WriteString(content)
+		sb.WriteString("\n")
+	}
+
+	prompt := "请对以下对话历史做精炼摘要。必须保留：用户目标、已做出的决定、已改动的文件、未完成事项、关键约束。直接输出摘要正文，不要寒暄：\n\n" + sb.String()
+
+	summary, err := s.generateSummary(prompt)
+	if err != nil {
+		s.log("summary generation failed: %v", err)
+		nid := s.nextBlockID()
+		s.emit(map[string]any{
+			"t": "block_start", "id": nid, "kind": "system",
+			"text": "[上下文压缩失败: 摘要生成超时或报错，本轮照常发送]",
+		})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
+		return
+	}
+
+	count := cutTo + 1
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendCompact(summary, 0, cutTo)
+	}
+
+	sumMsg := chatMessage{
+		Role:    "user",
+		Content: contextlog.SummaryPrefix + summary,
+	}
+	newHistory := make([]chatMessage, 0, len(s.history)-count+1)
+	newHistory = append(newHistory, sumMsg)
+	newHistory = append(newHistory, s.history[cutTo+1:]...)
+	s.history = newHistory
+
+	afterOccupancy := int(float64(s.ctxCapacity) * contextlog.TargetRatio)
+	if s.lastUsage != nil {
+		s.lastUsage.PromptTokens = afterOccupancy
+	}
+	s.lastCompressTurn = s.turn
+
+	beforePct := int(float64(occupancy) * 100 / float64(s.ctxCapacity))
+	afterPct := int(float64(afterOccupancy) * 100 / float64(s.ctxCapacity))
+
+	nid := s.nextBlockID()
+	noticeText := fmt.Sprintf("[上下文已压缩:%d 条 → 摘要,占用 %d%% → %d%%]", count, beforePct, afterPct)
+	s.emit(map[string]any{
+		"t": "block_start", "id": nid, "kind": "system", "text": noticeText,
+	})
+	s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
+	s.log("compressed %d messages: %s", count, noticeText)
+}
+
+func (s *session) generateSummary(prompt string) (string, error) {
+	reqMsgs := []chatMessage{
+		{Role: "user", Content: prompt},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var out strings.Builder
+	cb := func(content, reasoning string) {
+		out.WriteString(content)
+	}
+	_, _, err := s.llm.Stream(ctx, reqMsgs, nil, cb)
+	if err != nil {
+		return "", err
+	}
+	res := strings.TrimSpace(out.String())
+	if res == "" {
+		return "历史对话已汇总，此前确认的目标、改动与约束已保留。", nil
+	}
+	return res, nil
 }
 
 // ── LLM 流的块映射 ──────────────────────────────────────────────
@@ -512,6 +783,9 @@ func (b *streamBlocks) closeAll(ok bool) {
 func (s *session) buildRequestMessages() []chatMessage {
 	sys := fmt.Sprintf("你是一个运行在用户本机 GUI（harness）里的 agent。当前工作区：%s。\n"+
 		"可用工具均为只读，相对路径以工作区为根解析。用用户的语言回答。", s.cwd)
+	if s.memResult != nil && s.memResult.PromptText != "" {
+		sys += s.memResult.PromptText
+	}
 	msgs := make([]chatMessage, 0, len(s.history)+1)
 	msgs = append(msgs, chatMessage{Role: "system", Content: sys})
 	return append(msgs, s.history...)
@@ -684,6 +958,7 @@ func (s *session) handleWorkspace(msg wire.GuiMsg, arrived wire.State) {
 	}
 	s.cwd = resolved
 	s.log("workspace switched: %s", s.cwd)
+	s.loadMemories()
 	s.emit(map[string]any{"t": "workspace", "request_id": msg.RequestID,
 		"ok": true, "path": resolved})
 }

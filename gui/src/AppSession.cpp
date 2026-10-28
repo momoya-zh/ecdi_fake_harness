@@ -207,6 +207,18 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
     // 会话名：首个用 fixtureName；后续在 NewSession 里改成"会话 N"。
     if (s.label.empty()) s.label = "会话 " + std::to_string(m_sessions.size() + 1);
 
+    // ★★ L1 持久化：GUI 分配全局稳定 ID 与初始元数据
+    if (s.sessionId.empty()) {
+        s.sessionId = SessionStore::GenerateSessionId();
+    }
+    s.meta.id = s.sessionId;
+    s.meta.createdAt = SessionStore::CurrentUtcTimestamp();
+    s.meta.lastUsedAt = s.meta.createdAt;
+    s.meta.label = s.label;
+    s.meta.providerId = s.providerId;
+    s.meta.modelName = s.modelName;
+    s.meta.contextLimit = s.contextLimit;
+
     m_sessions.push_back(std::move(session));
     // ★★ REQ-03：运行期新建的 live 会话也要接上唤醒。构造期 `m_application` 还是空
     //   ⇒ 本调用在那里是 no-op，由 `Run()` 的 `InstallWakeHandlers()` 统一补装。
@@ -276,6 +288,145 @@ void HarnessApp::NewSession() {
     m_sidebarDirty = true;
 }
 
+void HarnessApp::ContinueCurrentSession() {
+    if (!m_sess) return;
+
+    // ★★ L2 持久化：若当前会话为已恢复的 journal 只读会话，且指定了 corePath，并且不在 persistProbe 模式下，
+    // 原位续接（Resume）历史会话
+    if (m_sess->originKind == "journal" && !m_options.corePath.empty() && !m_options.persistProbe) {
+        if (ResumeSession(*m_sess)) {
+            return;
+        }
+    }
+
+    const std::string wsPath = m_sess->workspacePath;
+    const std::string provId = m_sess->meta.providerId;
+    const std::string model = m_sess->meta.modelName;
+
+    // 1. 获取工作区实体
+    Workspace* ws = nullptr;
+    if (!wsPath.empty()) {
+        ws = AcquireWorkspace(wsPath);
+    }
+    const std::string wsId = ws ? ws->id : std::string();
+
+    // 2. 新建会话（live 下优先按工作区拉起新会话）
+    if (!m_options.corePath.empty() && !wsId.empty()) {
+        NewTemporarySession(wsId);
+    } else {
+        NewSession();
+        if (ws && m_sess) {
+            AssignSessionWorkspace(*m_sess, ws);
+            m_sess->workspacePath = ws->path;
+        }
+    }
+
+    // 3. 继承提供商与模型（若模型仍在配置中）
+    if (!provId.empty() && !model.empty() && m_sess) {
+        const ProviderConfig* pc = m_appConfig.Find(provId);
+        bool found = false;
+        if (pc) {
+            for (const auto& m : pc->models) {
+                if (m.name == model) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (found) {
+            if (m_sess->writer && m_sess->protocolVer >= 4) {
+                SendModelSwitch(provId, model);
+            } else {
+                m_sess->queuedModelProvider = provId;
+                m_sess->queuedModelName = model;
+                m_sess->providerId = provId;
+                m_sess->modelName = model;
+            }
+        }
+    }
+
+    // 4. 输入框获焦
+    if (m_window && m_promptBar && m_promptBar->input()) {
+        m_window->SetFocusedWidget(m_promptBar->input());
+    }
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+    RefreshHud();
+    RebuildMemoryList();
+    RequestRepaint();
+}
+
+bool HarnessApp::ResumeSession(Session& s) {
+    if (m_options.corePath.empty() || s.sessionId.empty()) return false;
+    PauseActiveTimedClock();
+
+    auto child = std::make_unique<ChildSource>();
+    std::string error;
+
+    CacheProviderKeys();
+    for (const auto& pc : m_appConfig.providers) {
+        const auto keyIt = m_providerKeys.find(pc.id);
+        if (keyIt == m_providerKeys.end()) continue;
+        const std::string san = EnvSanitizeProviderId(pc.id);
+        SetEnvironmentVariableW(
+            ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_ID").c_str(),
+            ECDI::UTF8ToWide(pc.id).c_str());
+        SetEnvironmentVariableW(
+            ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_URL").c_str(),
+            ECDI::UTF8ToWide(pc.baseUrl).c_str());
+        SetEnvironmentVariableW(
+            ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_KEY").c_str(),
+            ECDI::UTF8ToWide(keyIt->second).c_str());
+        SetEnvironmentVariableW(
+            ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_MODEL").c_str(),
+            ECDI::UTF8ToWide(pc.ActiveModelName()).c_str());
+    }
+    if (!m_coreApiKey.empty()) {
+        SetEnvironmentVariableW(L"ECDI_CORE_KEY", ECDI::UTF8ToWide(m_coreApiKey).c_str());
+    }
+
+    std::string args = m_options.coreArgs;
+    args += " --resume " + s.sessionId;
+    if (!s.workspacePath.empty()) {
+        args += " --workspace \"" + s.workspacePath + "\"";
+    }
+
+    if (!child->Start(m_options.corePath, args, error)) {
+        ECDI::Logger::Log(ECDI::LogLevel::Error,
+                          ECDI::UTF8ToWide("ResumeSession Start failed: " + error));
+        return false;
+    }
+
+    s.child = child.get();
+    s.source = std::move(child);
+    s.writer = std::make_unique<ProtocolWriter>(*s.source);
+    s.originKind = "live";
+    s.journalPromoted = true;
+
+    if (!s.journal || !s.journal->IsOpen()) {
+        s.journal = std::make_unique<SessionStore::JournalWriter>();
+        std::string jerr;
+        s.journal->Open(SessionStore::JournalPath(s.workspacePath, s.sessionId), jerr);
+    }
+
+    InstallWakeHandler(s);
+    if (m_promptBar) {
+        m_promptBar->SetReadOnlyMode(false);
+    }
+    if (m_hud.continueBtn) {
+        m_hud.continueBtn->SetVisible(false);
+    }
+    if (m_window && m_promptBar && m_promptBar->input()) {
+        m_window->SetFocusedWidget(m_promptBar->input());
+    }
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+    RefreshHud();
+    RebuildMemoryList();
+    RequestRepaint();
+    return true;
+}
+
 // 切换活动会话（0d）：拆当前视图 → 指向目标会话 → 按目标会话模型重建。
 void HarnessApp::SwitchToSession(size_t index) {
     if (index >= m_sessions.size()) return;
@@ -327,6 +478,7 @@ void HarnessApp::SwitchToSession(size_t index) {
     m_sidebarDirty = true;
     m_hudDirty = true;
     RefreshHud();
+    RebuildMemoryList();
     RequestRepaint();
 }
 
@@ -368,8 +520,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     const int nameW = (canDelete || isArchived)
         ? ((canDelete && !isArchived) || (isArchived && canDelete) ? 90 : 110)
         : (kSidebarRowW - 22 - 2);
-    auto name = uikit::Label(session->label.empty() ? "会话" : session->label,
-                             nameW, 16, active ? kAccentInk : kDarkInk,
+    std::string rowLabel = session->label.empty() ? "会话" : session->label;
+    if (session->originKind == "journal") {
+        rowLabel += " [只读]";
+    }
+    auto name = uikit::Label(rowLabel,
+                             nameW, 16,
+                             active ? kAccentInk : (session->originKind == "journal" ? kDarkMuted : kDarkInk),
                              harness::kFontSmall);
     name->SetPosition(22, (kSidebarRowH - 16) / 2);
     // ★ 名称标签禁用 ⇒ 它**不参与命中**（`Widget::HitTest` 的 `!IsEnabled()` 早退，
@@ -599,7 +756,8 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
         std::vector<bool> shown(n, false);
         for (size_t wi : GroupTitlesForDisplay()) {
             const Workspace& ws = *m_workspaces[wi];
-            place(BuildSessionGroupRow(ws.path, ws.id), kSidebarGroupH);
+            const std::string title = ws.unavailable ? (ws.path + " [不可用]") : ws.path;
+            place(BuildSessionGroupRow(title, ws.id), kSidebarGroupH);
             for (size_t i = 0; i < n; ++i) {
                 if (m_sessions[i]->workspaceId != ws.id) continue;
                 if (m_sessions[i]->archived) { shown[i] = true; continue; }  // ★★ 归档会话不进主列表
@@ -774,7 +932,14 @@ bool HarnessApp::DeleteSessionAt(size_t index) {
     //   取证：`.scratch/_repro_tempdel3.py` 七条 live 序列，修前 5 条 0xC0000005，修后 0 条。
     const auto it = std::find_if(m_sessions.begin(), m_sessions.end(),
                                  [target](const std::unique_ptr<Session>& p) { return p.get() == target; });
-    if (it != m_sessions.end()) m_sessions.erase(it);
+    if (it != m_sessions.end()) {
+        // ★★ 2026-10-28：删除已落盘会话时同步清理磁盘四件套（事实 §2）
+        if (!target->workspacePath.empty() && !target->sessionId.empty() && target->journalPromoted) {
+            std::string delErr;
+            SessionStore::DeleteSession(target->workspacePath, target->sessionId, delErr);
+        }
+        m_sessions.erase(it);
+    }
 
     // 活动下标同样按身份重取：`m_sess` 一定还在这张表里（切换后指向邻居，或者本来就没切），
     // 而 erase + MaybeDelete 一共可能前移一次，±1 算术扛不住两次变动。
@@ -826,6 +991,8 @@ bool HarnessApp::ArchiveSessionAt(size_t index) {
     }
 
     target->archived = true;
+    target->meta.archived = true;
+    SyncSessionMeta(*target);
     m_sidebarDirty = true;
     m_hudDirty = true;
     RequestRepaint();
@@ -838,6 +1005,8 @@ bool HarnessApp::RestoreSessionAt(size_t index) {
     if (!target->archived) return false;  // 未归档，不重复操作
 
     target->archived = false;
+    target->meta.archived = false;
+    SyncSessionMeta(*target);
     // ★ 恢复 = 取消归档 + 切到它（用户点「↩」的心智模型是「打开它」）。
     SwitchToSession(index);
     m_sidebarDirty = true;

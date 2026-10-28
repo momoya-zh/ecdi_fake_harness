@@ -448,7 +448,7 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
     }
     m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
     // ★★ Step 5：展开态也进 sidecar（同样是"只对历史会话"，理由同 MarkAnswered）。
-    if (m_sess && m_sess->originKind == "replay-history") SaveUiState(*m_sess);
+    if (m_sess && (m_sess->originKind == "replay-history" || m_sess->originKind == "journal")) SaveUiState(*m_sess);
     Relayout();             // 立即重排一次（settle 后定时器路径不再经过 Relayout）
     RequestRepaint();
 }
@@ -867,7 +867,7 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     if (m_sess->askHist.size() > 16) m_sess->askHist.pop_front();
     // ★★ Step 5：把结论落到 sidecar（**只有历史打开的会话**才写——启动时 `--replay`
     //   的会话是跑批基线，写它等于让"再跑一次"与"第一次跑"不同）。
-    if (m_sess->originKind == "replay-history") SaveUiState(*m_sess);
+    if (m_sess && (m_sess->originKind == "replay-history" || m_sess->originKind == "journal")) SaveUiState(*m_sess);
     m_hudDirty = true;
     AddNoticeRow("[answer] " + choice, kDarkMuted);
     RequestRepaint();

@@ -1,9 +1,13 @@
 # 会话持久化 / 长期有效 —— 方案与裁决点（2026-10-27）
 
 > **读者**：接手这件事的人。本文自包含，不需要读对话历史。
-> **状态**：**设计稿，零代码改动**。事实锚点全部实地核对（HEAD `af271ea` + 工作区未提交改动）。
-> **为什么现在只写不改**：并行会话正在改 6 个 UI 文件（§7 有冲突表），而本方案唯一躲不开的交集是
-> `App.h` 的 `Session` 结构体。先定方案、后落代码，比两边同时改一个结构体便宜。
+> **状态**：**已按 [session-persistence-decisions.md](session-persistence-decisions.md) 定稿并完成落地实施 (2026-10-28)**。
+> 原文分析及事实锚点保留作为历史设计考量与问题排查参考。
+> **实施落地成果**：
+> - L1 会话持久化（`SessionStore`、`<工作区>/.ecdi/sessions/`、journal 读点落盘、原子写 meta）已实现；
+> - 启动自动发现恢复（按 `createdAt` 排序、先建工作区映射、反序列化会话、只读回放）已实现；
+> - L2 只读保护与继续开会话（`[只读]` 标记置灰、输入框禁用/拦截、双重「继续」按钮继承工作区与模型）已实现；
+> - `--persist-probe` 7 相探针覆盖完整生命周期并通过回归测试。
 
 ---
 
@@ -27,18 +31,21 @@
 
 | # | 事实 | 锚点 | 后果 |
 |---|---|---|---|
-| 1 | 会话全在内存：`std::vector<std::unique_ptr<Session>> m_sessions` | `App.h:1093` | 进程退出 = 全部消失 |
-| 2 | live 会话与 core 子进程 1:1 绑定 | `AppSession.cpp:124-166`（`ChildSource`） | core 退/被杀 = 会话死 |
+| 1 | 会话全在内存：`std::vector<std::unique_ptr<Session>> m_sessions` | `App.h:1146` | 进程退出 = 全部消失 |
+| 2 | live 会话与 core 子进程 1:1 绑定 | `AppSession.cpp:125-180`（`ChildSource`） | core 退/被杀 = 会话死 |
 | 3 | core **不写任何磁盘**（非测试代码零 `os.WriteFile`） | `core/cmd/ecdi-core/*.go` | 模型上下文无处可恢复 |
-| 4 | live 会话**没有任何持久化写入路径** | `SaveUiState` 仅在 `AppTranscript.cpp:411`、`:739` 对 `replay-history` 调用 | 用户真用的会话零落盘 |
+| 4 | live 会话**没有任何持久化写入路径** | `SaveUiState` 仅在 `AppTranscript.cpp:451`、`:870` 对 `replay-history` 调用 | 用户真用的会话零落盘 |
 | 5 | 唯一的磁盘状态是 `.ui.json`（answers / expanded） | `AppHistory.cpp:223-268` | 只存「决策」，不存转录 |
 | 6 | 「历史」面板扫 `protocol/fixtures/**/*.jsonl` | `AppHistory.cpp:45-90` | 用户看到的是测试夹具 |
-| 7 | 会话 id 是 core 里的**常量** | `core/session.go:155` = `s-live-1`；`core/cmd/ecdi-core/session.go:103` = `s-real-1` | 侧栏 chip 对每个会话都一样 ⇒ 身份不存在 |
-| 8 | live 会话 label 恒为 `<core exe> (live)` | `AppSession.cpp:167` | 持久化后会得到一排同名会话 |
+| 7 | 会话 id 是 core 里的**常量** | `core/session.go:156` = `s-live-1`；`core/cmd/ecdi-core/session.go:104` = `s-real-1` | 侧栏 chip 对每个会话都一样 ⇒ 身份不存在 |
+| 8 | live 会话 label 恒为 `<core exe> (live)` | `AppSession.cpp:176` | 持久化后会得到一排同名会话 |
 | 9 | 协议给 resume 留了字段但没实现 | `PROTOCOL.md:100`；`P3-real-core-spec.md` §1.2、`P1.5-child-process-spec.md` §7 明写「推后」 | 有钩子，无实现 |
 | 10 | 协议强制 `hello.seq = 0`，且 `validate.py` 把它当 I4 硬判据 | `PROTOCOL.md:90`；`validate.py:139-141` | resume 后 seq 怎么续是**必须先裁决**的事（§4 B1） |
-| 11 | 临时会话切走即删；归档只在内存 | `AppWorkspace.cpp:252`；`AppSession.cpp:789` | 持久化必须先定义这两类的语义（§6.4） |
+| 11 | 临时会话切走即删；归档只在内存 | `AppWorkspace.cpp:267`（删除守卫）；`AppSession.cpp:828` | 持久化必须先定义这两类的语义（§6.4） |
 | 12 | A7 验收要求「关窗后 core 退出、无僵尸」 | `P1.5-child-process-spec.md` §6 A7 | 方案 C 与一条**已验收**契约直接冲突 |
+| 13 | **工作区注册表也是纯内存的**，id 由进程级计数器产生 | `App.h:1157`（`m_workspaces`）、`:1158`（`m_nextWorkspaceId = 1` 是**每次启动的初值**）、`AppWorkspace.cpp:209` | 「按工作区分组」缺数据来源（§9.1） |
+| 14 | `HandleLine` 有 **5 个调用点，其中 3 个是回放路径** | `AppStream.cpp:125` / `:249` / `:415` / `:435`、`AppHistory.cpp:322` | journal 的写入落点取决于它（§9.3） |
+| 15 | 配置 v4：提供商 1—N 模型，`activeModel` 是**全局**状态；回落规则「找不到 ⇒ `models[0]`」 | `AppConfig.h:40-47`、`AppConfig.cpp:75` | 只存 `providerId` 的恢复会**静默换模型**（§9.2） |
 
 ---
 
@@ -63,10 +70,13 @@
 **做什么**
 
 - GUI 侧生成会话 id（`s-<utc>-<4hex>`），live 会话创建时分配，进 `Session` 新字段。
-- `%APPDATA%\ecdi-fake-harness\sessions\<id>.jsonl`：在 `HandleLine` 入口
-  （`AppStream.cpp:445`）把 core→gui 原始行**逐字节** append + 每行 flush。
-- `%APPDATA%\ecdi-fake-harness\sessions\<id>.meta.json`：label / workspaceId / workspacePath /
-  providerId / modelName / createdAt / lastUsedAt / lastSeq / archived。
+- `%APPDATA%\ecdi-fake-harness\sessions\<id>.jsonl`：在**两个 live 读点**（`AppStream.cpp:124-125`、
+  `:247-249`，紧挨现成的 `++m_sess->liveLines`）把 core→gui 原始行**逐字节** append + 每行 flush。
+  ★ 不要挂在 `HandleLine` 入口（`AppStream.cpp:445`）——它有 3 个回放调用点，理由见 §9.3。
+- `%APPDATA%\ecdi-fake-harness\sessions\<id>.meta.json`：label / **workspacePath**（不是 workspaceId，§9.1）/
+  **providerId + modelName 二元组**（§9.2）/ createdAt / lastUsedAt / lastSeq / archived /
+  可选 `contextLimit`（来自 `hello.context` 的事实记录）。**meta 必须走「写 `.tmp` + rename」**，
+  不能照抄 `AppConfig::Save` 的 `trunc` 直写（§9.4）。
 - 启动时扫目录 → 每个 meta 建一个 `originKind: "journal"` 会话，打开走**现成的**
   `OpenHistorySession` 路径（`AppHistory.cpp:289-365`：抽干 + sidecar + 跳末尾）。
 - 「历史」面板改扫 `sessions/`；夹具另开一个入口（或 `--fixtures` 开关），见 §6.2。
@@ -75,13 +85,17 @@
 A 只是给它换一个数据来源，不新造恢复逻辑。**这是本仓已有能力，不是新设计。**
 
 **改动面**：`AppHistory.cpp`（读写 + 扫描）、`AppSession.cpp`（分配 id / label）、
-`AppStream.cpp`（`HandleLine` 一行写入）、`main.cpp`（启动恢复）、`App.h`（`Session` 加 2-3 字段）、
+`AppStream.cpp`（两个 live 读点各加一行 journal 写入）、`main.cpp`（启动恢复）、
+`AppWorkspace.cpp`（启动时按 `createdAt` 喂 `AcquireWorkspace`，§9.1）、`App.h`（`Session` 加 2-3 字段）、
 新增 `SessionStore.cpp/.h`（CMake 是 `GLOB_RECURSE`，新 .cpp 不用改 CMake）。
 
 **能解决**：会话活过重启、可回看、可按工作区分组、可归档。
 
 **不能解决**：**不能继续对话**。恢复出来的是只读历史，没有 core。「继续」= 新建会话（工作区可继承，
-`NewSession` 已有继承口径，`AppSession.cpp:230-235`）。
+`NewSession` 已有继承口径，`AppSession.cpp:239-244`）。
+★ 但那个口径**只继承工作区，不继承模型** —— 新建的 live 会话吃的是 `DefaultProvider()` 的 `activeModel`
+（`AppSession.cpp:182-183`）。所以从「只读恢复会话」点「继续」时，必须把 meta 里的
+`providerId + modelName` 一起带上，否则用户以为在接着聊，实际换了个脑子（§9.2）。
 
 **风险**
 
@@ -196,18 +210,25 @@ A 只是给它换一个数据来源，不新造恢复逻辑。**这是本仓已�
 
 **6.1 sidecar 路径对 live 会话算成 core exe 路径。**
 `UiStatePath` = `originPath + ".ui.json"`（`AppHistory.cpp:158-168`），而 live 会话的
-`originPath = m_options.corePath`（`AppSession.cpp:171`）⇒ 一旦有人把 `SaveUiState` 扩到 live 会话，
+`originPath = m_options.corePath`（`AppSession.cpp:180`）⇒ 一旦有人把 `SaveUiState` 扩到 live 会话，
 **所有 live 会话共写 `ecdi-core.exe.ui.json`**，就在二进制旁边。今天没爆**只因为**
-`SaveUiState` 只在 `replay-history` 分支被调用（`AppTranscript.cpp:411` / `:739`）。
+`SaveUiState` 只在 `replay-history` 分支被调用（`AppTranscript.cpp:451` / `:870`）。
 这是 A 必须顺手拆掉的引信。
+★ 复核补充：A 落地后这根引信**对恢复出来的会话是自动拆掉的** —— `OpenHistorySession` 建的会话
+`originPath` 就是 journal 路径，sidecar 天然落在 journal 旁边、按会话分文件；
+剩下的 live 那一半，把 `originPath` 设成 journal 路径即可一并解决（§9.3 末）。
 
 **6.2 「历史」面板扫夹具目录。** 见 #6。A 落地时必须把「夹具」与「我的会话」分开，
 否则持久化做完，用户看到的还是 `demo-session.jsonl`。
 
 **6.3 live 会话 label 同名。** 见 #8。需要 label 规则（首条 prompt 前 N 字 / 工作区叶子 + 序号）。
 
-**6.4 临时会话与归档的语义。** 临时会话切走即删（`AppWorkspace.cpp:252`）⇒ 它**不该**落盘
-（否则每次点「＋」都留一个空文件）。归档只在内存（`AppSession.cpp:789`）⇒ 要进 meta。
+**6.4 临时会话与归档的语义。** 临时会话切走即删（`AppWorkspace.cpp:267` 的 `temporary` 守卫）⇒ 它**不该**落盘
+（否则每次点「＋」都留一个空文件）。归档只在内存（`AppSession.cpp:828`）⇒ 要进 meta。
+★ 复核补充：转正时机也不能漏 —— `temporary` 是在 `PostPrompt` 里、**过了 idle 校验之后**才清掉的
+（`AppWorkspace.cpp:78-79`），不是建会话时。所以 journal 的开写点要么等转正、要么容忍「删会话 = 删文件」，
+但**不能**在 `CreateSessionFromOptions` 里就建文件，否则每次点「＋」都会留一个孤儿 journal。
+删除路径必须连 `<id>.jsonl` + `<id>.meta.json` + `<id>.jsonl.ui.json` **三个一起删**（少删一个 = 侧栏出现打不开的幽灵行）。
 
 **6.5 密钥绝不落盘。** `ECDI_CORE_KEY` / provider key 走启动环境层（`AppSession.cpp:127-157`），
 **绝不进** journal / meta / 摘要（`positioning.md` §4）。
@@ -221,7 +242,13 @@ A 只是给它换一个数据来源，不新造恢复逻辑。**这是本仓已�
 
 ---
 
-## 7. 与并行会话的协作边界
+## 7. 与并行会话的协作边界（**整节已作废**，2026-10-28）
+
+> **作废原因**：占坑的两个提交都已合入 —— `d57aa5d`（版心模型）、`2149170`（一密钥多模型 / 配置 v4）。
+> `git status` 干净，当年唯一躲不开的交集 `App.h` 现在自由。
+> **但 `2149170` 不是无害地落地的**：它把模型改成「提供商 1—N 子项 + 全局 `activeModel`」，
+> 直接改写了本文 §3 B 那句「`providerId` / `modelName` 必须一起恢复」的性质 —— 见 §9.2。
+> 下面这张表留作「为什么当时只写不改」的记录，**不要再据它排期**。
 
 `git diff --numstat`（2026-10-27 18:26）显示并行会话正在改：
 
@@ -243,9 +270,113 @@ A 只是给它换一个数据来源，不新造恢复逻辑。**这是本仓已�
 
 ## 8. 未决问题（要拍板）
 
+★ **哪几条真的挡住 S1**（2026-10-28 复核注）：只有 **2** 和 **5**。
+1（档位）可以先按「A」开工，B/C 是后面加不改存储格式的事（§9.2/§9.4 把接口预留好了）；
+3（夹具入口）是 UI 组织问题，做 S1 时顺手分栏；4（大会话上限）不改变任何判据，谁提醒都可以。
+
 1. **「长期有效」要哪一档？** 回看（A）/ 继续（B）/ 后台跑（C）。
 2. **存储位置**：`%APPDATA%\ecdi-fake-harness\sessions\`，还是跟工作区走
    （每个工作区一个 `.ecdi/sessions/`）？后者「项目搬走带着历史走」，与 sidecar 的现有取舍同源
    （`AppHistory.cpp:159` 注释），但会把历史写进用户的代码仓。
+   ★ 复核倾向 **APPDATA**：`AppConfig` 已经占了这个位置（`AppConfig.cpp:31`），
+   两处存储分家会让「备份/清空我的数据」变成两件要做的事；而「跟工作区走」在 §9.1 的
+   口径下并不丢东西 —— meta 存的是路径，工作区搬走时用户搬的是目录本身，历史仍然按路径指得回去。
 3. **「夹具历史」面板保留吗？** 保留 = 两个入口；去掉 = 评估流程要另找入口。
 4. **大会话上限策略**：不截断的前提下，谁来提醒、提醒几次。
+5. ★ **恢复出来的会话是只读的，这个「只能看」怎么表达？** S1 唯一的 UI 设计量在这里，
+   已出原型待验收（§9.5）。判据：用户点进去、试着打字，必须在**打第一下之前**就知道接不上，
+   而不是敲完一段话按回车才发现没反应。
+
+---
+
+## 9. 2026-10-28 复核：本文原先漏掉的三处缺口（外加一处可白捡的先例）
+
+复核动机：§7 的约束消失后动手不再受限，所以先把「照原来那张图做会做错」的几处补齐。
+9.1 / 9.2 / 9.3 每一条都会让功能**看起来跑通了、实际是错的**，不是风格问题。
+
+### 9.1 ★ 工作区注册表也不落盘 ⇒「按工作区分组」做出来是空的
+
+**事实**（#13）：`m_workspaces` 是纯内存的 `vector<unique_ptr<Workspace>>`（`App.h:1157`），
+id 由**进程级**计数器产生 —— `ws->id = "w" + std::to_string(m_nextWorkspaceId++)`
+（`AppWorkspace.cpp:209`），而 `m_nextWorkspaceId = 1` 是成员**初值**（`App.h:1158`），
+每次启动都从 1 重新数。全仓没有任何工作区落盘路径（`grep` 于 `gui/src/` 只有 `AppConfig` 写盘）。
+
+**后果**：本文 §3 A 让 meta 存 `workspaceId`，重启后恢复出来的会话**全部指向不存在的实体**。
+侧栏「按工作区分组」静默退化成「一堆没有归属的会话」，而且 `WorkspaceById()` 返回 nullptr
+是合法路径（`App.h:567-573` 明写空 `workspaceId` = replay/new 类），所以连判空都发现不了它。
+
+**修法（存路径，不存 id）**：meta 存 `workspacePath`；启动时把各 meta 的路径**按 `createdAt` 升序**
+逐个喂给现成的 `AcquireWorkspace()`（`AppWorkspace.cpp:200`），id 由本次进程重新派生。
+三条不变量正好都支持这条路：② 按路径去重 ⇒ 同目录的多个历史会话天然共享一个实体；
+③ 只由 core 确认过的路径创建 ⇒ 存进 meta 的本来就是 ack 过的规范化路径，喂回去不引入「GUI 猜的路径」。
+
+★ **前提是喂入顺序确定**。「下标即创建序」是探针判据的地基（`App.cpp:796`、`AppWorkspace.cpp:167-169`），
+所以排序键必须钉死 `createdAt`、同值再比 `sessionId`，**不能**靠目录枚举序 ——
+`FindHistoryFiles` 当年专门加了一次显式排序（`AppHistory.cpp:85-88`）就是为这个。
+
+★ 另一条不能忘：`AcquireWorkspace` 是**追加**语义，而恢复时新会话也会建工作区。
+所以启动顺序是「先按 `createdAt` 建全部工作区，再建会话」，反过来会让同一个目录拿到两个 id
+（第一个由恢复建、第二个由新建会话建），去重就废了。
+
+### 9.2 ★ v4 之后，模型身份必须存 (providerId, modelName) 二元组
+
+本文 §3 B 那句「`providerId` / `modelName` 必须一起恢复」在 `2149170` 之后**变了性质**：
+配置 v4 把模型降成提供商的子项（`ProviderConfig::models[]` + `activeModel`，`AppConfig.h:40-47`），
+一家之下可以有 N 个模型，而 `activeModel` 是**全局**配置状态。
+
+于是「只存 providerId、恢复时取 `ActiveModelName()`」这条最省事的写法**必然**换模型 ——
+用户在 v4 之后最常做的动作恰恰是「在同一家里切模型」，他一切，全局 `activeModel` 就变了，
+所有「按 providerId 恢复」的旧会话下次打开集体换脑子。更糟的是回落规则
+「`activeModel` 找不到 ⇒ `models[0]`」（`AppConfig.cpp:75-81`）会把这件事做得**很安静**：
+既不报错也不上屏。
+
+**修法**：
+- meta 存 `providerId` + `modelName` 两个字段（`Session` 里本来就有：`App.h:613` / `:616`）；
+- 恢复时**校验**这个名字还在不在那家的 `models[]` 里；不在 ⇒ 转录头部插一条可见 notice
+  （`[原模型 <name> 已不在提供商 <id> 的模型表中；本会话按只读显示]`），
+  **不得**静默回落 `models[0]`；
+- chip 显示的是 **meta 里那个名字**，不是 `ActiveModelName()` —— 只读会话的「它当时用什么模型」
+  是个历史事实，跟现在的激活项无关；
+- ★ 「继续」（从只读会话开新 live 会话）也要带上这对二元组，见 §3 A「不能解决」那段：
+  现成的继承口径只继承工作区，模型走的是 `DefaultProvider()` 的 `activeModel`（`AppSession.cpp:182-183`）；
+- 顺带存 `contextLimit`（`App.h:611`，来源只有 `hello.context`）：这是**记录事实**，
+  与「不得猜测容量、不得按 0 当分母」（`App.h:606-611`）不冲突；meta 里没有 ⇒ 照旧显示 `—`。
+
+### 9.3 ★ journal 的落点：不是 `HandleLine`，是两个 live 读点
+
+本文 §3 A 原文把写入挂在 `HandleLine` 入口（`AppStream.cpp:445`）。复核发现它有 **5 个调用点**（#14），
+其中 **3 个是回放路径**：`DrainInstant`（`AppStream.cpp:415`）、`DrainTimed`（`:435`）、
+以及 `OpenHistorySession` 自己的抽干循环（`AppHistory.cpp:322`）。
+
+**后果**：挂 `HandleLine` 就必须加 `originKind == "live"` 守卫。守卫是**纪律**不是**结构** ——
+漏一次（而新增第 6 个调用点在 0d/Step 5 之后是会发生的）就变成
+**「用户每点开一个历史会话，就把那份夹具重新记成一份自己的新 journal」**。
+届时 §5 S1 承诺的「6 份夹具基线逐位不变」不再天然成立，而且这条回归**测不出来**：
+基线跑的是 `--replay`，探针不会去点历史面板。
+
+**修法**：挂在 live 独有的两行旁边 —— `AppStream.cpp:124-125` 与 `:247-249`，两处都是
+`++m_sess->liveLines;` 紧接 `HandleLine(line);`。`liveLines` 这个计数器本身就是
+「这是一行 core→gui 原始行」的现成判据（全仓只有这两处自增，读点 `AppHud.cpp:992`/`:1184`、
+`AppSummary.cpp:71`），所以**回放路径结构上不可能经过，无需守卫**，基线不变才是结构性的。
+
+★ 附带确认过一件好事：GUI 自己的事件（`AddNoticeRow`、pending prompt 视图）不进 `HandleLine`，
+所以 §4 B2「journal 逐字节只记 core 发的行、不夹带 GUI 事件」这条，在这个落点上天然成立。
+
+### 9.4 一处可以白捡的先例：`AppConfig` 已经是完整的落盘模板
+
+不用新造持久化纪律，`AppConfig` 那套直接照抄五件：
+`DefaultDir()` 的 APPDATA + cwd 回落（`AppConfig.cpp:31`）、`SetPathForTesting`
+（探针隔离用户真实配置，`:48`）、版本号单一真相 + Load 时迁移（`kCurrentVersion`，`AppConfig.h:65`，
+教训见 `:62-64`「版本号散两处必漏一处」）、**结构上无密钥字段**（只存凭据目标名引用，`AppConfig.h:4-6`）、
+以及迁移测试 `tools/appconfig-migrate-test.cpp` 这个形态。
+密钥这条正好是 §6.5 的结构化实现 —— 别在 `SessionMeta` 里给 key 留字段，让它**放不下**而不是「不该写」。
+
+★ 唯一**别**照抄的一处：`AppConfig::Save` 是 `ofstream(binary|trunc)` 直写（`AppConfig.cpp:358`）。
+配置写坏了用户可以重填，**meta 写坏了那个会话就永久回不来**。所以 meta 走「写 `.tmp` + `rename` 覆盖」，
+journal 走 append + 每行 flush。两个文件的写入纪律本来就不同，别为了「复用 Save」把 meta 也做成 trunc 直写。
+
+### 9.5 只读恢复的交互（S1 唯一的 UI 设计量）
+
+原型：`docs/prototype/session-restore-mockup.html`（2026-10-28，待验收）。
+要覆盖四个观感点：侧栏「我的会话 / 夹具」两组怎么分、恢复出来的会话在列表里长什么样、
+点进去后输入框如何表达「接不上」、以及「继续」按钮把 §9.2 的模型二元组带过去。

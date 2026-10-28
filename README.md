@@ -199,6 +199,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--select-probe` | 转录正文选中复制（**配 `--selectable-rows` 用**，否则自述 `skipped-no-selectable-row`） |
 | `--delprov-probe` | 删除提供商：拒绝删最后一个（需一份有 provider 的 `--config`） |
 | `--settings-probe` | 设置面板 + 凭据注入 + 模型热切换回执（★ **强制要求 `--config`**，见下） |
+| `--persist-probe` | 会话持久化与启动恢复（7 相覆盖：元数据发现、会话反序列化与转录复原、只读 UI 置灰、发送拦截守卫、新会话继承工作区/模型上下文、残损容错、测试隔离清理；★ **强制要求 `--config`**） |
 | `--reasoning-probe` | 思维链折叠行为取证 |
 | `--async-probe` | **REQ-03**：投递 vs 轮询的 A/B（**live**）——`blockedUs` / 唤醒承载占比 / 单回调预算 / 送达延迟分位 |
 
@@ -224,7 +225,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | **评估读数**（机器可读 JSON） | `evals/`（口径见 §当前状态）· 工作读数在 `.scratch/`（gitignored） |
 | **协议契约** | `protocol/PROTOCOL.md`（v3） |
 | 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` |
-| **会话持久化方案（未实现）** | `docs/session-persistence-plan.md`（现状事实 · 三档方案 · 三个待裁决点） |
+| **会话持久化方案与实施** | `docs/session-persistence-decisions.md`（**已定稿并完成落地**：L1 会话持久 + L2 延续模型/工作区 + `--persist-probe` 7相验收）· `docs/session-persistence-plan.md`（架构分析与事实账本） |
 | GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
 
 ## 能力账本现状
@@ -300,17 +301,23 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 
 ### 轴二：BOM —— 按文件，且必须与该文件在 HEAD 中的字节一致
 
-实测 **146 个**受版本控制的文件里 **37 个带 BOM、109 个不带**（2026-10-24 按 `HEAD` 重数），与扩展名无关：
+实测 **198 个**受版本控制的文件里 **48 个带 BOM、150 个不带**（2026-10-28 按 `git ls-files` 重数；原记录 146/37/109 是 2026-10-24 的，之后新增的文档与原型都在涨），与扩展名无关：
 
 | 带 BOM（UTF-8 `EF BB BF`） | 不带 BOM |
 |---|---|
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
-| `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**6 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/prototype/harness-hifi-variant-a.html` |
+| `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
 | `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（九份夹具）· 全部 `evals/*.json`（82 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
+
+★ **2026-10-28 再订正两处**：③ 原型涨到 **8** 份，其中 5 份带 BOM —— 新增的两份
+`gui-v4-ux-mockup.html`（P4 的上游原型，从 Qoder 会话可视化目录按字节收进仓库，sha1 `2c1db367…`）
+与 `session-restore-mockup.html`（会话持久化 §9.5）**都无 BOM**；
+④ 顺带立一条纪律：**文档里出现 `C:\` 绝对路径算缺陷**，原型一律用 `docs/prototype/` 仓库相对路径引用
+（`docs/P4-gui-usability-plan.md` 原引的是机器路径，已改）。
 
 ★ **BOM 在本仓库不是编译正确性问题，别把它说成问题。** `gui/CMakeLists.txt:20` 给
 `harness_gui` 传了 `/utf-8`（自初始提交 `f243579` 起），MSVC 不看 BOM 也知道源文件是 UTF-8——

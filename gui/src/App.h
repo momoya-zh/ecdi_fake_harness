@@ -12,6 +12,7 @@
 #include "ReplaySource.h"
 #include "Transcript.h"
 #include "AppConfig.h"
+#include "SessionStore.h"
 
 #include "ECDI/Application/Application.h"
 #include "ECDI/Core/Color.h"
@@ -237,6 +238,9 @@ private:
         ECDI::Button* settingsSave = nullptr;    // 保存并连接
         // ★ P3.6：检查器「模型」卡片（提供商列表 + 切换）。
         ECDI::Panel* modelList = nullptr;        // 行容器（children 由 RebuildModelList 重建）
+        // ── L3 记忆文件卡片（docs/session-persistence-decisions.md §8）──
+        ECDI::Panel* inspMemoryCard = nullptr;   // 右栏：「记忆」卡片
+        ECDI::Panel* memoryList = nullptr;       // 记忆文件列表容器
         // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip + 下拉浮窗。
         ECDI::Button* modelChip = nullptr;       // 顶栏：`提供商 › 模型 · N% ▾`
         ECDI::Panel* modelPopup = nullptr;       // 浮窗壳（挂 m_scroll，顶部下拉）
@@ -247,6 +251,7 @@ private:
         ECDI::Label* sessProgress = nullptr; // 左栏：回放进度 n/N
         ECDI::Label* convTitle = nullptr;    // 中栏会话头：标题（原型 C .conversation-head）
         ECDI::Label* convSub = nullptr;      // 中栏会话头：元信息副标
+        ECDI::Button* continueBtn = nullptr; // 中栏会话头：「继续」操作按钮（只读会话专享）
         ECDI::Label* healthSeq = nullptr;    // 右栏：seq 连续性（I4）
         ECDI::Label* healthViol = nullptr;   // 右栏：违规 · 未知
         ECDI::Label* healthKind = nullptr;   // ★ 右栏：未知 kind 计数（2026-10-13，协议空白）
@@ -526,6 +531,16 @@ private:
         std::string id;           // 稳定 ID：`w1` / `w2` …（不是下标，删不掉、不随重排变）
         std::string path;         // core 回显并确认过的实际路径（未确认时为空）
         std::string requestedPath;// 最近一次请求的路径（含未确认/失败的那次，诊断用）
+        bool unavailable = false; // ★★ 2026-10-28：路径不存在或不可访问（侧栏标「不可用」，不删记录）
+    };
+
+    struct MemoryFileItem {
+        std::string name;
+        std::string source;       // "global" 或 "workspace"
+        long long bytes = 0;
+        int tokens = 0;
+        bool skipped = false;
+        std::string skipReason;
     };
 
     struct Session {
@@ -547,7 +562,10 @@ private:
 
         // ── hello / 协议协商 ──
         std::string coreState;
-        std::string sessionId;                     // hello 捕获（HUD 左栏）
+        // ★★ 2026-10-28：会话全局稳定 ID（GUI 分配 s-<utc>-<4hex>；回放为 hello 值）；
+        //   core 的 hello.session 降级为 coreInstanceId（运行实例 ID）。
+        std::string sessionId;
+        std::string coreInstanceId;
         std::string coreVer;
         std::string capsStr;
         int protocolVer = 0;
@@ -660,7 +678,22 @@ private:
         //   没有这一步，"切走 30 秒再切回"会让 timed 会话凭空快进 30 秒。
         bool timedPaused = false;
         std::chrono::steady_clock::time_point timedPausedAt;
+
+        // ── ★★ 2026-10-28：L1 会话持久化 ──
+        SessionMeta meta;                                   // 内存中的元数据副本
+        std::unique_ptr<SessionStore::JournalWriter> journal; // live 模式追加写流（转正后激活）
+        bool journalPromoted = false;                       // 是否已转正开写
+        std::vector<std::string> prePromotionLines;         // 转正前暂存的 live 行（hello、state 等）
+        std::string firstPromptText;                        // 首条 prompt 文本（用于派生会话名与转正）
+
+        // ── ★★ 2026-10-28：L3 记忆文件（从 hello.memories 提取）──
+        std::vector<MemoryFileItem> memories;
     };
+
+    // ── L1 会话持久化辅助 ──
+    void HandleLiveJournalLine(Session& session, const std::string& line);
+    void PromoteSessionJournal(Session& session, const std::string& promptText);
+    void SyncSessionMeta(Session& session);
 
     // timelineIdx = 本行对应的时间线条目下标（**由调用方显式给出**——
     //   重建时若有条目建不出行，两者会错位，而下标错位会把 A 的展开态写到 B 上）
@@ -747,6 +780,9 @@ private:
     // `NewSession()`：`＋ 新建会话` 的真实行为。live 模式拉起新 core（真新会话）；
     //   回放模式建一个空会话并如实提示（没有 core 会说话，不伪造转录）。
     void NewSession();
+    // ★★ L2 持久化：从只读历史会话开启新 live 对话（继承工作区与模型）
+    void ContinueCurrentSession();
+    bool ResumeSession(Session& s);
     // `SwitchToSession(i)`：切换活动会话——拆当前视图、指向新会话、按新会话模型重建。
     //   ★ 复用 0c 的 `RebuildTranscriptView`：这正是 0c 存在的全部理由。
     void SwitchToSession(size_t index);
@@ -962,6 +998,8 @@ private:
     void RunSettingsProbe();
     // ── P4 Phase I 探针（--preview-probe）：预览链的相判据在 RunPreviewProbe 内 ──
     void RunPreviewProbe();
+    // ── 会话持久化与启动恢复探针（--persist-probe）──
+    void RunPersistProbe();
     // ── ★★ P4 Phase I（2026-10-26）：文件路径可点 + 只读预览 ─────────
     //   规格住在 docs/P4-gui-usability-plan.md §11；入口形态经评审修订：
     //   标题按钮点击已被折叠占用（BindCollapsible）⇒ 入口 = 标题旁小按钮
@@ -979,6 +1017,7 @@ private:
     void RebuildPreviewContent();    // 按模型态（path/lines/error）重建体内行
     // ── ★★ P3.6（协议 v4）：模型热切换 ─────────────────────────
     void RebuildModelList();            // 检查器模型卡片行重建（tick 执行）
+    void RebuildMemoryList();           // 检查器记忆卡片行重建（L3 记忆文件）
     void RebuildSettingsProviderList(); // 设置面板提供商行重建（编辑目标选择）
     void RebuildSettingsModelList();    // 设置面板模型子列表重建（编辑目标那一家）
     void OnSettingsDeleteModel();       // 删除 m_editingModelName 那个模型（至少留一个）
@@ -1037,6 +1076,10 @@ private:
     // 打开一个历史文件：建会话 → 切过去 → 抽干 → 读 sidecar → 重建视图。
     //   ★ 失败必须如实说（回放源加载失败就 AddNoticeRow），不建半好会话。
     bool OpenHistorySession(const std::filesystem::path& file);
+    // ★★ 2026-10-28：L1 启动发现与持久化会话恢复
+    void DiscoverAndRestoreJournalSessions();
+    bool RestoreSingleJournalSession(const std::string& wsPath, const SessionMeta& meta,
+                                     const std::filesystem::path& journalPath);
     // sidecar：`<fixture>.jsonl.ui.json`，与夹具同目录。
     //   ★ 为什么不写进 jsonl 本身：那会改掉夹具字节，sha256 基线与 `validate.py` 全部失效；
     //     协议也没有"GUI 往会话文件里写"的方向。
@@ -1095,6 +1138,7 @@ private:
     void AppendSelectProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendDelProvProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendPreviewProbeSummary(std::string& json);   // ProbePreview.cpp
+    void AppendPersistProbeSummary(std::string& json);   // ProbePersist.cpp
     void AppendHudProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendSettingsProbeSummary(std::string& json);   // ProbeSettings.cpp
     void AppendEnterProbeSummary(std::string& json);   // ProbeFlow.cpp

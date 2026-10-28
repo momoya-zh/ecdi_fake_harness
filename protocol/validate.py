@@ -125,7 +125,7 @@ def parse(lines, findings):
     return out
 
 
-def check_stream(parsed, findings):
+def check_stream(parsed, findings, is_resume=False, last_seq=None):
     """Every invariant that can be checked on a core->gui fixture."""
     seqs = [(i, m["seq"]) for i, m in parsed
             if m is not None and "seq" in m]
@@ -136,9 +136,14 @@ def check_stream(parsed, findings):
             if b != a + 1:
                 findings.hit("I4", lj, "seq jumped %d -> %d (loss must be "
                                        "surfaced, never ignored)" % (a, b))
-        if seqs[0][1] != 0:
-            findings.hit("I4", seqs[0][0], "first seq is %d, must be 0"
-                         % seqs[0][1])
+        if is_resume:
+            if last_seq is not None and seqs[0][1] != last_seq + 1:
+                findings.hit("I4", seqs[0][0], "resumed first seq is %d, expected lastSeq+1 (%d)"
+                             % (seqs[0][1], last_seq + 1))
+        else:
+            if seqs[0][1] != 0:
+                findings.hit("I4", seqs[0][0], "first seq is %d, must be 0"
+                             % seqs[0][1])
 
     started, ended = {}, {}
     for i, m in parsed:
@@ -340,6 +345,12 @@ def is_hostile(path, fixtures_root):
     return rel.split("/")[0] == "hostile"
 
 
+def is_resume(path, fixtures_root):
+    rel = os.path.relpath(path, fixtures_root).replace("\\", "/")
+    parts = rel.split("/")
+    return "resume" in parts[0] or "resume" in os.path.basename(path).lower()
+
+
 def collect(fixtures_root):
     found = []
     for base, _dirs, files in os.walk(fixtures_root):
@@ -354,6 +365,8 @@ def main(argv=None):
         description="Check every fixture against the protocol invariants.")
     parser.add_argument("--fixtures", default=DEFAULT_FIXTURES,
                         help="fixtures root (default: ./fixtures)")
+    parser.add_argument("--last-seq", type=int, default=None,
+                        help="expected lastSeq for resume stream validation")
     parser.add_argument("--quiet", action="store_true",
                         help="only print fixtures that failed")
     opts = parser.parse_args(argv)
@@ -372,10 +385,11 @@ def main(argv=None):
     for path in paths:
         rel = os.path.relpath(path, opts.fixtures).replace("\\", "/")
         hostile = is_hostile(path, opts.fixtures)
+        resume = is_resume(path, opts.fixtures) or (opts.last_seq is not None)
         findings = Findings()
         lines = read_fixture(path, findings)
         parsed = parse(lines, findings)
-        check_stream(parsed, findings)
+        check_stream(parsed, findings, is_resume=resume, last_seq=opts.last_seq)
         triggered = findings.ids()
 
         if hostile:

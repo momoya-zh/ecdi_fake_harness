@@ -116,6 +116,9 @@ protected:
     }
 
     void OnKeyDown(const ECDI::KeyDownEvent& event) override {
+        if (IsReadOnly()) {
+            return;
+        }
         // ★ 只拦 Enter（含小键盘 Enter），其余按键**原样**交给基类。
         //   绝不能"先自己处理再调基类"——那会把方向键/Backspace 等编辑键
         //   吃成两次。
@@ -236,6 +239,21 @@ PromptBar::PromptBar() {
         if (m_onStop) m_onStop(std::string());
     });
     AddChild(std::move(stop));
+
+    auto cont = std::make_unique<ECDI::Button>("继续");
+    m_continue = cont.get();
+    m_continue->SetTextColor(harness::kBtnPrimaryInk);
+    m_continue->SetFont(harness::SansFont(13.0f));
+    m_continue->SetStyle(ECDI::ButtonStyleOverride{
+        .background = harness::kBtnPrimary,
+        .cornerRadius = 8.0f,
+        .pressedBackground = harness::kBtnPrimaryPressed,
+        .hoverBackground = harness::kBtnPrimaryHover});
+    m_continue->SetOnClick([this] {
+        if (m_onContinue) m_onContinue();
+    });
+    m_continue->SetVisible(false);
+    AddChild(std::move(cont));
 }
 
 void PromptBar::SetSize(int w, int h) {
@@ -259,6 +277,7 @@ void PromptBar::SetSize(int w, int h) {
 //   ★ 清空输入框**不在这里做**：`App` 的 `SetOnSend` 回调负责（与点按钮同一份
 //     副作用）。在这里再清一次会形成两处写入，将来改一处就漂移。
 void PromptBar::Submit() {
+    if (m_isReadOnly) return;
     if (!m_input) return;
     const std::string text = m_input->GetText();
     bool hasContent = false;
@@ -310,6 +329,17 @@ void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
     if (m_stop) m_stop->SetEnabled(stopEnabled);
     ApplySendStyle(sendEnabled);
     ApplyStopStyle(stopEnabled);
+}
+
+void PromptBar::SetReadOnlyMode(bool readOnly) {
+    m_isReadOnly = readOnly;
+    if (m_continue) m_continue->SetVisible(readOnly);
+    if (m_send) m_send->SetVisible(!readOnly);
+    if (m_stop) m_stop->SetVisible(!readOnly);
+    if (m_input) {
+        m_input->SetReadOnly(readOnly);
+        m_input->SetEnabled(!readOnly);
+    }
 }
 
 void PromptBar::SetHint(const std::string& text, const ECDI::Color& color) {
@@ -407,6 +437,10 @@ void PromptBar::LayoutChildren() {
     if (m_send) {
         m_send->SetSize(buttonW, 28);
         m_send->SetPosition(GetWidth() - padX - buttonW, buttonY);
+    }
+    if (m_continue) {
+        m_continue->SetSize(buttonW, 28);
+        m_continue->SetPosition(GetWidth() - padX - buttonW, buttonY);
     }
     if (m_stop) {
         m_stop->SetSize(buttonW, 28);

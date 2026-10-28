@@ -1,0 +1,527 @@
+<div id="uxmock" style="--bg:#16181d;--panel:#1d2027;--panel2:#232733;--line:#2c3140;--text:#d7dae2;--muted:#8a90a0;--accent:#5b8cff;--green:#3fb27f;--amber:#d9a13f;--red:#e05c5c;--add:#1e3a2a;--del:#3a2226;max-width:1180px;margin:0 auto;font:14px/1.55 'Segoe UI','Microsoft YaHei',sans-serif;color:var(--text);user-select:text">
+<style>
+#uxmock .app{width:100%;height:720px;background:var(--bg);border:1px solid #000;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;position:relative;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+#uxmock .chrome{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
+#uxmock .dot{width:11px;height:11px;border-radius:50%;background:#444}
+#uxmock .winbtn{width:34px;height:26px;display:grid;place-items:center;color:var(--muted);border-radius:5px;cursor:pointer;font-size:13px}
+#uxmock .winbtn:hover{background:var(--panel2);color:var(--text)}
+#uxmock .winbtn.close:hover{background:var(--red);color:#fff}
+#uxmock .topbar{display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;position:relative;z-index:15}
+#uxmock .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:14px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);font-size:12px;cursor:pointer;white-space:nowrap}
+#uxmock .chip:hover{color:var(--text);border-color:var(--accent)}
+#uxmock .chip b{color:var(--text);font-weight:600}
+#uxmock .state{font-size:12px;display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+#uxmock .state .sd{width:8px;height:8px;border-radius:50%;background:var(--green)}
+#uxmock .state.wait .sd{background:var(--amber)}
+#uxmock .state.run .sd{background:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+#uxmock .spacer{flex:1}
+#uxmock .body{display:flex;flex:1;min-height:0}
+#uxmock aside{width:210px;flex:0 0 auto;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow-y:auto;padding:10px}
+#uxmock aside.collapsed{display:none}
+#uxmock .side-sec{font-size:11px;color:var(--muted);margin:10px 2px 6px;display:flex;justify-content:space-between;align-items:center}
+#uxmock .side-sec .add{cursor:pointer;color:var(--accent);font-size:14px}
+#uxmock .side-item{padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center;overflow:hidden}
+#uxmock .side-item:hover{background:var(--panel2);color:var(--text)}
+#uxmock .side-item.active{background:var(--panel2);color:var(--text);box-shadow:inset 2px 0 0 var(--accent)}
+#uxmock .side-item .tm{margin-left:auto;font-size:11px;opacity:.6;flex:0 0 auto}
+#uxmock .side-item span.lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#uxmock .proj{padding:5px 8px;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:8px;cursor:pointer;border-radius:6px}
+#uxmock .proj:hover{background:var(--panel2)}
+#uxmock .proj.active{color:var(--text)}
+#uxmock .proj.active::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--green);flex:0 0 auto}
+#uxmock .proj:not(.active)::before{content:"";width:6px;height:6px;border-radius:50%;background:#444;flex:0 0 auto}
+#uxmock .mid{flex:1;display:flex;flex-direction:column;min-width:0}
+#uxmock .head{height:40px;flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+#uxmock .head .title{font-weight:600;font-size:13px}
+#uxmock .meterwrap{width:120px;height:5px;border-radius:3px;background:var(--panel2);overflow:hidden;cursor:pointer}
+#uxmock .meterwrap i{display:block;height:100%;background:var(--accent);border-radius:3px}
+#uxmock .iconbtn{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted);cursor:pointer;font-size:15px;background:transparent;border:none}
+#uxmock .iconbtn:hover{background:var(--panel2);color:var(--text)}
+#uxmock .transcript{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;position:relative}
+#uxmock .jump{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:12px;padding:5px 14px;border-radius:14px;cursor:pointer;display:none;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+#uxmock .blk{max-width:86%;display:flex;flex-direction:column;gap:4px;position:relative}
+#uxmock .blk .meta{font-size:11px;color:var(--muted);display:flex;gap:8px;align-items:center}
+#uxmock .blk .copy{opacity:0;font-size:11px;color:var(--accent);cursor:pointer}
+#uxmock .blk:hover .copy{opacity:1}
+#uxmock .user{align-self:flex-end}
+#uxmock .user .content{background:#2b4a80;color:#eaf0ff;padding:8px 12px;border-radius:10px 10px 2px 10px;white-space:pre-wrap}
+#uxmock .user .meta{justify-content:flex-end}
+#uxmock .pending .content{opacity:.6;border:1px dashed #4a6da8}
+#uxmock .pending .badge::after{content:"· 发送中";color:var(--amber);font-size:11px}
+#uxmock .assistant .content{padding:8px 12px;border-radius:2px 10px 10px 10px;background:var(--panel);border:1px solid var(--line);white-space:pre-wrap}
+#uxmock .collapsible{border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
+#uxmock .collapsible .ch{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
+#uxmock .collapsible .ch:hover{background:var(--panel2)}
+#uxmock .collapsible .ch .tw{transition:transform .15s}
+#uxmock .collapsible.open .ch .tw{transform:rotate(90deg)}
+#uxmock .collapsible .cb{display:none;padding:8px 12px;border-top:1px solid var(--line);font-family:Consolas,monospace;font-size:12px;color:#b9c0d0;white-space:pre-wrap}
+#uxmock .collapsible.open .cb{display:block}
+#uxmock .toolcard .ch .nm{color:#9fc1ff}
+#uxmock .collapsible .th{font-size:11px;padding:1px 6px;border-radius:8px;background:var(--panel2);margin-left:auto}
+#uxmock .fpath{color:var(--accent);cursor:pointer;border-bottom:1px dashed transparent}
+#uxmock .fpath:hover{border-bottom-color:var(--accent)}
+#uxmock .diff{font-family:Consolas,monospace;font-size:12px;line-height:1.5;padding:8px 0;border-top:1px solid var(--line)}
+#uxmock .diff .dl{display:flex;padding:0 12px;white-space:pre}
+#uxmock .diff .dl .g{width:34px;flex:0 0 auto;text-align:right;color:#57607a;margin-right:10px;user-select:none}
+#uxmock .diff .dl.add{background:var(--add)}
+#uxmock .diff .dl.add .g{color:var(--green)}
+#uxmock .diff .dl.del{background:var(--del)}
+#uxmock .diff .dl.del .g{color:var(--red)}
+#uxmock .diff .dl.ctx{color:#9aa2b5}
+#uxmock .diffstats{margin-left:auto;font-size:11px}
+#uxmock .diffstats .p{color:var(--green)}
+#uxmock .diffstats .m{color:var(--red)}
+#uxmock .askcard{border:1px solid var(--amber);border-radius:8px;background:#262016;padding:10px 12px}
+#uxmock .askcard .q{margin-bottom:8px}
+#uxmock .askcard .btns{display:flex;gap:8px}
+#uxmock .btn{padding:4px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);cursor:pointer;font-size:13px}
+#uxmock .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+#uxmock .btn.danger{background:#4a2b2b;border-color:#6b3a3a}
+#uxmock .btn:hover{filter:brightness(1.15)}
+#uxmock .btn:disabled{opacity:.4;cursor:default;filter:none}
+#uxmock .answered{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
+#uxmock .composer{flex:0 0 auto;border-top:1px solid var(--line);background:var(--panel);padding:10px 12px}
+#uxmock .composer .box{display:flex;gap:8px;align-items:flex-end;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px}
+#uxmock .composer:focus-within .box{border-color:var(--accent)}
+#uxmock textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);font:inherit;min-height:44px;max-height:160px;resize:none}
+#uxmock .hint{font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:14px}
+#uxmock kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;font-family:inherit}
+#uxmock .empty{margin:auto;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:12px;align-items:center}
+#uxmock .empty .big{font-size:30px;opacity:.5}
+#uxmock .empty .sugs{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+#uxmock .insp{width:220px;flex:0 0 auto;border-left:1px solid var(--line);background:var(--panel);padding:10px;overflow-y:auto;font-size:12px;display:flex;flex-direction:column;gap:12px}
+#uxmock .insp.collapsed{display:none}
+#uxmock .insp h4{margin:0;font-size:11px;color:var(--muted);font-weight:600}
+#uxmock .kv{display:flex;justify-content:space-between;color:var(--muted);padding:2px 0}
+#uxmock .kv b{color:var(--text);font-weight:500}
+#uxmock .kv.bad b{color:var(--red)}
+#uxmock .kv.warn b{color:var(--amber)}
+#uxmock .notice{font-size:12px;padding:4px 10px;border-radius:6px;background:var(--panel2);color:var(--muted);align-self:flex-start}
+#uxmock .notice.err{color:#ffb3b3;background:#3a2426}
+#uxmock .statusbar{flex:0 0 auto;height:26px;display:flex;align-items:center;gap:14px;padding:0 12px;border-top:1px solid var(--line);background:var(--panel);font-size:11px;color:var(--muted)}
+#uxmock .modal{position:absolute;inset:0;background:rgba(0,0,0,.55);display:none;place-items:center;z-index:20}
+#uxmock .modal.show{display:grid}
+#uxmock .sheet{width:620px;max-width:92%;max-height:86%;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 16px 50px rgba(0,0,0,.6)}
+#uxmock .sheet .sh{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);gap:10px}
+#uxmock .sheet .sh b{flex:1}
+#uxmock .sheet .sb{display:flex;flex:1;min-height:0}
+#uxmock .plist{width:190px;flex:0 0 auto;border-right:1px solid var(--line);padding:8px;overflow-y:auto}
+#uxmock .pitem{padding:7px 9px;border-radius:6px;cursor:pointer;font-size:13px;display:flex;align-items:center;gap:7px;color:var(--muted)}
+#uxmock .pitem:hover{background:var(--panel2)}
+#uxmock .pitem.cur{color:var(--text);background:var(--panel2)}
+#uxmock .pitem .cdot{width:7px;height:7px;border-radius:50%;background:var(--green);display:none}
+#uxmock .pitem.cur .cdot{display:block}
+#uxmock .pform{flex:1;padding:12px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
+#uxmock label.f{font-size:11px;color:var(--muted);display:block;margin-bottom:3px}
+#uxmock .pform input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--text);padding:6px 9px;font:inherit;outline:none;box-sizing:border-box}
+#uxmock .pform input:focus{border-color:var(--accent)}
+#uxmock .presets{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+#uxmock .preset{font-size:11px;padding:2px 9px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);cursor:pointer;color:var(--muted)}
+#uxmock .preset:hover{color:var(--text);border-color:var(--accent)}
+#uxmock .sheet .sf{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line)}
+#uxmock .toast{position:absolute;bottom:80px;left:50%;transform:translateX(-50%);background:#000;color:#fff;font-size:12px;padding:6px 16px;border-radius:16px;opacity:0;transition:opacity .2s;z-index:30;pointer-events:none}
+#uxmock .toast.show{opacity:.92}
+#uxmock .pop{position:absolute;top:36px;left:150px;width:330px;background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.55);display:none;flex-direction:column;z-index:16;overflow:hidden}
+#uxmock .pop.show{display:flex}
+#uxmock .pop .ph{padding:9px 12px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+#uxmock .pop .ph b{flex:1;font-size:13px}
+#uxmock .pop .search{margin:8px 10px 2px;background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:5px 9px;color:var(--text);font:inherit;font-size:12px;outline:none}
+#uxmock .pop .search:focus{border-color:var(--accent)}
+#uxmock .pop .pgroup{font-size:10.5px;color:var(--muted);padding:9px 12px 3px;letter-spacing:.4px;display:flex;align-items:center;gap:6px}
+#uxmock .pop .pgroup::after{content:"";flex:1;height:1px;background:var(--line)}
+#uxmock .mrow{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:13px}
+#uxmock .mrow:hover{background:var(--panel2)}
+#uxmock .mrow .st{width:14px;flex:0 0 auto;text-align:center;font-size:10px}
+#uxmock .mrow.cur .st{color:var(--green)}
+#uxmock .mrow .mn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#uxmock .mrow .prov{font-size:11px;color:var(--muted);flex:0 0 auto}
+#uxmock .mrow .ctx{margin-left:auto;font-size:11px;color:var(--muted);flex:0 0 auto}
+#uxmock .mrow.dup .mn{color:var(--amber)}
+#uxmock .pop .pf{padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+#uxmock .pop .pf .cfg{color:var(--accent);cursor:pointer}
+/* ★ read-only file peek panel */
+#uxmock .peek{position:absolute;top:36px;bottom:26px;right:0;width:420px;background:var(--panel);border-left:1px solid var(--line);box-shadow:-12px 0 34px rgba(0,0,0,.45);z-index:18;display:none;flex-direction:column;transform:translateX(0)}
+#uxmock .peek.show{display:flex}
+#uxmock .peek .phh{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);background:var(--panel2)}
+#uxmock .peek .phh .fn{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#uxmock .peek .phh .ro{font-size:10.5px;color:var(--amber);border:1px solid var(--amber);padding:0 6px;border-radius:8px;flex:0 0 auto}
+#uxmock .peek .code{flex:1;overflow:auto;padding:10px 0;font-family:Consolas,monospace;font-size:12px;line-height:1.6;white-space:pre;background:var(--bg)}
+#uxmock .peek .code .ln{display:inline-block;width:40px;text-align:right;color:#57607a;padding-right:12px;user-select:none}
+#uxmock .peek .code .hl{background:#233049}
+#uxmock .peek .pfb{display:flex;gap:8px;padding:9px 12px;border-top:1px solid var(--line);align-items:center;font-size:12px;color:var(--muted)}
+#uxmock .mark{position:absolute;top:-8px;right:-8px;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;display:grid;place-items:center;cursor:help;font-weight:600;z-index:5}
+#uxmock .legend{margin-top:18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;font-size:12.5px;color:#555}
+#uxmock .legend div{background:#fff;border:1px solid #ddd;border-radius:8px;padding:8px 10px;color:#333}
+#uxmock .legend b{color:#1f5eff}
+#uxmock .legend .new{border-color:#1f5eff;box-shadow:0 0 0 2px rgba(31,94,255,.15)}
+#uxmock [data-tip]{position:relative}
+#uxmock [data-tip]:hover::after{content:attr(data-tip);position:absolute;top:110%;left:50%;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:3px 9px;border-radius:5px;white-space:nowrap;z-index:40;pointer-events:none}
+</style>
+<div class="app" id="app">
+  <span class="mark" data-tip="本版新增：文件 diff 内联渲染 + 只读预览面板">新</span>
+  <div class="chrome">
+    <div class="dot"></div>
+    <b style="font-size:12px;margin-left:4px">ECDI 工作台</b>
+    <div class="spacer"></div>
+    <div class="winbtn" data-tip="隐藏">─</div>
+    <div class="winbtn" data-tip="最大化">▢</div>
+    <div class="winbtn close" data-tip="关闭 (Alt+F4)">✕</div>
+  </div>
+  <div class="topbar">
+    <div class="chip" id="burger" data-tip="显示/隐藏侧栏 (Ctrl+B)">☰</div>
+    <div class="chip" data-tip="当前工作区，点击切换">📁 <b>project\backend</b></div>
+    <div class="chip picked" id="modelchip" data-tip="切换模型/提供商 (Ctrl+M)">🧠 <b id="modelchipname">DeepSeek › deepseek-flash</b> ▾</div>
+    <div class="spacer"></div>
+    <div class="state" id="statechip"><span class="sd"></span><span id="statelabel">idle</span></div>
+    <div class="chip" data-tip="上下文用量 18k / 200k" id="usagechip">◔ 9%</div>
+    <div class="chip" data-tip="渲染计数" style="cursor:default">vbl 421 · 12fps</div>
+    <div class="chip" data-tip="协议/渲染后端，只读" style="cursor:default">gdi</div>
+    <div class="chip" id="gear" data-tip="设置 (Ctrl+,)">⚙</div>
+    <div class="pop" id="modelPop">
+      <div class="ph"><b>切换模型</b><span style="font-size:11px;color:var(--muted)">仅 idle 时发出 · 运行中自动排队</span></div>
+      <input class="search" id="mSearch" placeholder="搜索模型或提供商…">
+      <div id="mList" style="overflow-y:auto;max-height:330px"></div>
+      <div class="pf"><span>⚠ 有 2 个提供商含同名模型</span><span class="cfg" id="manageProv">管理提供商 →</span></div>
+    </div>
+  </div>
+  <div class="body">
+    <aside id="sidebar">
+      <div class="side-sec"><b>会话</b><span class="add" data-tip="新建会话 (Ctrl+N)">+</span></div>
+      <div class="side-item active"><span class="lbl">重构 wire 层</span><span class="tm">10:24</span></div>
+      <div class="side-item"><span class="lbl">排查 I4 缺口</span><span class="tm">昨天</span></div>
+      <div class="side-item"><span class="lbl">协议 v4 草案评审</span><span class="tm">10-22</span></div>
+      <div class="side-item"><span class="lbl">GUI 首屏引导文案</span><span class="tm">10-21</span></div>
+      <div class="side-sec"><b>项目</b><span class="add" data-tip="添加项目">+</span></div>
+      <div class="proj active">backend</div>
+      <div class="proj">ecdi-core</div>
+      <div class="proj">protocol-lab</div>
+      <div class="proj" style="opacity:.5">legacy-gui (离线)</div>
+      <div class="side-sec"><b>历史回放</b></div>
+      <div class="side-item"><span class="lbl">req10-acceptance.jsonl</span></div>
+      <div class="side-item"><span class="lbl">hostile-gap.jsonl</span></div>
+    </aside>
+    <div class="mid">
+      <div class="head">
+        <div class="iconbtn" data-tip="收起检视栏 (Ctrl+I)" id="inspBtn">⇥</div>
+        <div class="title">重构 wire 层</div>
+        <div style="font-size:11px;color:var(--muted)">12 轮</div>
+        <div class="spacer" style="flex:1"></div>
+        <div class="meterwrap" data-tip="上下文 18.4k / 200k"><i style="width:9%"></i></div>
+        <div class="iconbtn" data-tip="导出转录到文件">↗</div>
+        <div class="iconbtn" data-tip="清空视图（仅重绘，不删数据）" id="clearBtn">🗑</div>
+      </div>
+      <div class="transcript" id="transcript">
+        <div class="jump" id="jump">↓ 已跳到最新消息</div>
+        <div id="msglist" style="display:flex;flex-direction:column;gap:12px">
+          <div class="blk user">
+            <div class="meta"><span class="copy">复制</span><span>你 · 10:25</span></div>
+            <div class="content">把 session.go 里超时从 30s 调到 90s，然后在回归里加一条超时用例。</div>
+          </div>
+          <div class="collapsible open" style="max-width:92%">
+            <div class="ch"><span class="tw">▸</span> <span class="nm">edit_file</span> · <span class="fpath" data-file="core/cmd/ecdi-core/session.go">core/cmd/ecdi-core/session.go</span> <span class="diffstats"><span class="p">+2</span> <span class="m">−1</span></span></div>
+            <div class="diff">
+              <div class="dl ctx"><span class="g">41</span>  // per-turn wall clock</div>
+              <div class="dl del"><span class="g">42</span>− const turnTimeout = 30 * time.Second</div>
+              <div class="dl add"><span class="g">42</span>+ const turnTimeout = 90 * time.Second</div>
+              <div class="dl add"><span class="g">43</span>+ // 90s: 真模型首轮含 reasoning 输出常超 30s（见 P3 验收记录）</div>
+              <div class="dl ctx"><span class="g">44</span>  func (s *Session) RunTurn(ctx context.Context) error {</div>
+            </div>
+          </div>
+          <div class="collapsible open" style="max-width:92%">
+            <div class="ch"><span class="tw">▸</span> <span class="nm">edit_file</span> · <span class="fpath" data-file="tools/regress.py">tools/regress.py</span> <span class="diffstats"><span class="p">+3</span> <span class="m">−0</span></span></div>
+            <div class="diff">
+              <div class="dl add"><span class="g">+71</span>+ def case_turn_timeout():</div>
+              <div class="dl add"><span class="g">+72</span>+     # 注入 95s 假延迟，断言 core 报 error 而非静默挂起</div>
+              <div class="dl add"><span class="g">+73</span>+     ...</div>
+            </div>
+          </div>
+          <div class="collapsible" style="max-width:92%">
+            <div class="ch"><span class="tw">▸</span> <span class="nm">run_command</span> · python tools/regress.py --all <span class="th">退出码 0 · 8.2s</span></div>
+            <div class="cb">[validate] 9 fixtures, 9 pass
+[regress] gui build .... ok
+[regress] offline e2e .. ok
+[regress] turn timeout case .. ok (injected 95s -> error)</div>
+          </div>
+          <div class="blk assistant">
+            <div class="meta"><span>assistant · 10:26</span><span class="copy">复制</span></div>
+            <div class="content">已完成两处修改并跑通全量回归：
+
+· <span class="fpath" data-file="core/cmd/ecdi-core/session.go" style="color:var(--accent);cursor:pointer">core/cmd/ecdi-core/session.go:42</span> 超时 30s → 90s（点文件名可预览）
+· <span class="fpath" data-file="tools/regress.py" style="color:var(--accent);cursor:pointer">tools/regress.py:71</span> 新增超时用例
+
+改动尚未提交，需要我 commit 吗？</div>
+          </div>
+        </div>
+      </div>
+      <div class="composer" id="composer">
+        <div class="box">
+          <textarea id="input" placeholder="输入指令…（Enter 发送 · Shift+Enter 换行）"></textarea>
+          <button class="btn primary" id="sendBtn" style="align-self:flex-end">发送</button>
+          <button class="btn danger" id="stopBtn" style="align-self:flex-end;display:none">停止</button>
+        </div>
+        <div class="hint"><span><kbd>Enter</kbd> 发送</span><span><kbd>Shift+Enter</kbd> 换行</span><span><kbd>Esc</kbd> 关浮层/预览</span><span><kbd>Ctrl+M</kbd> 换模型</span><span><kbd>Ctrl+,</kbd> 设置</span><span id="chars"></span></div>
+      </div>
+    </div>
+    <div class="insp" id="inspector">
+      <div>
+        <h4>当前模型</h4>
+        <div class="kv"><span>提供商</span><b id="inspProv">DeepSeek</b></div>
+        <div class="kv"><span>模型</span><b id="inspModel">deepseek-flash</b></div>
+        <div class="kv"><span>上下文</span><b id="inspCtx">200k</b></div>
+        <div class="kv"><span>输出上限</span><b id="inspMax">32k</b></div>
+      </div>
+      <div>
+        <h4>本次会话改动 <span style="font-weight:400">(2 文件)</span></h4>
+        <div class="kv"><span class="fpath" data-file="core/cmd/ecdi-core/session.go">session.go</span><b><span style="color:var(--green)">+2</span> <span style="color:var(--red)">−1</span></b></div>
+        <div class="kv"><span class="fpath" data-file="tools/regress.py">regress.py</span><b><span style="color:var(--green)">+3</span> <span style="color:var(--red)">−0</span></b></div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">点击行号可回看该处 diff</div>
+      </div>
+      <div>
+        <h4>协议健康</h4>
+        <div class="kv"><span>state</span><b id="inspState">idle</b></div>
+        <div class="kv"><span>seq 核→屏</span><b>39 / 39</b></div>
+        <div class="kv bad"><span>seq 缺口</span><b>1 △</b></div>
+        <div class="kv warn"><span>未知 kind</span><b>2 △</b></div>
+      </div>
+      <div>
+        <h4>用量</h4>
+        <div class="kv"><span>输入</span><b>18,422</b></div>
+        <div class="kv"><span>输出</span><b>913</b></div>
+        <div class="meterwrap" style="width:100%"><i style="width:9%"></i></div>
+      </div>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span>core: ecdi-core.exe (pid 20481)</span>
+    <span>protocol v4</span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="sbState">就绪</span>
+  </div>
+
+  <div class="peek" id="peek">
+    <div class="phh"><span class="ro">只读</span><span class="fn" id="peekName">core/cmd/ecdi-core/session.go</span><div class="spacer" style="flex:1"></div><div class="iconbtn" id="peekClose" data-tip="关闭 (Esc)">✕</div></div>
+    <div class="code" id="peekCode"></div>
+    <div class="pfb"><button class="btn" id="peekReveal">在资源管理器中显示</button><button class="btn" id="peekCopyPath">复制路径</button><span style="margin-left:auto">编辑请用自己的 IDE——本面板不落盘、不保存</span></div>
+  </div>
+
+  <div class="modal" id="settings">
+    <div class="sheet">
+      <div class="sh"><b>设置</b><span style="font-size:11px;color:var(--muted)">Esc 关闭</span><div class="iconbtn" id="closeSettings" data-tip="关闭 (Esc)">✕</div></div>
+      <div class="sb">
+        <div class="plist">
+          <div class="pitem cur"><span class="cdot"></span>DeepSeek</div>
+          <div class="pitem"><span>OpenAI</span></div>
+          <div class="pitem"><span>阿里云百炼</span></div>
+          <div class="pitem"><span>硅基流动</span></div>
+          <div class="pitem"><span>本地 Ollama</span></div>
+          <div style="margin-top:8px"><button class="btn" style="width:100%;font-size:12px">＋ 新增提供商</button></div>
+        </div>
+        <div class="pform">
+          <div><label class="f">显示名（用于在模型浮窗里区分同名模型）</label><input value="DeepSeek"></div>
+          <div><label class="f">Base URL</label><input value="https://api.deepseek.com/v1"></div>
+          <div><label class="f">模型</label><input value="deepseek-chat"></div>
+          <div><label class="f">上下文容量 (context)</label><input value="200000"><div class="presets"><span class="preset">200k</span><span class="preset">500k</span><span class="preset">1M</span></div></div>
+          <div><label class="f">输出上限 (maxOutput)</label><input value="32000"><div class="presets"><span class="preset">4k</span><span class="preset">8k</span><span class="preset">16k</span><span class="preset">32k</span><span class="preset">64k</span></div></div>
+          <div><label class="f">API 密钥（存于 Windows 凭据管理器；留空=保持已存）</label><input type="password" placeholder="•••••••••••• 留空则不修改"></div>
+          <div style="font-size:11px;color:var(--muted)">保存后立即热切换（protocol v4 的 model 消息）；正在输出的轮次会先跑完。</div>
+        </div>
+      </div>
+      <div class="sf"><button class="btn" id="cancelSettings">取消</button><button class="btn primary">保存并连接</button></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+</div>
+
+<div class="legend">
+  <div class="new"><b>J 内联 diff</b>：edit_file 的 tool 卡片直接把 −/+ 行渲染成红绿 diff（带行号与 +N −M 统计），核对改动不用离开对话流。数据仍是协议里的纯文本块，不新增消息类型。</div>
+  <div class="new"><b>K 只读预览面板</b>：点任意文件路径（diff 卡标题或正文里的引用）从右侧滑出整文件预览，高亮改动行；只有「资源管理器显示 / 复制路径」两个动作——不做编辑器。</div>
+  <div class="new"><b>L 改动清单</b>：检视栏聚合本会话改过的文件，点击直达预览；回答"agent 到底动了哪些地方"不用翻转录。</div>
+  <div><b>边界立场</b>：GUI=协议渲染器。预览读取走 harness 本地文件 IO（同工作区租约的 path），不扩协议；若将来要在协议里传结构化 diff，那是 v5 议题。</div>
+  <div><b>其余同前</b>：A 选中复制 / B 快捷键 / C tooltip / D 设置浮层 / E 权限留痕 / F 滚动自主 / G 用量常驻 / H 折叠卡 / I 空状态 / ★ 模型浮窗分组。</div>
+  <div><b>试试</b>：点 session.go 路径开预览 → Esc 关；把 diff 卡折叠再展开；发送消息看流式。</div>
+</div>
+
+<script>
+(function(){
+  var root=document.getElementById('uxmock');
+  var $=function(s){return root.querySelector(s)};
+  var $$=function(s){return Array.prototype.slice.call(root.querySelectorAll(s))};
+  var toastEl=$('#toast'),toastT;
+  function toast(m){toastEl.textContent=m;toastEl.classList.add('show');clearTimeout(toastT);toastT=setTimeout(function(){toastEl.classList.remove('show')},1600)}
+  $$('.collapsible .ch').forEach(function(h){h.addEventListener('click',function(e){if(e.target.classList.contains('fpath'))return;h.parentNode.classList.toggle('open')})});
+  $$('.copy').forEach(function(c){c.addEventListener('click',function(){toast('已复制到剪贴板（原型模拟）')})});
+  function toggle(sel,cls){var e=$(sel);e.classList.toggle(cls);return e.classList.contains(cls)}
+  $('#burger').addEventListener('click',function(){toggle('#sidebar','collapsed')});
+  $('#inspBtn').addEventListener('click',function(){toggle('#inspector','collapsed')});
+  function openSettings(){$('#settings').classList.add('show');hidePop()}
+  function closeSettings(){$('#settings').classList.remove('show')}
+  $('#gear').addEventListener('click',openSettings);
+  $('#closeSettings').addEventListener('click',closeSettings);
+  $('#cancelSettings').addEventListener('click',closeSettings);
+  $('#settings').addEventListener('click',function(e){if(e.target===this)closeSettings()});
+  $('#manageProv').addEventListener('click',function(){openSettings();toast('跳到设置 · 提供商管理')});
+
+  var MODELS=[
+    {prov:'DeepSeek',name:'deepseek-flash',ctx:'200k',max:'32k',cur:true},
+    {prov:'DeepSeek',name:'deepseek-reasoner',ctx:'200k',max:'64k'},
+    {prov:'OpenAI',name:'gpt-4o-mini',ctx:'128k',max:'16k'},
+    {prov:'阿里云百炼',name:'qwen3-coder',ctx:'32k',max:'8k'},
+    {prov:'硅基流动',name:'qwen3-coder',ctx:'128k',max:'16k'},
+    {prov:'硅基流动',name:'deepseek-flash',ctx:'200k',max:'32k'},
+    {prov:'本地 Ollama',name:'qwen3-coder',ctx:'16k',max:'4k'}
+  ];
+  var dupNames={};MODELS.forEach(function(m){dupNames[m.name]=(dupNames[m.name]||0)+1});
+  var pop=$('#modelPop'),popOpen=false;
+  function showPop(){pop.classList.add('show');popOpen=true;$('#mSearch').focus()}
+  function hidePop(){pop.classList.remove('show');popOpen=false}
+  $('#modelchip').addEventListener('click',function(e){e.stopPropagation();popOpen?hidePop():showPop()});
+  function renderPop(q){
+    q=(q||'').toLowerCase();
+    var list=$('#mList');list.innerHTML='';
+    var provs=[];MODELS.forEach(function(m){if(provs.indexOf(m.prov)<0)provs.push(m.prov)});
+    var any=false;
+    provs.forEach(function(p){
+      var ms=MODELS.filter(function(m){return m.prov===p&&(!q||m.name.toLowerCase().indexOf(q)>=0||p.toLowerCase().indexOf(q)>=0)});
+      if(!ms.length)return;any=true;
+      var g=document.createElement('div');g.className='pgroup';g.textContent=p;list.appendChild(g);
+      ms.forEach(function(m){
+        var r=document.createElement('div');
+        r.className='mrow'+(m.cur?' cur':'')+(dupNames[m.name]>1?' dup':'');
+        r.innerHTML='<span class="st">'+(m.cur?'●':'')+'</span><span class="mn"></span><span class="ctx">'+m.ctx+'</span>';
+        r.querySelector('.mn').textContent=m.name;
+        if(dupNames[m.name]>1){var t=document.createElement('span');t.className='prov';t.textContent='· 同名×'+dupNames[m.name];r.querySelector('.mn').after(t)}
+        r.addEventListener('click',function(){pick(m)});
+        list.appendChild(r);
+      });
+    });
+    if(!any){list.innerHTML='<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px">没有匹配的模型</div>'}
+  }
+  function pick(m){
+    MODELS.forEach(function(x){x.cur=(x===m)});
+    $('#modelchipname').textContent=m.prov+' › '+m.name;
+    $('#inspProv').textContent=m.prov;$('#inspModel').textContent=m.name;
+    $('#inspCtx').textContent=m.ctx;$('#inspMax').textContent=m.max;
+    renderPop($('#mSearch').value);
+    toast('model 请求已排队 · 等当前轮跑完（idle）后生效');
+    setTimeout(function(){toast('已切换：'+m.prov+' › '+m.name+'（v4 model 确认 ok:true）')},1800);
+    hidePop();
+  }
+  $('#mSearch').addEventListener('input',function(){renderPop(this.value)});
+  renderPop('');
+
+  /* ★ file peek panel */
+  var FILES={
+    'core/cmd/ecdi-core/session.go':{hl:[14,15],lines:[
+      'package main','','import (','\t"context"','\t"time"',')','',
+      '// Session drives one agent loop against the wire.','type Session struct {','\tturn int','}',
+      '','','\t// per-turn wall clock','const turnTimeout = 90 * time.Second',
+      '// 90s: 真模型首轮含 reasoning 输出常超 30s（见 P3 验收记录）','',
+      'func (s *Session) RunTurn(ctx context.Context) error {','\tt := time.NewTimer(turnTimeout)','\tdefer t.Stop()','\treturn s.loop(ctx, t.C)','}']},
+    'tools/regress.py':{hl:[14,15,16],lines:[
+      '#!/usr/bin/env python3','"""Full regression gate: fixtures + build + e2e."""','','import sys','',
+      'def case_validate():','\tpass','','def case_build():','\tpass','',
+      '','','def case_turn_timeout():','\t# 注入 95s 假延迟，断言 core 报 error 而非静默挂起','\t...','',
+      'if __name__ == "__main__":','\tsys.exit(0)']}
+  };
+  var peek=$('#peek'),peekOpen=false;
+  function openPeek(path){
+    var f=FILES[path];if(!f){toast('原型只内置了两个示例文件');return}
+    peekOpen=true;peek.classList.add('show');
+    $('#peekName').textContent=path;
+    var c=$('#peekCode');c.innerHTML='';
+    f.lines.forEach(function(l,i){
+      var n=i+1,d=document.createElement('div');
+      d.className='ln-row'+(f.hl.indexOf(n)>=0?' hl':'');
+      if(f.hl.indexOf(n)>=0)d.className='hl';
+      d.innerHTML='<span class="ln">'+n+'</span>'+l.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      c.appendChild(d);
+    });
+    var first=f.hl[0];
+    setTimeout(function(){var el=c.querySelector('.hl');if(el)el.scrollIntoView({block:'center'})},50);
+  }
+  function closePeek(){peekOpen=false;peek.classList.remove('show')}
+  $$('.fpath').forEach(function(p){p.addEventListener('click',function(e){e.stopPropagation();openPeek(p.dataset.file)})});
+  $('#peekClose').addEventListener('click',closePeek);
+  $('#peekReveal').addEventListener('click',function(){toast('explorer /select, '+$('#peekName').textContent+'（原型模拟）')});
+  $('#peekCopyPath').addEventListener('click',function(){toast('路径已复制（原型模拟）')});
+
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'){if($('#settings').classList.contains('show'))closeSettings();else if(peekOpen)closePeek();else if(popOpen)hidePop()}
+    if(e.ctrlKey&&e.key===','){e.preventDefault();openSettings()}
+    if(e.ctrlKey&&e.key.toLowerCase()==='b'){e.preventDefault();toggle('#sidebar','collapsed')}
+    if(e.ctrlKey&&e.key.toLowerCase()==='i'){e.preventDefault();toggle('#inspector','collapsed')}
+    if(e.ctrlKey&&e.key.toLowerCase()==='m'){e.preventDefault();showPop()}
+  });
+  function setState(s){
+    $('#statelabel').textContent=s;$('#inspState').textContent=s;
+    $('#statechip').className='state'+(s==='running'?' run':s==='waiting'?' wait':'');
+    $('#sbState').textContent=({idle:'就绪',running:'core 输出中…',waiting:'等待你的授权'})[s];
+    var running=s==='running';
+    $('#sendBtn').style.display=running?'none':'';
+    $('#stopBtn').style.display=running?'':'none';
+  }
+  $('#stopBtn').addEventListener('click',function(){setState('idle');toast('cancel 已发送')});
+  var input=$('#input'),msglist=$('#msglist');
+  input.addEventListener('input',function(){
+    input.style.height='auto';input.style.height=Math.min(input.scrollHeight,160)+'px';
+    $('#chars').textContent=input.value.length?input.value.length+' 字符':'';
+  });
+  input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+  $('#sendBtn').addEventListener('click',send);
+  function send(){
+    var t=input.value.trim();if(!t)return;
+    if($('.empty'))msglist.innerHTML='';
+    input.value='';input.style.height='';$('#chars').textContent='';
+    var pending=document.createElement('div');
+    pending.className='blk user pending';
+    pending.innerHTML='<div class="meta"><span class="badge"></span><span>你</span></div><div class="content"></div>';
+    pending.querySelector('.content').textContent=t;
+    msglist.appendChild(pending);scrollTail(true);
+    setState('running');
+    setTimeout(function(){pending.classList.remove('pending');pending.querySelector('.badge').textContent='你 · 已确认';},500);
+    setTimeout(function(){
+      setState('idle');
+      var b=document.createElement('div');b.className='blk assistant';
+      b.innerHTML='<div class="meta"><span>assistant · 现在</span><span class="copy">复制</span></div><div class="content"></div>';
+      msglist.appendChild(b);
+      var full='（原型模拟流式输出）收到：「'+t.slice(0,40)+'」。真实版这里逐 delta 更新同一块文本，滚动条不再抢你的位置——除非你停在底部 60px 内。',i=0;
+      var c=b.querySelector('.content');
+      var iv=setInterval(function(){
+        c.textContent=full.slice(0,i+=4);scrollTail(false);
+        if(i>=full.length){clearInterval(iv);b.querySelector('.copy').addEventListener('click',function(){toast('已复制到剪贴板（原型模拟）')})}
+      },28);
+    },900);
+  }
+  var tr=$('#transcript');var pinned=true;
+  tr.addEventListener('scroll',function(){
+    pinned=tr.scrollHeight-tr.scrollTop-tr.clientHeight<60;
+    $('#jump').style.display=pinned?'':'block';
+  });
+  $('#jump').addEventListener('click',function(){scrollTail(true)});
+  function scrollTail(force){if(pinned||force){tr.scrollTop=tr.scrollHeight}}
+  var clearCount=0,savedHtml=msglist.innerHTML;
+  $('#clearBtn').addEventListener('click',function(){
+    if($('.empty')){msglist.innerHTML=savedHtml;bindAll();toast('已还原（真实版为"仅重绘"）');clearCount=0;return}
+    clearCount++;
+    if(clearCount===1){toast('这是"清空视图"演示：再点一次看空状态');return}
+    msglist.innerHTML='';
+    var e=document.createElement('div');e.className='empty';
+    e.innerHTML='<div class="big">💬</div><div style="font-size:15px;color:var(--text)">新会话还没有内容</div>'+
+      '<div>core 起来后，从这里下达第一条指令；或试试：</div>'+
+      '<div class="sugs"><span class="chip">解释这个仓库的结构</span><span class="chip">跑一遍协议夹具校验</span><span class="chip">把 GUI 的别扭点列成改进计划</span></div>'+
+      '<div class="chip">⚙ 还没有凭据？打开设置</div>';
+    msglist.appendChild(e);
+    e.querySelectorAll('.chip').forEach(function(c){c.addEventListener('click',function(){
+      if(c.textContent.indexOf('设置')>=0){openSettings()}else{input.value=c.textContent;send()}
+    })});
+    toast('空状态演示（真实版在转录为空时常驻）');
+  });
+  function bindAll(){
+    $$('.copy').forEach(function(c){if(!c._b){c._b=1;c.addEventListener('click',function(){toast('已复制到剪贴板（原型模拟）')})}});
+    $$('.fpath').forEach(function(p){if(!p._b){p._b=1;p.addEventListener('click',function(e){e.stopPropagation();openPeek(p.dataset.file)})}});
+  }
+  bindAll();
+})();
+</script>
+</div>

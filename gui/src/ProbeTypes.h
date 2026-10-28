@@ -169,6 +169,12 @@ struct PreviewProbeRec {
     std::string detail;     // matched=false 时的原因（其余相 = 关键读数）
 };
 
+struct PersistProbeRec {
+    std::string phase;
+    bool matched = true;
+    std::string detail;
+};
+
 struct WorkspaceProbeRec {
     std::string phase;
     std::string clientId;

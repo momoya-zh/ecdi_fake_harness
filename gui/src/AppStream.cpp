@@ -62,6 +62,10 @@ void HarnessApp::ResumeSessionTimedClock(Session& s) {
 void HarnessApp::MarkLiveEof() {
     m_sess->liveEof = true;   // core 退出（stdin EOF 或 bye 收尾）
     FailPendingOperations("core EOF / 断连");
+    if (m_sess->journalPromoted) {
+        SyncSessionMeta(*m_sess);
+        if (m_sess->journal) m_sess->journal->Close();
+    }
     m_hudDirty = true;
     RefreshHud();
 }
@@ -122,6 +126,7 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
                     .count()));
         }
         ++m_sess->liveLines;
+        HandleLiveJournalLine(*m_sess, line);
         HandleLine(line);
         ++handled;
     }
@@ -246,6 +251,7 @@ void HarnessApp::OnReplayTick() {
                 if (!got) break;
                 ++m_sess->liveLines;
                 if (m_options.asyncProbe) ++m_probeState.apLinesTick;
+                HandleLiveJournalLine(*m_sess, line);
                 HandleLine(line);
                 gotAny = true;
             }
@@ -333,6 +339,7 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
+                {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
                 // ── 跨 tick 组：靠后续 tick 推进，必须排在同步组之后 ──
                 {&CliOptions::settingsProbe, &ProbeState::settingsProbeDone, &HarnessApp::RunSettingsProbe},
                 {&CliOptions::themeProbe, &ProbeState::themeProbeDone, &HarnessApp::RunThemeProbe},
@@ -579,7 +586,10 @@ void HarnessApp::RouteLastMessage() {
         return;
     }
     if (t == "hello") {
-        m_sess->sessionId = msg.GetString("session");
+        m_sess->coreInstanceId = msg.GetString("session");
+        if (m_sess->sessionId.empty()) {
+            m_sess->sessionId = m_sess->coreInstanceId;
+        }
         m_sess->coreVer = msg.GetString("core");
         const json::Value* protocol = msg.Find("protocol");
         m_sess->protocolVer = protocol && protocol->IsNumber()
@@ -648,6 +658,30 @@ void HarnessApp::RouteLastMessage() {
                 m_sess->ctxCapacity = static_cast<int>(ctx->number);
             }
         }
+        // ★★ L3（2026-10-28）：记忆文件列表反序列化（唯一权威来源自 core）
+        if (const json::Value* mems = msg.Find("memories"); mems && mems->IsArray()) {
+            m_sess->memories.clear();
+            for (const auto& item : mems->array) {
+                if (!item.IsObject()) continue;
+                MemoryFileItem f;
+                f.name = item.GetString("name");
+                f.source = item.GetString("source");
+                if (const json::Value* b = item.Find("bytes"); b && b->IsNumber()) {
+                    f.bytes = static_cast<long long>(b->number);
+                }
+                if (const json::Value* tk = item.Find("tokens"); tk && tk->IsNumber()) {
+                    f.tokens = static_cast<int>(tk->number);
+                }
+                if (const json::Value* sk = item.Find("skipped"); sk && sk->IsBool()) {
+                    f.skipped = sk->boolean;
+                }
+                f.skipReason = item.GetString("skip_reason");
+                if (!f.name.empty()) {
+                    m_sess->memories.push_back(std::move(f));
+                }
+            }
+            RebuildMemoryList();
+        }
         m_hudDirty = true;
         if (m_devMode) {
             AddNoticeRow("core " + msg.GetString("core") + " · session " +
@@ -663,6 +697,9 @@ void HarnessApp::RouteLastMessage() {
         m_sess->coreState = msg.GetString("value");
         m_hudDirty = true;
         if (m_sess->coreState == "idle") {
+            if (m_sess->journalPromoted) {
+                SyncSessionMeta(*m_sess);
+            }
             MaybeStartWorkspaceSync();
             SendPendingModelSwitchIfIdle();   // ★ P3.6：排队的模型切换在 idle 兑现
         }
@@ -704,6 +741,9 @@ void HarnessApp::RouteLastMessage() {
                 m_sess->workspacePath = path->text;
                 m_sess->workspaceSyncComplete = true;
                 m_sess->workspaceStatus = "已由 core 确认";
+                if (!m_sess->temporary && !m_sess->journalPromoted && !m_sess->firstPromptText.empty()) {
+                    PromoteSessionJournal(*m_sess, m_sess->firstPromptText);
+                }
                 // ★★ 2026-10-20：确认成功 = 「这个会话现在属于这条路径那个工作区」。
                 //   ★ 注册只发生在这里（不在请求时）：工作区的路径定义是 **core 回显的
                 //     规范化结果**，不是 GUI 自己发出去的那个字符串。在请求时注册就会
@@ -790,4 +830,102 @@ void HarnessApp::RouteLastMessage() {
         return;
     }
     // state / usage：上移到 HUD，转录不渲染
+}
+
+void HarnessApp::HandleLiveJournalLine(Session& session, const std::string& line) {
+    if (session.originKind != "live") return;
+    if (session.journal && session.journal->IsOpen()) {
+        std::string err;
+        if (!session.journal->AppendLine(line, err)) {
+            AddNoticeRow("[转录落盘失败] " + err, kErrorDark);
+        }
+    } else if (!session.journalPromoted) {
+        if (session.prePromotionLines.size() < 64) {
+            session.prePromotionLines.push_back(line);
+        }
+    }
+}
+
+void HarnessApp::PromoteSessionJournal(Session& session, const std::string& promptText) {
+    if (session.journalPromoted) return;
+    if (session.originKind != "live") return;
+    if (session.workspacePath.empty()) return;
+
+    // 1. 派生 label：首条 prompt 前 24 字符；若为空则回落「工作区叶子 + 序号」
+    if (!promptText.empty()) {
+        std::string clean = promptText;
+        for (char& c : clean) {
+            if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+        }
+        const size_t start = clean.find_first_not_of(' ');
+        if (start != std::string::npos) {
+            clean = clean.substr(start);
+            if (clean.size() > 24) clean = clean.substr(0, 24);
+            session.label = clean;
+            m_sidebarDirty = true;
+        }
+    } else if (session.label.empty() || session.label.rfind(" (live)") != std::string::npos) {
+        namespace fs = std::filesystem;
+        fs::path p(session.workspacePath);
+        std::string leaf = p.filename().string();
+        if (leaf.empty()) leaf = "会话";
+        session.label = leaf + " #" + std::to_string(m_sessions.size());
+        m_sidebarDirty = true;
+    }
+
+    // 2. 补齐元数据
+    session.meta.id = session.sessionId;
+    session.meta.label = session.label;
+    session.meta.providerId = session.providerId;
+    session.meta.modelName = session.modelName;
+    session.meta.contextLimit = session.contextLimit;
+    session.meta.lastSeq = session.transcript.LastSeq() >= 0 ? session.transcript.LastSeq() : 0;
+    session.meta.lastUsedAt = SessionStore::CurrentUtcTimestamp();
+
+    // 3. 落盘初始 meta.json
+    std::string err;
+    if (!SessionStore::SaveMetaAtomic(session.workspacePath, session.meta, err)) {
+        AddNoticeRow("[会话元数据落盘失败] " + err, kErrorDark);
+        return;
+    }
+
+    // 4. 打开 journal 文件
+    session.journal = std::make_unique<SessionStore::JournalWriter>();
+    const auto journalPath = SessionStore::JournalPath(session.workspacePath, session.sessionId);
+    if (!session.journal->Open(journalPath, err)) {
+        AddNoticeRow("[会话转录日志打开失败] " + err, kErrorDark);
+        session.journal.reset();
+        return;
+    }
+
+    // 5. 补写转正前的初始协议行（hello、state 等）
+    for (const auto& line : session.prePromotionLines) {
+        if (!session.journal->AppendLine(line, err)) {
+            AddNoticeRow("[转录落盘失败] " + err, kErrorDark);
+            break;
+        }
+    }
+    session.prePromotionLines.clear();
+    session.journalPromoted = true;
+
+    // 6. 更新 meta 的 sizeBytes
+    session.meta.sizeBytes = session.journal->BytesWritten();
+    SessionStore::SaveMetaAtomic(session.workspacePath, session.meta, err);
+
+    // 7. 将工作区纳入 AppConfig 的 knownWorkspaces
+    m_appConfig.AddKnownWorkspace(session.workspacePath);
+    std::string cfgErr;
+    m_appConfig.Save(cfgErr);
+}
+
+void HarnessApp::SyncSessionMeta(Session& session) {
+    if (!session.journalPromoted || session.workspacePath.empty()) return;
+    session.meta.lastSeq = session.transcript.LastSeq() >= 0 ? session.transcript.LastSeq() : 0;
+    session.meta.sizeBytes = session.journal ? session.journal->BytesWritten() : 0;
+    session.meta.lastUsedAt = SessionStore::CurrentUtcTimestamp();
+    session.meta.contextLimit = session.contextLimit;
+    if (!session.providerId.empty()) session.meta.providerId = session.providerId;
+    if (!session.modelName.empty()) session.meta.modelName = session.modelName;
+    std::string err;
+    SessionStore::SaveMetaAtomic(session.workspacePath, session.meta, err);
 }

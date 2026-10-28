@@ -1,8 +1,8 @@
-// AppConfig v3 → v4 迁移判据（2026-10-27，provider 1—N model 拆层）。
+// AppConfig v3 → v4 → v5 迁移判据（2026-10-28，v5 增加 knownWorkspaces）。
 //
 // 为什么必须单独测：迁移的失败方式**全部是静默的**——模型名丢了、context 归零、
-// id 被重算（凭据目标名跟着变 ⇒ key 断）、defaultProviderId 指向不存在的项。
-// 这些都不会崩，只会在某天"切过去用不了"。所以逐字段钉。
+// id 被重算（凭据目标名跟着变 ⇒ key 断）、defaultProviderId 指向不存在的项、
+// 已知工作区被清空。这些都不会崩，只会在某天"切过去用不了"。所以逐字段钉。
 //
 // ★ 没进 `regress.py`：它需要 MSVC 编译一个独立小二进制，而 regress 至今不假设
 //   工具链可用（它只跑现成 exe）。**改 `ProviderConfig` / `AppConfig::Load/Save`
@@ -109,16 +109,17 @@ int main() {
     Check("3  defaultProviderId 不变", def && def->id == "ds",
           def ? def->id : "<null>");
 
-    // ── 4. Save 落 v4 ───────────────────────────────────────────
+    // ── 4. Save 落 v5 ───────────────────────────────────────────
     Check("4a Save 成功", cfg.Save(err), err);
     const std::string text = ReadFile(path);
-    Check("4b version=4", Has(text, "\"version\":4"), text.substr(0, 40));
+    Check("4b version=5", Has(text, "\"version\":5"), text.substr(0, 40));
     Check("4c 有 models 数组", Has(text, "\"models\":["));
     Check("4d 有 activeModel", Has(text, "\"activeModel\":\"glm-4.6\""));
     Check("4e 双写顶层 model", Has(text, "\"model\":\"glm-4.6\""));
     Check("4f 双写顶层 context", Has(text, "\"context\":200000"));
     Check("4g 保留 credentialTarget",
           Has(text, "\"credentialTarget\":\"ECDI.FakeHarness.v1.Provider.zhipu\""));
+    Check("4h 有 knownWorkspaces", Has(text, "\"knownWorkspaces\":["));
 
     // ── 5. v4 往返幂等 ──────────────────────────────────────────
     AppConfig again;
@@ -207,6 +208,47 @@ int main() {
             // 往返幂等：再存一次不得改文件（否则每次启动都在动配置）
             Check("7l 多模型二次 Save 成功", back.Save(err), err);
             Check("7m 多模型二次 Save 逐字节相同", ReadFile(path) == t7);
+        }
+    }
+
+    // ── 8. v4 -> v5 迁移与 knownWorkspaces 往返 ───────────────────
+    WriteFile(path, R"({
+  "version": 4,
+  "providers": [
+    {"id": "p4", "name": "P4", "baseUrl": "https://p4.invalid/v1",
+     "credentialTarget": "ECDI.FakeHarness.v1.Provider.p4",
+     "models": [{"name": "m4", "context": 4000, "maxOutput": 40}],
+     "activeModel": "m4"}
+  ],
+  "defaultProviderId": "p4"
+})");
+    {
+        AppConfig v4cfg;
+        const bool ok8 = v4cfg.Load(err);
+        Check("8a v4 (无 knownWorkspaces) 载入成功", ok8, err);
+        if (ok8) {
+            Check("8b knownWorkspaces 初始为空", v4cfg.knownWorkspaces.empty());
+            v4cfg.AddKnownWorkspace("D:/Project/ECDI");
+            v4cfg.AddKnownWorkspace("D:/Project/ECDI");  // 重复添加测试去重
+            v4cfg.AddKnownWorkspace("C:/Workspace/Foo");
+            Check("8c AddKnownWorkspace 去重后为 2 条", v4cfg.knownWorkspaces.size() == 2,
+                  std::to_string(v4cfg.knownWorkspaces.size()));
+            Check("8d Save 升级为 v5 成功", v4cfg.Save(err), err);
+            const std::string t8 = ReadFile(path);
+            Check("8e 保存后 version=5", Has(t8, "\"version\":5"));
+            Check("8f 包含添加的工作区", Has(t8, "D:/Project/ECDI") && Has(t8, "C:/Workspace/Foo"));
+
+            AppConfig v5cfg;
+            const bool ok8reload = v5cfg.Load(err);
+            Check("8g v5 重新载入成功", ok8reload, err);
+            if (ok8reload) {
+                Check("8h 保持 2 条工作区", v5cfg.knownWorkspaces.size() == 2);
+                Check("8i 路径顺序一致", v5cfg.knownWorkspaces[0] == "D:/Project/ECDI" &&
+                                          v5cfg.knownWorkspaces[1] == "C:/Workspace/Foo");
+                v5cfg.RemoveKnownWorkspace("D:/Project/ECDI");
+                Check("8j 移除后剩 1 条", v5cfg.knownWorkspaces.size() == 1 &&
+                                           v5cfg.knownWorkspaces[0] == "C:/Workspace/Foo");
+            }
         }
     }
 

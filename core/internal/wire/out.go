@@ -36,6 +36,9 @@ func NewOut(w io.Writer, burst bool) *Out {
 // hello 校验用它判断握手时点；调用方**不得**用它自行跳号——跳号只经 Skip。
 func (o *Out) Seq() int64 { return o.seq }
 
+// SetSeq：设置当前 seq（仅在 resume 恢复会话时设置为 lastSeq+1）。
+func (o *Out) SetSeq(seq int64) { o.seq = seq }
+
 // Skip：故意空一个 seq 号（I4 负向注入的唯一合法入口）。
 // 真 core 永远不调它；假 core 的 --drop-seq 用它造「消息丢失」。
 func (o *Out) Skip() { o.seq++ }

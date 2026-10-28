@@ -26,6 +26,15 @@ struct CliOptions {
     bool cullProbe = false;               // --cull-probe：包 PaintProbe 计数每帧到达后端的命令
     int scrollSweepStep = 0;              // --scroll-sweep <px>：加载完后从顶扫到底（0 = 关）
     std::filesystem::path corePath;       // --core <exe>：拉起假 core 走真子进程（P1.5）
+    // ★★ 2026-10-28（缺陷：持久化会话列表不出现，静默）：**命令行是否显式给了来源**。
+    //   为什么不复用 `corePath` 空不空：无参启动时 `TryAutoConnectFromConfig()` 会把
+    //   自动解析出的 core 路径写进 `corePath`（`AppSettings.cpp:245`），于是"corePath 非空"
+    //   同时表达了两件事 —— ① 用户给了 `--core`；② 配置自动连上了 core。
+    //   拿 ② 去判"命令行是否指定会话"，会让**每次**无参启动都跳过启动恢复，且不留痕迹
+    //   （`App.cpp` 里那道闸）。⇒ 这条语义在**解析期一次钉死**，运行期不许再从
+    //   `corePath` / `replayPath` 反推。同族病史见 `App.h` 的 `originKind` 注释
+    //   （"在此之前『来源』是隐式的"）。
+    bool sourceFromCli = false;           // 解析期置位：--replay / --core 任一出现
     std::string coreArgs;                 // --core-args "<args>"：透传给假 core
     std::string autoPrompt;               // --auto-prompt <text>：启动后自动发一次 prompt（跑批）
     // ★★ P3.5（规格 §8.5）：无参启动 / 设置面板 / 配置路径覆盖（2026-10-24）。
@@ -62,6 +71,7 @@ struct CliOptions {
     // ★★ P4 Phase I（2026-10-26）：--preview-probe 预览链判据（regex 抽取 /
     //   workspace 纪律 / 截断闸 / Esc 关闭——各相 matched 写在 RunPreviewProbe 内）。
     bool previewProbe = false;            // --preview-probe：路径可点 + 只读预览判据
+    bool persistProbe = false;            // --persist-probe：会话持久化与恢复判据（Step 1~4）
     // ★ 探针专用（2026-10-08）：高对比配色——转录画布纯白 / 文本纯黑 / 气泡无描边。
     //   动机：默认暗色主题下，像素探针要与卡片圆角、描边、滚动条抢阈值，
     //   反复产生「0 行」「跨度到 899」这类**仪器噪声**（多次误判的根因）。
@@ -299,7 +309,7 @@ struct CliOptions {
     [[nodiscard]] bool HasAnyProbe() const {
         return cullProbe || scrollSweepStep > 0 || settingsProbe || jumpProbe ||
                keyProbe || emptyProbe || modelProbe || selectProbe || delProvProbe ||
-               previewProbe || probeContrast || stateProbe || hitProbe ||
+               previewProbe || persistProbe || probeContrast || stateProbe || hitProbe ||
                reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || resizeProbe || enterProbe ||

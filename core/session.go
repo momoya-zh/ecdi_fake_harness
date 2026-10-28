@@ -17,9 +17,13 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"ecdi-fake-core/internal/contextlog"
+	"ecdi-fake-core/internal/memory"
 	"ecdi-fake-core/internal/wire"
 )
 
@@ -43,10 +47,10 @@ type session struct {
 	// 保留 stc 之外的副本必然漂移，所以 s.st 字段已删除。
 	stc *atomic.Int32
 
-	turn  int // 轮次计数（usage.turn）
-	since int // 自上次注入丢号以来发出的消息数
+	turn            int // 轮次计数（usage.turn）
+	since           int // 自上次注入丢号以来发出的消息数
 	blockEndSkipped bool // drop-block-end 只命中一次
-	blockNo int         // 块 id 计数器（与 seq 解耦——id 不依赖 seq 算术）
+	blockNo         int  // 块 id 计数器（与 seq 解耦——id 不依赖 seq 算术）
 
 	// 未决 ask（I3）：非空时只接受 answer
 	pendingAskID string
@@ -62,6 +66,20 @@ type session struct {
 	workspaceDelayMs int
 	// 延迟应答的定时器（nil 表示没有未决定时器；nil 通道在 select 中永不就绪）
 	wsTimer <-chan time.Time
+
+	// ── L2 上下文与压缩（docs/session-persistence-decisions.md §7.2）───
+	sessionID        string
+	resumeID         string
+	contextLimit     int
+	lastPromptTokens int
+	lastCompressTurn int
+	messages         []contextlog.Message
+	failSummarize    bool
+	ctxWriter        *contextlog.LogWriter
+
+	// ── L3 记忆文件（docs/session-persistence-decisions.md §8）────────
+	globalMemoryDir string
+	memResult       *memory.MemoryResult
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求。
@@ -72,7 +90,9 @@ type pendingWorkspace struct {
 }
 
 func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
-	wsDelayMs int, burst bool, in <-chan wire.StampedLine, stc *atomic.Int32,
+	wsDelayMs int, burst bool, resumeID, sessionID, workspace string,
+	contextTokens int, failSummarize bool, globalMemory string,
+	in <-chan wire.StampedLine, stc *atomic.Int32,
 	log func(string, ...any)) *session {
 	s := &session{
 		rng:              rand.New(rand.NewSource(seed)),
@@ -85,16 +105,78 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 		in:               in,
 		log:              log,
 		stc:              stc,
+		contextLimit:     contextTokens,
+		failSummarize:    failSummarize,
+		sessionID:        sessionID,
+		resumeID:         resumeID,
+		globalMemoryDir:  globalMemory,
 	}
-	// 初始工作区 = core 进程自身的 cwd（与 GUI 无关：GUI 的 CreateProcess 不传 cwd，
-	// 但即使传了，v3 起工作区的唯一真相也是 core 自己记的这一个字段）。
-	if wd, err := os.Getwd(); err == nil {
-		if norm, err := wire.NormalizeWorkspace(wd); err == nil {
+	if s.sessionID == "" {
+		s.sessionID = "s-live-1"
+	}
+	if workspace != "" {
+		if norm, err := wire.NormalizeWorkspace(workspace); err == nil {
 			s.cwd = norm
 		}
 	}
+	if s.cwd == "" {
+		if wd, err := os.Getwd(); err == nil {
+			if norm, err := wire.NormalizeWorkspace(wd); err == nil {
+				s.cwd = norm
+			}
+		}
+	}
 	s.log("initial workspace: %s", s.cwd)
+
+	// L2 resume 处理：从 .meta.json 获取 lastSeq 续号，从 .context.jsonl 顺序重放历史
+	if s.resumeID != "" {
+		s.sessionID = s.resumeID
+		metaPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".meta.json")
+		if meta, err := contextlog.ReadMeta(metaPath); err == nil {
+			startSeq := meta.LastSeq + 1
+			s.out.SetSeq(startSeq)
+			s.log("resumed session %s: starting seq=%d (from lastSeq=%d)", s.sessionID, startSeq, meta.LastSeq)
+			if s.contextLimit == 0 && meta.ContextLimit > 0 {
+				s.contextLimit = int(meta.ContextLimit)
+			}
+		}
+		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
+		if msgs, err := contextlog.Replay(ctxPath); err == nil {
+			s.messages = msgs
+			s.log("replayed %d messages from %s", len(msgs), ctxPath)
+		}
+		if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
+			s.ctxWriter = w
+		}
+	} else if s.sessionID != "" && s.cwd != "" {
+		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
+		if _, err := os.Stat(filepath.Dir(ctxPath)); err == nil {
+			if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
+				s.ctxWriter = w
+			}
+		}
+	}
+
+	if s.globalMemoryDir == "" {
+		s.globalMemoryDir = memory.DefaultGlobalDir()
+	}
+	s.loadMemories()
+
 	return s
+}
+
+func (s *session) loadMemories() {
+	if s.cwd == "" {
+		return
+	}
+	wsMemDir := filepath.Join(s.cwd, ".ecdi", "memory")
+	res, err := memory.Load(s.globalMemoryDir, wsMemDir, s.contextLimit)
+	if err != nil {
+		s.log("failed to load memories: %v", err)
+		return
+	}
+	s.memResult = res
+	s.log("loaded memories: %d loaded, %d skipped", len(res.LoadedFiles), len(res.SkippedFiles))
 }
 
 // ── 出站 ────────────────────────────────────────────────────────
@@ -150,12 +232,49 @@ func (s *session) sleep(ms float64) {
 // ── 主循环 ──────────────────────────────────────────────────────
 
 func (s *session) run() error {
-	// 协议 §3.1：core→gui 第一条 = hello，seq 必须为 0。
+	defer func() {
+		if s.ctxWriter != nil {
+			_ = s.ctxWriter.Close()
+		}
+	}()
+	// 协议 §3.1：core→gui 第一条 = hello，新会话 seq 从 0 起，resume 从 lastSeq+1 续。
 	// ★ v3：protocol 升到 3，并声明 workspace 能力（§3.1：未声明 ⇒ GUI 不得显示选择器）。
-	s.emit(map[string]any{"t": "hello", "protocol": 3, "core": "0.2.0",
-		"session": "s-live-1", "caps": []string{"tools", "ask", "workspace"}})
+	hello := map[string]any{
+		"t": "hello", "protocol": 3, "core": "0.2.0",
+		"session": s.sessionID, "caps": []string{"tools", "ask", "workspace"},
+	}
+	if s.contextLimit > 0 {
+		hello["context"] = s.contextLimit
+	}
+	if s.memResult != nil && len(s.memResult.Files) > 0 {
+		hello["memories"] = s.memResult.Files
+	}
+	s.emit(hello)
 	s.flush()   // ★ 必刷点①：握手的第一条不能留在缓冲里
-	s.log("hello sent; waiting for gui hello")
+	s.log("hello sent (seq=%d, session=%s); waiting for gui hello", s.out.Seq()-1, s.sessionID)
+
+	// L3 记忆通知（§8.2 / §8.3）：
+	// 1. resume 且存在已加载记忆文件 ⇒ 发一条 kind:"system" 提示「记忆已更新」
+	if s.resumeID != "" && s.memResult != nil && len(s.memResult.LoadedFiles) > 0 {
+		nid := s.nextBlockID()
+		s.emit(map[string]any{"t": "block_start", "id": nid, "kind": "system", "text": "[记忆已更新]"})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
+		s.flush()
+	}
+	// 2. 超限跳过文件提示
+	if s.memResult != nil && len(s.memResult.SkippedFiles) > 0 {
+		var skippedNames []string
+		for _, f := range s.memResult.SkippedFiles {
+			skippedNames = append(skippedNames, f.Name)
+		}
+		nid := s.nextBlockID()
+		s.emit(map[string]any{
+			"t": "block_start", "id": nid, "kind": "system",
+			"text": fmt.Sprintf("[记忆文件超限已跳过: %s]", strings.Join(skippedNames, ", ")),
+		})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
+		s.flush()
+	}
 	for {
 		var sl wire.StampedLine
 		var ok bool
@@ -236,6 +355,71 @@ func (s *session) handlePrompt(text string, clientID string) {
 	s.cancelRequested = false
 	s.setState(wire.StateRunning)
 
+	// ── L2 压缩触发检查（§7.2）────────────────────────────────────
+	if s.contextLimit > 0 {
+		occupancy := s.lastPromptTokens
+		if occupancy == 0 {
+			for _, m := range s.messages {
+				occupancy += len([]rune(m.Content))/2 + 100
+			}
+		}
+		thresh := int(float64(s.contextLimit) * contextlog.CompressThresholdRatio)
+		if occupancy >= thresh && (s.turn-s.lastCompressTurn >= 2 || s.lastCompressTurn == 0) {
+			if s.failSummarize {
+				s.log("compression failed due to --fail-summarize")
+				nid := s.nextBlockID()
+				s.emit(map[string]any{
+					"t": "block_start", "id": nid, "kind": "system",
+					"text": "[上下文压缩失败: 摘要生成失败，本轮照常发送]",
+				})
+				s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
+			} else {
+				cutTo, ok := contextlog.FindCompressionCutPoint(s.messages, 2)
+				if ok && cutTo >= 0 {
+					beforeOccupancy := occupancy
+					count := cutTo + 1
+					summary := fmt.Sprintf("此前对话涵盖 %d 条历史消息的讨论，已确认关键决定与进展。", count)
+					if s.ctxWriter != nil {
+						_ = s.ctxWriter.AppendCompact(summary, 0, cutTo)
+					}
+					sumMsg := contextlog.Message{
+						Role:    "user",
+						Content: contextlog.SummaryPrefix + summary,
+					}
+					newMsgs := make([]contextlog.Message, 0, len(s.messages)-count+1)
+					newMsgs = append(newMsgs, sumMsg)
+					newMsgs = append(newMsgs, s.messages[cutTo+1:]...)
+					s.messages = newMsgs
+
+					afterOccupancy := int(float64(s.contextLimit) * contextlog.TargetRatio)
+					occupancy = afterOccupancy
+					s.lastPromptTokens = afterOccupancy
+					s.lastCompressTurn = s.turn
+
+					beforePct := int(float64(beforeOccupancy) * 100 / float64(s.contextLimit))
+					afterPct := int(float64(afterOccupancy) * 100 / float64(s.contextLimit))
+
+					nid := s.nextBlockID()
+					noticeText := fmt.Sprintf("[上下文已压缩:%d 条 → 摘要,占用 %d%% → %d%%]", count, beforePct, afterPct)
+					s.emit(map[string]any{
+						"t": "block_start", "id": nid, "kind": "system", "text": noticeText,
+					})
+					s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
+					s.log("compressed %d messages: %s", count, noticeText)
+				}
+			}
+		}
+
+		if occupancy >= s.contextLimit {
+			s.emit(map[string]any{
+				"t": "error", "fatal": false,
+				"message": "上下文已达 100% 且压缩无法腾出足够空间，请新开会话",
+			})
+			s.setState(wire.StateIdle)
+			return
+		}
+	}
+
 	// ① 回显用户（协议 §4：转录的唯一作者仍是 core；GUI 的「发送中」气泡靠
 	//    client_id 认领这一块，所以回显**必须**带同一个 id，否则气泡永远停在发送中）。
 	//
@@ -255,6 +439,12 @@ func (s *session) handlePrompt(text string, clientID string) {
 	})
 	s.emit(map[string]any{"t": "block_end", "id": userID, "ok": true})
 
+	userMsg := contextlog.Message{Role: "user", Content: text}
+	s.messages = append(s.messages, userMsg)
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(userMsg)
+	}
+
 	// ② 助手 Markdown 流
 	s.streamAssistant()
 
@@ -269,10 +459,23 @@ func (s *session) handlePrompt(text string, clientID string) {
 	}
 
 	// ④ 收尾
-	s.emit(map[string]any{
+	inputTokens := 8000 + s.turn*137
+	if s.contextLimit > 0 {
+		if s.lastCompressTurn > 0 {
+			inputTokens = s.lastPromptTokens + s.turn*10
+		} else {
+			inputTokens = int(float64(s.contextLimit)*0.75) + s.turn*int(float64(s.contextLimit)*0.08)
+		}
+	}
+	s.lastPromptTokens = inputTokens
+	u := map[string]any{
 		"t": "usage", "turn": s.turn,
-		"input": 8000 + s.turn*137, "output": 600 + s.turn*53,
-	})
+		"input": inputTokens, "output": 600 + s.turn*53,
+	}
+	if s.contextLimit > 0 {
+		u["context"] = s.contextLimit
+	}
+	s.emit(u)
 	if s.st() != wire.StateIdle {
 		s.setState(wire.StateIdle)
 	}
@@ -292,6 +495,12 @@ func (s *session) streamAssistant() {
 	}
 	s.emit(map[string]any{"t": "block_end", "id": id, "ok": true})
 	s.sleep(120)
+
+	asstMsg := contextlog.Message{Role: "assistant", Content: text}
+	s.messages = append(s.messages, asstMsg)
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(asstMsg)
+	}
 }
 
 func (s *session) toolRound(index int) {
@@ -302,6 +511,18 @@ func (s *session) toolRound(index int) {
 		"name": tool.Name, "args": tool.Args})
 	s.emit(map[string]any{"t": "block_end", "id": callID, "ok": true, "summary": "已发起"})
 	s.sleep(400 + s.rng.Float64()*2000)
+
+	callMsg := contextlog.Message{
+		Role: "assistant",
+		ToolCalls: []contextlog.ToolCall{{
+			ID: callID, Type: "function",
+			Function: contextlog.FuncSpec{Name: tool.Name, Arguments: "{}"},
+		}},
+	}
+	s.messages = append(s.messages, callMsg)
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(callMsg)
+	}
 
 	// 每第 3 轮插权限门（I3：ask 后停发，直到 answer）
 	if index%3 == 2 {
@@ -339,6 +560,12 @@ func (s *session) toolRound(index int) {
 	s.emit(map[string]any{"t": "block_end", "id": resultID, "ok": ok})
 	if !ok {
 		s.log("injecting tool failure for %s", tool.Name)
+	}
+
+	resMsg := contextlog.Message{Role: "tool", Content: body, ToolCallID: callID}
+	s.messages = append(s.messages, resMsg)
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(resMsg)
 	}
 
 	// I1 负向注入：漏一次 block_end（只在第一次工具轮）
@@ -416,6 +643,7 @@ func (s *session) completeWorkspace() {
 	s.pendingWs = nil
 	s.cwd = pw.resolved
 	s.log("workspace switched: %s", s.cwd)
+	s.loadMemories()
 	s.emit(map[string]any{"t": "workspace", "request_id": pw.requestID,
 		"ok": true, "path": pw.resolved})
 }

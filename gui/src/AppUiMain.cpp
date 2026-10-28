@@ -329,6 +329,21 @@ void HarnessApp::BuildConversationHead() {
         grow->SetSize(10, 10);
         head->AddChild(std::move(grow));
 
+        // ★★ L2 持久化：只读会话顶部「继续」按钮
+        auto contBtn = std::make_unique<ECDI::Button>("⎘ 继续");
+        m_hud.continueBtn = contBtn.get();
+        contBtn->SetSize(64, 24);
+        contBtn->SetFont(harness::SansFont(harness::kFontSmall));
+        contBtn->SetTextColor(kBtnPrimaryInk);
+        contBtn->SetStyle(ECDI::ButtonStyleOverride{
+            .background = kBtnPrimary,
+            .cornerRadius = kRadiusBtn,
+            .pressedBackground = kBtnPrimaryPressed,
+            .hoverBackground = kBtnPrimaryHover});
+        contBtn->SetOnClick([this] { ContinueCurrentSession(); });
+        contBtn->SetVisible(false);
+        head->AddChild(std::move(contBtn));
+
         // 操作钮：C 是 3 个 iconbtn（↗ ☷ ···）——`↗` 两主题都有字形，
         // `☷` 与 `⋯`(U+22EF) 都没有 ⇒ 后两个用 ASCII 文字（诚实降级，不画缺字图标）。
         // ★★ 2026-10-20：动作从「`bool toggleInspector`」改为枚举。
@@ -1104,6 +1119,9 @@ void HarnessApp::BuildComposer() {
         Relayout();
         RequestRepaint();
     });
+    composer->SetOnContinue([this] {
+        ContinueCurrentSession();
+    });
     m_counting->AddChild(std::move(composer));
 }
 
@@ -1240,6 +1258,21 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         }
         urow("输入", &m_hud.usageInV, &m_usageBarIn, harness::kDarkAccent);
         urow("输出", &m_hud.usageOutV, &m_usageBarOut, harness::kDarkAccent);
+        insp->AddChild(std::move(card));
+    }
+
+    {
+        // ── ★★ L3（2026-10-28）：记忆卡片（docs/session-persistence-decisions.md §8）──
+        auto card = makeCard(80);
+        m_hud.inspMemoryCard = card.get();
+        card->SetVisible(false); // 默认隐藏，有记忆文件时展示
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        cardTitle(*card, "记忆");
+        auto list = std::make_unique<ECDI::Panel>();
+        m_hud.memoryList = list.get();
+        list->SetSize(190, 50);
+        list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+        card->AddChild(std::move(list));
         insp->AddChild(std::move(card));
     }
 

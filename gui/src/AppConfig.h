@@ -59,10 +59,10 @@ struct ProviderConfig {
 struct AppConfig {
     // ★ 配置格式版本 = **单一真相**。`version` 成员的初值、`Load` 的接受上限、
     //   探针的「保存后升级到当前版本」判据都取它。
-    //   演进：1 单提供商 → 2 多提供商 → 3 加 `name` → 4 provider 1—N model。
+    //   演进：1 单提供商 → 2 多提供商 → 3 加 `name` → 4 provider 1—N model → 5 knownWorkspaces。
     //   ★ 为什么提成常量：v4 那次升级时，`--settings-probe` 的 rename-ok 相里
     //     硬编码的 `"version":3` 让整个回归红了——版本号散落在两处就必然漏一处。
-    static constexpr int kCurrentVersion = 4;
+    static constexpr int kCurrentVersion = 5;
     // ★ v2（P3.6）：多提供商。providers = 全部已配置的提供商（顺序 = 编辑序，
     //   不重排）；defaultProviderId = 无参启动连接的那一家。v1 单提供商配置在
     //   Load 时迁移（providers[0] = 原 provider，default = 它的 id）。
@@ -75,10 +75,14 @@ struct AppConfig {
     //   一个都不动**（老配置的 key 不断、默认提供商不变），下次 Save 升级为 v4。
     //   Save **双写**顶层 `model/context/maxOutput`（= 激活值）：给"只认顶层字段"
     //   的旧读取路径留一个降级口。两者都从 `Active()` 生成，不会各说各话。
+    // ★★ v5（2026-10-28）：`knownWorkspaces`（已知工作区路径列表，几 KB，仍在 APPDATA）。
+    //   工作区注册表本身是纯内存的；启动时按已知工作区扫各自的 .ecdi/ 目录恢复历史。
+    //   老版本载入时字段缺失 ⇒ 默认为空，保存时自动升级为 v5。
     int version = kCurrentVersion;
     std::vector<ProviderConfig> providers;
     std::string defaultProviderId;
     std::string corePath;           // 可选：ecdi-core.exe 路径覆盖；空 = 自动解析
+    std::vector<std::string> knownWorkspaces; // 已知工作区路径列表
 
     // 便捷访问：默认提供商（defaultProviderId 找不到 ⇒ providers[0]；空表 ⇒ nullptr）。
     const ProviderConfig* DefaultProvider() const;
@@ -86,6 +90,10 @@ struct AppConfig {
     const ProviderConfig* Find(const std::string& id) const;
     // upsert：按 id 替换或追加（设置面板「保存」的唯一写入口）。
     void Upsert(const ProviderConfig& pc);
+
+    // 工作区已知列表操作（去重追加 / 移除）
+    void AddKnownWorkspace(const std::string& path);
+    void RemoveKnownWorkspace(const std::string& path);
 
     // 文件不存在 → false + error="no config file"（首启分支据此判定）；
     // 存在但解析失败 → false + 具体 error（带病运行被禁止）。

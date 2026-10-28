@@ -68,6 +68,7 @@ public:
     //     · `UnknownKinds` = `block_start.kind` 未知（**协议未规定**，属空白）。
     //   合并会让「协议空白」被误读成「I5 已覆盖」。
     size_t UnknownKinds() const { return m_unknownKinds; }
+    long long LastSeq() const { return m_lastSeq; }
     // 已知 kind 集合的判据（供 App 与 validate 口径一致）
     [[nodiscard]] static bool IsKnownKind(const std::string& kind);
 

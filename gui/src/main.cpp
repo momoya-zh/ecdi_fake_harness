@@ -126,6 +126,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.delProvProbe = true;    // ★ P4：删除所选不崩判据
         } else if (arg == L"--preview-probe") {
             options.previewProbe = true;    // ★ P4 Phase I：路径可点 + 只读预览判据
+        } else if (arg == L"--persist-probe") {
+            options.persistProbe = true;    // ★ 会话持久化与启动恢复判据
         } else if (arg == L"--grow-probe") {
             options.growProbe = true;       // ★ 2026-10-21：输入框多行自动长高
         } else if (arg == L"--valign-probe") {
@@ -175,6 +177,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // ★★ P3.5（规格 §8.5 D7）：无参 = 正常入口——配置可用 ⇒ 直连默认提供商；
     //   否则首启引导（设置面板）。用法文档只挂在 --help 上。
     const bool haveSource = haveReplay || !options.corePath.empty();
+    // ★★ 2026-10-28：把"来源是命令行给的"这件事**在此刻钉死**。此后再看 `corePath`
+    //   就分不出「用户写了 --core」与「配置自动连上了 core」——`TryAutoConnectFromConfig()`
+    //   会在构造期回填它（`AppSettings.cpp:245`），而启动恢复的闸正是踩了这个歧义。
+    options.sourceFromCli = haveSource;
     if (!haveSource && !showUsage) {
         options.firstRun = true;
     }
@@ -215,6 +221,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --grow-probe                     输入框多行自动长高判据\n"
                     L"  --valign-probe                   REQ-14：单行输入框垂直居中判据\n"
                     L"  --preview-probe                  P4 I：路径可点 + 只读预览判据\n"
+                    L"  --persist-probe                  会话持久化与启动恢复判据\n"
                     L"  --async-probe                    REQ-03：PostToUi 投递 vs 8ms 轮询的读数\n"
                     L"  --legacy-poll                    REQ-03 对照世界：恢复每 tick 等 8ms 的旧路径\n"
                     L"  --scroll-sweep <px>              回放加载完后从顶扫到底，扫完退出",

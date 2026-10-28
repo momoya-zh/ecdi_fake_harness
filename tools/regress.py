@@ -21,6 +21,10 @@ import shutil
 import subprocess
 import sys
 
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 # 生成器决定产物落点：Ninja（单配置）= gui/build/ 根；Visual Studio（多配置）= gui/build/Release/。
 # 两者都认，新布局优先——2026-10-27 构建器已迁 Ninja（同一 cl.exe，ABI 不变）。
@@ -110,10 +114,13 @@ EXTRA_PROBES = [
     # （读回走公开 GetCaretClientGeometry，设置面板/模型浮窗用产品入口真开真关）；
     # 无 designed-red——翻转臂（Top 强制）就是剂量对照，没有结构性不可达的相。
     ("--valign-probe", "valignProbe", DEMO, [], []),
+    # 会话持久化与恢复探针：L1~L4 全链判据在 RunPersistProbe 内（发现 / 恢复 / 只读 / 守卫 / 继续 / 负对照 / 清理）
+    ("--persist-probe", "persistProbe", DEMO, ["--config", "@PERSIST@"], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
 SETTINGS_CONFIG = OUT / "_reg-settings-config.json"
+PERSIST_CONFIG = OUT / "_reg-persist-config.json"
 
 # C 类：跑得动、有读数，但没有断言面。写在这里是为了让"没有门"这件事本身可见。
 INSTRUMENTS = [
@@ -176,6 +183,8 @@ def run_probe(flag, key, fixture, extra, designed, configs):
             resolved.append(str(configs["delprov"]))
         elif a == "@SETTINGS@":
             resolved.append(str(configs["settings"]))
+        elif a == "@PERSIST@":
+            resolved.append(str(configs["persist"]))
         else:
             resolved.append(a)
     out = OUT / f"_reg{flag}.json"
@@ -542,14 +551,15 @@ def main():
         print(f"  {flag:18s} {len(rows)-len(red)}/{len(rows)} green  "
               f"designed-red={designed or '-'}  {tag}")
 
-    print("\n== 2a. 补齐探针 (7) ==")
+    print("\n== 2a. 补齐探针 (8) ==")
     # 配置必须在跑批前落盘：delprov 要有 provider（否则自述 skipped-empty-config），
     # settings 要一个**隔离**路径（它的 cleanup 会删掉这一轮跑的配置文件）。
     write_probe_config(DELPROV_CONFIG,
                        [provider("probe-delprov.invalid",
                                  "https://probe-delprov.invalid/v1", "probe-model")])
     SETTINGS_CONFIG.unlink(missing_ok=True)
-    configs = {"delprov": DELPROV_CONFIG, "settings": SETTINGS_CONFIG}
+    PERSIST_CONFIG.unlink(missing_ok=True)
+    configs = {"delprov": DELPROV_CONFIG, "settings": SETTINGS_CONFIG, "persist": PERSIST_CONFIG}
     for flag, key, fixture, extra, designed in EXTRA_PROBES:
         ok, detail = run_probe(flag, key, fixture, extra, designed, configs)
         fail += 0 if ok else 1

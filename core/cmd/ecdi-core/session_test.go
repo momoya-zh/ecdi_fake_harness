@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,7 +99,7 @@ func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*sessio
 
 	sess := newSession(
 		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
-		strings.Split(allowTools, ","), nil, lines, &stc,
+		strings.Split(allowTools, ","), nil, "", "s-test-1", "", "", false, lines, &stc,
 		func(string, ...any) {}, col)
 	return sess, col, lines, &stc
 }
@@ -669,5 +670,95 @@ func TestSummarizeArgsTruncates(t *testing.T) {
 	// ★ 判据按 rune 数（省略号「…」占 3 字节，按字节判会把正确行为判 RED）
 	if n := len([]rune(got)); n > 201 {
 		t.Fatalf("摘要应截断到 ~200 rune: %d", n)
+	}
+}
+
+// ── L3 记忆文件测试 ─────────────────────────────────────────────
+
+func TestMemory_LoadingAndPromptInjection(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsMemDir := filepath.Join(tmpDir, ".ecdi", "memory")
+	if err := os.MkdirAll(wsMemDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsMemDir, "guidelines.md"), []byte("Always reply in poem"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	col := &outCollector{}
+	lines := make(chan wire.StampedLine, 64)
+	var stc atomic.Int32
+	stc.Store(wire.CodeIdle)
+
+	sess := newSession(
+		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k", Context: 10000},
+		nil, nil, "", "s-test-mem-1", tmpDir, "", false, lines, &stc,
+		func(string, ...any) {}, col)
+	t.Cleanup(func() {
+		if sess.ctxWriter != nil {
+			_ = sess.ctxWriter.Close()
+		}
+	})
+
+	// 1. 验证 hello 消息包含 memories 列表
+	msgs := parseAll(t, col)
+	if len(msgs) == 0 || msgs[0]["t"] != "hello" {
+		t.Fatalf("first msg must be hello: %v", msgs)
+	}
+	mems, ok := msgs[0]["memories"].([]any)
+	if !ok || len(mems) != 1 {
+		t.Fatalf("expected memories in hello to have 1 item: %v", msgs[0]["memories"])
+	}
+	mem0 := mems[0].(map[string]any)
+	if mem0["name"] != "guidelines.md" || mem0["source"] != "workspace" {
+		t.Fatalf("unexpected memory item in hello: %v", mem0)
+	}
+
+	// 2. 验证 buildRequestMessages 包含了记忆区段
+	reqMsgs := sess.buildRequestMessages()
+	if len(reqMsgs) == 0 || reqMsgs[0].Role != "system" {
+		t.Fatalf("first msg must be system: %v", reqMsgs)
+	}
+	sysContent := reqMsgs[0].Content
+	if !strings.Contains(sysContent, "## 记忆 (Memory)") || !strings.Contains(sysContent, "Always reply in poem") {
+		t.Fatalf("system prompt does not contain memory section: %s", sysContent)
+	}
+}
+
+func TestMemory_ResumeNotice(t *testing.T) {
+	tmpDir := t.TempDir()
+	wsMemDir := filepath.Join(tmpDir, ".ecdi", "memory")
+	if err := os.MkdirAll(wsMemDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsMemDir, "test.md"), []byte("Mem content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	col := &outCollector{}
+	lines := make(chan wire.StampedLine, 64)
+	var stc atomic.Int32
+	stc.Store(wire.CodeIdle)
+
+	sess := newSession(
+		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k"},
+		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, lines, &stc,
+		func(string, ...any) {}, col)
+	t.Cleanup(func() {
+		if sess.ctxWriter != nil {
+			_ = sess.ctxWriter.Close()
+		}
+	})
+
+	msgs := parseAll(t, col)
+	var sawResumeNotice bool
+	for _, m := range msgs {
+		if m["t"] == "block_start" && m["kind"] == "system" && m["text"] == "[记忆已更新]" {
+			sawResumeNotice = true
+			break
+		}
+	}
+	if !sawResumeNotice {
+		t.Fatalf("expected [记忆已更新] notice on resume with memory, but got: %v", msgs)
 	}
 }

@@ -38,6 +38,7 @@
 // 跨 TU 共享符号（定义见 AppInternal.h）
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
+
 using harness::internal::kSidebarRowGap;
 using harness::internal::kSidebarRowH;
 using harness::internal::kSidebarRowW;
@@ -361,5 +362,147 @@ bool HarnessApp::OpenHistorySession(const std::filesystem::path& file) {
     m_hudDirty = true;
     RefreshHud();
     RequestRepaint();
+    return true;
+}
+
+void HarnessApp::DiscoverAndRestoreJournalSessions() {
+    struct DiscoveredSession {
+        std::string workspacePath;
+        SessionMeta meta;
+    };
+    std::vector<DiscoveredSession> allSessions;
+
+    // 1. 扫描全部已知工作区
+    for (const auto& wsPath : m_appConfig.knownWorkspaces) {
+        if (wsPath.empty()) continue;
+        std::string err;
+        auto metas = SessionStore::ScanSessionMetas(wsPath, err);
+        for (auto& m : metas) {
+            allSessions.push_back({wsPath, std::move(m)});
+        }
+    }
+
+    // 2. 按 (createdAt, id) 升序全局排序
+    std::sort(allSessions.begin(), allSessions.end(), [](const DiscoveredSession& a, const DiscoveredSession& b) {
+        if (a.meta.createdAt != b.meta.createdAt) return a.meta.createdAt < b.meta.createdAt;
+        return a.meta.id < b.meta.id;
+    });
+
+    // 3. 先按顺序建立全部工作区（保持下标即创建序，确保确定性去重，事实 §9.1）
+    for (const auto& ds : allSessions) {
+        Workspace* ws = AcquireWorkspace(ds.workspacePath);
+        if (ws) {
+            std::error_code ec;
+            if (!std::filesystem::exists(ds.workspacePath, ec) || !std::filesystem::is_directory(ds.workspacePath, ec)) {
+                ws->unavailable = true;
+            }
+        }
+    }
+    for (const auto& wsPath : m_appConfig.knownWorkspaces) {
+        if (wsPath.empty()) continue;
+        Workspace* ws = AcquireWorkspace(wsPath);
+        if (ws) {
+            std::error_code ec;
+            if (!std::filesystem::exists(wsPath, ec) || !std::filesystem::is_directory(wsPath, ec)) {
+                ws->unavailable = true;
+            }
+        }
+    }
+
+    // 4. 逐个恢复会话（已存在则跳过，保持幂等性）
+    for (const auto& ds : allSessions) {
+        auto existing = std::find_if(m_sessions.begin(), m_sessions.end(),
+                                     [&](const std::unique_ptr<Session>& s) {
+                                         return s && s->sessionId == ds.meta.id;
+                                     });
+        if (existing != m_sessions.end()) {
+            continue;
+        }
+        const auto journalPath = SessionStore::JournalPath(ds.workspacePath, ds.meta.id);
+        std::error_code ec;
+        if (!std::filesystem::exists(journalPath, ec)) {
+            continue;
+        }
+        RestoreSingleJournalSession(ds.workspacePath, ds.meta, journalPath);
+    }
+}
+
+bool HarnessApp::RestoreSingleJournalSession(const std::string& wsPath, const SessionMeta& meta,
+                                             const std::filesystem::path& journalPath) {
+    std::string error;
+    auto replay = std::make_unique<ReplaySource>();
+    if (!replay->Load(journalPath, error)) {
+        return false;
+    }
+
+    auto session = std::make_unique<Session>();
+    Session& s = *session;
+    s.pendingTruncated = replay->TruncatedError();
+    s.replay = replay.get();
+    s.source = std::move(replay);
+    s.label = meta.label.empty() ? meta.id : meta.label;
+    s.sessionId = meta.id;
+    s.originKind = "journal";
+    s.originPath = journalPath;
+    s.meta = meta;
+    s.archived = meta.archived;
+    s.providerId = meta.providerId;
+    s.modelName = meta.modelName;
+    s.contextLimit = meta.contextLimit;
+    s.workspacePath = wsPath;
+    s.journalPromoted = true;
+    s.temporary = false;
+
+    Workspace* ws = WorkspaceByPath(wsPath);
+    if (ws) {
+        AssignSessionWorkspace(s, ws);
+    }
+
+    m_sessions.push_back(std::move(session));
+    const size_t idx = m_sessions.size() - 1;
+    SwitchToSession(idx);
+
+    // 抽干内容
+    std::string line;
+    while (m_sess->source->Next(line)) {
+        HandleLine(line);
+        if (m_sess->protocolIncompatible) break;
+    }
+    m_sess->instantDone = true;
+    if (!m_sess->pendingTruncated.empty()) {
+        AddNoticeRow(m_sess->pendingTruncated, kErrorDark);
+        m_sess->pendingTruncated.clear();
+    }
+
+    // 恢复 sidecar
+    const bool hadState = LoadUiState(*m_sess);
+    if (hadState) {
+        ApplyUiStateToView(*m_sess);
+    }
+
+    // 校验模型是否仍在全局配置中（事实 §9.2）
+    const ProviderConfig* pc = m_appConfig.Find(meta.providerId);
+    bool modelFound = false;
+    if (pc) {
+        for (const auto& m : pc->models) {
+            if (m.name == meta.modelName) {
+                modelFound = true;
+                break;
+            }
+        }
+    }
+    if (!modelFound && !meta.modelName.empty()) {
+        AddNoticeRow("[原模型 " + meta.modelName + " 已不在提供商 " +
+                     (meta.providerId.empty() ? "默认" : meta.providerId) +
+                     " 的模型表中；本会话按只读显示]", kDarkMuted);
+    }
+
+    RebuildTranscriptView();
+    if (m_scroll) {
+        m_scroll->SetContentOffset(0, m_scroll->GetMaxOffsetY());
+    }
+    FollowTailIfPinned();
+    m_sidebarDirty = true;
+    m_hudDirty = true;
     return true;
 }

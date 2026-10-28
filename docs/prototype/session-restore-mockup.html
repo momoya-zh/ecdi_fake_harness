@@ -1,0 +1,358 @@
+<div id="srmock" style="--bg:#16181d;--panel:#1d2027;--panel2:#232733;--line:#2c3140;--text:#d7dae2;--muted:#8a90a0;--accent:#5b8cff;--green:#3fb27f;--amber:#d9a13f;--red:#e05c5c;max-width:1180px;margin:0 auto;font:14px/1.55 'Segoe UI','Microsoft YaHei',sans-serif;color:var(--text);user-select:text">
+<style>
+#srmock .app{width:100%;height:720px;background:var(--bg);border:1px solid #000;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;position:relative;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+#srmock .chrome{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}
+#srmock .dot{width:11px;height:11px;border-radius:50%;background:#444}
+#srmock .winbtn{width:34px;height:26px;display:grid;place-items:center;color:var(--muted);border-radius:5px;cursor:pointer;font-size:13px}
+#srmock .winbtn:hover{background:var(--panel2);color:var(--text)}
+#srmock .winbtn.close:hover{background:var(--red);color:#fff}
+#srmock .topbar{display:flex;align-items:center;gap:8px;height:38px;padding:0 12px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto;position:relative;z-index:15}
+#srmock .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:14px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);font-size:12px;cursor:pointer;white-space:nowrap}
+#srmock .chip:hover{color:var(--text);border-color:var(--accent)}
+#srmock .chip b{color:var(--text);font-weight:600}
+#srmock .chip.ro{border-color:var(--amber);color:var(--amber)}
+#srmock .spacer{flex:1}
+#srmock .state{font-size:12px;display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+#srmock .state .sd{width:8px;height:8px;border-radius:50%;background:var(--green)}
+#srmock .state.dead .sd{background:#555}
+#srmock .state.dead{color:var(--amber)}
+#srmock .body{display:flex;flex:1;min-height:0}
+#srmock aside{width:236px;flex:0 0 auto;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;overflow-y:auto;padding:10px}
+#srmock .side-sec{font-size:11px;color:var(--muted);margin:12px 2px 6px;display:flex;justify-content:space-between;align-items:center;letter-spacing:.3px}
+#srmock .side-sec .add{cursor:pointer;color:var(--accent);font-size:14px}
+#srmock .side-sec .n{opacity:.6;font-size:10.5px}
+#srmock .side-item{padding:6px 8px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--muted);display:flex;gap:8px;align-items:center;overflow:hidden}
+#srmock .side-item:hover{background:var(--panel2);color:var(--text)}
+#srmock .side-item.active{background:var(--panel2);color:var(--text);box-shadow:inset 2px 0 0 var(--accent)}
+#srmock .side-item .ind{width:9px;flex:0 0 auto;text-align:center;font-size:10px;opacity:.85}
+#srmock .side-item .ind.live{color:var(--green)}
+#srmock .side-item .ind.ro{color:#5b6274}
+#srmock .side-item .ind.fx{color:var(--amber)}
+#srmock .side-item span.lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#srmock .side-item .tm{margin-left:auto;font-size:11px;opacity:.6;flex:0 0 auto}
+#srmock .side-item .sz{font-size:10.5px;color:#5b6274;flex:0 0 auto}
+#srmock .side-item.stale span.lbl{color:#6d7488;text-decoration:line-through dotted}
+#srmock .grp{font-size:11px;color:var(--muted);margin:8px 2px 3px;display:flex;align-items:center;gap:6px}
+#srmock .grp::after{content:"";flex:1;height:1px;background:var(--line)}
+#srmock .grp .p{color:#9fc1ff}
+#srmock .mid{flex:1;display:flex;flex-direction:column;min-width:0}
+#srmock .head{height:40px;flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+#srmock .head .title{font-weight:600;font-size:13px}
+#srmock .iconbtn{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;color:var(--muted);cursor:pointer;font-size:15px;background:transparent;border:none}
+#srmock .iconbtn:hover{background:var(--panel2);color:var(--text)}
+#srmock .transcript{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;position:relative}
+#srmock .blk{max-width:86%;display:flex;flex-direction:column;gap:4px}
+#srmock .blk .meta{font-size:11px;color:var(--muted);display:flex;gap:8px;align-items:center}
+#srmock .user{align-self:flex-end}
+#srmock .user .content{background:#2b4a80;color:#eaf0ff;padding:8px 12px;border-radius:10px 10px 2px 10px;white-space:pre-wrap}
+#srmock .user .meta{justify-content:flex-end}
+#srmock .assistant .content{padding:8px 12px;border-radius:2px 10px 10px 10px;background:var(--panel);border:1px solid var(--line);white-space:pre-wrap}
+#srmock .collapsible{border:1px solid var(--line);border-radius:8px;background:var(--panel);overflow:hidden}
+#srmock .collapsible .ch{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;color:var(--muted);font-size:12px;user-select:none}
+#srmock .collapsible .ch:hover{background:var(--panel2)}
+#srmock .collapsible .ch .tw{transition:transform .15s}
+#srmock .collapsible.open .ch .tw{transform:rotate(90deg)}
+#srmock .collapsible .cb{display:none;padding:8px 12px;border-top:1px solid var(--line);font-family:Consolas,monospace;font-size:12px;color:#b9c0d0;white-space:pre-wrap}
+#srmock .collapsible.open .cb{display:block}
+#srmock .answered{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}
+#srmock .answered .yes{color:var(--green)}
+#srmock .notice{font-size:12px;padding:5px 10px;border-radius:6px;background:var(--panel2);color:var(--muted);align-self:flex-start;max-width:92%;white-space:pre-wrap}
+#srmock .notice.ro{color:var(--amber);background:#241f16;border:1px solid #3d3421}
+#srmock .notice.err{color:#ffb3b3;background:#3a2426;border:1px solid #4d2e31}
+#srmock .notice.mut{color:#767d90;background:transparent;border-left:2px solid var(--line);border-radius:0;padding:2px 10px}
+#srmock .composer{flex:0 0 auto;border-top:1px solid var(--line);background:var(--panel);padding:10px 12px}
+#srmock .composer .box{display:flex;gap:8px;align-items:flex-end;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:8px}
+#srmock .composer:focus-within .box{border-color:var(--accent)}
+#srmock .composer.locked .box{border-style:solid;border-color:#3d3421;background:#1c1b18}
+#srmock textarea{flex:1;background:transparent;border:none;outline:none;color:var(--text);font:inherit;min-height:44px;max-height:140px;resize:none}
+#srmock .btn{padding:4px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--text);cursor:pointer;font-size:13px;font-family:inherit}
+#srmock .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+#srmock .btn:hover{filter:brightness(1.15)}
+#srmock .btn.glow{animation:glow .9s ease-out 2}
+@keyframes glow{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 3px rgba(217,161,63,.45)}}
+#srmock .hint{font-size:11px;color:var(--muted);margin-top:6px;display:flex;gap:14px;align-items:center}
+#srmock .hint .warn{color:var(--amber)}
+#srmock kbd{background:var(--panel2);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;font-family:inherit}
+#srmock .insp{width:230px;flex:0 0 auto;border-left:1px solid var(--line);background:var(--panel);padding:10px;overflow-y:auto;font-size:12px;display:flex;flex-direction:column;gap:10px}
+#srmock .insp h4{margin:0;font-size:11px;color:var(--muted);font-weight:600}
+#srmock .kv{display:flex;justify-content:space-between;gap:8px;color:var(--muted);padding:2px 0}
+#srmock .kv b{color:var(--text);font-weight:500;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#srmock .kv.warn b{color:var(--amber)}
+#srmock .kv.bad b{color:var(--red)}
+#srmock .files{font-family:Consolas,monospace;font-size:10.5px;color:#7b839a;line-height:1.7}
+#srmock .files i{color:var(--muted);font-style:normal}
+#srmock .statusbar{flex:0 0 auto;height:26px;display:flex;align-items:center;gap:14px;padding:0 12px;border-top:1px solid var(--line);background:var(--panel);font-size:11px;color:var(--muted)}
+#srmock .toast{position:absolute;bottom:84px;left:50%;transform:translateX(-50%);background:#000;color:#fff;font-size:12px;padding:7px 16px;border-radius:16px;opacity:0;transition:opacity .2s;z-index:30;pointer-events:none;max-width:80%}
+#srmock .toast.show{opacity:.94}
+#srmock .switch{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+#srmock .sw{font-size:12px;padding:4px 11px;border-radius:14px;background:var(--panel2);border:1px solid var(--line);cursor:pointer;color:var(--muted)}
+#srmock .sw:hover{color:var(--text)}
+#srmock .sw.on{background:var(--accent);border-color:var(--accent);color:#fff}
+#srmock .mark{position:absolute;top:-9px;right:-9px;width:18px;height:18px;border-radius:50%;background:#7a5cff;color:#fff;font-size:11px;display:grid;place-items:center;cursor:help;font-weight:600;z-index:5}
+#srmock .legend{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12.5px;color:#444}
+#srmock .legend div{background:#fff;border:1px solid #ddd;border-radius:8px;padding:9px 11px;color:#333}
+#srmock .legend b{color:#1f5eff}
+#srmock .legend .ask{border-color:#1f5eff;box-shadow:0 0 0 2px rgba(31,94,255,.15)}
+#srmock [data-tip]{position:relative}
+#srmock [data-tip]:hover::after{content:attr(data-tip);position:absolute;top:110%;left:50%;transform:translateX(-50%);background:#000;color:#fff;font-size:11px;padding:3px 9px;border-radius:5px;white-space:nowrap;z-index:40;pointer-events:none}
+</style>
+
+<div class="switch" id="cases">
+  <span class="sw on" data-c="ro">① 恢复的会话（只读）</span>
+  <span class="sw" data-c="gone">② 原模型已下架</span>
+  <span class="sw" data-c="moved">③ 工作区搬走了</span>
+  <span class="sw" data-c="half">④ 崩溃留下的半行</span>
+  <span class="sw" data-c="live">⑤ 正常 live 会话（对照）</span>
+</div>
+
+<div class="app" id="app">
+  <span class="mark" data-tip="会话持久化 S1：恢复只读会话">新</span>
+  <div class="chrome">
+    <div class="dot"></div>
+    <b style="font-size:12px;margin-left:4px">ECDI 工作台</b>
+    <div class="spacer"></div>
+    <div class="winbtn" data-tip="隐藏">─</div>
+    <div class="winbtn" data-tip="最大化">▢</div>
+    <div class="winbtn close" data-tip="关闭 — 这一刀下去，今天所有会话都会消失">✕</div>
+  </div>
+  <div class="topbar">
+    <div class="chip" data-tip="显示/隐藏侧栏 (Ctrl+B)">☰</div>
+    <div class="chip" id="wsmeta" data-tip="工作区按路径归属，恢复时重新派生 id">📁 <b>project\backend</b></div>
+    <div class="chip" id="modelchip" data-tip="这里显示的是「它当时用的模型」，不是当前激活模型">🧠 <b id="mname">zhipu › glm-4.6</b></div>
+    <div class="spacer"></div>
+    <div class="state dead" id="statechip"><span class="sd"></span><span id="statelabel">core 已退出</span></div>
+    <div class="chip" data-tip="上下文 18k / 200k（分母来自当时 hello.context 的记录）">◔ 9%</div>
+    <div class="chip" id="robadge" data-tip="只读：没有 core，打字不会有回应">只读</div>
+    <div class="chip" style="cursor:default">gdi</div>
+  </div>
+  <div class="body">
+    <aside id="sidebar">
+      <div class="side-sec"><b>我的会话</b><span class="add" data-tip="新建会话 (Ctrl+N)">+</span></div>
+      <div class="grp"><span class="p">project\backend</span><span class="n">3</span></div>
+      <div class="side-item" data-s="live"><span class="ind live">●</span><span class="lbl">重构 wire 层</span><span class="tm">10:31</span></div>
+      <div class="side-item active" data-s="ro"><span class="ind ro">◌</span><span class="lbl">排查 I4 缺口</span><span class="tm">昨天</span></div>
+      <div class="side-item" data-s="gone"><span class="ind ro">◌</span><span class="lbl">协议 v4 草案评审</span><span class="tm">10-22</span></div>
+      <div class="grp"><span class="p">D:\Project\ecdi-core</span><span class="n">1</span></div>
+      <div class="side-item" data-s="moved"><span class="ind ro">◌</span><span class="lbl">tools 层超时排查</span><span class="tm">10-24</span></div>
+      <div class="grp"><span class="p">（无工作区）</span><span class="n">1</span></div>
+      <div class="side-item" data-s="half"><span class="ind ro">◌</span><span class="lbl">GUI 首屏引导文案</span><span class="sz">7.2MB</span><span class="tm">10-21</span></div>
+      <div class="side-sec"><b>归档</b><span class="n">1</span></div>
+      <div class="side-item"><span class="ind ro">◌</span><span class="lbl">侧栏虚拟化的草稿</span><span class="tm">10-19</span></div>
+      <div class="side-sec"><b>夹具（测试数据）</b><span class="n">6</span></div>
+      <div class="side-item"><span class="ind fx">▣</span><span class="lbl">realistic/realistic-session.jsonl</span></div>
+      <div class="side-item"><span class="ind fx">▣</span><span class="lbl">demo-session.jsonl</span></div>
+    </aside>
+    <div class="mid">
+      <div class="head">
+        <div class="iconbtn" data-tip="收起检视栏 (Ctrl+I)">⇥</div>
+        <div class="title" id="headtitle">排查 I4 缺口</div>
+        <div style="font-size:11px;color:var(--muted)" id="headturns">42 行 · 3 轮</div>
+        <div class="spacer" style="flex:1"></div>
+        <div class="btn primary" id="contBtn" data-tip="新建一个 live 会话，继承这个会话的工作区 + 模型">继续这个会话</div>
+      </div>
+      <div class="transcript" id="tr"></div>
+      <div class="composer locked" id="composer">
+        <div class="box">
+          <textarea id="ta" placeholder="这个会话已经结束了 —— core 在昨天 18:04 退出，这里是它的记录。想接着聊，点下面这个按钮。"></textarea>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div class="btn primary" id="contBtn2">继续</div>
+          </div>
+        </div>
+        <div class="hint" id="hintline">
+          <span class="warn" id="warntext">⚠ 只读：在这里按回车不会发送，只会把这段草稿带进新会话</span>
+          <span style="flex:1"></span>
+          <span><kbd>Ctrl</kbd>+<kbd>N</kbd> 新建</span>
+        </div>
+      </div>
+    </div>
+    <div class="insp" id="insp">
+      <h4>会话身份</h4>
+      <div class="kv"><span>持久 id</span><b id="k-sid">s-20261027-3f0a</b></div>
+      <div class="kv warn"><span>core 侧 session</span><b>s-live-1（常量）</b></div>
+      <div class="kv"><span>来源</span><b id="k-origin">journal</b></div>
+      <h4>模型（当时的记录）</h4>
+      <div class="kv"><span>providerId</span><b id="k-pid">zhipu</b></div>
+      <div class="kv"><span>modelName</span><b id="k-model">glm-4.6</b></div>
+      <div class="kv"><span>contextLimit</span><b id="k-ctx">200000</b></div>
+      <h4>归属</h4>
+      <div class="kv"><span>workspacePath</span><b id="k-ws">project\backend</b></div>
+      <div class="kv"><span>workspaceId</span><b id="k-wsid">w1（本次派生）</b></div>
+      <div class="kv"><span>归档</span><b id="k-arc">false</b></div>
+      <h4>磁盘上是什么</h4>
+      <div class="files" id="k-files"></div>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span id="st-left">42 msg（journal，只读）</span>
+    <span>seqGaps 0</span>
+    <span>violations 0</span>
+    <span class="spacer"></span>
+    <span>%APPDATA%\ecdi-fake-harness\sessions\</span>
+  </div>
+  <div class="toast" id="toast"></div>
+</div>
+
+<div class="legend">
+  <div><b>判据 · 打第一下之前就知道</b><br>点输入框、敲几个字、按回车 —— 不能出现「敲完发现没反应」。本版做法：占位文案先说明结束了；按回车不吞字，草稿原样搬进新会话并把新会话的第一句准备好。</div>
+  <div><b>◌ / ● / ▣ 三个记号</b><br>● 有 core 在跑；◌ 只有磁盘记录（只读）；▣ 是测试夹具，不是「我的」。把夹具从「历史」里分出去，是这次顺手要修掉的真缺陷。</div>
+  <div><b>分组靠路径，不靠 id</b><br>工作区 id 每次启动都从 w1 重新数，所以 meta 存 workspacePath、启动按 createdAt 喂给现成的 AcquireWorkspace。点 ③ 看路径失效时怎么显示。</div>
+  <div class="ask"><b>要你拍板：「继续」这个动作叫什么？</b><br>现在的文案是「继续这个会话」，但它其实是<b>新开一个 live 会话并继承工作区+模型</b>。叫「继续」最顺，可是会让人以为原会话被接上了（转录里会多出旧内容吗？不会）。备选：「接着聊」「另开一个继续」。</div>
+  <div class="ask"><b>要你拍板：只读要不要更显眼？</b><br>现在只有输入框变暗 + 顶栏一个「只读」chip。更重的做法是在转录顶部压一条通栏横幅。代价：每次点开恢复会话都先吃一条横幅，扫历史时很吵。</div>
+  <div><b>没做的</b><br>不截断大会话（截断=伪造历史，只在列表里显示体积，见 ④ 的 7.2MB）；半行如实上屏不修（④）；密钥永不进 journal/meta（结构上没有这个字段）。</div>
+</div>
+
+<script>
+(function(){
+  var R=document.getElementById('srmock');
+  function $(s){return R.querySelector(s);}
+  function $all(s){return Array.prototype.slice.call(R.querySelectorAll(s));}
+  var toastT=null;
+  function toast(m){var t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(toastT);toastT=setTimeout(function(){t.classList.remove('show');},2600);}
+
+  var CASES={
+    ro:{title:'排查 I4 缺口',turns:'42 行 · 3 轮',sid:'s-20261027-3f0a',pid:'zhipu',model:'glm-4.6',ctx:'200000',
+        ws:'project\\backend',wsid:'w1（本次派生）',arc:'false',size:'318KB',
+        files:['s-20261027-3f0a.jsonl        <i>42 行原始协议流</i>','s-20261027-3f0a.meta.json    <i>label/ws/模型/lastSeq</i>','s-20261027-3f0a.jsonl.ui.json <i>决策 + 展开态</i>'],
+        head:[['ro','[已恢复 42 行 · core 于昨天 18:04 退出] 这里是你上次看到的原样。想接着聊点「继续这个会话」。']],
+        ro:true, goneModel:false},
+    gone:{title:'协议 v4 草案评审',turns:'118 行 · 6 轮',sid:'s-20261022-c17d',pid:'deepseek',model:'deepseek-pro',ctx:'128000',
+        ws:'project\\backend',wsid:'w1（本次派生）',arc:'false',size:'1.1MB',
+        files:['s-20261022-c17d.jsonl','s-20261022-c17d.meta.json <i>modelName=deepseek-pro</i>','s-20261022-c17d.jsonl.ui.json'],
+        head:[['ro','[已恢复 118 行 · core 于 10-22 16:30 退出]'],['err','[原模型 deepseek-pro 已不在提供商 deepseek 的模型表中；本会话按只读显示。若点「继续」，新会话会用该家的默认模型 —— 请在开起来之后立刻确认顶栏的模型名]']],
+        ro:true, goneModel:true},
+    moved:{title:'tools 层超时排查',turns:'63 行 · 4 轮',sid:'s-20261024-08ab',pid:'zhipu',model:'glm-4.6',ctx:'200000',
+        ws:'D:\\Project\\ecdi-core <i>（不存在）</i>',wsid:'w2（本次派生）',arc:'false',size:'540KB',
+        files:['s-20261024-08ab.jsonl','s-20261024-08ab.meta.json <i>workspacePath 原样保留</i>','s-20261024-08ab.jsonl.ui.json'],
+        head:[['ro','[已恢复 63 行 · core 于 10-24 20:11 退出]'],['mut','工作区目录 D:\\Project\\ecdi-core 现在不在这台机器上。转录照常可读；「继续」会先让你重新指一个目录 —— 不猜、不复用别的目录。']],
+        ro:true, goneModel:false, staleWs:true},
+    half:{title:'GUI 首屏引导文案',turns:'8906 行 · 31 轮',sid:'s-20261021-5ee4',pid:'zhipu',model:'glm-4-flash',ctx:'—',
+        ws:'（无工作区）',wsid:'—',arc:'false',size:'7.2MB',
+        files:['s-20261021-5ee4.jsonl <i>7.2MB，最后一行不完整</i>','s-20261021-5ee4.meta.json <i>lastSeq=8905</i>','— <i>没有决策记录</i>'],
+        head:[['ro','[已恢复 8906 行 · 进程崩溃，最后一行是半行]'],['err','[第 8906 行 JSON 不完整：崩溃在写入中途。已如实显示，不做截断、不补全 —— 截断等于伪造历史]'],['mut','[此会话没有决策记录：磁盘上没有 s-20261021-5ee4.jsonl.ui.json，权限门一律按未回答显示]']],
+        ro:true, goneModel:false, noAsk:true},
+    live:{title:'重构 wire 层',turns:'217 msg（live）',sid:'s-20261028-1a92',pid:'zhipu',model:'glm-4.6',ctx:'200000',
+        ws:'project\\backend',wsid:'w1（本次派生）',arc:'false',size:'journal 正在写',
+        files:['s-20261028-1a92.jsonl <i>每行 flush，正在追加</i>','s-20261028-1a92.meta.json <i>rename 覆盖，不是 trunc 直写</i>'],
+        head:[],ro:false,goneModel:false}
+  };
+
+  var BODY=[
+    {k:'user',t:'帮我看一下 Transcript::OnLine 里 seq 跳号的判定，I4 现在会不会误报？',m:'昨天 17:58'},
+    {k:'asst',t:'先说结论：现在这条判据不会误报连续流，但会在「core 重启」处必然报一次跳号 —— 因为它写死了 seq 必须从 0 起。\n\n具体在 Transcript.cpp:20，跳号是按 lastSeq+1 比的，lastSeq 只在同一进程内推进。',m:'17:59',
+      tool:{t:'read_file  Transcript.cpp:14-32',b:'14\tvoid Transcript::OnLine(const std::string& line){\n18\t  long long seq = msg.GetNumber("seq");\n20\t  if(seq != m_lastSeq + 1){ ++m_seqGaps; notice = "I4: seq 跳号"; }\n22\t  m_lastSeq = seq;'}},
+    {k:'askq',t:'允许 core 读 D:/Project/ECDI_fake_harness/gui/src/Transcript.cpp ？',a:'allow',at:'18:00'},
+    {k:'asst',t:'看到了。补一句：如果以后加 resume，这里不改的话，恢复出来的第一个会话一定带一次 seqGaps 读数，而回归基线会跟着漂。',m:'18:03'}
+  ];
+
+  function blk(d){
+    var e=document.createElement('div');
+    if(d.k==='user'){e.className='blk user';e.innerHTML='<div class="meta"><span>'+d.m+'</span></div><div class="content">'+d.t+'</div>';}
+    else if(d.k==='asst'){e.className='blk assistant';e.innerHTML='<div class="meta"><span>assistant · '+d.m+'</span></div><div class="content">'+d.t+'</div>';}
+    else if(d.k==='askq'){e.className='notice';e.innerHTML='<span class="answered"><span class="yes">已授权 allow</span> · '+d.at+' —— '+d.t+'</span>';}
+    return e;
+  }
+  function collab(d){
+    var w=document.createElement('div');w.className='collapsible open';
+    w.innerHTML='<div class="ch"><span class="tw">▸</span><span>'+d.tool.t+'</span></div><div class="cb">'+d.tool.b+'</div>';
+    w.querySelector('.ch').onclick=function(){w.classList.toggle('open');};
+    return w;
+  }
+
+  function render(name){
+    var c=CASES[name];
+    $('#headtitle').textContent=c.title;
+    $('#headturns').textContent=c.turns;
+    $('#k-sid').textContent=c.sid;
+    $('#k-pid').textContent=c.pid;
+    $('#k-model').textContent=c.model;
+    $('#k-ctx').innerHTML=c.ctx;
+    $('#k-ws').innerHTML=c.ws;
+    $('#k-wsid').innerHTML=c.wsid;
+    $('#k-arc').textContent=c.arc;
+    $('#k-files').innerHTML=c.files.join('<br>');
+    $('#mname').textContent=c.pid+' › '+c.model;
+    var mc=$('#modelchip');
+    mc.classList.toggle('ro',!!c.goneModel);
+    mc.setAttribute('data-tip',c.goneModel?'原模型已不在模型表中 —— 显示的是 meta 里的历史值，不是当前激活模型':'这里显示的是「它当时用的模型」，不是当前激活模型');
+
+    var tr=$('#tr');tr.innerHTML='';
+    c.head.forEach(function(h){var n=document.createElement('div');n.className='notice '+(h[0]==='err'?'err':h[0]==='mut'?'mut':'ro');n.textContent=h[1];tr.appendChild(n);});
+    BODY.forEach(function(d){
+      if(c.noAsk && d.k==='askq')return;
+      tr.appendChild(blk(d));
+      if(d.tool)tr.appendChild(collab(d));
+    });
+    if(c.noAsk){var n=document.createElement('div');n.className='notice mut';n.textContent='（上面这个权限门按「未回答」显示 —— 磁盘上没有决策记录。缺失必须说出来，不能静默抹平成未回答。）';tr.appendChild(n);}
+    if(!c.ro){var n2=document.createElement('div');n2.className='notice mut';n2.textContent='（live 会话：journal 正在逐行 append。这一行同时是恢复时读的第一手数据 —— core 是唯一作者，GUI 的 notice 行不进 journal。）';tr.appendChild(n2);}
+    tr.scrollTop=tr.scrollHeight;
+
+    var locked=c.ro;
+    $('#composer').classList.toggle('locked',locked);
+    var ta=$('#ta');
+    ta.placeholder=locked?'这个会话已经结束了 —— core 已经退出，这里是它的记录。想接着聊，点「继续」。':(c.staleWs?'工作区目录不存在，先点「继续」重新指一个目录…':'给 core 下一个任务…');
+    ta.disabled=false;
+    $('#warntext').style.display=locked?'':'none';
+    $('#warntext').textContent=c.goneModel
+      ?'⚠ 只读，且原模型已下架：点「继续」开的新会话会用该家默认模型，开起来先核一眼顶栏'
+      :'⚠ 只读：在这里按回车不会发送，草稿会原样带进新会话';
+    $('#robadge').style.display=locked?'':'none';
+    $('#statechip').className='state '+(locked?'dead':'');
+    $('#statelabel').textContent=locked?'core 已退出':'idle';
+    $('#contBtn').style.display=locked?'':'none';
+    $('#contBtn2').style.display=locked?'':'none';
+    $('#st-left').textContent=c.turns;
+    $all('.side-item').forEach(function(x){x.classList.toggle('stale',c.staleWs&&x.getAttribute('data-s')==='moved');});
+  }
+
+  $all('.side-item[data-s]').forEach(function(x){
+    x.onclick=function(){
+      $all('.side-item').forEach(function(y){y.classList.remove('active');});
+      x.classList.add('active');
+      var n=x.getAttribute('data-s');
+      render(n);
+      $all('.sw').forEach(function(s){s.classList.toggle('on',s.getAttribute('data-c')===n);});
+    };
+  });
+  $all('.sw').forEach(function(s){
+    s.onclick=function(){
+      $all('.sw').forEach(function(y){y.classList.remove('on');});
+      s.classList.add('on');
+      var n=s.getAttribute('data-c');
+      render(n);
+      $all('.side-item').forEach(function(y){y.classList.toggle('active',y.getAttribute('data-s')===n);});
+    };
+  });
+
+  var ta=$('#ta');
+  ta.addEventListener('keydown',function(e){
+    if(e.key!=='Enter'||e.shiftKey)return;
+    if($('#composer').classList.contains('locked')){
+      e.preventDefault();
+      var draft=ta.value;
+      $('#contBtn2').classList.add('glow');
+      setTimeout(function(){$('#contBtn2').classList.remove('glow');},1900);
+      toast(draft?('草稿「'+draft.slice(0,14)+'…」没丢：已带进新会话的第一句，core 一起来就发出去'):'这个会话已经结束了 —— 已为你聚焦「继续」，点它就开一个新的');
+      if(draft){ta.value='';}
+    }
+  });
+  function cont(){
+    var draft=ta.value;
+    var c=CASES[$('.side-item.active')?$('.side-item.active').getAttribute('data-s'):'ro'];
+    if(c.staleWs){toast('工作区目录不存在 —— 先指一个新目录，再开会话（不猜、不复用别的目录）');return;}
+    ta.value='';
+    if(goneModelNote(c)){
+      toast('已新建 live 会话：继承工作区 + 模型（'+c.pid+' › '+c.model+'）'+(draft?' · 你的草稿已作为第一句发出':''));
+    }else{
+      toast('已新建 live 会话：继承工作区 project\\backend + 模型 '+c.pid+' › '+c.model+(draft?' · 你的草稿已作为第一句发出':'')+'（原只读会话不动）');
+    }
+    render('live');
+    $all('.side-item').forEach(function(y){y.classList.toggle('active',y.getAttribute('data-s')==='live');});
+    $all('.sw').forEach(function(s){s.classList.toggle('on',s.getAttribute('data-c')==='live');});
+  }
+  function goneModelNote(c){return !!c.goneModel;}
+  $('#contBtn').onclick=cont;
+  $('#contBtn2').onclick=cont;
+  render('ro');
+})();
+</script>
+</div>

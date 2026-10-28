@@ -52,6 +52,13 @@ void HarnessApp::SendPrompt(const std::string& text) {
         ++m_probeState.hitProbeSendCalls;
         return;
     }
+    // ★★ L2 持久化：拦截只读会话发送
+    if (m_sess && m_sess->originKind == "journal") {
+        AddNoticeRow("[只读会话不可发送消息，请点击「继续」开启新对话]", kWarn);
+        Relayout();
+        RequestRepaint();
+        return;
+    }
     if (m_sess->writer) {
         (void)PostPrompt(owned);
         return;
@@ -77,6 +84,12 @@ std::string HarnessApp::PostPrompt(const std::string& text, bool allowBusyForPro
     const std::string clientId = "p" + std::to_string(m_sess->nextClientId++);
     // ★★ m09443：发了 prompt ⇒ 临时会话转正。
     m_sess->temporary = false;
+    if (m_sess->firstPromptText.empty()) {
+        m_sess->firstPromptText = text;
+    }
+    if (!m_sess->journalPromoted && !m_sess->workspacePath.empty()) {
+        PromoteSessionJournal(*m_sess, text);
+    }
     PendingPrompt pending;
     pending.clientId = clientId;
     pending.text = text;

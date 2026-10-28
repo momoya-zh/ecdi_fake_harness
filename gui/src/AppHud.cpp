@@ -730,6 +730,8 @@ std::vector<std::string> HarnessApp::HudUnbuilt() const {
         if (n == "histWhat") return h.histWhat[0] != nullptr;
         if (n == "inspector") return h.inspector != nullptr;
         if (n == "inspectorToggle") return h.inspectorToggle != nullptr;
+        if (n == "inspMemoryCard") return h.inspMemoryCard != nullptr;
+        if (n == "memoryList") return h.memoryList != nullptr;
         if (n == "exportToggle") return h.exportToggle != nullptr;
         if (n == "moreToggle") return h.moreToggle != nullptr;
         if (n == "moreMenu") return h.moreMenu != nullptr;
@@ -804,6 +806,9 @@ void HarnessApp::RefreshHud() {
             std::string sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
             if (!m_sess->sessionId.empty()) sub += " · " + m_sess->sessionId;
             sub += " · protocol " + std::to_string(m_sess->protocolVer);
+            if (!m_sess->memories.empty()) {
+                sub += " · 记忆 " + std::to_string(m_sess->memories.size());
+            }
             // ★ 0d：会话计数——让用户看见"现在有几个会话、我在第几个"。
             sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
                    std::to_string(m_sessions.size());
@@ -818,6 +823,13 @@ void HarnessApp::RefreshHud() {
                       (m_sess->modelName.empty() ? "?" : m_sess->modelName);
             } else {
                 sub = "未连接模型 — 点击右上角模型胶囊或按 Ctrl+, 配置";
+            }
+            if (!m_sess->memories.empty()) {
+                size_t loaded = 0;
+                for (const auto& m : m_sess->memories) {
+                    if (!m.skipped) loaded++;
+                }
+                sub += " · 记忆 " + std::to_string(loaded);
             }
             if (m_sessions.size() > 1) {
                 sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
@@ -853,16 +865,26 @@ void HarnessApp::RefreshHud() {
            m_sess->pendingWorkspaceId.empty() && !HasUnconfirmedPrompt())
         : !active;
     const bool stopEnabled = live ? (liveReady && active) : active;
+    const bool isJournalReadOnly = (m_sess && m_sess->originKind == "journal");
+    if (m_hud.continueBtn) {
+        m_hud.continueBtn->SetVisible(isJournalReadOnly);
+    }
     if (m_promptBar) {
-        m_promptBar->SetButtonStates(sendEnabled, stopEnabled);
-        if (m_devMode) {
-            m_promptBar->SetHint("Enter 发送 · Shift+Enter 换行", kDarkMuted);
-        } else if (stateText == "waiting" || m_sess->waitForAnswer) {
-            m_promptBar->SetHint("● 请先在上方对话中点击「允许」或「拒绝」", kWarn);
-        } else if (stateText == "running") {
-            m_promptBar->SetHint("● 正在生成回复… 可点击右侧「停止」中断", kDarkMuted);
+        m_promptBar->SetReadOnlyMode(isJournalReadOnly);
+        if (isJournalReadOnly) {
+            m_promptBar->SetButtonStates(false, false);
+            m_promptBar->SetHint("只读会话不可输入，点「继续」开启新对话", kWarn);
         } else {
-            m_promptBar->SetHint("Enter 发送 · Shift+Enter 换行 · Ctrl+Shift+D 切换视图", kDarkMuted);
+            m_promptBar->SetButtonStates(sendEnabled, stopEnabled);
+            if (m_devMode) {
+                m_promptBar->SetHint("Enter 发送 · Shift+Enter 换行", kDarkMuted);
+            } else if (stateText == "waiting" || m_sess->waitForAnswer) {
+                m_promptBar->SetHint("● 请先在上方对话中点击「允许」或「拒绝」", kWarn);
+            } else if (stateText == "running") {
+                m_promptBar->SetHint("● 正在生成回复… 可点击右侧「停止」中断", kDarkMuted);
+            } else {
+                m_promptBar->SetHint("Enter 发送 · Shift+Enter 换行 · Ctrl+Shift+D 切换视图", kDarkMuted);
+            }
         }
     }
     const bool pickerEnabled = m_sess->workspaceCap && liveReady &&
@@ -1196,6 +1218,70 @@ void HarnessApp::RefreshHud() {
         m_hud.stPaint->SetText("paints " + std::to_string(m_evalPaints) + " · 上次 " +
                                std::to_string(m_evalLastUs) + " us");
     }
+}
+
+// ── L3 记忆文件卡片重建 ──────────────────────────────────────────
+void HarnessApp::RebuildMemoryList() {
+    if (!m_hud.memoryList) return;
+    while (m_hud.memoryList->GetChildCount() > 0) {
+        m_hud.memoryList->RemoveChild(m_hud.memoryList->GetChildAt(0));
+    }
+    const Session* s = m_sess;
+    const bool hasMemories = s && !s->memories.empty();
+    if (m_hud.inspMemoryCard) {
+        if (m_hud.inspMemoryCard->IsVisible() != hasMemories) {
+            m_hud.inspMemoryCard->SetVisible(hasMemories);
+            if (m_hud.inspector) m_hud.inspector->Arrange();
+        }
+    }
+    if (!hasMemories) return;
+
+    for (const auto& m : s->memories) {
+        auto row = std::make_unique<ECDI::Panel>();
+        row->SetSize(180, 18);
+        auto nameLbl = std::make_unique<ECDI::Label>(m.name);
+        nameLbl->SetFont(harness::SansFont(harness::kFontMicro));
+        nameLbl->SetSize(110, 16);
+        nameLbl->SetPosition(0, 1);
+        if (m.skipped) {
+            nameLbl->SetTextColor(kWarn);
+        } else {
+            nameLbl->SetTextColor(kDarkInk);
+        }
+        row->AddChild(std::move(nameLbl));
+
+        std::string metaStr;
+        if (m.skipped) {
+            metaStr = "[超限跳过]";
+        } else {
+            if (m.bytes >= 1024) {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%.1f KB", static_cast<double>(m.bytes) / 1024.0);
+                metaStr = buf;
+            } else {
+                metaStr = std::to_string(m.bytes) + " B";
+            }
+        }
+        auto metaLbl = std::make_unique<ECDI::Label>(metaStr);
+        metaLbl->SetFont(harness::MonoFont(10.0f));
+        metaLbl->SetSize(65, 16);
+        metaLbl->SetPosition(112, 1);
+        metaLbl->SetTextColor(m.skipped ? kWarn : kDarkMuted);
+        row->AddChild(std::move(metaLbl));
+
+        m_hud.memoryList->AddChild(std::move(row));
+    }
+
+    const int totalH = 28 + static_cast<int>(s->memories.size()) * 20;
+    if (m_hud.inspMemoryCard) {
+        m_hud.inspMemoryCard->SetSize(200, std::max(60, totalH));
+        m_hud.memoryList->SetSize(190, static_cast<int>(s->memories.size()) * 20);
+        m_hud.inspMemoryCard->Arrange();
+    }
+    if (m_hud.inspector) {
+        m_hud.inspector->Arrange();
+    }
+    RequestRepaint();
 }
 
 // ── 摘要段（Stage 4：从 WriteSummary 搬出，块体逐字未改）──────────────────

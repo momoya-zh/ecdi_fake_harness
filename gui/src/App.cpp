@@ -539,8 +539,36 @@ int HarnessApp::Run() {
     RefreshHud();  // Before hello, live controls are deliberately gated closed.
     uikit::WarnZeroSized(win.GetRootWidget());   // F2/D9 巡检：漏 SetSize 的 0×0 静默不可见 → 告警
 
+    // ★★ 2026-10-28：启动发现并恢复已知工作区下的持久化会话（L1，仅在无 CLI 指定会话时生效）
+    //   ★★ 隐患修复（同日）：判据**不能**用 `m_options.corePath` 空不空——无参启动走到这里时，
+    //     `TryAutoConnectFromConfig()` 早把自动解析的 core 路径填进去了（AppSettings.cpp:245），
+    //     于是该判据恒真 ⇒ 整段恢复被跳过，而且**一声不响**：磁盘上 8 个会话
+    //     （`.ecdi/sessions/*.meta.json` + `*.jsonl` 齐全）一条都不进侧栏。
+    //     修法 = 读解析期钉死的 `sourceFromCli`（main.cpp），运行期不再从路径反推来源。
+    const bool cliSessionRequested = m_options.sourceFromCli;
+    Session* initialSess = m_sess;
+    if (!cliSessionRequested) {
+        if (initialSess) {
+            // 防止在恢复过程连续切会话时被 MaybeDeleteTemporarySession 误删
+            initialSess->temporary = false;
+        }
+        DiscoverAndRestoreJournalSessions();
+        if (!m_sessions.empty()) {
+            if (initialSess && initialSess->timeline.empty() && m_sessions.size() > 1) {
+                auto it = std::find_if(m_sessions.begin(), m_sessions.end(),
+                                       [initialSess](const std::unique_ptr<Session>& p) { return p.get() == initialSess; });
+                if (it != m_sessions.end()) {
+                    m_sessions.erase(it);
+                }
+            } else if (initialSess && m_sessions.size() == 1) {
+                initialSess->temporary = true;
+            }
+            SwitchToSession(m_sessions.size() - 1);
+        }
+    }
+
     // P1.5 live：收到 core 的 hello 之后回 hello（协议 §4：seq 0）
-    if (m_sess->writer) {
+    if (m_sess && m_sess->writer) {
         m_sess->writer->Hello("0.0.1");
     }
     win.Show();

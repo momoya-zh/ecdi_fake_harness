@@ -21,13 +21,19 @@
 class PromptBar : public ECDI::Panel {
 public:
     using Action = std::function<void(const std::string&)>;
+    using ContinueAction = std::function<void()>;
 
     PromptBar();
 
     void SetOnSend(Action action) { m_onSend = std::move(action); }
     void SetOnStop(Action action) { m_onStop = std::move(action); }
+    void SetOnContinue(ContinueAction action) { m_onContinue = std::move(action); }
 
     ECDI::TextBox* input() const { return m_input; }
+    ECDI::Button* continueButton() const { return m_continue; }
+
+    void SetReadOnlyMode(bool readOnly);
+    [[nodiscard]] bool IsReadOnlyMode() const { return m_isReadOnly; }
 
     // ★ REQ-04（2026-10-13）：暴露两个按钮，供 App 按 core 的 `state` 驱动使能。
     //   协议 §6 是硬要求：「发送 / 停止按钮**只由 `state` 驱动**（不要自己推测）」。
@@ -120,6 +126,9 @@ private:
     ECDI::Label* m_hint = nullptr;      // 非拥有——"Enter 发送 / Shift+Enter 换行"
     ECDI::Button* m_send = nullptr;     // 非拥有
     ECDI::Button* m_stop = nullptr;     // 非拥有
+    ECDI::Button* m_continue = nullptr; // 非拥有——只读会话继续按钮
     Action m_onSend;
     Action m_onStop;
+    ContinueAction m_onContinue;
+    bool m_isReadOnly = false;
 };

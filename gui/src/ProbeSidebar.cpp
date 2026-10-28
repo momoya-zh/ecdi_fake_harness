@@ -1362,7 +1362,7 @@ void HarnessApp::AppendSidebarProbeSummary(std::string& json) {
     for (size_t i = 0; i < m_probeState.sidebarProbeLog.size(); ++i) {
         const SidebarProbeRec& r = m_probeState.sidebarProbeLog[i];
         json += (i ? ", " : "");
-        char b[512];
+        char b[4096];
         std::snprintf(b, sizeof(b),
                       "{\"phase\": \"%s\", \"rowCount\": %zu, \"sessionCount\": %zu, "
                       "\"activeIndex\": %zu, \"selectedRows\": %zu, "
