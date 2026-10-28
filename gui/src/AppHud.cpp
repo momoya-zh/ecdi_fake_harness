@@ -813,7 +813,8 @@ void HarnessApp::RefreshHud() {
             if (!m_sess->workspacePath.empty()) {
                 sub = "工作区：" + m_sess->workspacePath;
             } else if (!m_sess->providerId.empty()) {
-                sub = m_sess->providerId + " › " +
+                // ★ §9.5：显示名（空回落 id）。副标题是给眼睛看的，不是给协议看的。
+                sub = ProviderDisplayLabel(m_sess->providerId) + " › " +
                       (m_sess->modelName.empty() ? "?" : m_sess->modelName);
             } else {
                 sub = "未连接模型 — 点击右上角模型胶囊或按 Ctrl+, 配置";

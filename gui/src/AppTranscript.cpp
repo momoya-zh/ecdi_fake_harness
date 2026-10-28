@@ -1001,7 +1001,9 @@ void HarnessApp::RefreshEmptyGuide() {
             panel->AddChild(std::move(sub));
             auto b = mkBtn("打开设置");
             b->SetSize(110, 30);
-            b->SetOnClick([this] { SetSettingsVisible(true); });
+            // ★ 2026-10-27（v4 第三步）：走统一入口——这里原来只 `SetSettingsVisible(true)`，
+            //   于是从引导卡进面板时字段全空、模型子列表也是空的（两个入口行为不一致）。
+            b->SetOnClick([this] { OpenSettingsPanel(); });
             panel->AddChild(std::move(b));
         }
         panel->SetPosition(kCanvasPadX, 0);

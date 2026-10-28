@@ -50,6 +50,8 @@ void AppConfig::SetPathForTesting(const std::filesystem::path& p) {
 }
 
 std::string AppConfig::ProviderIdFromBaseUrl(const std::string& baseUrl) {
+    // ★★ §9.5 起这里**不再是身份来源**：只是「新增时识别名留空」的兜底初值
+    //   （host 恰好是个还行的默认名）。真要改身份，改的是配置里的 `id` 字段。
     // host = "://" 之后到第一个 '/'（或结尾）。
     const auto scheme = baseUrl.find("://");
     const size_t start = (scheme == std::string::npos) ? 0 : scheme + 3;
@@ -66,6 +68,40 @@ std::string AppConfig::ProviderIdFromBaseUrl(const std::string& baseUrl) {
 std::string AppConfig::CredentialTargetFor(const std::string& providerId) {
     // 命名空间（规格 §8.5 D4）：ECDI.FakeHarness.v1.Provider.<provider-id>
     return "ECDI.FakeHarness.v1.Provider." + providerId;
+}
+
+// ── v4：激活模型（三个访问器等价于 v3 的 model/context/maxOutput 字段）─────
+// ★ 回落规则只有一条：`activeModel` 找不到 ⇒ `models[0]`。不引入"无激活"状态
+//   ——那会让"这个 provider 能不能用"多出一个中间态，而 UI 与探针都得再判一次。
+const ModelConfig* ProviderConfig::Active() const {
+    if (models.empty()) return nullptr;
+    for (const auto& m : models) {
+        if (m.name == activeModel) return &m;
+    }
+    return &models[0];
+}
+
+ModelConfig* ProviderConfig::MutableActive() {
+    if (models.empty()) models.push_back(ModelConfig{});
+    for (auto& m : models) {
+        if (m.name == activeModel) return &m;
+    }
+    return &models[0];
+}
+
+std::string ProviderConfig::ActiveModelName() const {
+    const ModelConfig* m = Active();
+    return m ? m->name : std::string();
+}
+
+int ProviderConfig::ActiveContext() const {
+    const ModelConfig* m = Active();
+    return m ? m->context : 0;
+}
+
+int ProviderConfig::ActiveMaxOutput() const {
+    const ModelConfig* m = Active();
+    return m ? m->maxOutput : 0;
 }
 
 const ProviderConfig* AppConfig::DefaultProvider() const {
@@ -116,7 +152,14 @@ bool AppConfig::Load(std::string& error) {
         return false;
     }
     const int fileVersion = static_cast<int>(ver->number);
-    if (fileVersion != 1 && fileVersion != 2) {
+    // ★ §9.5：v3 = 加 `name`（显示名）。老版本照旧可读（迁移在 fillProvider 里，
+    //   只补默认值、不改 id/credentialTarget）。
+    // ★ v4（2026-10-27）：`model/context/maxOutput` → `models[]` + `activeModel`。
+    //   迁移同样在 fillProvider 里（折叠顶层三元组），id/凭据目标/defaultProviderId
+    //   全不动 ⇒ 老配置的 key 不断、默认提供商不变。
+    // ★ 上限取 `kCurrentVersion`（单一真相）：更高版本的文件由**更老**的二进制
+    //   拒绝，这条永远成立，不需要每次升级都回来加一个数字。
+    if (fileVersion < 1 || fileVersion > AppConfig::kCurrentVersion) {
         error = "config version unsupported: " + std::to_string(fileVersion);
         return false;
     }
@@ -132,19 +175,52 @@ bool AppConfig::Load(std::string& error) {
             if (v && v->IsString()) out = v->text;
         };
         getStr("id", pc.id);
+        getStr("name", pc.name);
         getStr("baseUrl", pc.baseUrl);
-        getStr("model", pc.model);
         getStr("credentialTarget", pc.credentialTarget);
-        if (const auto* ctx = prov.Find("context"); ctx && ctx->IsNumber()) {
-            pc.context = static_cast<int>(ctx->number);
+        getStr("activeModel", pc.activeModel);
+
+        // ★★ v4：先读 `models` 数组（新形态）；没有就**折叠**顶层三元组
+        //   （v1/v2/v3 的形态）。两条路都落到 `models`，之后代码只认 models
+        //   ——不允许"顶层字段还活着"的第二真相。
+        if (const auto* arr = prov.Find("models"); arr && arr->IsArray()) {
+            for (const auto& mv : arr->array) {
+                if (!mv.IsObject()) continue;
+                ModelConfig mc;
+                if (const auto* n = mv.Find("name"); n && n->IsString()) mc.name = n->text;
+                if (const auto* c = mv.Find("context"); c && c->IsNumber()) {
+                    mc.context = static_cast<int>(c->number);
+                }
+                if (const auto* mo = mv.Find("maxOutput"); mo && mo->IsNumber()) {
+                    mc.maxOutput = static_cast<int>(mo->number);
+                }
+                // 无名模型跳过：请求体 `"model": ""` 端点必报错（见 core 侧同条纪律）
+                if (!mc.name.empty()) pc.models.push_back(std::move(mc));
+            }
         }
-        if (const auto* mo = prov.Find("maxOutput"); mo && mo->IsNumber()) {
-            pc.maxOutput = static_cast<int>(mo->number);
+        if (pc.models.empty()) {
+            ModelConfig mc;
+            getStr("model", mc.name);
+            if (const auto* ctx = prov.Find("context"); ctx && ctx->IsNumber()) {
+                mc.context = static_cast<int>(ctx->number);
+            }
+            if (const auto* mo = prov.Find("maxOutput"); mo && mo->IsNumber()) {
+                mc.maxOutput = static_cast<int>(mo->number);
+            }
+            if (!mc.name.empty()) pc.models.push_back(std::move(mc));
         }
+        // activeModel 空 / 指向已不存在的模型 ⇒ 回落首项（不留"无激活"状态）
+        if (pc.activeModel.empty() && !pc.models.empty()) {
+            pc.activeModel = pc.models[0].name;
+        }
+
         if (pc.credentialTarget.empty()) {
             pc.id = ProviderIdFromBaseUrl(pc.baseUrl);
             pc.credentialTarget = CredentialTargetFor(pc.id);
         }
+        // ★ §9.5：v1/v2 没有 `name` ⇒ 回落 id（观感不变、不引入"无名"状态）。
+        //   ★ 必须放在**自愈块之后**：自愈会重写 id，name 得跟着最终 id 走。
+        if (pc.name.empty()) pc.name = pc.id;
     };
 
     // v1 单提供商 ⇒ 迁移成 providers[0]（原文件不动，保存时升级为 v2）。
@@ -156,7 +232,7 @@ bool AppConfig::Load(std::string& error) {
         }
         ProviderConfig pc;
         fillProvider(*prov, pc);
-        if (pc.baseUrl.empty() || pc.model.empty()) {
+        if (pc.baseUrl.empty() || pc.models.empty()) {
             error = "config provider is missing baseUrl or model";
             return false;
         }
@@ -170,6 +246,8 @@ bool AppConfig::Load(std::string& error) {
     //   id 由 BaseURL host 派生，历史文件里同端点多份同 id 累积（实测 8 份）
     //   ⇒「按 id 删除/编辑/切换」语义全被打穿。去重走既有 Upsert（同 id 更新），
     //   下次 Save 落盘即收敛。
+    //   ★ §9.5 起 id 由用户声明（唯一），所以这条去重**语义变正了**：同 id 就是
+    //     同一家，合并即正确。历史文件里的派生 id 重复仍靠它收敛——保留不动。
     const auto* arr = root.Find("providers");
     if (!arr || !arr->IsArray() || arr->array.empty()) {
         error = "config has no providers array";
@@ -179,7 +257,7 @@ bool AppConfig::Load(std::string& error) {
         if (!prov.IsObject()) continue;
         ProviderConfig pc;
         fillProvider(prov, pc);
-        if (pc.baseUrl.empty() || pc.model.empty()) continue;
+        if (pc.baseUrl.empty() || pc.models.empty()) continue;
         Upsert(pc);
     }
     if (providers.empty()) {
@@ -230,10 +308,36 @@ bool AppConfig::Save(std::string& error) const {
             prov.object[k] = std::move(v);
         };
         putStr("id", pc.id);
+        putStr("name", pc.name);   // ★ v3（§9.5）：显示名。这里**不**替空值兜底——
+                                   //   「空 ⇒ 回落 id」是界面侧的读取规则（ProviderDisplayName），
+                                   //   存储层把两者都如实写下，回滚/对账才有得比。
         putStr("baseUrl", pc.baseUrl);
-        putStr("model", pc.model);
-        putNum("context", pc.context);
-        putNum("maxOutput", pc.maxOutput);
+        // ★★ v4：模型进数组（真身）。
+        {
+            json::Value marr;
+            marr.type = json::Value::Type::Array;
+            for (const auto& m : pc.models) {
+                json::Value mv;
+                mv.type = json::Value::Type::Object;
+                json::Value mn; mn.type = json::Value::Type::String; mn.text = m.name;
+                json::Value mc; mc.type = json::Value::Type::Number;
+                mc.number = static_cast<double>(m.context);
+                json::Value mo; mo.type = json::Value::Type::Number;
+                mo.number = static_cast<double>(m.maxOutput);
+                mv.object["name"] = std::move(mn);
+                mv.object["context"] = std::move(mc);
+                mv.object["maxOutput"] = std::move(mo);
+                marr.array.push_back(std::move(mv));
+            }
+            prov.object["models"] = std::move(marr);
+        }
+        putStr("activeModel", pc.activeModel);
+        // ★ 双写：顶层三元组 = **激活模型**的值。真身是 `models[]`，这三行是给
+        //   "只认顶层字段"的旧读取路径留的降级口（也方便肉眼对账）。两者都从
+        //   `Active()` 生成 ⇒ 结构上不可能各说各话。
+        putStr("model", pc.ActiveModelName());
+        putNum("context", pc.ActiveContext());
+        putNum("maxOutput", pc.ActiveMaxOutput());
         putStr("credentialTarget", pc.credentialTarget);
         arr.array.push_back(std::move(prov));
     }

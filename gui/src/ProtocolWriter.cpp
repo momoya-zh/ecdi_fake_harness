@@ -81,7 +81,7 @@ bool ProtocolWriter::Workspace(const std::string& requestId, const std::string& 
 }
 
 bool ProtocolWriter::Model(const std::string& requestId, const std::string& provider,
-                           int context, int maxOutput) {
+                           const std::string& model, int context, int maxOutput) {
     json::Value msg;
     msg.type = json::Value::Type::Object;
     json::Value t; t.type = json::Value::Type::String; t.text = "model";
@@ -90,14 +90,26 @@ bool ProtocolWriter::Model(const std::string& requestId, const std::string& prov
     msg.object["t"] = t;
     msg.object["id"] = id;
     msg.object["provider"] = p;
-    if (context > 0) {
+    // ★ 2026-10-27：空模型名**不写**字段（而不是写空串）——写空串会让 core
+    //   把"没指定"当成"指定了空模型"，与省略字段的语义正好相反。
+    if (!model.empty()) {
+        json::Value mv; mv.type = json::Value::Type::String; mv.text = model;
+        msg.object["model"] = mv;
+    }
+    // ★★ 2026-10-27（v4 第三步）：`context` / `maxOutput` **总是写**，包括 0。
+    //   为什么改（原来是 `> 0` 才写）：v4 起两个参数跟着**模型**走，同一家下
+    //   M1 标了 200K、M2 没标。省略字段的语义是"沿用上一个模型的值" ⇒ 切到 M2
+    //   后 core 仍按 M1 的 200K 当分母（百分比是假的），max_tokens 也照旧发 M1 的
+    //   上限（端点可能 400）。显式写 0 的语义是**清零**（未知），core 侧对应
+    //   `wire.GuiMsg.Context/MaxOutput` 改成指针才能区分这两件事。
+    {
         json::Value c; c.type = json::Value::Type::Number;
-        c.number = static_cast<double>(context);
+        c.number = static_cast<double>(context > 0 ? context : 0);
         msg.object["context"] = c;
     }
-    if (maxOutput > 0) {
+    {
         json::Value m; m.type = json::Value::Type::Number;
-        m.number = static_cast<double>(maxOutput);
+        m.number = static_cast<double>(maxOutput > 0 ? maxOutput : 0);
         msg.object["maxOutput"] = m;
     }
     return SendWith(std::move(msg));

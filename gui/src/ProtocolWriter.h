@@ -18,8 +18,10 @@ public:
     bool Workspace(const std::string& requestId, const std::string& path); // 仅 idle
     // ★ v4（P3.6）：model 切换请求（仅 idle；排队语义在 App）。context/maxOutput
     //   为 0 时省略字段（core 维持现值，§4）。
+    // ★ 2026-10-27：增 `model`——同一提供商下换模型（core 用它覆盖注册表里的
+    //   模型名）。空 ⇒ 不写字段，core 沿用已登记的名字（与旧行为一致）。
     bool Model(const std::string& requestId, const std::string& provider,
-               int context, int maxOutput);
+               const std::string& model, int context, int maxOutput);
     bool Cancel();                                                 // running
     bool Answer(const std::string& askId, const std::string& choice);  // waiting
     bool Bye();                                                    // 关窗收尾

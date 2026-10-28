@@ -765,8 +765,12 @@ void HarnessApp::RouteLastMessage() {
         } else {
             m_sess->providerId = msg.GetString("provider", m_sess->providerId);
             m_sess->modelName = msg.GetString("model", m_sess->modelName);
-            if (const json::Value* c = msg.Find("context");
-                c && c->IsNumber() && c->number > 0) {
+            // ★★ 2026-10-27（v4 第三步）：ack 的 `context` **0 也要认**。
+            //   v4 起容量跟着模型走，新模型没标容量时 core 会回 context:0（= 未知）
+            //   ⇒ 这里必须把它落到 0，否则 GUI 保留上一个模型的分母，显示的百分比
+            //   是拿 A 的容量除 B 的用量算出来的（最难发现的一类假读数）。
+            //   ★ 只有**字段缺席**才不覆盖（老 core 不发这个字段）。
+            if (const json::Value* c = msg.Find("context"); c && c->IsNumber()) {
                 m_sess->ctxCapacity = static_cast<int>(c->number);
                 m_sess->contextLimit = static_cast<long long>(c->number);
             }

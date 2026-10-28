@@ -82,6 +82,24 @@ namespace {
 constexpr const char* kProbeEnvKeyUrl = "https://probe-env-key.invalid/v1";
 constexpr const char* kProbeEnvMissingUrl = "https://probe-env-missing.invalid/v1";
 constexpr const char* kProbeEnvModel = "probe-env-model";
+// §9.5 改名相：源提供商由探针自己造（回放跑法下 case 0 那家根本不存在），
+// 目标识别名刻意**不是任何 host**——它就是"id 不再从地址派生"的活证据。
+constexpr const char* kProbeRenameSrcUrl = "https://probe-rename-src.invalid/v1";
+constexpr const char* kProbeRenameSrcId = "probe-rename-src";
+constexpr const char* kProbeRenameSrcName = "probe 改名前";
+constexpr const char* kProbeRenameKey = "sk-probe-rename-not-a-real-key";
+constexpr const char* kProbeRenameToId = "probe-renamed";
+constexpr const char* kProbeRenameToName = "probe 改名后";
+// ★★ v4 第三步（2026-10-27）：多模型相（追加 / 删除）用的那一家。
+//   为什么必须真造一家：`OnSettingsSave` 的合并逻辑是**按已存在的条目**合并的
+//   （表单这个顶替编辑目标、其余保序保留），没有"已存在的第一个模型"就测不到
+//   "第二个模型有没有把它冲掉"——而那正是 Save 走 `Upsert` 整条替换时最容易
+//   静默发生的损坏（配置看着还有一家，模型只剩一个）。
+constexpr const char* kProbeMultiUrl = "https://probe-multi.invalid/v1";
+constexpr const char* kProbeMultiId = "probe-multi";
+constexpr const char* kProbeMultiKey = "sk-probe-multi-not-a-real-key";
+constexpr const char* kProbeMultiModel1 = "probe-multi-1";
+constexpr const char* kProbeMultiModel2 = "probe-multi-2";
 
 std::string ReadWholeFile(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -101,6 +119,32 @@ void HarnessApp::RunSettingsProbe() {
     };
     const auto now = std::chrono::steady_clock::now();
     const auto settle = std::chrono::milliseconds(400);
+
+    // ★★ §9.5（2026-10-27）：探针直接 SetText 填字段、绕过 UI，所以「新增提供商」
+    //   那一步（清编辑目标 + 清两个身份字段 + 清待确认改名）也得自己补上。
+    //   漏了它，一次针对**另一家** URL 的保存会被判成改名（编辑目标还是上一家），
+    //   于是保存变成"再点一次确认"——判据会静默退化成「保存没生效」，那是最难
+    //   分辨的一种假红。
+    auto startNewProvider = [this] {
+        m_editingProviderId.clear();
+        // ★ v4 第三步：新增提供商 = 它名下还没有模型 ⇒ 模型编辑目标一并清掉
+        //   （留着上一家的模型名，保存时会被当成"替换掉那个模型"而不是新增）。
+        m_editingModelName.clear();
+        m_pendingRenameFrom.clear();
+        m_pendingRenameTo.clear();
+        if (m_hud.settingsProviderId) m_hud.settingsProviderId->SetText("");
+        if (m_hud.settingsProviderName) m_hud.settingsProviderName->SetText("");
+    };
+    auto clickSave = [this] {
+        if (!m_hud.settingsPanel || !m_hud.settingsPanel->IsVisible() || !m_hud.settingsSave) {
+            return false;
+        }
+        const ECDI::Point abs = m_hud.settingsSave->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.settingsSave->GetWidth() / 2,
+                          static_cast<int>(abs.y) + m_hud.settingsSave->GetHeight() / 2);
+        return true;
+    };
+    // save 相写入的那家提供商的识别名（改名相的**源**）。与 case 0 同一算式。
 
     switch (m_probeState.settingsProbeStage) {
     case 0: {
@@ -325,7 +369,7 @@ void HarnessApp::RunSettingsProbe() {
             if (!m_sess || !m_sess->hasModelCap) {
                 bad = "live session lacks model cap (protocol 4 handshake broken)";
             } else {
-                SendModelSwitch(m_sess->providerId);
+                SendModelSwitch(m_sess->providerId, m_sess->modelName);
             }
             report("switch-ok", bad);
         }
@@ -344,9 +388,42 @@ void HarnessApp::RunSettingsProbe() {
                 }
                 bad = "model ack never arrived for same-provider switch";
             }
+            // ★★ 2026-10-27：ack 到了**还不够**，模型名必须真的对上。
+            //   只判"ack 到达"时，把 `model` 字段传成任何非空串（甚至传成 provider
+            //   id）都会绿：core 照单全收、ack 回那个错值，而判据根本不看值。
+            //   这条是 `model` 字段唯一的端到端判据——松了，它就等于没测。
+            if (bad.empty() && m_sess) {
+                const ProviderConfig* pc = m_appConfig.Find(m_sess->providerId);
+                if (!pc) {
+                    bad = "switch-ok: provider not in config: " + m_sess->providerId;
+                } else if (!pc->ActiveModelName().empty() &&
+                           m_sess->modelName != pc->ActiveModelName()) {
+                    // ★ 文案里**不能有双引号**：settingsProbe 的 firstDivergence 走
+                    //   `escS`，那个转义器不转义引号（摘要格式的既有契约）⇒ 带引号
+                    //   会把整份摘要 JSON 弄坏，regress 在 json.loads 处崩掉，
+                    //   于是"判据红了"变成"门自己炸了"。方括号同样可读。
+                    bad = "model ack mismatch: want [" + pc->ActiveModelName() + "], got [" +
+                          m_sess->modelName + "]";
+                }
+            }
             report("switch-ok", bad);
         }
-        SendModelSwitch("unknown-host.invalid");
+        // ★★ 2026-10-27：原来这里是 `SendModelSwitch("unknown-host.invalid")`，
+        //   而那条路径在 `!pc`（配置里查不到）分支就 AddNoticeRow + return 了——
+        //   **请求从来没发出去**。case 3 判的是 `pendingModelId` 为空，于是
+        //   switch-bad 恒绿：注释写着「core 应回 ok:false」，实际 core 一次都没
+        //   收到过。这里直接走写通道，让 core 真的拒一次。
+        //   ★ 回放源没有写通道（Send 返回 false）⇒ 清掉在途 id，本相在该跑法下
+        //     自述"不适用"，与原来一样绿——判别力由 live 跑法提供（§2e）。
+        if (m_sess && m_sess->writer) {
+            const std::string id = "m" + std::to_string(m_sess->writer->LastSeqSent() + 1);
+            m_sess->pendingModelId = id;
+            m_probeState.settingsProbeBadSwitchSent =
+                m_sess->writer->Model(id, "unknown-host.invalid", "", 0, 0);
+            if (!m_probeState.settingsProbeBadSwitchSent) {
+                m_sess->pendingModelId.clear();
+            }
+        }
         m_probeState.settingsProbeStage = 3;
         m_probeState.settingsProbeNextAt = now + settle;
         return;
@@ -361,6 +438,26 @@ void HarnessApp::RunSettingsProbe() {
                 }
                 bad = "model ack never arrived for unknown-provider switch";
             }
+            // ★★ 2026-10-27：ack 到达**还不够**，必须确认它是 ok:false。
+            //   `pendingModelId` 的清空是无条件的（ok:true 也清）⇒ 只看它，core
+            //   哪怕回了个错绿的 ack 也照样通过。真判据是时间线上那条失败通知
+            //   （ok:false 分支唯一的可观察产物）。
+            //   ★ 只在"请求真发出去过"时判：回放源没有写通道，扫不到通知是必然的，
+            //     那不是功能坏了，是这一相在该跑法下不适用（见 ProbeState 注释）。
+            if (bad.empty() && m_sess && m_probeState.settingsProbeBadSwitchSent) {
+                bool sawFailure = false;
+                for (const auto& e : m_sess->timeline) {
+                    if (e.kind == TimelineEntry::Kind::Notice &&
+                        e.text.find("模型切换失败") != std::string::npos) {
+                        sawFailure = true;
+                        break;
+                    }
+                }
+                if (!sawFailure) {
+                    bad = "no failure notice in timeline "
+                          "(core answered ok:true for an unknown provider?)";
+                }
+            }
             report("switch-bad", bad);
         }
         // ⑥ key-env（正对照，§8.5.6）：凭据库无该提供商、**只**设环境变量
@@ -369,6 +466,7 @@ void HarnessApp::RunSettingsProbe() {
         //     否则点击落在一个不可见控件上，判据会静默变成「保存没生效」——
         //     那是最难分辨的一种假红。
         SetSettingsVisible(true);
+        startNewProvider();
         const std::string envProviderId = AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl);
         SetEnvironmentVariableW(ECDI::UTF8ToWide(ProviderKeyEnvName(envProviderId)).c_str(),
                                 L"sk-probe-env-source-not-a-real-key");
@@ -418,6 +516,7 @@ void HarnessApp::RunSettingsProbe() {
         SetSettingsVisible(true);
         SetEnvironmentVariableW(
             ECDI::UTF8ToWide(ProviderKeyEnvName(envProviderId)).c_str(), nullptr);
+        startNewProvider();
         m_hud.settingsBase->SetText(kProbeEnvMissingUrl);
         m_hud.settingsModel->SetText(kProbeEnvModel);
         m_hud.settingsKey->SetText("");
@@ -448,17 +547,330 @@ void HarnessApp::RunSettingsProbe() {
             }
             report("env-key-missing", bad);
         }
+        // ⑧ rename 前置：**自己造一家有凭据的提供商**，再改它的名。
+        //   ★ 为什么不用 case 0 存的那家：回放跑法下 first-run/save 是 designed-red
+        //     （面板根本没开，点击落在转录上），那家提供商在这条跑法里**不存在**。
+        //     依赖它的判据会以"旧凭据不见了"这种假红出现，看起来像功能坏了。
+        //   ★ 为什么必须有凭据：凭据搬迁是改名的核心契约，没有旧凭据就测不到"搬"。
+        SetSettingsVisible(true);
+        startNewProvider();
+        if (m_hud.settingsProviderId) m_hud.settingsProviderId->SetText(kProbeRenameSrcId);
+        if (m_hud.settingsProviderName) {
+            m_hud.settingsProviderName->SetText(kProbeRenameSrcName);
+        }
+        m_hud.settingsBase->SetText(kProbeRenameSrcUrl);
+        m_hud.settingsModel->SetText("probe-model");
+        m_hud.settingsKey->SetText(kProbeRenameKey);
+        m_probeState.settingsProbeStage = 6;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 6: {
+        // ⑨ rename-src：造出来的那家必须真的落盘 + 真的有凭据。
+        //   单独一相是为了让「仪器没摆好」与「改名坏了」可分辨——混进下一相的话，
+        //   一个"提供商没建成"的实现会以"改名没生效"的样子报出来。
+        const bool clicked = clickSave();
+        {
+            std::string bad;
+            if (!clicked) {
+                bad = "settings panel not visible before creating the rename source"
+                      " (probe precondition)";
+            }
+            const std::string text = ReadWholeFile(AppConfig::DefaultPath());
+            if (text.find(std::string("\"id\":\"") + kProbeRenameSrcId + "\"") ==
+                std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "rename source provider was not written to the config";
+            }
+            if (!creds::Exists(ECDI::UTF8ToWide(
+                    AppConfig::CredentialTargetFor(kProbeRenameSrcId)))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "rename source has no credential (nothing to migrate)";
+            }
+            report("rename-src", bad);
+        }
+        // ⑩ rename 前置：编辑目标 = 那家，识别名改成 kProbeRenameToId，key 留空。
+        SetSettingsVisible(true);
+        m_editingProviderId = kProbeRenameSrcId;
+        m_pendingRenameFrom.clear();
+        m_pendingRenameTo.clear();
+        if (m_hud.settingsProviderId) m_hud.settingsProviderId->SetText(kProbeRenameToId);
+        if (m_hud.settingsProviderName) m_hud.settingsProviderName->SetText(kProbeRenameToName);
+        m_hud.settingsBase->SetText(kProbeRenameSrcUrl);   // 端点不动，只改身份
+        m_hud.settingsModel->SetText("probe-model");
+        m_hud.settingsKey->SetText("");   // ★ 留空 ⇒ 必须把旧凭据搬过来（轮换语义）
+        // 快照「点击前」的配置文件：后面两相的判据都要拿它当比对面。
+        m_probeState.settingsProbeConfigSnapshot = ReadWholeFile(AppConfig::DefaultPath());
+        m_probeState.settingsProbeStage = 7;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 7: {
+        // ⑪ rename-confirm（正对照，规格 9.5.3 第 1 步）：第一击**只问不做**。
+        //   ★ 判据必须是"什么都没变"。只查「hint 里有'再点保存确认'」是自欺——
+        //     一个"问了但也顺手改了"的实现同样能过，而那正是最危险的形态
+        //     （配置已改、凭据没迁，下次无参启动静默失效）。
+        const bool clicked = clickSave();
+        {
+            std::string bad;
+            if (!clicked) {
+                bad = "settings panel not visible before rename confirm (probe precondition)";
+            }
+            const std::string hint = m_hud.settingsHint ? m_hud.settingsHint->GetText() : "";
+            if (hint.find("再点保存确认") == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "first click did not ask for confirmation (hint=" + hint + ")";
+            }
+            if (ReadWholeFile(AppConfig::DefaultPath()) !=
+                m_probeState.settingsProbeConfigSnapshot) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "first click already rewrote the config"
+                       " (must ask before touching anything)";
+            }
+            if (creds::Exists(ECDI::UTF8ToWide(
+                    AppConfig::CredentialTargetFor(kProbeRenameToId)))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "first click already wrote the new credential target";
+            }
+            if (!creds::Exists(ECDI::UTF8ToWide(
+                    AppConfig::CredentialTargetFor(kProbeRenameSrcId)))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "old credential vanished before the rename was confirmed";
+            }
+            report("rename-confirm", bad);
+        }
+        m_probeState.settingsProbeStage = 8;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 8: {
+        // ⑫ rename-ok（正对照，规格 9.5.3 第 2–5 步）：第二击真的执行。
+        const bool clicked = clickSave();
+        {
+            std::string bad;
+            if (!clicked) {
+                bad = "settings panel not visible before rename apply (probe precondition)";
+            }
+            const std::string oldId = kProbeRenameSrcId;
+            std::string key;
+            std::string credError;
+            if (!creds::Read(ECDI::UTF8ToWide(AppConfig::CredentialTargetFor(kProbeRenameToId)),
+                             key, credError)) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "credential was not migrated to the new target: " + credError;
+            } else if (key != kProbeRenameKey) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "migrated credential value mismatch";
+            }
+            if (creds::Exists(ECDI::UTF8ToWide(AppConfig::CredentialTargetFor(oldId)))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "old credential target left behind";
+            }
+            const std::string text = ReadWholeFile(AppConfig::DefaultPath());
+            const std::string newIdField = std::string("\"id\":\"") + kProbeRenameToId + "\"";
+            const std::string oldIdField = std::string("\"id\":\"") + oldId + "\"";
+            // ★ 判据必须带 `"id":"` 前缀：baseUrl 里仍然含旧 host（端点没换，只换了
+            //   身份），裸搜旧 id 会永远命中——那条判据就永远红/永远绿，没有判别力。
+            if (text.find(newIdField) == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "config does not carry the new provider id";
+            }
+            if (text.find(oldIdField) != std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "old provider id survived the rename";
+            }
+            if (text.find(std::string("\"name\":\"") + kProbeRenameToName + "\"") ==
+                std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "display name was not persisted (v3 field missing)";
+            }
+            // ★ 2026-10-27：版本号取自 `AppConfig::kCurrentVersion`，不再写死。
+            //   上一版硬编码 `"version":3`，配置升到 v4 后这条判据立刻变红——
+            //   版本号散落在两处，就必然有一处会被忘掉。
+            if (text.find("\"version\":" + std::to_string(AppConfig::kCurrentVersion)) ==
+                std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "config version did not upgrade to " +
+                       std::to_string(AppConfig::kCurrentVersion);
+            }
+            if (text.find(std::string("\"defaultProviderId\":\"") + kProbeRenameToId + "\"") ==
+                std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "defaultProviderId did not follow the rename";
+            }
+            report("rename-ok", bad);
+        }
+        // ⑬ rename-conflict 前置（负对照，规格 9.5.2）：识别名改成**另一家已有的** id。
+        //   撞的是 env-key 那家（case 4 建的），不是刚改名的这家——唯一性校验必须
+        //   跨提供商生效，撞自己（正在编辑的那家）是被豁免的。
+        SetSettingsVisible(true);
+        if (m_hud.settingsProviderId) {
+            m_hud.settingsProviderId->SetText(
+                AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl));
+        }
+        m_hud.settingsKey->SetText("");
+        m_probeState.settingsProbeConfigSnapshot = ReadWholeFile(AppConfig::DefaultPath());
+        m_probeState.settingsProbeStage = 9;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 9: {
+        // ⑭ rename-conflict：撞已有的另一家 ⇒ 保存被**拒**且配置文件逐字节不变。
+        //   这是「唯一性校验」唯一的负对照：没有它，一个"静默覆盖"的实现照样全绿。
+        const bool clicked = clickSave();
+        {
+            std::string bad;
+            if (!clicked) {
+                bad = "settings panel not visible before conflict save (probe precondition)";
+            }
+            const std::string hint = m_hud.settingsHint ? m_hud.settingsHint->GetText() : "";
+            if (hint.find("已存在") == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "conflicting id was not rejected (hint=" + hint + ")";
+            }
+            if (ReadWholeFile(AppConfig::DefaultPath()) !=
+                m_probeState.settingsProbeConfigSnapshot) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "rejected save still rewrote the config";
+            }
+            if (creds::Exists(ECDI::UTF8ToWide(AppConfig::CredentialTargetFor(
+                    AppConfig::ProviderIdFromBaseUrl(kProbeEnvKeyUrl))))) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "rejected save wrote a credential";
+            }
+            report("rename-conflict", bad);
+        }
+        // ⑬ multi 前置：造一家**只有一个模型**的提供商（下一相往它追加第二个）。
+        //   ★ 为什么单独造一家而不是复用上面那家：上面那家的 id 在改名相里变过，
+        //     拿它当"同家多模型"的载体，一旦改名出问题，多模型两相会跟着一起红——
+        //     那就分不清"改名坏了"还是"多模型坏了"。
+        SetSettingsVisible(true);
+        startNewProvider();
+        if (m_hud.settingsProviderId) m_hud.settingsProviderId->SetText(kProbeMultiId);
+        if (m_hud.settingsProviderName) m_hud.settingsProviderName->SetText("probe multi");
+        m_hud.settingsBase->SetText(kProbeMultiUrl);
+        m_hud.settingsModel->SetText(kProbeMultiModel1);
+        if (m_hud.settingsContext) m_hud.settingsContext->SetText("64000");
+        if (m_hud.settingsMaxOut) m_hud.settingsMaxOut->SetText("2048");
+        m_hud.settingsKey->SetText(kProbeMultiKey);
+        m_probeState.settingsProbeStage = 10;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 10: {
+        // ⑭ multi-add：第一个模型落盘。单独一相是为了让「仪器没摆好」与
+        //   「多模型坏了」可分辨——混进下一相的话，一个"提供商根本没建成"的
+        //   实现会以"追加没生效"的样子报出来。
+        const bool clicked = clickSave();
+        {
+            std::string bad;
+            if (!clicked) {
+                bad = "settings panel not visible before multi-model setup (probe precondition)";
+            }
+            const std::string text = ReadWholeFile(AppConfig::DefaultPath());
+            if (text.find(std::string("\"id\":\"") + kProbeMultiId + "\"") == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "multi-model provider was not created";
+            }
+            if (text.find(kProbeMultiModel1) == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "first model missing from the config";
+            }
+            report("multi-add", bad);
+        }
+        // ⑮ 前置：**新增模型**（= 点「新增模型」按钮的效果：编辑目标清空），
+        //   同一个提供商下填第二个模型；key 留空（已存过 ⇒ 保持不变）。
+        SetSettingsVisible(true);
+        m_editingModelName.clear();   // ★ 这一行就是「新增模型」按钮的全部语义
+        m_hud.settingsModel->SetText(kProbeMultiModel2);
+        if (m_hud.settingsContext) m_hud.settingsContext->SetText("128000");
+        if (m_hud.settingsMaxOut) m_hud.settingsMaxOut->SetText("4096");
+        m_hud.settingsKey->SetText("");
+        m_probeState.settingsProbeStage = 11;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 11: {
+        // ⑯ multi-merge：第二个模型必须**追加**，第一个不能被冲掉。
+        //   这是 v4 第三步最容易踩的一脚：`OnSettingsSave` 走 `Upsert`（整条替换），
+        //   合并源若取错（比如只认改名时的 oldId），普通保存就只剩表单这一个模型。
+        const bool clicked = clickSave();
+        {
+            std::string bad;
+            if (!clicked) {
+                bad = "settings panel not visible before second-model save (probe precondition)";
+            }
+            const std::string text = ReadWholeFile(AppConfig::DefaultPath());
+            if (text.find(kProbeMultiModel1) == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "adding a second model dropped the first one";
+            }
+            if (text.find(kProbeMultiModel2) == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "second model was not saved";
+            }
+            if (text.find(std::string("\"activeModel\":\"") + kProbeMultiModel2 + "\"") ==
+                std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "activeModel did not follow the saved model";
+            }
+            report("multi-merge", bad);
+        }
+        // ⑰ 前置：删除刚加的那个模型（点模型行 ⇒ 编辑目标 = 它）。
+        SetSettingsVisible(true);
+        m_editingModelName = kProbeMultiModel2;
+        OnSettingsDeleteModel();   // 同步落盘；判据在下一相读文件
+        m_probeState.settingsProbeStage = 12;
+        m_probeState.settingsProbeNextAt = now + settle;
+        return;
+    }
+    case 12: {
+        // ⑱ multi-del：只删被选中的那个，同家另一个必须还在。
+        //   ★ 这条同时钉住「至少保留一个」的反面：删到只剩一个时再删必须被拒
+        //     （下面单独一步做），否则会留下"有提供商但没有模型"的死配置。
+        {
+            std::string bad;
+            const std::string text = ReadWholeFile(AppConfig::DefaultPath());
+            if (text.find(std::string("\"id\":\"") + kProbeMultiId + "\"") == std::string::npos) {
+                bad = "deleting a model removed the whole provider";
+            }
+            if (text.find(kProbeMultiModel2) != std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "deleted model is still in the config";
+            }
+            if (text.find(kProbeMultiModel1) == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "deleting one model dropped its sibling";
+            }
+            // 最后一个模型不许删（否则 core 侧"切过去必 ok:false"）
+            m_editingModelName = kProbeMultiModel1;
+            OnSettingsDeleteModel();
+            const std::string after = ReadWholeFile(AppConfig::DefaultPath());
+            if (after.find(kProbeMultiModel1) == std::string::npos) {
+                bad += std::string(bad.empty() ? "" : "; ") +
+                       "the last remaining model was deleted (provider left unusable)";
+            }
+            report("multi-del", bad);
+        }
         // ⑥ cleanup：删探针建的凭据与配置文件（幂等）。
         {
             std::string bad;
-            const std::string target = AppConfig::CredentialTargetFor(
-                AppConfig::ProviderIdFromBaseUrl(
-                    m_options.settingsUrl.empty()
-                        ? "https://probe-settings.invalid/v1"
-                        : m_options.settingsUrl));
-            std::string credError;
-            if (!creds::Delete(ECDI::UTF8ToWide(target), credError)) {
-                bad = "credential cleanup failed: " + credError;
+            // ★ 要删**四个**目标名：改名后凭据已搬到 kProbeRenameToId 名下，只删
+            //   旧名会把它留在库里（那正是"探针泄漏"的老形态）；case 0 那条
+            //   （无参启动跑法下才存在）也要收掉；多模型相自己造的那家同理。
+            const std::string targets[4] = {
+                AppConfig::CredentialTargetFor(kProbeRenameSrcId),
+                AppConfig::CredentialTargetFor(kProbeRenameToId),
+                AppConfig::CredentialTargetFor(kProbeMultiId),
+                AppConfig::CredentialTargetFor(AppConfig::ProviderIdFromBaseUrl(
+                    m_options.settingsUrl.empty() ? "https://probe-settings.invalid/v1"
+                                                  : m_options.settingsUrl))};
+            for (const std::string& target : targets) {
+                std::string credError;
+                if (!creds::Delete(ECDI::UTF8ToWide(target), credError)) {
+                    bad += std::string(bad.empty() ? "" : "; ") +
+                           "credential cleanup failed: " + credError;
+                }
             }
             // 正对照那条**不该**有凭据（env 来源不落库）；留着就是泄漏，必须报出来。
             const std::string envTarget = AppConfig::CredentialTargetFor(

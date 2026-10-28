@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # ============================================================
-# 全量回归验证套件：6 夹具基线 + 24 个探针 + 1 个仪器声明 + REQ-03 live A/B + 协议校验
+# 全量回归验证套件：6 夹具基线 + 24 个探针 + 1 个仪器声明 + REQ-03 live A/B
+# + live 设置探针（真 core，2e）+ 协议校验
 # ------------------------------------------------------------
 # 判据说明（本仓纪律）：
 #   * 夹具基线只看 blocks/deltas/messages —— paints/frames 会随字体与实现变化，
@@ -16,6 +17,7 @@
 # ============================================================
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -88,8 +90,10 @@ EXTRA_PROBES = [
     #   session-live 要探针自己拉起活会话——回放没有写通道；
     #   switch-ok    要 protocol 4 + caps["model"]，而 fake-core 恒为 protocol 3
     #                （P3.6 明文：回归基线不动），回放夹具也声明 protocol 3。
-    # ⇒ 这四相只能在「无参启动 + 真实配置 + 真凭据 + protocol 4 的 core」下验收，
-    #   那是人工验收，不是回归门。门守住它剩下的 env-check / switch-bad / cleanup。
+    # ⇒ 这四相只能在「无参启动 + 真实配置 + protocol 4 的 core」下验收；**回放
+    #   跑法**里它们不可达，所以在这里登记成 designed-red。
+    #   ★ 2026-10-27 起它们由 §2e（live 设置探针）真跑真断——登记项不再是"没人
+    #     管"，而是"这个跑法管不了、另一个跑法管"。别看到 designed-red 就当已覆盖。
     # ★ 2026-10-27（§8.5.6）：env-key-ok / env-key-missing 两相**不在 designed-red 里**
     #   ——它们自己 SetSettingsVisible(true) 把面板打开，不依赖 first-run 分支，
     #   所以在回放跑法下真的能绿。它们是门，不是登记项（负对照实测：把
@@ -193,6 +197,125 @@ def run_probe(flag, key, fixture, extra, designed, configs):
     detail = (f"{len(green)}/{len(rows)} green  "
               f"designed-red={designed_red or '-'}  skipped={skipped or '-'}")
     return (not unexpected), (detail if not unexpected else "UNEXPECTED-RED=" + str(unexpected))
+
+
+CORE_REAL = ROOT / "core" / "bin" / "ecdi-core.exe"
+LIVE_SETTINGS_CONFIG = OUT / "_reg-live-settings-config.json"
+
+# 设置探针在 live 跑法下**必须**绿的相。前四个在回放跑法里是 designed-red
+# （见 EXTRA_PROBES 的注释），switch-bad / env-check 两边都跑，一并钉住。
+# ★ 2026-10-27（v4 第三步）：multi-add / multi-merge / multi-del 两跑法都跑——
+#   它们判的是**配置文件内容**（同家第二个模型有没有把第一个冲掉、删模型会不会
+#   连带删掉兄弟/整家），与有没有写通道无关，所以回放里也能真绿，不是登记项。
+LIVE_SETTINGS_REQUIRED = ("first-run", "save", "session-live", "switch-ok",
+                          "switch-bad", "env-check",
+                          "multi-add", "multi-merge", "multi-del")
+
+
+def rebuild_core():
+    """重建 core/bin/ecdi-core.exe → (ok, detail)。
+
+    ★ 为什么门必须自己构建：门测的是**这个二进制**。源码改了不重建，门就在旧
+      代码上绿——那比不跑更糟，它给出的是"已验证"的错觉。
+    ★ 没有 go 工具链时退化为「二进制不得比 core/*.go 旧」；过期即 FAILED，
+      不降级成 SKIP（SKIP 会静默变成"没测"）。
+    """
+    go = shutil.which("go")
+    if not go:
+        if not CORE_REAL.exists():
+            return False, "no go toolchain and core/bin/ecdi-core.exe absent"
+        newest = max(p.stat().st_mtime for p in (ROOT / "core").rglob("*.go"))
+        if CORE_REAL.stat().st_mtime < newest:
+            return False, "no go toolchain and ecdi-core.exe older than core/*.go"
+        return True, "reused existing binary (no go toolchain)"
+    r = subprocess.run([go, "build", "-o", str(CORE_REAL), "./cmd/ecdi-core"],
+                       cwd=ROOT / "core", capture_output=True, text=True)
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip().splitlines()
+        return False, "go build failed: " + (tail[0] if tail else "?")
+    return True, "rebuilt"
+
+
+def check_live_settings_probe():
+    """2e：设置探针的 live 四相（first-run / save / session-live / switch-ok）。
+
+    为什么单开一节：这四相要「无参启动 + 无配置文件 + protocol 4 的 core」，
+    **回放跑法**里结构上不可达，所以一直登记成 designed-red。登记久了就等于
+    没有——而 `switch-ok` 恰好是**唯一**能端到端验证 GUI→core `model` 消息回环
+    的探针（2026-10-27 给 `model` 请求增补可选 `model` 字段后，它成了这条链路
+    上唯一的门；在那之前没有任何门碰过这条链）。
+
+    判据：必需相**全部出现且全绿**。缺相 = FAILED 而不是 SKIP——缺相说明跑法
+    退化了（比如没走进首启分支），那正是最需要看见的失败。
+    另加一条身份判据 `protocolDeclared == 4`：否则说明连的不是真 core，
+    全绿也是假的。
+    """
+    fail = 0
+
+    def check(label, ok, detail):
+        nonlocal fail
+        fail += 0 if ok else 1
+        print(f"  {label:26s} {'OK' if ok else 'FAILED':6s}  {detail}")
+
+    ok, detail = rebuild_core()
+    check("core rebuild", ok, detail)
+    if not ok:
+        return fail
+
+    # 配置文件必须**不存在** ⇒ 应用从首启分支进来（设置面板可见）。
+    LIVE_SETTINGS_CONFIG.unlink(missing_ok=True)
+    out = OUT / "_reg-live-settings.json"
+    out.unlink(missing_ok=True)
+    try:
+        subprocess.run([str(EXE), "--settings-probe",
+                        "--config", str(LIVE_SETTINGS_CONFIG),
+                        "--theme", "light", "--auto-close", "40000", "--out", str(out)],
+                       cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        check("--settings-probe (live)", False, "TIMEOUT")
+        return fail
+    if not out.exists():
+        check("--settings-probe (live)", False, "FAILED TO PRODUCE OUTPUT")
+        return fail
+
+    try:
+        d = json.loads(out.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # 摘要坏了（实测：探针把**未转义的双引号**写进 firstDivergence，
+        # 而 escS 不转义引号）——"门自己炸了"必须与"判据红了"分开报，
+        # 否则 traceback 会盖掉结论，看的人只会以为脚本有 bug。
+        check("--settings-probe (live)", False, f"summary unparsable: {e}")
+        return fail
+    rows = d.get("settingsProbe") or []
+    if not rows:
+        # 没有行 = 探针根本没跑（不是"全绿"）。静默当成通过是最坏的一种假绿。
+        check("--settings-probe (live)", False, "NO ROWS (settingsProbe)")
+        return fail
+    # 同一相可能报多次（switch-ok 在「发起」与「确认」两处各报一次）⇒ 按相聚合：
+    #   只要有一次红这一相就算红，不能拿"后面那次绿了"盖住前面的红。
+    verdict = {}
+    for r in rows:
+        name = r.get("phase") or "?"
+        if r.get("matched") is False:
+            verdict[name] = r.get("firstDivergence") or "unmatched"
+        else:
+            verdict.setdefault(name, "")
+    missing = [p for p in LIVE_SETTINGS_REQUIRED if p not in verdict]
+    red = [(p, verdict[p]) for p in LIVE_SETTINGS_REQUIRED if verdict.get(p)]
+    green_n = sum(1 for v in verdict.values() if not v)
+    required_ok = len(LIVE_SETTINGS_REQUIRED) - len(missing) - len(red)
+    detail = (f"{green_n}/{len(verdict)} green  "
+              f"required={required_ok}/{len(LIVE_SETTINGS_REQUIRED)}")
+    if missing:
+        detail += "  MISSING=" + ",".join(missing)
+    if red:
+        detail += "  RED=" + "; ".join(f"{p}: {m}" for p, m in red)
+    check("--settings-probe (live)", not missing and not red, detail)
+
+    check("core identity", d.get("protocolDeclared") == 4,
+          f"protocolDeclared={d.get('protocolDeclared')} "
+          f"label={d.get('activeSessionLabel')!r}")
+    return fail
 
 
 def run_live(core, core_args, auto_close_ms, extra, out_name):
@@ -447,7 +570,11 @@ def main():
         print("\n== 2d. live 探针 (workspace) ==")
         fail += check_workspace_probe(core)
 
-    print("\n== 2e. 不入断言门的仪器 (1) ==")
+    print("\n== 2e. live 设置探针 (真 core，覆盖 4 个 designed-red 相) ==")
+    # 不放进上面的 else：它用的是 ecdi-core.exe，与 fake-core.exe 在不在无关。
+    fail += check_live_settings_probe()
+
+    print("\n== 2f. 不入断言门的仪器 (1) ==")
     for flag, why in INSTRUMENTS:
         print(f"  {flag:18s} INSTRUMENT (not a gate): {why}")
 

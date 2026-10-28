@@ -107,7 +107,12 @@ func main() {
 		if base == "" || key == "" {
 			continue
 		}
-		providerEnv[id] = llmConfig{BaseURL: base, Model: "", Key: key}
+		// ★ 2026-10-27：模型名也随环境注入。此前这里恒写 `Model: ""`——切到
+		//   非初始提供商后 pc.Model 是空串，请求体里 `"model": ""` 端点必报错，
+		//   等于「切得过去、用不了」。`model` 消息现在也能覆盖它（§4），但 env
+		//   是「切过去就能用」的那条路：老 GUI 不发 model 字段时它是唯一来源。
+		providerEnv[id] = llmConfig{BaseURL: base,
+			Model: os.Getenv(prefix + san + "_MODEL"), Key: key}
 	}
 	logf("provider registry from environment: %d entr%s", len(providerEnv),
 		map[bool]string{true: "y", false: "ies"}[len(providerEnv) == 1])

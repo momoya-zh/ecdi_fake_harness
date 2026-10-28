@@ -25,9 +25,20 @@ type GuiMsg struct {
 	RequestID string
 	Path      string
 	// ★ v4（P3.6）：model 切换请求的载荷（协议 §4）。
+	// ★ 2026-10-27：增 `Model`——请求方可指定**同一提供商下的另一个模型**。
+	//   空 = 沿用该提供商已注册的模型（老 GUI 不发这个字段，行为不变）。
 	Provider  string
-	Context   int64
-	MaxOutput int64
+	Model     string
+	// ★★ 2026-10-27（v4 第三步）：`Context`/`MaxOutput` 改**指针**——为了区分
+	//   「字段省略」与「显式写了 0」。
+	//   为什么必须区分：v4 起两个参数**跟着模型走**（同一个提供商下 M1=200K、
+	//   M2 未标容量）。用 int64 时两者都是 0，core 只能一律当"没指定"沿用上一个
+	//   模型的值 ⇒ 切到 M2 后 usage 仍按 M1 的 200K 当分母（分子是 M2 的，百分比
+	//   是假的），max_tokens 也照旧发 M1 的上限（端点可能直接 400）。
+	//   现在：nil = 省略（老 GUI / 没这个概念）= 沿用；非 nil = 以它为准，
+	//   0 的语义是**清零**（= 未知 ⇒ usage 不带 context、请求体不带 max_tokens）。
+	Context   *int64
+	MaxOutput *int64
 	Raw       string
 }
 
@@ -45,15 +56,17 @@ func ParseGui(line string) GuiMsg {
 		RequestID string `json:"request_id"`
 		Path      string `json:"path"`
 		Provider  string `json:"provider"`
-		Context   int64  `json:"context"`
-		MaxOutput int64  `json:"maxOutput"`
+		Model     string `json:"model"`
+		Context   *int64 `json:"context"`
+		MaxOutput *int64 `json:"maxOutput"`
 	}
 	if err := json.Unmarshal([]byte(line), &raw); err != nil {
 		return GuiMsg{T: "", Raw: line}
 	}
 	return GuiMsg{T: raw.T, Seq: raw.Seq, Text: raw.Text, ID: raw.ID, Choice: raw.Choice,
 		ClientID: raw.ClientID, RequestID: raw.RequestID, Path: raw.Path,
-		Provider: raw.Provider, Context: raw.Context, MaxOutput: raw.MaxOutput}
+		Provider: raw.Provider, Model: raw.Model,
+		Context: raw.Context, MaxOutput: raw.MaxOutput}
 }
 
 // StampedLine = 一行输入 + **读到它的那一刻**的会话状态码。

@@ -443,38 +443,12 @@ void HarnessApp::BuildMoreMenu() {
             menu->AddChild(std::move(b));
         };
         mkMenuItem("导出", "导出转录到文件", [this] { (void)ExportTranscript(); });
-        mkMenuItem("设置", "提供商连接设置（BaseURL / API Key / 模型）", [this] {
-            // 打开时预填非秘密字段（BaseURL/模型来自配置）；key 字段**永不回填**
-            // ——凭据库里有值时 hint 说明"留空保持不变"。
-            if (m_hud.settingsBase) {
-                const ProviderConfig* edit =
-                    m_appConfig.Find(m_editingProviderId);
-                if (!edit) edit = m_appConfig.DefaultProvider();
-                if (edit) {
-                    m_editingProviderId = edit->id;
-                    m_hud.settingsBase->SetText(edit->baseUrl);
-                    m_hud.settingsModel->SetText(edit->model);
-                    if (m_hud.settingsContext) {
-                        m_hud.settingsContext->SetText(
-                            edit->context > 0 ? std::to_string(edit->context) : "");
-                    }
-                    if (m_hud.settingsMaxOut) {
-                        m_hud.settingsMaxOut->SetText(
-                            edit->maxOutput > 0 ? std::to_string(edit->maxOutput) : "");
-                    }
-                    RebuildSettingsProviderList();
-                }
-                if (m_providerKeys.empty()) {
-                    m_hud.settingsKey->SetText("");
-                    m_hud.settingsHint->SetText("填写提供商连接信息，保存后连接");
-                } else {
-                    m_hud.settingsKey->SetText("");
-                    m_hud.settingsHint->SetText(
-                        "已保存的密钥不回显——留空则保持不变");
-                }
-            }
-            SetSettingsVisible(true);
-        });
+        // ★★ 2026-10-27（v4 第三步）：预填逻辑上提到 `OpenSettingsPanel()`——
+        //   空态引导卡上的「打开设置」按钮也要走同一条预填，否则从那里进面板时
+        //   字段全空、模型子列表也是空的（实测截图抓到：只有一个"模型"标签，
+        //   下面一片空白）。这条在引入模型子列表之前就存在，只是没人看得出来。
+        mkMenuItem("设置", "提供商连接设置（识别名 / BaseURL / API Key / 模型）",
+                   [this] { OpenSettingsPanel(); });
         mkMenuItem("归档", "归档当前会话", [this] {
             if (!m_sess) return;
             for (size_t i = 0; i < m_sessions.size(); ++i) {
@@ -697,7 +671,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             b1->SetSize(110, 26);
             b1->SetOnClick([this] {
                 m_editingProviderId.clear();
+                // ★ v4 第三步：新增提供商 = 它名下还没有任何模型 ⇒ 模型编辑目标也清空。
+                m_editingModelName.clear();
+                // ★ 新增 = 与上一家无关：把「待确认改名」也清掉，否则一次
+                //   A→B 的确认会残留到下一次保存（那正是"确认过 A→B 却执行 A→C"）。
+                m_pendingRenameFrom.clear();
+                m_pendingRenameTo.clear();
                 if (m_hud.settingsBase) {
+                    if (m_hud.settingsProviderId) m_hud.settingsProviderId->SetText("");
+                    if (m_hud.settingsProviderName) m_hud.settingsProviderName->SetText("");
                     m_hud.settingsBase->SetText("");
                     m_hud.settingsModel->SetText("");
                     if (m_hud.settingsContext) m_hud.settingsContext->SetText("");
@@ -705,6 +687,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
                     m_hud.settingsKey->SetText("");
                     m_hud.settingsHint->SetText("填写新提供商信息，保存后加入列表");
                 }
+                RebuildSettingsModelList();   // 编辑目标没了 ⇒ 模型列表回到空态说明
             });
             row->AddChild(std::move(b1));
             auto b2 = std::make_unique<ECDI::Button>("删除所选");
@@ -755,7 +738,14 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
                     return;
                 }
                 m_editingProviderId = m_appConfig.defaultProviderId;
+                // ★ v4 第三步：编辑目标换人了 ⇒ 模型编辑目标也跟着换成新那家的激活模型，
+                //   否则字段区编的还是"刚被删掉那家"的模型名（保存时会被当成新增）。
+                m_editingModelName.clear();
+                if (const ProviderConfig* now2 = m_appConfig.Find(m_editingProviderId)) {
+                    m_editingModelName = now2->ActiveModelName();
+                }
                 RebuildSettingsProviderList();
+                RebuildSettingsModelList();
                 m_modelListDirty = true;
                 m_hud.settingsHint->SetText("已删除");
             });
@@ -763,6 +753,77 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             content->AddChild(std::move(row));   // ★ 与标签/列表同处 content（见上方注释）
         }
 
+        // ── ★★ v4 第三步（2026-10-27）：模型子列表 ─────────────────────────
+        //   为什么排在提供商行之后、字段之前：读法仍是「先选后编」——选提供商 →
+        //   选这家的哪个模型 → 下面三个字段编它。三块紧挨着，从属关系才看得出来；
+        //   插到字段下面的话，用户会先看到"模型名"却不知道它是这家里面的哪一个。
+        //   ★ 列表**跟着 m_editingProviderId 走**（RebuildSettingsModelList 里重建），
+        //     没选提供商时给一行说明，不留空白（同上方提供商列表的空态纪律）。
+        {
+            auto cap = std::make_unique<ECDI::Label>(
+                "模型（点击选择编辑；● = 该家激活模型；保存后表单这个成为激活）");
+            cap->SetTextColor(kDarkMuted);
+            cap->SetFont(harness::SansFont(harness::kFontSmall));
+            cap->SetSize(500, 20);
+            content->AddChild(std::move(cap));
+            auto list = std::make_unique<ECDI::Panel>();
+            m_hud.settingsModelList = list.get();
+            list->SetSize(500, 26);   // 基准高 = 一行提示；有行时按行数改到 ≤108
+            list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+            content->AddChild(std::move(list));
+        }
+        {
+            auto row = std::make_unique<ECDI::Panel>();
+            row->SetSize(500, 38);   // 26（按钮）+ 6×2 —— 同上方增删行，padding 是四边硬 inset
+            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
+            auto b1 = std::make_unique<ECDI::Button>("新增模型");
+            b1->SetTextColor(kDarkInk);
+            b1->SetFont(harness::SansFont(harness::kFontSmall));
+            b1->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b1->SetSize(110, 26);
+            b1->SetOnClick([this] {
+                // ★ 清空「正在编辑的模型」⇒ 保存时走"追加"，不是"替换掉某一个"。
+                //   三个容量字段也一并清掉：留着上一行的值会让人以为新模型已经配好了。
+                m_editingModelName.clear();
+                if (m_hud.settingsModel) m_hud.settingsModel->SetText("");
+                if (m_hud.settingsContext) m_hud.settingsContext->SetText("");
+                if (m_hud.settingsMaxOut) m_hud.settingsMaxOut->SetText("");
+                if (m_hud.settingsHint) {
+                    m_hud.settingsHint->SetText("填写新模型名与容量，保存后加入该提供商");
+                }
+                RebuildSettingsModelList();
+            });
+            row->AddChild(std::move(b1));
+            auto b2 = std::make_unique<ECDI::Button>("删除模型");
+            b2->SetTextColor(kDarkInk);
+            b2->SetFont(harness::SansFont(harness::kFontSmall));
+            b2->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kPanel2,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            b2->SetSize(110, 26);
+            b2->SetOnClick([this] { OnSettingsDeleteModel(); });
+            row->AddChild(std::move(b2));
+            content->AddChild(std::move(row));
+        }
+
+        // ★★ §9.5（2026-10-27）：身份由用户**声明**，两个字段排在最前。
+        //   识别名 = 机器键（凭据目标名 / 环境变量片段 / 协议 `model.provider`
+        //   都绑它），显示名 = 只给眼睛看的（可重复）。留空识别名 ⇒ 保存时用
+        //   BaseURL 的 host 兜底（旧派生行为降级成了"初值"，见 AppConfig.h）。
+        addLabel("识别名（唯一机器键：字母数字和 . _ -，≤64；留空用域名）");
+        addInput(&m_hud.settingsProviderId, false);
+        addLabel("显示名（界面显示，可重复；留空则与识别名相同）");
+        addInput(&m_hud.settingsProviderName, false);
         // ★ 无 placeholder：TextBox 没有 Placeholder API（ENTER-SEND 起登记的
         //   已知缺口），字段含义由上方 Label 承担——不去发明第二套提示机制。
         addLabel("Base URL（OpenAI 兼容端点根，如 https://api.deepseek.com/v1）");
@@ -778,9 +839,20 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
 
         {
             auto row = std::make_unique<ECDI::Panel>();
-            // ★ 同上：30px 按钮 + 6×2 padding ⇒ 42（原 30 会把按钮下沿裁掉 6px）。
-            row->SetSize(500, 42);
-            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 6));
+            // ★★ 2026-10-27（用户要求「按键靠右」）：行宽跟字段列对齐（520），
+            //   最前面塞一个 `stretch = 1` 的空面板吃掉剩余空间 ⇒ 两个按钮被顶到右端。
+            //   ★ 为什么不用 `SetPosition`：ECDI 布局**幂等重排**，手写坐标每次
+            //     Arrange 都会被覆盖（Layout 契约 1）；stretch 是布局自己的分配语义。
+            //   ★ padding 取 0（不是原来的 6）：按钮右边缘要跟下面那行右对齐的状态
+            //     文字落在同一条线上；行高随之从 42 收到 30（30 = 按钮高，不再垫 6）。
+            //     原来那 42/6 的注释讲的是「padding 会裁按钮下沿」，padding=0 时该
+            //     约束自然消失（0 + 30 = 30），不是把它删了当没事。
+            row->SetSize(520, 30);
+            row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(6, false, 0));
+            auto spacer = std::make_unique<ECDI::Panel>();
+            spacer->SetSize(0, 30);       // 宽由 stretch 分配（初值无意义）
+            spacer->SetStretch(1);
+            row->AddChild(std::move(spacer));
             auto save = std::make_unique<ECDI::Button>("保存并连接");
             m_hud.settingsSave = save.get();
             save->SetTextColor(harness::kBtnPrimaryInk);
@@ -824,7 +896,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             panel->AddChild(std::move(row));
         }
 
-        auto hint = std::make_unique<ECDI::Label>("");
+        // ★ 2026-10-27（用户要求「下面的文字也靠右」）：状态行改 `RightLabel`。
+        //   它超宽时**贴左裁尾**（不是贴右裁头）——文案纪律「可执行信息放最前」
+        //   因此仍然成立（理由写在 UiKit.h 的 RightLabel 上）。
+        auto hint = std::make_unique<uikit::RightLabel>("");
         m_hud.settingsHint = hint.get();
         hint->SetTextColor(kDarkMuted);
         hint->SetFont(harness::SansFont(harness::kFontSmall));
@@ -835,6 +910,11 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
         //   暂存，scroll 建好后与遮罩一起转移为视口浮层。
         settingsSheetOwned = std::move(panel);
     }
+    // ★ v4 第三步：构造期先把模型子列表刷成"空态说明"。两个入口（更多菜单 /
+    //   引导卡）都会预填并重建，但**首启自动弹面板**那条路径不预填（first-run 探针
+    //   要求字段为空）⇒ 不刷的话那里是一块高 26 的空白带（实测截图：只有"模型"
+    //   标签，下面什么都没有，看不出该先选提供商）。
+    RebuildSettingsModelList();
 
     return settingsSheetOwned;
 }

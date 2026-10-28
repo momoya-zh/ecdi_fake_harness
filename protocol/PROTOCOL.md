@@ -310,12 +310,35 @@ core 退出前的**最后一条**。
 | `id` | ✅ | 对应请求的 id，一份流内互不相同（**I11**） |
 | `ok` | ✅ | 布尔 |
 | `provider` | ✅ | 提供商 id（成功 = 已采用；失败 = 被拒绝的请求原文） |
-| `model` | `ok:true` 时必填 | 切换后的模型名 |
-| `context` / `maxOutput` | `ok:true` 时必填 | 已采用的容量分母与输出上限（请求未带 ⇒ 回显 core 现值） |
+| `model` | `ok:true` 时必填 | 切换后的模型名（请求带了 `model` ⇒ 该值；否则 ⇒ 该提供商注册表里的名字） |
+| `context` / `maxOutput` | `ok:true` 时必填 | 已采用的容量分母与输出上限（请求未带 ⇒ 回显 core 现值；请求带 0 ⇒ 回 0，见 §4「省略与 0」） |
 | `message` | `ok:false` 时必填 | 可直接显示的原因 |
+
+★ **同一提供商下的多模型**（2026-10-27 增补，同主版本内的纯增量）：请求可带可选
+`model` 覆盖该提供商的模型名——这是「一个端点 + 一把密钥服务多个模型」的协议基础，
+否则每加一个模型就得复制一整条提供商（连同重新录入密钥）。省略 ⇒ 沿用注册表里
+已登记的名字（来自 `--model` 或启动环境 `ECDI_PROVIDER_<SAN>_MODEL`）；两者都为空
+⇒ core 必须回 `ok:false`，**不得放行**：放行只会构造出请求体 `"model": ""`，端点侧
+回一句无关的 400，把「模型名没传过来」这个根因埋掉。
 
 ★ 切换**不改 `state`**（控制面操作，同 §3.9）；**不丢对话历史**——agent loop 的
 messages 原样带给新模型，这正是热切换的意义。
+
+★★ **`context` / `maxOutput` 的「省略」与「0」是两种语义**（2026-10-27 增补）：
+v4 起两个参数跟着**模型**走（同一提供商下 M1 标了 200K、M2 未标容量），所以
+
+| 请求里 | core 的行为 |
+|---|---|
+| 字段**省略** | 沿用 core 现值（老 GUI 的行为，兼容保留） |
+| 字段 = 正整数 | 以它为准（覆盖） |
+| 字段 = **0** | **清零**：`usage.context` 不再下发、请求体不带 `max_tokens`（= 未知） |
+
+为什么必须能表达 0：只有"省略"一种语义时，切到未标容量的模型会沿用上一个模型的
+分母与输出上限 ⇒ GUI 拿 A 的容量除 B 的用量（百分比是假的）、请求体照旧发 A 的
+`max_tokens`（端点可能直接 400）。两种失效都发生在用户看不见的地方。
+⇒ core 侧 `wire.GuiMsg.Context/MaxOutput` 是 `*int64`（nil = 省略），GUI 侧
+`ProtocolWriter::Model` **总是写**这两个字段。ack 的 `context` 同理要能回 0，
+GUI 收到 0 必须落到 `ctxCapacity = 0`（显示 `—`），不得保留旧分母。
 
 ## 4. gui → core 消息
 
@@ -326,16 +349,17 @@ messages 原样带给新模型，这正是热切换的意义。
 | `cancel` | — | 用户点停止（`running` 时合法；`waiting` 时应改发 `answer`） |
 | `answer` | `id`、`choice` | 回答一个未决 `ask` |
 | `workspace` | `request_id`、`path` | 请求切换工作区（仅 `idle` 时合法） |
-| `model` | `id`、`provider`、`context?`、`maxOutput?` | ★ **v4**：请求切换提供商/模型（仅 `idle` 时合法；GUI 在 running/waiting 时**排队**，`idle` 后才发——「等上一个完整输出完」在 GUI 侧兑现）。`provider` = 提供商 id；`context`/`maxOutput` 可选（省略 = 维持现值）。**cap：core 必须声明 `"model"`**，未声明的 core 收到此消息按 I5 忽略并记录 |
+| `model` | `id`、`provider`、`model?`、`context?`、`maxOutput?` | ★ **v4**：请求切换提供商/模型（仅 `idle` 时合法；GUI 在 running/waiting 时**排队**，`idle` 后才发——「等上一个完整输出完」在 GUI 侧兑现）。`provider` = 提供商 id；`model`/`context`/`maxOutput` 可选。**cap：core 必须声明 `"model"`**，未声明的 core 收到此消息按 I5 忽略并记录 |
 | `bye` | — | GUI 即将关闭，请 core 退出 |
 
 ```json
 {"t":"hello","seq":0,"protocol":3,"gui":"0.0.1"}
 {"t":"workspace","seq":1,"request_id":"w1","path":"D:/work/project"}
 {"t":"prompt","seq":2,"client_id":"p1","text":"帮我看看 README"}
-{"t":"answer","seq":3,"id":"q1","choice":"allow"}
-{"t":"cancel","seq":4}
-{"t":"bye","seq":5}
+{"t":"model","seq":3,"id":"m1","provider":"zhipu","model":"glm-4.5-air","context":128000,"maxOutput":8192}
+{"t":"answer","seq":4,"id":"q1","choice":"allow"}
+{"t":"cancel","seq":5}
+{"t":"bye","seq":6}
 ```
 
 **GUI 可以先显示本地待确认用户气泡，但不拥有规范转录块。** `prompt` 必须带唯一 `client_id`；GUI 提交后立即显示临时 `kind:"user"` 气泡。core 接受后必须以同一 `client_id` 回显唯一的 `kind:"user"` `block_start`（及对应 `block_end`）；GUI 将临时气泡按 id 原位确认，不得再插入第二块。规范转录仍由 core 输出。
@@ -590,7 +614,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
-| **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案） | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
+| **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |
 | **2** | 2026-10-14 | §3.3 加 `reasoning` · §5 加 **I8** · §7 加 `reasoning` 渲染形态 · §3.1 加 `hello.context` · §3.5 加 `block_end.tokens` | **v1 GUI 不崩、不丢内容**——`reasoning` 落进「未知 `kind`」的中性渲染路径（可见气泡 + 显式提示），只是**不折叠**；`context`/`tokens` 是未知字段，按 I5 忽略（百分比显示 `—`）。这正是 I5/I8 的用途 |
 | 1 | 2026-10-03 | 初版 | — |

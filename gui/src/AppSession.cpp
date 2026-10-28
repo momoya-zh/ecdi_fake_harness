@@ -134,9 +134,12 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         //   ★ 保留不"用完即清"：每个新会话（＋按钮/临时会话）都要再拉一个 core。
         //     key 留在 GUI 进程内存属可接受形态（同一信任域，positioning §4）；
         //     纪律是**绝不**进日志/摘要/转录。
-        // ★ P3.6：为**每一家**提供商注入 ECDI_PROVIDER_<SAN>_{ID,URL,KEY}
+        // ★ P3.6：为**每一家**提供商注入 ECDI_PROVIDER_<SAN>_{ID,URL,KEY,MODEL}
         //   （core 按同一 sanitize 规则对齐；model 切换按 id 寻址）。
         //   ECDI_CORE_KEY 仍指向初始提供商（独立调试兼容）。
+        // ★ 2026-10-27：补 `_MODEL`。缺了它，core 注册表里除初始提供商之外
+        //   每条的模型名都是空串 ⇒ 热切换过去后请求体 `"model": ""` 端点必报错。
+        //   这是「一个端点一个密钥带多个模型」在协议层能成立的前提。
         CacheProviderKeys();
         for (const auto& pc : m_appConfig.providers) {
             const auto keyIt = m_providerKeys.find(pc.id);
@@ -151,6 +154,12 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
             SetEnvironmentVariableW(
                 ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_KEY").c_str(),
                 ECDI::UTF8ToWide(keyIt->second).c_str());
+            // 传空串 = 删除变量（Win32 语义），正好表达「这家没有模型名」。
+            // ★ v4：注入的是**激活模型**——core 的注册表仍是「一 provider 一个
+            //   模型名」，多模型切换靠 `model` 消息的 `model` 字段覆盖。
+            SetEnvironmentVariableW(
+                ECDI::UTF8ToWide("ECDI_PROVIDER_" + san + "_MODEL").c_str(),
+                ECDI::UTF8ToWide(pc.ActiveModelName()).c_str());
         }
         if (!m_coreApiKey.empty()) {
             SetEnvironmentVariableW(L"ECDI_CORE_KEY", ECDI::UTF8ToWide(m_coreApiKey).c_str());
@@ -171,7 +180,7 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         s.originPath = m_options.corePath;
         // ★ P4 H：模型名预填（hello 不带 model 字段；ack 到达前 chip 显示它）。
         if (const ProviderConfig* def = m_appConfig.DefaultProvider()) {
-            s.modelName = def->model;
+            s.modelName = def->ActiveModelName();
         }
         if (m_sessions.empty()) {
             // 首个 live 会话：把 fixtureName 也定下来（窗口标题 / 摘要用）

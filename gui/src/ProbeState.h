@@ -136,6 +136,14 @@ struct ProbeState {
     std::string settingsProbeKey;   // save 相输入的 key（判据 5 用：不得出现在配置文件）
     int settingsProbeStage = 0;     // 跨 tick 步进（save 点击后要等 hello 下一 tick 才到）
     std::chrono::steady_clock::time_point settingsProbeNextAt;
+    // ★ §9.5 改名相：第一击「只问不做」⇒ 配置文件必须**逐字节**等于点击前。
+    //   快照存在这里而不是就地重读：重读拿到的是"当前文件"，而判据要的是"点击前的文件"。
+    std::string settingsProbeConfigSnapshot;
+    // ★ 2026-10-27：switch-bad 相的那条请求**真的发出去了**吗？
+    //   回放源没有写通道（`Send` 恒 false）⇒ 本相在该跑法下不适用。若不加这个
+    //   标志，"时间线上没有失败通知"会把「仪器没接上」误报成「功能坏了」
+    //   ——正是本文件反复警告的那种假红。跨 tick 传，所以必须放在状态里。
+    bool settingsProbeBadSwitchSent = false;
 
     std::vector<EnterProbeRec> enterProbeLog;
     bool enterProbeDone = false;

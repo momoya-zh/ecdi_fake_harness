@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -565,8 +566,18 @@ func sanitizeProviderID(id string) string {
 // 输出完」在 GUI 侧兑现；非 idle 到达 = 回 ok:false，与交错拒绝同规则）。
 // 切换不改 state、不丢 history——agent loop 的 messages 原样带给新模型。
 func (s *session) handleModelSwitch(msg wire.GuiMsg, arrived wire.State) {
-	s.log("model switch request: id=%q provider=%q context=%d maxOutput=%d (arrived=%s)",
-		msg.ID, msg.Provider, msg.Context, msg.MaxOutput, arrived)
+	// ★ 两个容量参数是**指针**（省略 ≠ 0）：日志里要能看出"没带"与"带了 0"的区别，
+	//   否则排查"切过去分母还是上一个模型的"时，日志会显示 context=0 而看不出根因。
+	ctxDesc := "absent"
+	if msg.Context != nil {
+		ctxDesc = strconv.FormatInt(*msg.Context, 10)
+	}
+	outDesc := "absent"
+	if msg.MaxOutput != nil {
+		outDesc = strconv.FormatInt(*msg.MaxOutput, 10)
+	}
+	s.log("model switch request: id=%q provider=%q model=%q context=%s maxOutput=%s (arrived=%s)",
+		msg.ID, msg.Provider, msg.Model, ctxDesc, outDesc, arrived)
 
 	ack := map[string]any{"t": "model", "id": msg.ID, "ok": false,
 		"provider": msg.Provider}
@@ -595,11 +606,29 @@ func (s *session) handleModelSwitch(msg wire.GuiMsg, arrived wire.State) {
 		s.emit(ack)
 		return
 	}
-	if msg.Context > 0 {
-		s.ctxCapacity = int(msg.Context)
+	// ★ 2026-10-27：请求可指定**同一提供商下的另一个模型**（§4 可选 `model`）。
+	//   空 = 沿用注册表里已登记的模型名。注册表条目也可能是空的（GUI 没注入
+	//   `_MODEL`、老 GUI 也不发这个字段）——那种情况必须**如实拒绝**：放行会
+	//   构造出请求体 `"model": ""`，端点回 400 时用户只能看到一句无关的 API
+	//   错误，根因（模型名没传过来）被埋掉。
+	if msg.Model != "" {
+		pc.Model = msg.Model
 	}
-	if msg.MaxOutput > 0 {
-		s.maxOutput = int(msg.MaxOutput)
+	if pc.Model == "" {
+		ack["message"] = "该提供商没有可用模型名（请求未带 model，启动时也未注入 ECDI_PROVIDER_*_MODEL）"
+		s.emit(ack)
+		return
+	}
+	// ★★ 2026-10-27（v4 第三步）：两个参数**跟着模型走**，所以"没带"与"带了 0"
+	//   必须分开处理：没带（老 GUI）= 沿用；带了 0 = 这个模型没标容量 ⇒ **清零**，
+	//   让 usage 不再带 context（GUI 显示 —），请求体也不再带 max_tokens。
+	//   原来一律 `> 0 才覆盖`，于是切到"没标容量"的模型时分母还是上一个模型的
+	//   （百分比是假的），max_tokens 也照旧发上一个模型的上限。
+	if msg.Context != nil {
+		s.ctxCapacity = int(*msg.Context)
+	}
+	if msg.MaxOutput != nil {
+		s.maxOutput = int(*msg.MaxOutput)
 	}
 	pc.Context = s.ctxCapacity
 	pc.MaxOutput = s.maxOutput

@@ -111,6 +111,41 @@ inline std::unique_ptr<CenteredLabel> Centered(const std::string& text, int w, i
     return label;
 }
 
+// ── 右对齐标签（2026-10-27 用户要求：设置面板底部状态行靠右）──────────────
+// 与 `CenteredLabel` 同一个扩展点（`TextWidget::CalculateTextPosition`），
+// 只把偏移换成 `GetWidth() - textWidth`。
+// ★ 超宽时的降级方向很关键：**贴左、裁尾部**（offsetX 钳 0），而不是贴右裁开头。
+//   状态行的文案纪律是「可执行信息放最前」（§8.5.6 的变量名、§9.5 的
+//   「再点保存确认」）⇒ 真被裁时必须裁掉后缀，不能把开头裁掉。
+//   也就是说：常态右对齐，极端长文案自动退回原来的左对齐行为。
+class RightLabel : public ECDI::Label {
+public:
+    using ECDI::Label::Label;
+
+protected:
+    ECDI::Point CalculateTextPosition(int x, int y, float textWidth,
+                                      float lineHeight) const override {
+        const float w = static_cast<float>(GetWidth());
+        const float h = static_cast<float>(GetHeight());
+        float offsetX = w - textWidth;
+        if (offsetX < 0.0f) offsetX = 0.0f;   // 文字超宽 ⇒ 贴左（保住"可执行信息在前"）
+        const float offsetY = (h - lineHeight) / 2.0f;
+        return ECDI::Point{static_cast<float>(x) + offsetX,
+                           static_cast<float>(y) + offsetY};
+    }
+};
+
+// 右对齐标签工厂（尺寸与创建强制成对，同 `Label`）。
+inline std::unique_ptr<RightLabel> Right(const std::string& text, int w, int h,
+                                         const ECDI::Color& color,
+                                         float size = 12.0f, bool mono = false) {
+    auto label = std::make_unique<RightLabel>(text);
+    label->SetTextColor(color);
+    label->SetFont(mono ? harness::MonoFont(size) : harness::SansFont(size));
+    label->SetSize(w, h);
+    return label;
+}
+
 // 圆点（状态点/列表点）——Panel + 全圆角。
 inline std::unique_ptr<ECDI::Panel> Dot(int d, const ECDI::Color& color) {
     auto dot = std::make_unique<ECDI::Panel>();

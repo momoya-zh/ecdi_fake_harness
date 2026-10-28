@@ -675,6 +675,33 @@ void HarnessApp::RunDelProvProbe() {
         m_probeState.delProvProbeLog.push_back(std::move(rec));
         return m_probeState.delProvProbeLog.back();
     };
+    // ★★ §9.5.4（2026-10-27）：v2 → v3 迁移的**唯一真实入口**。
+    //   regress 的 `write_probe_config` 写的是 `"version": 2` 且**不带 name**，
+    //   所以载入之后每家都必须 `name == id`——「老配置观感不变、凭据不断、
+    //   defaultProviderId 语义不动」的全部含义就是这个等式。
+    //   ★ 这条只能挂在这个探针上：它是全仓唯一会载入 v2 文件的地方
+    //     （settings 探针的配置文件是从**不存在**开始的）。
+    {
+        std::string bad;
+        for (const auto& pc : m_appConfig.providers) {
+            if (pc.name.empty()) {
+                bad = "provider " + pc.id + " has no display name (v2 fallback broken)";
+                break;
+            }
+            if (pc.name != pc.id) {
+                bad = "v2 provider " + pc.id + " got name '" + pc.name +
+                      "' (must fall back to its id)";
+                break;
+            }
+        }
+        DelProvProbeRec rec;
+        rec.phase = "load-migrate";
+        rec.providersBefore = m_appConfig.providers.size();
+        rec.providersAfter = rec.providersBefore;
+        rec.matched = bad.empty();
+        rec.note = bad.empty() ? "v2 config: name falls back to id for every provider" : bad;
+        m_probeState.delProvProbeLog.push_back(std::move(rec));
+    }
     auto clickButtonWithText = [&](ECDI::Widget* root, const char* text) {
         // ★★ 2026-10-25：设置面板的「提供商区」收进 ScrollView 之后，「删除所选」
         //   从 `panel → row → button`（两层）变成 `panel → sv → content → row →

@@ -407,7 +407,7 @@ key 的提供商 `continue`，不覆盖继承来的变量），但 UI 不认、�
 
 | 项 | 内容 |
 |---|---|
-| gui→core `model` | `{t,id,provider,context?,maxOutput?}`——**仅 idle 合法**；排队语义在 GUI（running/waiting 时入 `queuedModelProvider`，state=idle 时兑现）。「等上一个完整输出完」由此兑现，core 侧对非 idle 到达回 ok:false |
+| gui→core `model` | `{t,id,provider,model?,context?,maxOutput?}`——**仅 idle 合法**；排队语义在 GUI（running/waiting 时入 `queuedModelProvider`，state=idle 时兑现）。「等上一个完整输出完」由此兑现，core 侧对非 idle 到达回 ok:false。★ 2026-10-27：`model?` 用于**同一提供商下换模型**（省略 = 沿用注册表；两者都空 ⇒ 必须 ok:false，不得放行空模型名） |
 | core→gui `model` ack | I10 同族：id 匹配 + ok 布尔 + ok:false 带 message；成功回**实际采用**的 provider/model/context/maxOutput（**I11**） |
 | `usage.context`（可选） | §3.1 的「按轮覆盖」未定项定案：分母经 usage 逐轮下发，GUI 取最近一次 |
 | hello | `protocol:4`；caps 增 `"model"`（GUI 无此 cap ⇒ 隐藏切换器，I5 路径照旧） |
@@ -415,10 +415,14 @@ key 的提供商 `continue`，不覆盖继承来的变量），但 UI 不认、�
 
 ### 9.2 多提供商凭据（仍不进协议）
 
-GUI 为配置里**每一家**注入 `ECDI_PROVIDER_<SAN>_{ID,URL,KEY}`（SAN = 双端同规则的
+GUI 为配置里**每一家**注入 `ECDI_PROVIDER_<SAN>_{ID,URL,KEY,MODEL}`（SAN = 双端同规则的
 非字母数字→'_'大写；core 端 `sanitizeProviderID` 与 GUI 端 `EnvSanitizeProviderId` 注释互指）；
 `ECDI_CORE_KEY` 仍指初始提供商。core 启动扫环境建注册表，`model` 消息按 id 寻址——
 **切走再切回**靠 `--provider-id` 把初始提供商也注册进表。
+
+★ 2026-10-27：补 `_MODEL`。此前 core 建注册表时恒写 `Model: ""`，非初始提供商切过去后
+请求体是 `"model": ""` —— 端点必报错，「切得过去、用不了」。`model` 消息现在也能覆盖它，
+但 env 是「切过去就能用」的那条路（老 GUI 不发 `model` 字段时它是唯一来源）。
 
 ### 9.3 实施期发现
 
@@ -441,7 +445,7 @@ switch-bad：未知提供商 → ok:false + 通知）×全绿；双提供商无�
 
 ---
 
-## §9.5 提供商身份（id）与显示名（name）分离（2026-10-27 用户提出，**决策记录，未实施**）
+## §9.5 提供商身份（id）与显示名（name）分离（2026-10-27 用户提出；同日**已实施**，见 9.5.7）
 
 ### 9.5.1 问题：派生主键把网络地址当成了身份
 
@@ -454,7 +458,7 @@ id 同时承担**四类外部契约**，所以它不是一个"显示字段"：
 | 绑定面 | 形态 |
 |---|---|
 | 凭据目标名 | `ECDI.FakeHarness.v1.Provider.<id>`（D4 命名空间） |
-| 进程环境变量 | `ECDI_PROVIDER_<SAN>_URL / _KEY / _ID`（§9.2） |
+| 进程环境变量 | `ECDI_PROVIDER_<SAN>_URL / _KEY / _ID / _MODEL`（§9.2） |
 | 协议寻址 | `model` 消息的 `provider` 字段（v4） |
 | 默认提供商 | `defaultProviderId` |
 
@@ -533,3 +537,143 @@ id 同时承担**四类外部契约**，所以它不是一个"显示字段"：
 
 **登记未做**：本轮只更新规格，代码未动；`name` 是否进摘要/探针输出、id 改名的确认框形态
 （面板内提示 vs 独立弹窗）留待实施时定。
+
+### 9.5.7 实施记录（2026-10-27，同批落地）
+
+**两处 9.5.6 的留白，已定：**
+
+| 留白 | 结论 | 理由 |
+|---|---|---|
+| 确认框形态 | **面板内二次确认**（第一击只问不做，第二击执行） | 仓里没有通用 modal；为一个低频动作引入遮罩/焦点/ESC 一整套，代价远大于收益。而「保存」按钮本来就在手上。命中条件 = (旧 id, 新 id) **完全一致**，中途改任一处就重新问——否则会出现「确认过 A→B，实际执行了 A→C」 |
+| `name` 进不进摘要 | **不进** | `AppSummary.cpp` 里根本没有 provider 字段（grep 证实），所以不存在「重建摘要基线」这件事。`name` 只进配置文件，纯显示 |
+
+**四处与 9.5.3 原文的偏差（都是有意的，逐条给理由）：**
+
+1. **删旧目标名的时机调换**：原文是「③ 成功后才删旧目标名 → ④ 更新配置文件」，
+   实现改成 **写新 → 配置落盘 → 删旧**。反过来（先删旧再落盘）一旦 `Save` 失败就是
+   「旧凭据没了、新配置没写」的双向丢失；按实现的顺序，最坏只留一个**孤儿旧目标名**
+   （可诊断、无损，且会在通知行里明说）。「禁止配置文件已改、凭据没迁」这条原文意图不变。
+2. **改名 + live 会话 ⇒ 强制重开会话**，不看 cap。原文写「走既有重连路径（`model` 切换
+   或重开会话，按 cap 决定）」，但**热切换在改名场景下必然失败**：core 的提供商注册表
+   在 spawn 时就按 id 建好了，运行中的 core 不认识新 id ⇒ 发过去只会拿到 `ok:false`。
+3. **改名 + 纯环境变量供 key ⇒ 允许继续用旧变量名**，并在通知行里点名
+   「环境变量仍是旧名 `ECDI_PROVIDER_<旧 id>_KEY`」。env 是**来源**不是存储，搬不了；
+   不这么做的话，纯 env 供 key 的提供商一改名就永远保存不了（报「缺少环境变量新名」）。
+4. **结果反馈走通知行，不走 `settingsHint`**：成功路径紧接着就 `SetSettingsVisible(false)`，
+   而 hint 住在面板里 ⇒ 写进 hint 等于没写。这也顺带解释了既有那几条
+   「已保存并连接…」为什么其实只在探针里可读。
+
+**显示侧的单一入口**（分散写 `name.empty() ? id : name` 必然漏一处）：
+
+- `HarnessApp::ProviderDisplayName(const ProviderConfig&)` / `ProviderDisplayLabel(id)`——
+  后者在 id 不在配置里时**原样返回 id**（历史会话 / 刚删掉的提供商 / 回放夹具都会走到）。
+- 五处显示点全部改走它：设置列表行、模型弹窗分组、顶栏模型 chip、检查器「提供商」行、
+  HUD 副标题。
+- 同名时带 `(id)` 副标（规格 9.5.2）；行文本按 **UTF-8 码点**截断（`ClampDisplay`），
+  不交给 GDI 尾部硬裁——那会切出半个汉字。
+
+**探针新增五相**（`--settings-probe` 四相 + `--delprov-probe` 一相）：
+
+| 相 | 判据 |
+|---|---|
+| `rename-src` | 探针自己造一家**有凭据**的提供商（回放跑法下 case 0 那家根本不存在，依赖它会把「仪器没摆好」报成「改名坏了」） |
+| `rename-confirm` | 第一击**什么都没变**：配置文件**逐字节**等于点击前、新目标名无凭据、旧目标名还在。★ 只查「hint 里有'再点保存确认'」是自欺——「问了但也顺手改了」同样能过 |
+| `rename-ok` | 凭据搬到新名且值不变、旧名已删、配置里 `"id":"新"` 在且 `"id":"旧"` 不在、`"name"` 已落、`"version":3`、`defaultProviderId` 跟随 |
+| `rename-conflict` | 撞已有的另一家 ⇒ 被拒 + 配置文件逐字节不变 + 没写凭据（唯一性校验唯一的负对照） |
+| `load-migrate`（delprov） | regress 写的 `version:2` 配置载入后每家 `name == id`——v2→v3 迁移的**唯一真实入口** |
+
+★ 判据细节：改名相里断言「旧 id 不在」必须带 `"id":"` 前缀。baseUrl 里仍含旧 host
+（端点没换，只换了身份），裸搜旧 id 会永远命中，那条判据就永远绿/永远红、没有判别力。
+
+**负对照实测**（确认闸真的有牙）：把确认闸写成恒假（`if (false && ...)`）后重跑，
+`rename-confirm` 四条子判据**全部**报红（did not ask / config already rewritten /
+new credential written / old credential vanished），`rename-ok` 因面板已关而报
+"probe precondition"。改回来即全绿。
+
+### 9.6 配置迁移 v3 → v4：provider 1—N model（2026-10-27）
+
+**问题**：v3 把 `model` / `context` / `maxOutput` 钉在提供商上，而凭据目标名按 id 派生
+（一 provider 一把 key）⇒ 同一端点加第二个模型必须**复制整条 provider 并重新录入密钥**，
+而那把 key 本来是同一把。实测用户就是被这一步挡住的（另有一个 core 侧 bug 让复制也走不通，
+见 §9.2 的 2026-10-27 补记）。
+
+**结构**（`AppConfig.h`）：
+
+| 层 | 字段 | 理由 |
+|---|---|---|
+| 提供商 | `id` / `name` / `baseUrl` / `credentialTarget` | 端点 + 凭据，一家一把 key |
+| 模型 | `models[]` = `{name, context, maxOutput}` | **容量参数是模型属性**：同一端点 glm-4.6 与 glm-4-flash 的窗口本来就不一样 |
+| 激活 | `activeModel`（存**名字**不存下标） | 下标在删模型时漂移，名字不会；配置 diff 也可读 |
+
+**迁移**：`Load` 接受 **1 / 2 / 3 / 4**。v1/v2/v3 的顶层三元组折叠成 `models[0]`，
+`activeModel` = 那个名字 ⇒ `id` / `credentialTarget` / `defaultProviderId` **一个都不动**
+（老配置的 key 不断、默认提供商不变）。`models` 里无名的条目跳过——空模型名会让请求体
+变成 `"model": ""`，端点必报错（与 core 侧同一条纪律）。
+
+**双写**：`Save` 同时写 `models[]` + `activeModel` 与顶层 `model/context/maxOutput`
+（= 激活值）。真身是 `models[]`；顶层三行是给"只认顶层字段"的旧读取路径留的降级口。
+两者都从 `Active()` 生成，**结构上不可能各说各话**。
+
+**访问器**：`Active()` / `ActiveModelName()` / `ActiveContext()` / `ActiveMaxOutput()`，
+外加 `MutableActive()`（空表时 push 一个空项）。迁移后 `models` 恰好一项，取值与 v3 老字段
+逐字节相同 ⇒ 既有读点改访问器**不改行为**，这就是「UI 不动也能跑」的实现方式。
+
+**回落规则只有一条**：`activeModel` 找不到 ⇒ `models[0]`。不引入"无激活"状态——那会让
+"这个 provider 能不能用"多出一个中间态，UI 与探针都得再判一次。
+
+**判据**：`tools/appconfig-migrate-test.cpp`（41 条，文件头有编译命令）。覆盖 v3 折叠 /
+`id` 与 `credentialTarget` 逐字节不变 / `defaultProviderId` 不变 / Save 落 v4 且双写 /
+v4 往返幂等（**二次 Save 逐字节相同**，否则每次启动都在改文件）/ 悬空 `activeModel` 回落 /
+**多模型往返**（两个模型都在、顺序不变、激活指针与双写顶层三元组都跟激活值）。
+★ 它没进 `regress.py`（那里不假设 MSVC 可用），所以**改 `ProviderConfig` 或
+`AppConfig::Load/Save` 时必须手工跑它**。
+
+**多模型 UI（第三步，2026-10-27）**：设置面板在「提供商列表」与字段之间插一张
+**模型子列表**——列出编辑目标那一家挂的模型，`●` = 该家激活模型、`[编辑中]` 标黄 =
+保存时被替换的那一个；下面是「新增模型 / 删除模型」两个按钮。
+
+| 动作 | 语义 | 关键实现 |
+|---|---|---|
+| 点模型行 | 填字段 + 记编辑目标 | `m_editingModelName`（**存名字不存下标**：Save 会重排 `models[]`） |
+| 新增模型 | 清空编辑目标 ⇒ 保存时**追加** | 三个容量字段一并清空（留着旧值像"已经配好了"） |
+| 保存 | 表单这个**顶替**编辑目标，其余原样保序 | 合并源 = `oldId ? oldId : m_editingProviderId`；同名撞车直接拒 |
+| 删除模型 | 只删选中那个，激活项改嫁 `models[0]` | 每家至少留一个（core 侧无模型 = 切过去必 `ok:false`） |
+
+★ 合并源必须取 `m_editingProviderId`：`oldId` 只在**改名**时非空，拿它当合并源的话
+普通保存（改容量 / 加模型）根本不进合并段，而 Save 走 `Upsert` **整条替换** ⇒ 同家其它
+模型被静默冲掉。这一脚由探针 `multi-merge` 钉住（负对照实测：改回 `oldId` ⇒ 红
+`adding a second model dropped the first one`）。
+
+**已收口（本轮）**：多模型 UI / `RequestModelSwitch` 早退判断改比 `(provider, model)` /
+`RebuildModelPopupList` 同名计数改按 `模型名 → provider 集合` / 分母串味（见 §9.7）。
+
+**有意留下**：
+
+1. 顶栏弹窗切换只改**会话**，不改配置的 `activeModel` ⇒ 下次启动回到配置里那个模型。
+   这是 v3 起的既有语义，多模型下更明显；要改等于引入"会话级偏好是否持久化"的产品决策。
+2. 探针**绕过按钮接线**：`multi-add/merge/del` 三拍直接清 `m_editingModelName`、
+   直接调 `OnSettingsDeleteModel()`，不合成点击（列表是动态重建的，行坐标要另算）。
+   ⇒ 逻辑面有机读判据，**接线本身**只有一行 `[this]{ OnSettingsDeleteModel(); }` 可目视核对。
+3. 模型子列表 > 3 行时钳到 108px 且**不滚动**（与提供商列表同一取舍），溢出项看不见、
+   也没有"另有 N 项"底注。等"一家挂到 4 个以上模型"成为真实反馈再说。
+4. 保存即激活：没有「编辑 A 的容量但保留 B 为激活模型」的路径（表单那个永远成为激活项，
+   按钮文案已写明）。
+
+### 9.7 `context` / `maxOutput`：省略 ≠ 0（2026-10-27 第三步）
+
+拆层后容量参数**跟着模型走**，于是"这个模型没标容量"必须能被表达。原来的实现是
+`> 0 才覆盖`，省略与 0 无法区分 ⇒ 切到未标容量的模型时：
+
+- `usage.context` 仍是上一个模型的分母 ⇒ GUI 拿 A 的容量除 B 的用量，**百分比是假的**；
+- 请求体仍带上一个模型的 `max_tokens` ⇒ 端点可能直接 400。
+
+**改法**：`wire.GuiMsg.Context/MaxOutput` 改 `*int64`（nil = 省略），core 侧
+`if msg.Context != nil { s.ctxCapacity = int(*msg.Context) }`；GUI 侧
+`ProtocolWriter::Model` **总是写**这两个字段（0 = 清零）；`model` ack 的 `context`
+GUI 也要能认 0（落到 `ctxCapacity = 0`，显示 `—`）。协议文档见 `protocol/PROTOCOL.md` §4。
+
+**判据**：`.scratch/provider-model-e2e.py`（8 条，真 core + 脚本化 SSE 服务器）。
+F 组验"显式 0 ⇒ ack 回 0、请求体不带 `max_tokens`、usage 不带 `context`"；
+G 组是它的反向对照（正整数必须生效，防"一律清零"这种过修）；H 组验"省略 ⇒ 沿用现值"
+（老 GUI 的兼容路径不得被带坏）。★ 它不在 `regress.py` 里：回放跑法碰不到 HTTP 请求体。
+

@@ -218,6 +218,9 @@ private:
         ECDI::ScrollView* previewSv = nullptr;   // 预览体滚动区
         ECDI::Label* previewTitle = nullptr;     // 文件名行
         ECDI::Widget* previewBody = nullptr;     // 行容器（GetContentView，OpenPreview 后重建）
+        // ★★ §9.5（2026-10-27）：识别名 / 显示名两个字段（原来只有 BaseURL 派生）。
+        ECDI::TextBox* settingsProviderId = nullptr;    // 识别名（机器键，唯一）
+        ECDI::TextBox* settingsProviderName = nullptr;  // 显示名（可重复，空 ⇒ 回落 id）
         ECDI::TextBox* settingsBase = nullptr;   // BaseURL（单行）
         ECDI::TextBox* settingsKey = nullptr;    // API Key（单行 + Password 掩码）
         ECDI::TextBox* settingsModel = nullptr;  // 模型名（单行）
@@ -225,6 +228,11 @@ private:
         ECDI::TextBox* settingsContext = nullptr;  // 上下文容量（token，数字）
         ECDI::TextBox* settingsMaxOut = nullptr;   // 输出上限 max_tokens（数字）
         ECDI::Panel* settingsProviderList = nullptr; // 提供商行容器（RebuildSettingsProviderList）
+        // ★★ v4 第三步（2026-10-27）：编辑目标那一家的**模型子列表**容器。
+        //   为什么需要它：v4 起「一条 provider = 1—N 个模型」，而字段区一次只能编
+        //   一个模型 ⇒ 没有这张表，用户既看不出这家挂了几个模型，也无从删掉其中某个
+        //   （拆层前"一个 provider 一个模型"时，删提供商就是删模型，不需要它）。
+        ECDI::Panel* settingsModelList = nullptr;    // 模型行容器（RebuildSettingsModelList）
         ECDI::Label* settingsHint = nullptr;     // 状态/错误行（非敏感：不含 key）
         ECDI::Button* settingsSave = nullptr;    // 保存并连接
         // ★ P3.6：检查器「模型」卡片（提供商列表 + 切换）。
@@ -610,6 +618,10 @@ private:
         int ctxCapacity = 0;             // 当下分母：hello.context ⇒ usage.context ⇒ model ack 逐级覆盖
         std::string pendingModelId;      // 已发出未确认的切换请求 id（I11 在途）
         std::string queuedModelProvider; // running/waiting 时排队；state 回 idle 后发出
+        // ★ 2026-10-27（v4 拆层）：排队的**目标模型名**。只存 provider 的话，
+        //   同一家下连点两个模型，后一次会覆盖前一次的 provider 而丢掉模型名
+        //   ——排队语义就退化成"随便切到那家的某个模型"。
+        std::string queuedModelName;
 
         // ── 权限询问历史（右栏三行）──
         std::deque<std::pair<std::string, std::string>> askHist;   // {choice, question}
@@ -968,10 +980,30 @@ private:
     // ── ★★ P3.6（协议 v4）：模型热切换 ─────────────────────────
     void RebuildModelList();            // 检查器模型卡片行重建（tick 执行）
     void RebuildSettingsProviderList(); // 设置面板提供商行重建（编辑目标选择）
-    void RequestModelSwitch(const std::string& providerId);
-    void SendModelSwitch(const std::string& providerId);   // 立即发（调用方保证 idle）
+    void RebuildSettingsModelList();    // 设置面板模型子列表重建（编辑目标那一家）
+    void OnSettingsDeleteModel();       // 删除 m_editingModelName 那个模型（至少留一个）
+    // ★ v4 第三步：面板的**唯一**打开入口（预填字段 + 开浮层）。两个入口
+    //   （更多菜单 / 空态引导卡）都必须走它，否则两边行为不一致。
+    void OpenSettingsPanel();
+    // ★ 2026-10-27（v4）：切换粒度是 **(provider, model)**，不是 provider。
+    //   早退判断必须比两个字段——只比 provider 的话，同一家换模型会被判
+    //   「已是当前模型」而静默拦掉（拆层前的遗留缺陷）。
+    void RequestModelSwitch(const std::string& providerId, const std::string& modelName);
+    void SendModelSwitch(const std::string& providerId, const std::string& modelName);
     void SendPendingModelSwitchIfIdle();                   // state=idle 时的排队兑现点
     void CacheProviderKeys();           // 凭据库 → m_providerKeys（全部提供商；env 兜底见下）
+    // ── ★★ §9.5（2026-10-27）：识别名（id）/ 显示名（name）分离 ──────────
+    // 界面**唯一**的取名入口：name 空 ⇒ 回落 id（规格 9.5.2「不引入无名状态」）。
+    // 五处显示点（设置列表 / 模型弹窗分组 / 模型芯片 / 检查器卡片 / HUD 副标题）
+    // 全走它——分散写 `name.empty() ? id : name` 必然漏一处。
+    static std::string ProviderDisplayName(const ProviderConfig& pc);
+    // 同一件事的「按 id 查」版本（显示点手上只有 `Session::providerId`）。
+    // id 不在配置里（历史会话、未连上）⇒ 原样返回 id——绝不返回空，那会让
+    // 副标题变成「 › model」这种半截话。
+    std::string ProviderDisplayLabel(const std::string& providerId) const;
+    // 识别名合法性（规格 9.5.2）：字符集 `[A-Za-z0-9._-]`、非空、≤64。
+    // why 是给 hint 的**后缀**（调用方拼「识别名…」），不带标点。
+    static bool ValidateProviderId(const std::string& id, std::string& why);
     static std::string EnvSanitizeProviderId(const std::string& id);
     // ── ★★ §8.5.6（2026-10-27）：环境变量作为 key 的**兜底来源**（不是存储）
     //   凭据库缺失时才看它；优先级恒为「凭据库 > 环境变量」（见规格 §8.5.6）。
@@ -1219,6 +1251,19 @@ private:
     // ★★ P4 H：模型浮窗开合（模型侧状态——重建后按它恢复，同 m_moreMenuOpen）。
     bool m_modelPopupOpen = false;
     std::string m_editingProviderId; // 设置面板当前编辑的提供商（空 = 新增）
+    // ★★ v4 第三步（2026-10-27）：编辑目标那一家里**正在编辑的模型名**（空 = 新增模型）。
+    //   为什么存名字不存下标：Save 会重建 models[]（表单值优先、其余保序），下标在保存
+    //   前后不保证指同一个东西；名字既是用户可见的键，也是 models[] 的查找键。
+    //   ★ 它同时是「保存时替换谁」的唯一依据——拿表单里的名字当依据的话，
+    //     "把 A 改名成 B"会被实现成"留着 A 再加一个 B"（两个模型都活着）。
+    std::string m_editingModelName;
+    // ★★ §9.5（2026-10-27）：改识别名要用户确认一次（规格 9.5.3 第 1 步）。
+    //   形态定为**面板内二次确认**（不是独立弹窗）：仓里没有通用 modal，为一个
+    //   低频动作引入一套遮罩/焦点/ESC 机制，代价远大于收益；而「保存」按钮本来
+    //   就在手上，第二击即确认。命中条件 = (旧 id, 新 id) 与上次完全相同 ⇒
+    //   用户中途改了任一字段就重新问一遍（避免"确认过 A→B，却执行了 A→C"）。
+    std::string m_pendingRenameFrom;
+    std::string m_pendingRenameTo;
     // ★★ Step 4（2026-10-19）：整树重建待执行。
     //   与 `m_sidebarDirty` 完全同族、同一个理由：顶栏「主题」钮的回调跑在
     //   `Button::RaiseClick` 的栈上，而重建要 `root.RemoveChild` 掉**这个按钮自己**
