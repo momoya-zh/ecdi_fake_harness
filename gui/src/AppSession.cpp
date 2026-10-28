@@ -120,6 +120,9 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
     auto session = std::make_unique<Session>();
     Session& s = *session;
 
+    // ★★ L1 持久化：预先分配全局稳定 ID，非 CLI 指定源时透传 --session <id> 让 core 与 GUI 同号
+    s.sessionId = SessionStore::GenerateSessionId();
+
     // ── 源选择（P1.5）：--core <exe> ⇒ 子进程真路径；否则夹具回放 ──
     if (!m_options.corePath.empty()) {
         auto child = std::make_unique<ChildSource>();
@@ -164,7 +167,12 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         if (!m_coreApiKey.empty()) {
             SetEnvironmentVariableW(L"ECDI_CORE_KEY", ECDI::UTF8ToWide(m_coreApiKey).c_str());
         }
-        if (!child->Start(m_options.corePath, m_options.coreArgs, error)) {
+        std::string startArgs = m_options.coreArgs;
+        if (!m_options.sourceFromCli && startArgs.find("--session") == std::string::npos) {
+            if (!startArgs.empty()) startArgs += " ";
+            startArgs += "--session " + s.sessionId;
+        }
+        if (!child->Start(m_options.corePath, startArgs, error)) {
             ECDI::Logger::Log(ECDI::LogLevel::Error,
                               ECDI::UTF8ToWide("ChildSource: " + error));
             // 源启动失败 ⇒ 不 push（避免留下一个拉不动的会话），如实返回 nullptr
@@ -360,6 +368,11 @@ bool HarnessApp::ResumeSession(Session& s) {
     if (m_options.corePath.empty() || s.sessionId.empty()) return false;
     PauseActiveTimedClock();
 
+    // ★ 启动子进程前先将当前内存中的真实 lastSeq 同步落盘至 .meta.json，
+    //   避免上次异常中断导致磁盘 meta.lastSeq 滞后而引发 [I4] seq gap。
+    s.journalPromoted = true;
+    SyncSessionMeta(s);
+
     auto child = std::make_unique<ChildSource>();
     std::string error;
 
@@ -386,7 +399,36 @@ bool HarnessApp::ResumeSession(Session& s) {
     }
 
     std::string args = m_options.coreArgs;
-    args += " --resume " + s.sessionId;
+    if (!m_options.sourceFromCli && !s.meta.providerId.empty() && !s.meta.modelName.empty()) {
+        if (const ProviderConfig* pc = m_appConfig.Find(s.meta.providerId)) {
+            const auto keyIt = m_providerKeys.find(pc->id);
+            const ModelConfig* matchedModel = nullptr;
+            for (const auto& m : pc->models) {
+                if (m.name == s.meta.modelName) {
+                    matchedModel = &m;
+                    break;
+                }
+            }
+            if (matchedModel && keyIt != m_providerKeys.end()) {
+                SetEnvironmentVariableW(L"ECDI_CORE_KEY", ECDI::UTF8ToWide(keyIt->second).c_str());
+                args = "--base-url=" + pc->baseUrl +
+                       " --model=" + matchedModel->name +
+                       " --provider-id=" + pc->id;
+                if (matchedModel->context > 0) {
+                    args += " --context=" + std::to_string(matchedModel->context);
+                }
+                if (matchedModel->maxOutput > 0) {
+                    args += " --max-output=" + std::to_string(matchedModel->maxOutput);
+                }
+                s.providerId = pc->id;
+                s.modelName = matchedModel->name;
+                s.ctxCapacity = matchedModel->context;
+                s.contextLimit = matchedModel->context;
+            }
+        }
+    }
+    if (!args.empty()) args += " ";
+    args += "--resume " + s.sessionId;
     if (!s.workspacePath.empty()) {
         args += " --workspace \"" + s.workspacePath + "\"";
     }
@@ -401,7 +443,20 @@ bool HarnessApp::ResumeSession(Session& s) {
     s.source = std::move(child);
     s.writer = std::make_unique<ProtocolWriter>(*s.source);
     s.originKind = "live";
-    s.journalPromoted = true;
+    s.disconnected = false;
+    s.liveEof = false;
+    s.protocolIncompatible = false;
+    s.waitForAnswer = false;
+    s.coreState = "idle";
+    s.pendingWorkspaceId.clear();
+    s.pendingWorkspaceInitialSync = false;
+    s.pendingModelId.clear();
+    s.nextClientId = std::max(s.nextClientId, s.transcript.MaxClientIdIndex() + 1);
+    if (!s.workspacePath.empty()) {
+        s.workspaceSyncStarted = true;
+        s.workspaceSyncComplete = true;
+        s.workspaceStatus = "已由 core 确认";
+    }
 
     if (!s.journal || !s.journal->IsOpen()) {
         s.journal = std::make_unique<SessionStore::JournalWriter>();
@@ -410,6 +465,9 @@ bool HarnessApp::ResumeSession(Session& s) {
     }
 
     InstallWakeHandler(s);
+    if (s.child) s.child->RearmWake();
+    if (s.writer) s.writer->Hello("0.0.1");
+    if (m_options.timed) s.timedAnchor = std::chrono::steady_clock::now();
     if (m_promptBar) {
         m_promptBar->SetReadOnlyMode(false);
     }
@@ -450,6 +508,9 @@ void HarnessApp::SwitchToSession(size_t index) {
     //    只是因为 ToggleRow/MarkAnswered 每次点击都已写回模型；把正确性押在
     //    "别处恰好也写了"上是本仓最反对的形状，故在这里显式补上。
     SyncRowViewState();
+    if (m_sess && m_sess->journalPromoted) {
+        SyncSessionMeta(*m_sess);
+    }
 
     // ② 切换活动指针。m_sess 是全部 200+ 处调用点的"当前会话"锚，
     //    改这一个指针，OnReplayTick/RefreshHud/… 立即指向新会话。

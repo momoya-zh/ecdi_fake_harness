@@ -82,25 +82,25 @@ void HarnessApp::RunPersistProbe() {
     bool s1 = SessionStore::SaveMetaAtomic(wsA_str, m1, err);
     bool s2 = SessionStore::SaveMetaAtomic(wsB_str, m2, err);
 
-    // 写对应的 journal 简要内容
-    auto writeJournal = [](const fs::path& p) {
+    // 写对应的 journal 简要内容（含真实 live 会话必有的 workspace ack 与 model ack，验证恢复时不误报 ack 不匹配）
+    auto writeJournal = [](const fs::path& p, const std::string& wsPath) {
         std::ofstream f(p, std::ios::binary);
-        f << "{\"t\":\"hello\",\"protocol\":3,\"seq\":0}\n";
-        f << "{\"t\":\"state\",\"state\":\"idle\",\"seq\":1}\n";
-        f << "{\"t\":\"block_start\",\"id\":\"b1\",\"kind\":\"user\",\"seq\":2}\n";
-        f << "{\"t\":\"delta\",\"id\":\"b1\",\"text\":\"hello world\",\"seq\":3}\n";
-        f << "{\"t\":\"block_end\",\"id\":\"b1\",\"seq\":4}\n";
+        f << "{\"t\":\"hello\",\"protocol\":3,\"caps\":[\"tools\",\"ask\",\"workspace\"],\"seq\":0}\n";
+        f << "{\"t\":\"workspace\",\"request_id\":\"w1\",\"ok\":true,\"path\":\"" << wsPath << "\",\"seq\":1}\n";
+        f << "{\"t\":\"state\",\"value\":\"running\",\"seq\":2}\n";
+        f << "{\"t\":\"block_start\",\"id\":\"b1\",\"kind\":\"user\",\"client_id\":\"p1\",\"text\":\"hello world\",\"seq\":3}\n";
+        f << "{\"t\":\"block_end\",\"id\":\"b1\",\"ok\":true,\"seq\":4}\n";
         f << "{\"t\":\"block_start\",\"id\":\"b2\",\"kind\":\"assistant\",\"seq\":5}\n";
         f << "{\"t\":\"delta\",\"id\":\"b2\",\"text\":\"greetings\",\"seq\":6}\n";
-        f << "{\"t\":\"block_end\",\"id\":\"b2\",\"seq\":7}\n";
-        f << "{\"t\":\"state\",\"state\":\"idle\",\"seq\":8}\n";
+        f << "{\"t\":\"block_end\",\"id\":\"b2\",\"ok\":true,\"seq\":7}\n";
+        f << "{\"t\":\"state\",\"value\":\"idle\",\"seq\":8}\n";
         return !f.fail();
     };
 
     const auto j1Path = SessionStore::JournalPath(wsA_str, m1.id);
     const auto j2Path = SessionStore::JournalPath(wsB_str, m2.id);
-    bool w1 = writeJournal(j1Path);
-    bool w2 = writeJournal(j2Path);
+    bool w1 = writeJournal(j1Path, wsA_str);
+    bool w2 = writeJournal(j2Path, wsB_str);
 
     auto metasA = SessionStore::ScanSessionMetas(wsA_str, err);
     auto metasB = SessionStore::ScanSessionMetas(wsB_str, err);
@@ -121,12 +121,55 @@ void HarnessApp::RunPersistProbe() {
         if (sess->sessionId == m2.id) restoredB = sess.get();
     }
 
+    auto hasAckErrorNotice = [](const Session* s) {
+        if (!s) return true;
+        for (const auto& e : s->timeline) {
+            if (e.kind == TimelineEntry::Kind::Notice &&
+                e.text.find("ack 不匹配") != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     bool restoreOk = (restoredA != nullptr) && (restoredB != nullptr) &&
                      (restoredA->originKind == "journal") && (restoredB->originKind == "journal") &&
                      (restoredA->label == m1.label) && (restoredB->label == m2.label) &&
-                     (!restoredA->timeline.empty()) && (!restoredB->timeline.empty());
+                     (!restoredA->timeline.empty()) && (!restoredB->timeline.empty()) &&
+                     (restoredA->transcript.Violations() == 0) && (restoredB->transcript.Violations() == 0) &&
+                     !hasAckErrorNotice(restoredA) && !hasAckErrorNotice(restoredB) &&
+                     (restoredA->meta.lastSeq == 8) && (restoredB->meta.lastSeq == 8) &&
+                     (restoredA->nextClientId == 2) && (restoredB->nextClientId == 2);
     snap("restore-sessions", restoreOk, restoreOk ? "both sessions restored with timeline"
                                                   : "session restoration failed");
+
+    // ── ②b startup-gate：启动恢复的**闸**本身（受控对照）──
+    //   2026-10-28 的缺陷就是这道闸：判据读 `corePath` 空不空，而无参启动的自动连接
+    //   （`AppSettings.cpp:245`）已经把它填上 ⇒ 判据恒真 ⇒ 恢复被静默跳过。
+    //   为什么在这里造两个 `CliOptions` 而不直接读 `m_options`：要判的是**判据函数**
+    //   （`ShouldAutoRestoreSessions`），受控输入才有区分力——真跑一次的 `m_options`
+    //   只有一个形状，任何实现都能绿。旧实现（读 corePath）会让 positive 变 false。
+    {
+        CliOptions autoConnected;                   // 无参启动 + 配置自动连上了 core
+        autoConnected.corePath = "X:/ecdi-core.exe";
+        autoConnected.sourceFromCli = false;
+
+        CliOptions explicitCli;                     // 用户显式 --core
+        explicitCli.corePath = "X:/ecdi-core.exe";
+        explicitCli.sourceFromCli = true;
+
+        const bool positive = ShouldAutoRestoreSessions(autoConnected);
+        const bool negative = !ShouldAutoRestoreSessions(explicitCli);
+        // ★ 元断言：两个输入只在 **一个**自变量上不同（corePath 逐字相同）。
+        //   若这里写错成"两处都不同"，本相对任何实现都会绿——夹具没区分力。
+        const bool inputsDiffer = (autoConnected.sourceFromCli != explicitCli.sourceFromCli) &&
+                                  (autoConnected.corePath == explicitCli.corePath);
+        const bool gateOk = inputsDiffer && positive && negative;
+        snap("startup-gate", gateOk,
+             gateOk ? "gate keys on sourceFromCli only (auto-filled corePath does not block restore)"
+                    : (!inputsDiffer ? "fixture lacks discrimination (inputs identical)"
+                                     : "gate re-derives source from paths"));
+    }
 
     // ── ③ readonly-ui ──
     bool readonlyUiOk = false;

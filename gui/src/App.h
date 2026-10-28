@@ -115,7 +115,7 @@ public:
     //   ★ 不做 `RebuildTranscriptView`：尺寸变化不动模型，重建是白花的测量成本，
     //     而且会把滚动位置和展开态再跑一遍（`Relayout` 已足够）。
     void OnWindowResized(int width, int height);
-    void SendPrompt(const std::string& text);     // P1.5：发送路径（按钮与自动发共用）
+    bool SendPrompt(const std::string& text);     // P1.5：发送路径（按钮与自动发共用）
     // ★★ P4 Phase A（2026-10-25）：「跳到最新」按钮刷新（HarnessApplication 的
     //   滚轮/键盘 override 在基类派发完之后调）。全部只读查询 + 同值守卫的
     //   SetVisible（M9：同值不 Invalidate）⇒ 高频调用零重绘代价。

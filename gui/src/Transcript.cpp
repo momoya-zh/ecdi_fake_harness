@@ -128,6 +128,34 @@ const Block* Transcript::FindBlock(const std::string& id) const {
     return it == m_blocks.end() ? nullptr : &it->second;
 }
 
+void Transcript::FinalizeIncompleteBlocks() {
+    for (auto& kv : m_blocks) {
+        if (!kv.second.ended) {
+            kv.second.ended = true;
+        }
+    }
+}
+
+size_t Transcript::MaxClientIdIndex() const {
+    size_t maxIdx = 0;
+    for (const auto& kv : m_blocks) {
+        const std::string& cid = kv.second.clientId;
+        if (cid.size() > 1 && cid[0] == 'p') {
+            size_t val = 0;
+            bool ok = true;
+            for (size_t i = 1; i < cid.size(); ++i) {
+                if (cid[i] < '0' || cid[i] > '9') {
+                    ok = false;
+                    break;
+                }
+                val = val * 10 + static_cast<size_t>(cid[i] - '0');
+            }
+            if (ok && val > maxIdx) maxIdx = val;
+        }
+    }
+    return maxIdx;
+}
+
 // ★★ §3.3 的已知 kind（2026-10-13 收进单一判据；2026-10-14 v2 加 `reasoning`）。
 //   为何要独立成函数：App 的渲染分支与 Transcript 的记账**必须同源**——
 //   若两处各写一份列表，加一个 kind 时漏改一处 ⇒ 又会出现「渲染成一个样、

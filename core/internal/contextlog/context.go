@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -71,6 +72,50 @@ func ReadMeta(metaPath string) (*SessionMetaLite, error) {
 		return nil, err
 	}
 	return &meta, nil
+}
+
+// ScanJournalState = 扫描会话转录 .jsonl，提取最大 seq、最大块序号 b<N> 与最大轮次 turn。
+// 用于 --resume 时兜底校准（防止上次异常退出导致 .meta.json 的 lastSeq 滞后，以及防止块 id b1 冲突触发 I1）。
+func ScanJournalState(journalPath string) (maxSeq int64, maxBlockNo int, maxTurn int) {
+	maxSeq = -1
+	f, err := os.Open(journalPath)
+	if err != nil {
+		return maxSeq, 0, 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	type journalEnvelope struct {
+		T    string `json:"t"`
+		Seq  *int64 `json:"seq"`
+		ID   string `json:"id"`
+		Turn int    `json:"turn"`
+	}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var env journalEnvelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			continue
+		}
+		if env.Seq != nil && *env.Seq > maxSeq {
+			maxSeq = *env.Seq
+		}
+		if env.T == "block_start" && strings.HasPrefix(env.ID, "b") {
+			if n, err := strconv.Atoi(env.ID[1:]); err == nil && n > maxBlockNo {
+				maxBlockNo = n
+			}
+		}
+		if env.T == "usage" && env.Turn > maxTurn {
+			maxTurn = env.Turn
+		}
+	}
+	return maxSeq, maxBlockNo, maxTurn
 }
 
 // Replay = 顺序重放 context.jsonl 重构当前 messages 列表

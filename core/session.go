@@ -128,18 +128,32 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 	}
 	s.log("initial workspace: %s", s.cwd)
 
-	// L2 resume 处理：从 .meta.json 获取 lastSeq 续号，从 .context.jsonl 顺序重放历史
+	// L2 resume 处理：从 .meta.json + .jsonl 获取 lastSeq 续号与块序号，从 .context.jsonl 顺序重放历史
 	if s.resumeID != "" {
 		s.sessionID = s.resumeID
+		var lastSeq int64 = -1
 		metaPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".meta.json")
 		if meta, err := contextlog.ReadMeta(metaPath); err == nil {
-			startSeq := meta.LastSeq + 1
-			s.out.SetSeq(startSeq)
-			s.log("resumed session %s: starting seq=%d (from lastSeq=%d)", s.sessionID, startSeq, meta.LastSeq)
+			lastSeq = meta.LastSeq
 			if s.contextLimit == 0 && meta.ContextLimit > 0 {
 				s.contextLimit = int(meta.ContextLimit)
 			}
 		}
+		journalPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".jsonl")
+		jMaxSeq, jMaxBlockNo, jMaxTurn := contextlog.ScanJournalState(journalPath)
+		if jMaxSeq > lastSeq {
+			lastSeq = jMaxSeq
+		}
+		if lastSeq >= 0 {
+			startSeq := lastSeq + 1
+			s.out.SetSeq(startSeq)
+			if jMaxBlockNo < int(startSeq) {
+				jMaxBlockNo = int(startSeq)
+			}
+			s.log("resumed session %s: starting seq=%d (lastSeq=%d, blockNo=%d)", s.sessionID, startSeq, lastSeq, jMaxBlockNo)
+		}
+		s.blockNo = jMaxBlockNo
+		s.turn = jMaxTurn
 		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
 		if msgs, err := contextlog.Replay(ctxPath); err == nil {
 			s.messages = msgs
@@ -148,13 +162,8 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 		if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
 			s.ctxWriter = w
 		}
-	} else if s.sessionID != "" && s.cwd != "" {
-		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
-		if _, err := os.Stat(filepath.Dir(ctxPath)); err == nil {
-			if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
-				s.ctxWriter = w
-			}
-		}
+	} else {
+		s.ensureCtxWriter()
 	}
 
 	if s.globalMemoryDir == "" {
@@ -177,6 +186,22 @@ func (s *session) loadMemories() {
 	}
 	s.memResult = res
 	s.log("loaded memories: %d loaded, %d skipped", len(res.LoadedFiles), len(res.SkippedFiles))
+}
+
+func (s *session) ensureCtxWriter() *contextlog.LogWriter {
+	if s.ctxWriter != nil {
+		return s.ctxWriter
+	}
+	if s.sessionID == "" || s.cwd == "" {
+		return nil
+	}
+	ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
+	if _, err := os.Stat(filepath.Dir(ctxPath)); err == nil {
+		if w, err := contextlog.OpenLogWriter(ctxPath); err == nil {
+			s.ctxWriter = w
+		}
+	}
+	return s.ctxWriter
 }
 
 // ── 出站 ────────────────────────────────────────────────────────
@@ -354,6 +379,7 @@ func (s *session) handlePrompt(text string, clientID string) {
 	s.turn++
 	s.cancelRequested = false
 	s.setState(wire.StateRunning)
+	s.ensureCtxWriter()
 
 	// ── L2 压缩触发检查（§7.2）────────────────────────────────────
 	if s.contextLimit > 0 {
@@ -642,6 +668,10 @@ func (s *session) completeWorkspace() {
 	}
 	s.pendingWs = nil
 	s.cwd = pw.resolved
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.Close()
+		s.ctxWriter = nil
+	}
 	s.log("workspace switched: %s", s.cwd)
 	s.loadMemories()
 	s.emit(map[string]any{"t": "workspace", "request_id": pw.requestID,

@@ -32,7 +32,7 @@ using harness::internal::PathToUtf8;
 using harness::internal::Utf8FromWidePath;
 
 // P1.5：发送路径（发送按钮与 --auto-prompt 共用）
-void HarnessApp::SendPrompt(const std::string& text) {
+bool HarnessApp::SendPrompt(const std::string& text) {
     // ★★ 2026-10-27 修复（实测反馈「点空态卡的建议，发出去的气泡是空的」）：
     //   **进函数第一件事是拷贝**。调用方之一是空状态引导卡里的建议按钮，而发送
     //   路径会在本函数的**栈内**就把它拆掉：
@@ -50,22 +50,22 @@ void HarnessApp::SendPrompt(const std::string& text) {
     // ★ --hit-probe：探针合成点击时只计数、零副作用，保持旧读数。
     if (m_probeState.hitProbeActive) {
         ++m_probeState.hitProbeSendCalls;
-        return;
+        return true;
     }
     // ★★ L2 持久化：拦截只读会话发送
     if (m_sess && m_sess->originKind == "journal") {
         AddNoticeRow("[只读会话不可发送消息，请点击「继续」开启新对话]", kWarn);
         Relayout();
         RequestRepaint();
-        return;
+        return false;
     }
     if (m_sess->writer) {
-        (void)PostPrompt(owned);
-        return;
+        return !PostPrompt(owned).empty();
     }
     AddNoticeRow("[prompt 仅记录] " + owned, kDarkMuted);   // 回放：只记录
     Relayout();
     RequestRepaint();
+    return true;
 }
 
 std::string HarnessApp::PostPrompt(const std::string& text, bool allowBusyForProbe) {

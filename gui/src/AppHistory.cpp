@@ -474,6 +474,15 @@ bool HarnessApp::RestoreSingleJournalSession(const std::string& wsPath, const Se
         m_sess->pendingTruncated.clear();
     }
 
+    // 历史转录恢复收尾：闭合上次异常中断遗留的未完结块，复位运行态并对齐 client_id / lastSeq
+    m_sess->transcript.FinalizeIncompleteBlocks();
+    m_sess->coreState = "idle";
+    m_sess->waitForAnswer = false;
+    m_sess->nextClientId = std::max(m_sess->nextClientId, m_sess->transcript.MaxClientIdIndex() + 1);
+    if (m_sess->transcript.LastSeq() > m_sess->meta.lastSeq) {
+        SyncSessionMeta(*m_sess);
+    }
+
     // 恢复 sidecar
     const bool hadState = LoadUiState(*m_sess);
     if (hadState) {

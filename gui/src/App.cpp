@@ -545,7 +545,10 @@ int HarnessApp::Run() {
     //     于是该判据恒真 ⇒ 整段恢复被跳过，而且**一声不响**：磁盘上 8 个会话
     //     （`.ecdi/sessions/*.meta.json` + `*.jsonl` 齐全）一条都不进侧栏。
     //     修法 = 读解析期钉死的 `sourceFromCli`（main.cpp），运行期不再从路径反推来源。
-    const bool cliSessionRequested = m_options.sourceFromCli;
+    //     ★ 判据本体收在 `ShouldAutoRestoreSessions()`（CliOptions.h）——纯函数才能被
+    //       `--persist-probe` 的 startup-gate 相对照；写在 Run() 深处的局部布尔
+    //       任何探针都摸不到，这正是本轮缺陷藏了一整轮的原因。
+    const bool cliSessionRequested = !ShouldAutoRestoreSessions(m_options);
     Session* initialSess = m_sess;
     if (!cliSessionRequested) {
         if (initialSess) {
@@ -564,6 +567,30 @@ int HarnessApp::Run() {
                 initialSess->temporary = true;
             }
             SwitchToSession(m_sessions.size() - 1);
+        }
+    } else {
+        // ★★ 2026-10-28：跳过分流必须**说出来**——"命令行指定了来源"是正当理由，但用户
+        //   看不见"磁盘上还有 N 个会话没被恢复"，这种沉默正是本轮缺陷的现场。
+        //   ★★ 为什么用 Logger 而**不是** `AddNoticeRow`（试过，撤回）：
+        //     走 else 分支的**只有**带 `--replay`/`--core` 的场景，而这恰好是全部探针与
+        //     回归基线的入口（`tools/regress.py` 的基线跑不带任何 probe flag）。
+        //     往转录里插一行 notice ⇒ `rows`/`blocks` 全 +1 ⇒ 25 个探针的既有读数被改写；
+        //     而"用户模式"（`!firstRun && !HasAnyProbe()`）根本到不了这里（那时
+        //     `sourceFromCli` 恒 false）⇒ 对真实用户它反而永远不可见。
+        //     两头不讨好 ⇒ 改用日志：机器可读、零 UI 扰动、零摘要字段变化。
+        if (!m_options.HasAnyProbe()) {
+            size_t skippedSessions = 0;
+            for (const auto& wsPath : m_appConfig.knownWorkspaces) {
+                if (wsPath.empty()) continue;
+                std::string scanErr;
+                skippedSessions += SessionStore::ScanSessionMetas(wsPath, scanErr).size();
+            }
+            if (skippedSessions > 0) {
+                ECDI::Logger::Log(ECDI::LogLevel::Warning,
+                                  ECDI::UTF8ToWide("[startup] skipped auto-restore of " +
+                                                   std::to_string(skippedSessions) +
+                                                   " persisted session(s): CLI source was given"));
+            }
         }
     }
 
@@ -613,6 +640,10 @@ int HarnessApp::Run() {
     //   各拉起过一个 core 子进程。只 Bye/Stop 活动会话 ⇒ 其余 core 变僵尸
     //   （这正是 P1.5 验收里"no zombies"那一项要防的）。
     for (auto& session : m_sessions) {
+        if (session->journalPromoted) {
+            SyncSessionMeta(*session);
+            if (session->journal) session->journal->Close();
+        }
         if (session->writer) session->writer->Bye();
         if (session->child) session->child->Stop();
     }

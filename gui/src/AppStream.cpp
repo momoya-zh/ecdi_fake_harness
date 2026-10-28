@@ -452,6 +452,9 @@ void HarnessApp::DrainTimed() {
 void HarnessApp::HandleLine(const std::string& line) {
     std::string notice;
     const bool ok = m_sess->transcript.OnLine(line, notice);
+    if (m_sess->transcript.LastSeq() > m_sess->meta.lastSeq) {
+        m_sess->meta.lastSeq = m_sess->transcript.LastSeq();
+    }
     if (!notice.empty()) AddNoticeRow(notice, kErrorDark);   // I4 / I5 等显式提示
     if (ok) RouteLastMessage();
 }
@@ -689,8 +692,10 @@ void HarnessApp::RouteLastMessage() {
                              std::to_string(m_sess->protocolVer), kDarkMuted);
         }
         // The v3 core starts in idle and does not emit a redundant initial state line.
-        if (m_sess->coreState.empty()) m_sess->coreState = "idle";
+        m_sess->coreState = "idle";
+        m_sess->waitForAnswer = false;
         MaybeStartWorkspaceSync();
+        SendPendingModelSwitchIfIdle();
         return;
     }
     if (t == "state") {
@@ -723,9 +728,22 @@ void HarnessApp::RouteLastMessage() {
             AddNoticeRow("[workspace ack 缺少 request_id]", kErrorDark);
             return;
         }
-        if (m_sess->pendingWorkspaceId.empty() || requestId != m_sess->pendingWorkspaceId) {
+        const bool isJournalReplay = (m_sess->originKind == "journal");
+        if (!isJournalReplay &&
+            (m_sess->pendingWorkspaceId.empty() || requestId != m_sess->pendingWorkspaceId)) {
             AddNoticeRow("[workspace ack 不匹配] " + requestId, kErrorDark);
             return;
+        }
+        if (requestId.size() > 1 && requestId[0] == 'w') {
+            size_t wid = 0;
+            bool wok = true;
+            for (size_t i = 1; i < requestId.size(); ++i) {
+                if (requestId[i] < '0' || requestId[i] > '9') { wok = false; break; }
+                wid = wid * 10 + static_cast<size_t>(requestId[i] - '0');
+            }
+            if (wok && wid >= m_sess->nextWorkspaceRequestId) {
+                m_sess->nextWorkspaceRequestId = wid + 1;
+            }
         }
         const bool initialSync = m_sess->pendingWorkspaceInitialSync;
         m_sess->pendingWorkspaceId.clear();
@@ -789,7 +807,9 @@ void HarnessApp::RouteLastMessage() {
     if (t == "model") {
         // ★ v4 §3.11：model 确认（I10 同族：id 匹配 + ok 布尔 + ok:false 带 message）
         const std::string ackId = msg.GetString("id");
-        if (m_sess->pendingModelId.empty() || ackId != m_sess->pendingModelId) {
+        const bool isJournalReplay = (m_sess->originKind == "journal");
+        if (!isJournalReplay &&
+            (m_sess->pendingModelId.empty() || ackId != m_sess->pendingModelId)) {
             AddNoticeRow("[model ack 不匹配] " + ackId, kErrorDark);
             return;
         }
@@ -920,8 +940,18 @@ void HarnessApp::PromoteSessionJournal(Session& session, const std::string& prom
 
 void HarnessApp::SyncSessionMeta(Session& session) {
     if (!session.journalPromoted || session.workspacePath.empty()) return;
-    session.meta.lastSeq = session.transcript.LastSeq() >= 0 ? session.transcript.LastSeq() : 0;
-    session.meta.sizeBytes = session.journal ? session.journal->BytesWritten() : 0;
+    const long long tSeq = session.transcript.LastSeq() >= 0 ? session.transcript.LastSeq() : 0;
+    if (tSeq > session.meta.lastSeq) {
+        session.meta.lastSeq = tSeq;
+    }
+    if (session.journal) {
+        session.meta.sizeBytes = static_cast<long long>(session.journal->BytesWritten());
+    } else {
+        std::error_code ec;
+        const auto jPath = SessionStore::JournalPath(session.workspacePath, session.sessionId);
+        const auto sz = std::filesystem::file_size(jPath, ec);
+        if (!ec) session.meta.sizeBytes = static_cast<long long>(sz);
+    }
     session.meta.lastUsedAt = SessionStore::CurrentUtcTimestamp();
     session.meta.contextLimit = session.contextLimit;
     if (!session.providerId.empty()) session.meta.providerId = session.providerId;

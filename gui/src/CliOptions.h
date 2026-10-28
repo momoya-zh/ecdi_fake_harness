@@ -316,3 +316,22 @@ struct CliOptions {
                growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe;
     }
 };
+
+// ★★ 2026-10-28：启动时是否应自动恢复持久化会话。
+//
+// 规则只有一条：**命令行没指定来源时才恢复**。
+//
+// 为什么抽成自由纯函数，而不是在 `Run()` 里就地写个局部布尔：
+//   本轮缺陷（会话列表恒空、且一声不响）就是"判据写在 Run() 深处、任何探针都摸不到"
+//   的直接后果——`--persist-probe` 直接调 `DiscoverAndRestoreJournalSessions()`，
+//   把闸整个绕过，于是闸读错变量读了一整轮都没人发现。
+//   抽出来以后，判据可以被**受控对照**：喂 `{corePath 非空, sourceFromCli=false}`
+//   （无参启动 + 自动连接）必须返回 true；喂 `{sourceFromCli=true}`（显式 --core）必须返回 false。
+//   ★ 反例的意义：旧实现读 `corePath` 空不空 ⇒ 第一条会返回 false ⇒ 该判据在旧实现下红。
+//
+// ★ 为什么**不能**用 `corePath` / `replayPath` 反推：`TryAutoConnectFromConfig()`
+//   在无参启动时会把自动解析出的 core 路径回填进 `corePath`（`AppSettings.cpp:245`），
+//   于是"路径非空"同时意味着"用户给了 --core"和"配置连上了 core"两件事。
+inline bool ShouldAutoRestoreSessions(const CliOptions& options) {
+    return !options.sourceFromCli;
+}

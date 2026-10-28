@@ -1099,7 +1099,7 @@ void HarnessApp::BuildComposer() {
     m_promptBar = composer.get();
     composer->SetSize(600, 92);
     composer->SetOnSend([this](const std::string& text) {
-        SendPrompt(text);
+        if (!SendPrompt(text)) return;
         if (m_promptBar && m_promptBar->input()) {
             m_promptBar->input()->SetText("");   // 已发出/记录，输入框清空（聊天惯例）
             // ★★ 2026-10-21：清空是 `SetText` 路径 ⇒ 自动长高不会自己知道。
