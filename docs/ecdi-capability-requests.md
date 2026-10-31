@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v4.2**（2026-10-31；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v4.3**（2026-10-31；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -827,6 +827,7 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | ★ `TODO-02` | **字体工厂**：全仓 `ECDI::Font` 构造散落 18 处、`family` 只有 `Consolas` 一个值，中文正文全部落到 SimSun；且 `AddLine()` 只在传了字号时才 `SetFont` ⇒ 同一界面里两种中文字形混排 | ✅ **已落地**（2026-10-18）：`harness::SansFont(float)` / `MonoFont(float)` 单一入口；`AddLine()` 改为无条件 `SetFont`（默认 `14.0f` = `Font::size` 出厂值）。★ **2026-10-22 订正**：原写「深色刻意保留 `sansFamily = ""`（SimSun）作回归基线，浅色才用雅黑」——该决定已被**推翻并撤回**：两主题现在**都**用 `Microsoft YaHei`（`Theme.h` 的 `MakeDark()` 里 `t.sansFamily = "Microsoft YaHei"`）。撤回理由见下条 `FONT-UNIFIED` 与 §6 的 v3.0 |
 | ★ `TODO-03` | **输入框焦点视觉**：ECDI 默认 `DrawFocusRect` 点线框，本项目输入框**启动即获焦**（验收 A2）⇒ 常态就是一圈蓝色虚线，与 variant-c 的实线描边形态冲突 | ✅ **已落地**（2026-10-18）：派生 `ComposerBox` 关掉点线框（`SetShowFocusRect(false)`），改让 `borderColor` 表达焦点（失焦 `kInputBorder` / 获焦 `kDarkAccent`）。★ **不是**直接关掉焦点框——那样焦点完全不可见，是拿可访问性换观感 |
 | ★ `FONT-UNIFIED` | **两主题字族统一**（用户报「中间上面三个按键深浅主题样子不同」，收窄为「three dots 暗色每个 dot 的间隔比浅色大」）：`gui/src/Theme.h:184` 深色 `sansFamily = ""` ⇒ ECDI 默认 face = **SimSun**，`Theme.h:281` 浅色 `"Microsoft YaHei"`，而 `SansFont()` 读 `g_theme.sansFamily` ⇒ **同一串字符被两个 face 光栅化** | ✅ **已落地**（2026-10-22）：`MakeDark()` 里 `t.sansFamily = "Microsoft YaHei"`（改一行）。★ 实测比用户报告更严重：浅色把 `·`(U+00B7) 渲成**一条 9px 实心横杠**（三点粘连），深色是**三个独立 2px 点、中心距 12.0px**；浅色 `↗`/`≡` 另带 ClearType 彩边（15 种墨色 vs 3 种）⇒ 根因是**字族**不是间距。修后 `dump_dots3.py` 两主题 run 数/pitch/墨色数完全一致（`SAME=True`）。代价：深色 paints 变（demo 22→23 · realistic 17→19 · cot 21→22 · scale 21→23），**此前深色 paints/frames 不可直接对比**；六夹具 × 两主题的结构读数（blocks/deltas/messages）全不变。★ 这是本仓第一次有意改变深色字形基线，`TODO-02` 里「深色刻意保留 SimSun 作回归基线」一句已随之作废 |
+| ★ `TODO-06` | **回归门 race 段错误（红门不可信项）**：`--workspace-probe`（活 core）确定复现段错误/零输出；`--theme-probe`、`--delprov-probe` 间歇段错误且**崩溃点逐轮漂移**（同轮 theme 红、换轮 delprov 红；加一条 fprintf 改时序即 6/6 全过 ⇒ 海森 bug） | 🔄 **立案 2026-10-31**：干净构建核实为 **HEAD 自带**（b0dd54e 上 theme 同样段错误、ws 同样零输出），与表格修复 f1cfa07 无关。疑与 overlay/定时器悬垂指针族同源（`RebuildUi` 开头 ⓪/⓪b 两条自保注释、审计整改批 A §11.2 未覆盖的 `exemptWidget` 第 5 例）。★ **纪律：本条未闭合前，回归红相先对照本条与 `.scratch/_regress_precommit.log` 族证据，再归因新改动**；取证 `.scratch/_regress_tablefix2.log` / `_regress_precommit.log` / `_tp.err` / `_wp2.err` |
 
 ---
 
@@ -857,6 +858,11 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v4.3（2026-10-31）★ 立案 `TODO-06`：回归门 race 段错误（红门不可信项）**：
+  ① **现象**：`--workspace-probe`（活 core）确定复现段错误/零输出；`--theme-probe`、`--delprov-probe` 间歇段错误且崩溃点逐轮漂移（加一条 fprintf 改时序即全过 ⇒ 海森 bug）；
+  ② **归因核对**：干净构建（b0dd54e）同样复现 ⇒ **HEAD 自带**，与同日表格修复 f1cfa07 无关；疑与 overlay/定时器悬垂指针族同源（`RebuildUi` ⓪/⓪b 自保注释、审计整改批 A §11.2 的 `exemptWidget` 第 5 例）；
+  ③ **纪律**：本条未闭合前，回归红相先对照本条证据再归因新改动；同日表格「有框无字」缺陷另由 f1cfa07 闭合（建表期 Label 无测量器 ⇒ 改 `Window::GetTextMeasurer()` 实测设尺寸）。
+  头部 v4.2 → **v4.3**。
 - **v4.2（2026-10-31）★ `REQ-15` ✅ 闭合：输入框 Word Wrap 消费落地 + `--grow-probe` 12/12 进门**：
   ① **本仓动作**：`ComposerBox` 构造函数与 `PromptBar` 显式开启 `SetWordWrap(true)`，正式消费 ECDI Phase 38 的视觉行缓存机制；
   ② **探针扩充**：`--grow-probe` 新增 `wrap-grow`（单行超宽软折行长高且 `GetScrollOffsetX()==0`）/ `wrap-shrink`（删减恢复单行高）/ `wrap-resize`（窗口宽度变化驱动折行自适应），实测 12/12 全绿，既有 9 相（含 baseline `inputH=29 / barH=81 / hintY=43`）读数逐位未动；
