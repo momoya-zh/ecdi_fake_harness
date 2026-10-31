@@ -116,6 +116,15 @@ EXTRA_PROBES = [
     ("--valign-probe", "valignProbe", DEMO, [], []),
     # 会话持久化与恢复探针：L1~L4 全链判据在 RunPersistProbe 内（发现 / 恢复 / 只读 / 守卫 / 继续 / 负对照 / 清理）
     ("--persist-probe", "persistProbe", DEMO, ["--config", "@PERSIST@"], []),
+    # ★★ 2026-10-30（浮层迁移）：浮层拓扑与 Light Dismiss。
+    #   全部判据写在 RunOverlayProbe 内（closed / mount / modal-blank / rebuild /
+    #   theme / tip / tip-through / popup / popup-dismiss 九相），回放模式即可全绿。
+    #   无 designed-red：本探针守的是**本仓自己的挂载约定**（模态托管挂载、下拉与
+    #   tooltip 走注册式浮层），全部可在回放跑法下观测——不依赖 live 写通道，
+    #   也不依赖 protocol 4。
+    #   ★ 它补的是一个真实存在的盲区：迁移前**没有任何探针读过 `GetOverlayRoot()`**，
+    #     `--theme-probe` 的 toggle 相只问「面板还在不在」，而"两套同屏"时它全绿。
+    ("--overlay-probe", "overlayProbe", DEMO, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
@@ -400,9 +409,30 @@ def check_async_delivery(core):
     bc = (burst["blocks"], burst["deltas"], burst["messages"])
     check("C4b burst 不改变内容（只改到达节奏）", bc == lc and bc[1] > 0,
           f"burst={bc} legacy={lc}")
-    check("C3b 预算被真的顶到（burst 下应恰好 256）",
-          ba["maxLinesPerCallback"] == 256 and pa["maxLinesPerCallback"] <= 256,
-          f"burst={ba['maxLinesPerCallback']}（无 burst 时 {pa['maxLinesPerCallback']}）")
+    # ★★ 2026-10-30：判据换代（旧判据是「burst 下应**恰好** 256 行」）。
+    #   旧判据守的是「行数上限被顶到」，但那要求 256 行能在 `kBudgetUs=4000` 内跑完
+    #   ⇒ 实际是在断言**机器速度**（单行成本 ≤ 15.6µs）。本机实测 195–252，
+    #   于是这条门每轮随机红，而它红的时候什么缺陷也没说明。
+    #   预算本来就是**双界**（行数 / 时间，谁先到谁生效）⇒ 正确的命题是
+    #   「预算真的顶到了」，即**撞到任一界**：
+    #     · 快机：撞行数上限 ⇒ `maxLinesPerCallback == 256`（`capStops ≥ 1`）
+    #     · 慢机：撞时间预算 ⇒ `budgetStops ≥ 1`，行数自然 < 256
+    #   两者都为 0 才说明 burst 不够大、判据在这一轮无区分力 —— 那时必须红。
+    #   ★ 代价（诚实记账）：行数上限这道保险在慢机上**不被判据覆盖**。要覆盖它
+    #     得让单行成本降到 ~15µs 以下，那是性能工作，不是这条判据的事。
+    #   ★ 代价（诚实记账，两条）：
+    #     ① 行数上限这道保险在慢机上**不被判据覆盖**（要覆盖得让单行成本降到
+    #        ~15µs 以下，那是性能工作，不是这条判据的事）；
+    #     ② 反过来，**删掉时间预算也不会让 C3/C3b 变红**——行数上限仍把回调钳在 256，
+    #        而 `capStops` 会接手变成 ≥1。要覆盖它得加「单次回调耗时 ≤ 预算 + 单行成本」
+    #        这类帧时判据（现有 `--cull-probe` 的帧时读数跨轮不可比，接不上）。
+    #        这里只保证「预算的双界里至少有一个真的在工作」，不声称两个都被覆盖。
+    cap_hit = ba["maxLinesPerCallback"] == 256 or ba["capStops"] >= 1
+    budget_hit = ba["budgetStops"] >= 1
+    check("C3b 预算被真的顶到（撞到行数上限或时间预算，任一双界）",
+          cap_hit or budget_hit,
+          f"burst={ba['maxLinesPerCallback']} capStops={ba['capStops']} "
+          f"budgetStops={ba['budgetStops']}（无 burst 时 {pa['maxLinesPerCallback']}）")
 
     check("C5 节奏化流下单行送达中位数 ≤1ms",
           ka["latencySamples"] > 0 and ka["latencyP50Us"] <= 1000,

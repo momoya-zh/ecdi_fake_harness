@@ -161,9 +161,15 @@ public:
     [[nodiscard]] int TranscriptCanvasX() const;
     // ★★ P4 Phase E：tooltip 单例浮层。ShowTooltipFor 记锚点 + 起 400ms 定时器
     //   （kTooltipTimer 到点才显示——TipButton::OnMouseEnter 调）；leave/点击
-    //   即 HideTooltip。浮层挂 m_scroll（最后子 = 最上层）。
+    //   即 HideTooltip。
+    // ★★ 2026-10-30（浮层迁移）：改走 `Window::ShowOverlay` 的 **Tooltip 层**，
+    //   不再挂 m_scroll。于是「不被视口裁剪」「点穿」「单例」三件事都由框架保证，
+    //   `m_hud.tooltip` / `m_hud.tooltipText` 只在**显示期间**有效（关闭即销毁）。
     void ShowTooltipFor(const ECDI::Widget* anchor, const std::string& text);
     void HideTooltip();
+    // 关掉当前显示中的 tooltip 并把两个句柄置空（`HideOverlay` 帧末才析构，
+    //   置空必须在同一处完成，否则中间态是悬空指针）。`HideTooltip` 会调它。
+    void HideTooltipOverlay();
     // kTooltipTimer 到点：若锚点仍在（未 leave），定位并显示浮层。
     void OnTooltipFire();
 
@@ -332,10 +338,13 @@ private:
         //     moreMenu 的注释，那里记了为什么不能用浮层）。ScrollView 内部
         //     恰好是「无布局、手动定位」的口子，正好承载浮层。
         ECDI::Button* jumpLatest = nullptr;   // 视口右下角浮层（显隐 = 离开贴底态）
-        // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层（Panel+Label 挂 m_scroll
-        //   最后子 = 最上层；ECDI 无 Tooltip 原语，harness 拼——见 UiKit::TipButton）。
-        ECDI::Panel* tooltip = nullptr;           // 浮层壳（隐藏态常驻）
-        ECDI::Label* tooltipText = nullptr;       // 提示文本（SetText 换文案）
+        // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层（ECDI 无 Tooltip 原语，
+        //   harness 拼——见 UiKit::TipButton）。
+        // ★★ 2026-10-30（浮层迁移）：**不再是常驻控件**——每次显示时新建并经
+        //   `Window::ShowOverlay` 挂 Tooltip 层，关闭即销毁 ⇒ 这两个句柄只在
+        //   「显示中」有效（`OnTooltipFire` 写、`HideTooltipOverlay` 清）。
+        ECDI::Panel* tooltip = nullptr;           // 浮层壳（显示期间有效）
+        ECDI::Label* tooltipText = nullptr;       // 提示文本（显示期间有效）
         // ★★ P4 Phase C（2026-10-25）：空状态引导卡（挂 m_content 顶部）。
         //   ★ 空转录（rows 0 且无 pending 气泡）⇒ 显示；任何行/pending 到达即拆。
         //   ★ 修的死胡同：首启（firstRun）关掉设置面板后屏幕全空（App.cpp 原注释
@@ -984,6 +993,10 @@ private:
     // 把模型侧显隐投到控件上（BuildUi 首帧与 RebuildUi 重建共用同一条路径——
     // 「投影只存在于一条路径」正是 2026-10-21 起始幻影 34px 空洞的教训）。
     void ApplySettingsVisibility();
+    // ★★ 2026-10-30：模态浮层的挂载/收回（挂载点 = overlayRoot，见成员注释）。
+    //   挂是**幂等**的（已挂 ⇒ 指针为空 ⇒ 直接返回）；收回只在 `RebuildUi` 用。
+    void MountSettingsOverlay();
+    void UnmountSettingsOverlay();
     // ★★ P4 F：遮罩 + 居中 sheet 的几何（sheet = clamp(视口-80, 280..620 ×
     //   240..560)）。浮层无父布局 ⇒ SetSize 后自己 Arrange（内部 stretch 生效）。
     void LayoutSettingsOverlay();
@@ -1011,7 +1024,13 @@ private:
     // m_previewError 落因，面板**仍然打开**（体内显示 notice——不静默）。
     bool OpenPreview(const std::string& rawPath);
     std::unique_ptr<ECDI::Widget> BuildPreviewSheet();   // 所有权交 BuildTranscriptViewport
+    // ★★ 2026-10-30：模型下拉的**建**（每次打开现建，挂/收归 SetModelPopupOpen）。
+    //   建的时候就把 `m_hud.modelPopup/modelPopupList/modelSearch/modelPopupFoot`
+    //   全部重设 —— 句柄只在「打开期间」有效。
+    std::unique_ptr<ECDI::Widget> BuildModelPopup();
     void ApplyPreviewVisibility();   // 唯一投影路径（BuildUi 首帧 + RebuildUi 共用）
+    void MountPreviewOverlay();      // ★ 2026-10-30：挂到 overlayRoot（幂等，同设置）
+    void UnmountPreviewOverlay();    // ★ 2026-10-30：只在 RebuildUi 收回
     void LayoutPreviewOverlay();     // 贴右几何（无父布局 ⇒ 自己 Arrange）
     void SetPreviewVisible(bool visible);
     void RebuildPreviewContent();    // 按模型态（path/lines/error）重建体内行
@@ -1049,8 +1068,13 @@ private:
     static std::string ProviderKeyEnvName(const std::string& providerId);
     static bool ReadEnvProviderKey(const std::string& providerId, std::string& out);
     // ── ★★ P4 Phase H（2026-10-25）：顶栏 chip + 模型下拉浮窗 ─────────────
-    //   浮窗挂 m_scroll（F 同款浮层口）；显隐 = m_modelPopupOpen 模型侧状态。
+    //   显隐 = m_modelPopupOpen 模型侧状态。
+    // ★★ 2026-10-30（浮层迁移）：下拉改走 `Window::ShowOverlay`（Normal 层）——
+    //   每次打开现建、关闭即销毁 ⇒ `m_hud.modelPopup/modelPopupList/modelSearch/
+    //   modelPopupFoot` **只在打开期间有效**（关闭由 `CloseModelPopup` 统一置空）。
     void SetModelPopupOpen(bool open);   // 唯一入口（chip 点击 / Ctrl+M / 行点击关）
+    void CloseModelPopup();              // 关 + 四个句柄置空（销毁在帧末，置空必须同步）
+    void RepositionModelPopup();         // 贴视口右上角（Relayout 里跟随 resize）
     void RebuildModelPopupList();        // 按搜索词重建行（开窗 + 搜索变化时）
     void UpdateModelChip();              // chip 文本（提供商 › 模型 · N% ▾）
 
@@ -1149,6 +1173,7 @@ private:
     void AppendHistoryProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendWorkspaceProbeSummary(std::string& json);   // ProbeSettings.cpp
     void AppendAsyncProbeSummary(std::string& json);   // ProbeSupport.cpp
+    void AppendOverlayProbeSummary(std::string& json);   // ProbeOverlay.cpp
 
     // ★★ Step 4 / 0e（2026-10-19）：**整树重建**——运行期切主题的唯一可行路径。
     //   ★ 为什么必须整树：`Theme.h:19-20` 的令牌是引用别名，颜色值在 `BuildUi`
@@ -1174,6 +1199,10 @@ private:
     // Step 4 探针入口（`--theme-probe`）。
     void RunThemeProbe();
     void RunWorkspaceProbe();
+    // ★★ 2026-10-30（浮层迁移）：浮层拓扑取证入口（`--overlay-probe`，ProbeOverlay.cpp）。
+    //   同步探针：全部相在**一次派发**里跑完（`HideOverlay` 立刻摘树，只是析构延后），
+    //   收尾复原状态后 Exit。判据清单见 `CliOptions::overlayProbe` 的注释。
+    void RunOverlayProbe();
 
     CliOptions m_options;
 
@@ -1282,6 +1311,20 @@ private:
     std::vector<std::string> m_previewLines;      // 打开时一次读入的行（≤512KB 上限内）
     bool m_previewTruncated = false;              // 超 512KB ⇒ true（体内截断 notice）
     std::string m_previewError;                   // 非空 = 体内显示错误 notice（面板仍开）
+    // ★★ 2026-10-30（浮层迁移，docs/overlay-migration-plan.md §3）：模态浮层的**所有权**
+    //   归 harness，挂载点 = `Window::GetOverlayRoot()`（ECDI Phase 42）。
+    //   ★ 为什么模态**不**走 `Window::ShowOverlay`：它移交所有权、`HideOverlay` 帧末销毁
+    //     ⇒ 常驻句柄（`m_hud.settings*` 那 12 个，被 5 个探针读、被保存链写）会当场悬空。
+    //     模态因此走「托管挂载」：挂 = `AddChild` 把所有权交给 overlayRoot；收 = `RemoveChild`
+    //     拿回来。拿到的是同一套浮层根能力（越界不裁 / 不被布局挤 / 恒在顶层）。
+    //   ★ **唯一真相就是这两个指针**：非空 ⇔ 未挂载（挂着时所有权在 overlayRoot）。
+    //     不另设 bool —— 两处状态必然漂移（「视图状态只存在控件里」那条教训的同族）。
+    //   ★ 正常路径**只挂不收**：关闭只是 `SetVisible(false)`（挂在树上但不可见 ⇒ 不绘制、
+    //     不参与命中）。收回只在 `RebuildUi` 里做（那里要换新令牌重建它们），且不在派发栈上。
+    std::unique_ptr<ECDI::Widget> m_settingsMaskOwned;
+    std::unique_ptr<ECDI::Widget> m_settingsSheetOwned;
+    std::unique_ptr<ECDI::Widget> m_previewMaskOwned;
+    std::unique_ptr<ECDI::Widget> m_previewSheetOwned;
     // 注入 core 的 API key（env block 通道，规格 §8.5 D5）。
     // ★ 不"用完即清"：每个新会话（＋按钮/临时会话）都要再拉一个 core，
     //   env 注入是每次 spawn 都走同一条路。key 留在 GUI 进程内存属可接受形态

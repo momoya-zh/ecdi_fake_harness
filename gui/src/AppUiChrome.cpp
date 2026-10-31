@@ -4,10 +4,13 @@
 // 为什么单独一个文件：这里回答的是「窗口由哪几块组成、每块多高」——是**结构**，
 //   不是内容。中栏里具体长什么样归 AppUiMain.cpp，摆位归 AppHud.cpp。
 //   三者的修改理由完全不同：加一块区域改这里，改一个气泡改 Main，改像素位置改 Hud。
-// ★ `HarnessRootLayout` 只在本文件用（BuildUi 装它）：它逐位复刻
-//   VerticalLayout(0,true) 的摆位算法，但对 Exempt 注册的浮层完全跳过——
-//   原版会把可见浮层当固定尺寸子统计，mask+sheet 一显示主区就被挤成 0×0。
-// ★ 2026-10-25：从 App.cpp 切出（Stage 1e）。函数体逐字节相同。
+// ★★ 2026-10-30（浮层迁移，docs/overlay-migration-plan.md §3）：本文件里那个
+//   `HarnessRootLayout`（逐位复刻 VerticalLayout(0,true) 只为给浮层开 Exempt 豁免）
+//   已**整类删除**。根因是浮层不再是 root 的子节点——设置/预览的遮罩与 sheet 改挂
+//   `Window::GetOverlayRoot()`（ECDI Phase 42），于是原版 `VerticalLayout` 又变得可用，
+//   「可见浮层被当固定尺寸子统计 ⇒ 主区挤成 0×0」这个前提消失了。
+//   连带删掉的还有 BuildUi 尾部那段「从 m_scroll 搬到 root 末尾」的转移挂载。
+// ★ 2026-10-25：从 App.cpp 切出（Stage 1e）。
 // ============================================================
 
 #include "App.h"
@@ -25,7 +28,6 @@
 #endif
 
 #include "ECDI/Layout/HorizontalLayout.h"
-#include "ECDI/Layout/Layout.h"   // HarnessRootLayout 基类
 #include "ECDI/Layout/VerticalLayout.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Widget/Label.h"
@@ -37,7 +39,6 @@
 
 #include <algorithm>
 #include <memory>
-#include <set>   // HarnessRootLayout 的豁免集
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,79 +55,13 @@ using harness::internal::kSidebarGroupH;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarRowH;
 
-// ★★ P4 F（2026-10-25）：root 专用布局——逐位复刻 VerticalLayout(0, true) 的
-//   摆位算法（spacing=0 / fillCrossAxis / 隐藏子 C-VIS 停泊），但对 **Exempt 注册
-//   的浮层**（设置遮罩/sheet）完全跳过：不进统计、不停泊、不摆位（几何归
-//   LayoutSettingsOverlay）。
-//   ★ 为什么必须换：原 VerticalLayout 把**可见的**浮层当固定尺寸子统计——
-//   mask(整窗高)+sheet 一显示，主区就被挤没了（实测 counting 被挤到 0×0）。
-//   ★ 隐藏子停泊语义保留（C-VIS-4）：非豁免的隐藏子照旧停 (−w,−h)。
-class HarnessRootLayout : public ECDI::Layout {
-public:
-    void Exempt(ECDI::Widget* w) { m_exempt.insert(w); }
-
-    void Arrange(ECDI::Widget& parent) override {
-        const size_t count = parent.GetChildCount();
-        int fixedTotal = 0;
-        int totalStretch = 0;
-        size_t visibleCount = 0;
-        size_t visibleStretchCount = 0;
-        for (size_t i = 0; i < count; ++i) {
-            const ECDI::Widget* child = parent.GetChildAt(i);
-            if (!child->IsVisible() || m_exempt.count(child) > 0) continue;
-            ++visibleCount;
-            if (child->GetStretch() > 0) {
-                totalStretch += child->GetStretch();
-                ++visibleStretchCount;
-            } else {
-                fixedTotal += child->GetHeight();
-            }
-        }
-        const int remaining =
-            (std::max)(0, parent.GetHeight() - fixedTotal);
-        const int cross = (std::max)(0, parent.GetWidth());
-        int y = 0;
-        int allocated = 0;
-        size_t stretchSeen = 0;
-        for (size_t i = 0; i < count; ++i) {
-            ECDI::Widget* child = parent.GetChildAt(i);
-            if (m_exempt.count(child) > 0) continue;   // 浮层：视而不见
-            if (!child->IsVisible()) {
-                const int parkW = child->GetWidth();
-                const int parkH = child->GetHeight();
-                child->SetPosition(-parkW, -parkH);   // C-VIS-4 停泊
-                continue;
-            }
-            if (child->GetStretch() > 0) {
-                ++stretchSeen;
-                int height = (stretchSeen == visibleStretchCount)
-                                 ? remaining - allocated
-                                 : static_cast<int>(static_cast<long long>(remaining) *
-                                                    child->GetStretch() / totalStretch);
-                allocated += height;
-                child->SetSize(cross, height);
-            } else {
-                child->SetSize(cross, child->GetHeight());
-            }
-            child->SetPosition(0, y);
-            y += child->GetHeight();
-        }
-    }
-
-private:
-    std::set<const ECDI::Widget*> m_exempt;
-};
-
 void HarnessApp::BuildUi(ECDI::Window& window) {
     ECDI::Widget& root = window.GetRootWidget();
-    // ★★ P4 F 修复（实测反馈）：root 布局换 HarnessRootLayout——逐位复刻
-    //   VerticalLayout(0,true) 但跳过 Exempt 注册的全窗浮层（设置遮罩/sheet，
-    //   它们挂 root 盖全窗）。原布局把**可见的**浮层当固定尺寸子统计
-    //   （mask 整窗高 + sheet 560 高），一开设置主区就被挤没了。浮层几何
-    //   归 LayoutSettingsOverlay。BuildUi 尾部转移挂载后注册豁免。
-    auto rootLayout = std::make_unique<HarnessRootLayout>();
-    HarnessRootLayout* const rootLayoutRaw = rootLayout.get();
-    root.SetLayout(std::move(rootLayout));
+    // ★★ 2026-10-30（浮层迁移）：root 布局回到**原版** `VerticalLayout(0,true)`。
+    //   P4 F 当时换 `HarnessRootLayout` 的唯一理由是「可见浮层被当固定尺寸子统计
+    //   ⇒ 一开设置主区就被挤成 0×0」，而浮层现在是 overlayRoot 的子节点、
+    //   根本不在 root 的子表里 ⇒ 那个前提消失，豁免机制随之作废。
+    root.SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true));
 
     // CaptionBar 是 root 的直接子项：保持贴边全宽，空白区可拖动，按钮由 harness 自绘
     // （ECDI 原生 CaptionBar 把颜色写死，跟不了主题 —— 见 ThemedCaptionBar.h 头注）。
@@ -147,29 +82,12 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     RebuildSessionList();
     RebuildHistoryList();
     RebuildProjectList();
-    // ★★ P4 F 修复（实测反馈「变色应该是整个变色」）：遮罩 + sheet 转移到
-    //   **root 末尾**（最后子 = 最上层，盖过 caption/counting 全窗——含顶栏/
-    //   侧栏/检查器；此前挂 m_scroll 只盖转录视口）。转移必须在 root.Arrange()
-    //   **之前**：Arrange 递归驱动子树，挂好后 mask/sheet 尺寸交给
-    //   LayoutSettingsOverlay（Relayout 尾部）摆。
-    if (m_hud.settingsMask && m_hud.settingsMask->GetParent() == m_scroll) {
-        root.AddChild(m_scroll->RemoveChild(m_hud.settingsMask));
-        rootLayoutRaw->Exempt(m_hud.settingsMask);   // 布局视而不见
-    }
-    if (m_hud.settingsPanel && m_hud.settingsPanel->GetParent() == m_scroll) {
-        root.AddChild(m_scroll->RemoveChild(m_hud.settingsPanel));
-        rootLayoutRaw->Exempt(m_hud.settingsPanel);
-    }
-    // ★★ P4 Phase I（2026-10-26）：预览 mask/sheet 同款转移（盖全窗；几何归
-    //   LayoutPreviewOverlay——root.Arrange 跳过浮层子，布局与浮层互不干扰）。
-    if (m_hud.previewMask && m_hud.previewMask->GetParent() == m_scroll) {
-        root.AddChild(m_scroll->RemoveChild(m_hud.previewMask));
-        rootLayoutRaw->Exempt(m_hud.previewMask);
-    }
-    if (m_hud.previewPanel && m_hud.previewPanel->GetParent() == m_scroll) {
-        root.AddChild(m_scroll->RemoveChild(m_hud.previewPanel));
-        rootLayoutRaw->Exempt(m_hud.previewPanel);
-    }
+    // ★★ 2026-10-30（浮层迁移）：这里原本有 18 行「从 m_scroll 搬到 root 末尾 + 注册
+    //   Exempt」的转移挂载——随 `HarnessRootLayout` 一起删除。遮罩与 sheet 现在由
+    //   `BuildTranscriptViewport` 直接交给 harness 持有（`m_settings*Owned` /
+    //   `m_preview*Owned`），首次显示时挂到 `Window::GetOverlayRoot()`（见
+    //   `MountSettingsOverlay`）。于是「盖过顶栏/侧栏/检查器」由浮层根保证，
+    //   不再依赖 root 的子节点顺序。
     // ★★ 2026-10-26（按模式分流）：首帧与重建都在 root.Arrange() 之前把
     //   `m_devMode` 投影到所有开发者专属控件上——在开发者模式下所有控件本身已是
     //   可见的，同值守卫下零额外 Arrange、零额外 Invalidate。
@@ -205,6 +123,31 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
 void HarnessApp::RebuildUi() {
     if (!m_window) return;
 
+    // ⓪ ★★ 2026-10-30（浮层迁移）：先把 tooltip 收掉。
+    //   它是 overlayRoot 上的浮层（不在 root 下 ⇒ 下面的拆树碰不到它），而
+    //   `m_tooltipAnchor` 指向的按钮**马上就会被拆掉**——定时器若在飞，
+    //   `OnTooltipFire` 会拿一个已析构的锚点算坐标（悬空读）。这里一次性
+    //   把「定时器 + 锚点 + 浮层」全部收干净，顺带解决这条历史隐患。
+    HideTooltip();
+
+    // ⓪b ★★ 2026-10-31（审计整改批 A 复核）：模型下拉**同样**必须先收。
+    //   它是 `ShowOverlay` 注册的浮层（挂 Normal 层），**不在 root 子树里** ⇒
+    //   下面的拆树碰不到它。不收的两个后果：
+    //     ① 旧下拉留在屏幕上，且仍是**旧令牌**——与设置面板那条「两套同屏、
+    //        切主题后配色不跟着变」同族（④ 的注释记的正是这个缺陷形状）；
+    //     ② 更硬的一条：`OverlayOptions::exemptWidget` 指向 `modelChip`，而 chip
+    //        属于 root 子树、马上被析构。框架的条目里于是留下一个**悬垂指针**，
+    //        `Application::OnMouseButtonDown` 的 `IsWithinSubtree(hit, exemptWidget)`
+    //        会沿父链上溯 ⇒ 下一次点外就是一次 UAF 读。
+    //        ★ ECDI 审计整改批 A 只注销 `anchorWidget` / `previousFocus`，
+    //          `exemptWidget` 是同一族的第 5 个、仍未覆盖（已回报，见方案 §11.2）。
+    //          本仓先自保：重建前把它收掉，让条目随 `HideOverlay` 一起消失。
+    //   ★ 模型位要**先存后还**：`HideOverlay` 会经 `onClosed` 把 `m_modelPopupOpen`
+    //     清掉，而重建后的投影（`BuildUi` 末尾 `SetModelPopupOpen(m_modelPopupOpen)`）
+    //     读的正是它。不还回去 = 切一次主题就把用户开着的下拉静默吞掉。
+    const bool modelPopupWasOpen = m_modelPopupOpen;
+    SetModelPopupOpen(false);
+
     // ① 视图侧的用户状态先写回模型。`RebuildTranscriptView` 内部也会调一次，
     //    但这里动的是**整棵树**（连 `m_scroll` 都要换），必须在拆之前再保一次，
     //    否则行的展开/已答会跟着旧控件一起消失（0c 的 `buildTitle` 就是这类回退）。
@@ -229,6 +172,14 @@ void HarnessApp::RebuildUi() {
     //    `Application::OnTimer` 会在下一个 tick 直接 return 的原因
     //    （定时器只派给焦点控件，`Application.cpp:303-339`）——**所以后面必须重设焦点**，
     //    否则回放 tick 停摆、探针再也跑不动。这是本步的头号结构性风险。
+    // ★★ 2026-10-30（浮层迁移）：模态浮层**不在 root 下**（挂 overlayRoot）⇒ 上面这个
+    //   循环拆不到它们。必须先显式收回，否则 `BuildUi` 会把新 sheet 赋给
+    //   `m_settings*Owned`，而旧的那套还挂在浮层树上——**两套同屏**，且旧的仍是旧令牌
+    //   （切主题后设置面板配色不跟着变，而「面板还在不在」类判据全绿）。
+    //   ★ 收回安全：本函数由 `OnReplayTick` 在派发栈之外调用（`m_uiRebuildPending`），
+    //     `RemoveChild` 不会命中「派发中摘自己」那条路径。
+    UnmountSettingsOverlay();
+    UnmountPreviewOverlay();
     ECDI::Widget& root = m_window->GetRootWidget();
     while (root.GetChildCount() > 0) {
         root.RemoveChild(root.GetChildAt(0));
@@ -238,6 +189,9 @@ void HarnessApp::RebuildUi() {
     //    幂等），然后按新令牌把整棵树建出来。
     harness::SwitchTheme(harness::g_themeLight);
     m_window->SetBackgroundColor(m_options.probeContrast ? kProbeCanvas : harness::kContentBg);
+    // ★ ⓪b 的模型位在这里还回去：`BuildUi` 末尾的投影据此用**新令牌**重建下拉。
+    //   必须写在 `BuildUi` **之前**——那一行投影就是这条状态的唯一消费者。
+    m_modelPopupOpen = modelPopupWasOpen;
     BuildUi(*m_window);
 
     // ⑥ 续接计数器。`BuildUi` 刚建出的新面板计数为 0；把 ①② 的快照写回去，

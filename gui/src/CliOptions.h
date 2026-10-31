@@ -218,6 +218,27 @@ struct CliOptions {
     //       且行尾是 LF（不是 CRLF）
     //   ★ 默认 false ⇒ 摘要逐字节不变（本仓铁律）。
     bool menuProbe = false;            // --menu-probe：中栏头导出/菜单判据
+    // ★★ 2026-10-30（浮层迁移，docs/overlay-migration-plan.md §7）：浮层拓扑取证。
+    //   【要回答什么】6 处浮层绕行换成 `Window::GetOverlayRoot()` 之后，本仓多了一条
+    //     **结构不变量**，而既有判据一条都看不见它：`--theme-probe` 只问「面板还在不在」，
+    //     `--flow-probe` 只问可见性——「在」与「只有一套在」是两件事。
+    //   【核心读数】`overlayRootChildren`：浮层根恒有 3 个孩子（三个层，构造期建好），
+    //     托管挂载的遮罩/sheet 直接挂上去 ⇒ 期望 `3 + mountedManaged`。
+    //     旧的一套没被收回 ⇒ 多 2；`ShowOverlay` 重复注册 ⇒ 层里多一个。
+    //   【判据逐条】
+    //     · closed        全关后浮层根只剩三个层；托管挂载**不**让 `HasActiveOverlay()` 为真
+    //                     （托管挂载不是注册式浮层 ⇒ 没有 ESC / 点外关闭 / 焦点恢复）
+    //     · mount         遮罩与 sheet 的父节点都是浮层根；遮罩盖满客户区；sheet 水平居中
+    //     · modal-blank   点遮罩空白处**不关闭**（用户裁决的现状语义），
+    //                     且这一击**到不了**顶栏——拿主题钮当探针：`g_themeLight` 不许翻
+    //     · rebuild       整树重建后 sheet/遮罩换新令牌，浮层根孩子数**不变**（不叠套）
+    //     · theme         切主题 + 重建后 sheet 内文字色跟着变（重建真的换了令牌）
+    //     · tip           tooltip 在浮层根下、不在 root 子树里；关掉后句柄立即为空
+    //     · tip-through   把 tooltip 盖在主题钮上再点：**点击必须穿过**它落到钮上
+    //                     （Tooltip 层在 `HitTestWindow` 里被显式跳过）
+    //     · popup         下拉在浮层根下；点外面关掉（Light Dismiss）
+    //   ★ 默认 false ⇒ 摘要逐字节不变（本仓铁律）。
+    bool overlayProbe = false;         // --overlay-probe：浮层拓扑与 Light Dismiss 判据
     // ★★ 2026-10-21（「先把 UI 完善」第 1 项）：窗口可拉伸的取证。
     //   ★ 为什么必须有：尺寸变化的失败**在既有读数里完全不可见**——`blocks`/
     //     `deltas`/`seqGaps` 与窗口多大毫无关系，而截图只能证明"某一刻看起来还行"。
@@ -312,7 +333,7 @@ struct CliOptions {
                previewProbe || persistProbe || probeContrast || stateProbe || hitProbe ||
                reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
-               workspaceProbe || menuProbe || resizeProbe || enterProbe ||
+               workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
                growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe;
     }
 };

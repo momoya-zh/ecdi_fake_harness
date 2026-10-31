@@ -409,6 +409,11 @@ void HarnessApp::AppendAsyncProbeSummary(std::string& json) {
     json += ", \"posts\": " +
             std::to_string(m_sess->child ? m_sess->child->WakePosts() : 0);
     json += ", \"maxLinesPerCallback\": " + std::to_string(m_probeState.apMaxLinesPerCallback);
+    // ★ 2026-10-30：预算的**停止原因**（双界：行数 / 时间）。
+    //   `capStops + budgetStops == 0` ⇒ 每次都把队列取空了 ⇒ burst 不够大，
+    //   「预算生效」这条判据在该轮无区分力（regress 的 C3b 就靠这个判断）。
+    json += ", \"capStops\": " + std::to_string(m_probeState.apCapStops);
+    json += ", \"budgetStops\": " + std::to_string(m_probeState.apBudgetStops);
     json += ", \"latencySamples\": " + std::to_string(m_probeState.apLatencyUs.size());
     json += ", \"latencyP50Us\": " + std::to_string(p50);
     json += ", \"latencyP99Us\": " + std::to_string(p99);

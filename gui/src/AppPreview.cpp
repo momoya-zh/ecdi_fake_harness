@@ -306,14 +306,42 @@ void HarnessApp::RebuildPreviewContent() {
 }
 
 // ── 投影：BuildUi 首帧与 RebuildUi 共用这一条路径（起始幻影教训）。
+// ★★ 2026-10-30（浮层迁移）：与设置同款——先挂（幂等）再投影，关闭只 `SetVisible(false)`
+//   不收回（收回会清焦点 ⇒ tick 停摆，理由见 `ApplySettingsVisibility` 的注释）。
+// ── ★★ 2026-10-30（浮层迁移）：预览浮层的挂载 / 收回（与设置同一套，见
+//    `AppSettings.cpp` 里 `MountSettingsOverlay` 头注的取舍理由）。
+void HarnessApp::MountPreviewOverlay() {
+    if (!m_window) return;
+    ECDI::Widget& overlayRoot = m_window->GetOverlayRoot();
+    if (m_previewMaskOwned) overlayRoot.AddChild(std::move(m_previewMaskOwned));
+    if (m_previewSheetOwned) overlayRoot.AddChild(std::move(m_previewSheetOwned));
+}
+
+void HarnessApp::UnmountPreviewOverlay() {
+    if (!m_window) return;
+    ECDI::Widget& overlayRoot = m_window->GetOverlayRoot();
+    if (m_hud.previewPanel && m_hud.previewPanel->GetParent() == &overlayRoot) {
+        m_previewSheetOwned = overlayRoot.RemoveChild(m_hud.previewPanel);
+    }
+    if (m_hud.previewMask && m_hud.previewMask->GetParent() == &overlayRoot) {
+        m_previewMaskOwned = overlayRoot.RemoveChild(m_hud.previewMask);
+    }
+}
+
 void HarnessApp::ApplyPreviewVisibility() {
     if (!m_hud.previewPanel) return;
+    if (m_previewOpen) MountPreviewOverlay();
     m_hud.previewPanel->SetVisible(m_previewOpen);
     if (m_hud.previewMask) m_hud.previewMask->SetVisible(m_previewOpen);
     // 三件套互斥（menu/settings/preview）：开预览合其余浮层——同一时刻只该有
     // 一层模态；反向（开 settings/model 时合预览）在各自的 Set 里做。
     if (m_previewOpen && m_moreMenuOpen) SetMoreMenuOpen(false);
     if (m_previewOpen && m_settingsVisible) SetSettingsVisible(false);
+    // ★★ 2026-10-30（浮层迁移，自查补）：同设置——注册式下拉在 Normal 层，
+    //   而 `HitTestWindow` 的探测序是 [A] Modal → [B] Normal → [C] 托管挂载，
+    //   ⇒ 模态开着时下拉会**先**被命中（迁移前靠"最后 AddChild 在最上层"没这问题）。
+    //   互斥把"同时存在"变成结构上不可能，不依赖框架的探测顺序。
+    if (m_previewOpen && m_modelPopupOpen) SetModelPopupOpen(false);
     LayoutPreviewOverlay();
 }
 

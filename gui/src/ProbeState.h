@@ -84,6 +84,11 @@ struct ProbeState {
     std::vector<ThemeProbeRec> themeProbeLog;
     bool themeProbeDone = false;
 
+    // ★★ 2026-10-30（浮层迁移）：浮层拓扑取证。同步探针（跑完即 Exit），
+    //   故只有「做完了没有」一个标志，没有跨 tick 的步号/时刻。
+    std::vector<OverlayProbeRec> overlayProbeLog;
+    bool overlayProbeDone = false;
+
     int themeProbeStep = 0;
     std::chrono::steady_clock::time_point themeProbeNextAt;
     UiSnapshot themeUiBefore;        // baseline 的四路快照（所有 rebuild 相的比对面）
@@ -184,6 +189,15 @@ struct ProbeState {
     size_t apLinesWake = 0;          // 由**唤醒回调**处理的行数
     size_t apLinesTick = 0;          // 由 tick 兜底处理的行数
     size_t apMaxLinesPerCallback = 0;  // 单次回调最多处理了多少行（预算是否生效）
+    // ★ 2026-10-30：预算的**停止原因**计数。预算是「行数与时间谁先到」双界：
+    //   · `apCapStops`   = 撞到行数上限（`kMaxLinesPerCallback`）
+    //   · `apBudgetStops`= 撞到时间预算（`kBudgetUs`）
+    //   · 两者都为 0     = 每次都把队列取空了（burst 不够大，判据无区分力）
+    //   ★ 为什么要分：`maxLinesPerCallback == 256` 只在前者成立时才为真，而单行成本
+    //     决定了哪个界先到 —— 那是**机器速度**，不是被测性质。分开记之后，
+    //     「预算真的顶到了」可以写成「撞到任一双界」，快机慢机都成立。
+    size_t apCapStops = 0;
+    size_t apBudgetStops = 0;
     size_t apCallbacks = 0;          // 唤醒回调执行次数
     std::vector<uint64_t> apLatencyUs;  // 入队 → HandleLine 的墙钟差（开戳时才有）
     bool apEofSeen = false;

@@ -104,6 +104,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.workspaceProbe = true;  // v3：workspace ack 与 optimistic prompt 判据
         } else if (arg == L"--menu-probe") {
             options.menuProbe = true;       // ★ 2026-10-21：中栏头导出/菜单判据
+        } else if (arg == L"--overlay-probe") {
+            options.overlayProbe = true;    // ★ 2026-10-30：浮层拓扑 / Light Dismiss 判据
         } else if (arg == L"--resize-probe") {
             options.resizeProbe = true;     // ★ 2026-10-21：窗口拉伸的布局判据
         } else if (arg == L"--enter-probe") {
@@ -209,6 +211,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --history-probe                  Step 5：打开历史会话（列表/跳到末尾/sidecar）判据\n"
                     L"  --workspace-probe                协议 v3：workspace 与 prompt client_id 判据\n"
                     L"  --menu-probe                     中栏头 `↗` 导出 / `···` 菜单判据\n"
+                    L"  --overlay-probe                  浮层拓扑（浮层根/重建不叠套/Light Dismiss）判据\n"
                     L"  --resize-probe                   窗口拉伸：行宽/标题栏/无横滚条判据\n"
                     L"  --enter-probe                    Enter 发送 / Shift+Enter 换行判据\n"
                     L"  --hud-probe                      HUD 指针“读了但没建”判据\n"

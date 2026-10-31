@@ -295,6 +295,11 @@ void HarnessApp::WriteSummary() {
         AppendHistoryProbeSummary(json);
     }
 
+    // ★★ 2026-10-30（浮层迁移）：浮层拓扑探针。同样**只在开启时写**。
+    if (m_options.overlayProbe && !m_probeState.overlayProbeLog.empty()) {
+        AppendOverlayProbeSummary(json);
+    }
+
     std::snprintf(buf, sizeof(buf), "  \"seqGaps\": %zu,\n", m_sess->transcript.SeqGaps());
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"violations\": %zu,\n", m_sess->transcript.Violations());
@@ -329,6 +334,10 @@ void HarnessApp::WriteSummary() {
     //   · `--legacy-poll` 世界：`avgBlockedUs` ≈ 8000（空闲 tick 把 8ms 等满）
     //   · 默认（推）世界：`avgBlockedUs` ≈ 0，且 `linesViaWake` 占绝对多数
     //   · `maxLinesPerCallback` ≤ 256（预算生效；去掉预算这个数会跳到数千）
+    //   · `capStops` / `budgetStops` = 预算的**停止原因**（行数上限 / 时间预算）。
+    //     ★ 2026-10-30：预算是双界、谁先到谁生效，而哪个先到取决于单行成本（机器速度）。
+    //     判据「预算被真的顶到」必须写成「撞到任一界」，只认行数上限会把机器速度
+    //     当成被测性质（本机 4000µs 只够 ~250 行 ⇒ 那条门曾每轮随机红）。
     //   · `latencyP99Us` 与 tick 周期（33000µs）脱钩——延迟不再由渲染节奏决定
     //   ★ 默认关闭 ⇒ 摘要里连 `asyncProbe` 键都不出现（本仓铁律）。
     if (m_options.asyncProbe) {

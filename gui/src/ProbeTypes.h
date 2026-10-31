@@ -120,6 +120,36 @@ struct ThemeProbeRec {
     size_t sessionCount = 0;
 };
 
+// ★★ 2026-10-30（浮层迁移）：浮层拓扑取证（`--overlay-probe`）。
+//   【为什么需要它】迁移把 6 处绕行换成 ECDI Phase 42 的浮层根之后，本仓多了一条
+//     **结构不变量**：模态/tooltip/下拉都必须挂在 `Window::GetOverlayRoot()` 下，
+//     且整树重建（切主题）不得让新旧两套同屏。此前**没有任何探针读过 `GetOverlayRoot()`**
+//     ——旧判据只问「面板还在不在」，而"在"与"只有一套在"是两件事。
+//   【读数设计】`overlayRootChildren` 是这套判据的核心：
+//     浮层根**恒有 3 个孩子**（Normal/Modal/Tooltip 三个层，构造期建好），
+//     托管挂载的遮罩与 sheet 直接挂上去 ⇒ 期望值 = 3 + 已挂载数。
+//     ★ 这个恒等式能同时抓住两类缺陷：①旧的一套没收（多 2）；
+//       ②`ShowOverlay` 的浮层重复注册（层里的孩子数对不上）。
+struct OverlayProbeRec {
+    std::string phase;          // closed / mount / modal-blank / rebuild / theme /
+                                // tip / tip-through / popup / popup-dismiss
+    int overlayRootChildren = 0;   // 浮层根直接子节点数（期望 3 + mountedManaged）
+    int mountedManaged = 0;        // 托管挂载的遮罩/sheet 数（按 GetParent 实测，不看指针非空）
+    bool settingsOnOverlay = false;// 设置 sheet 的父节点 == 浮层根
+    bool maskOnOverlay = false;    // 遮罩的父节点 == 浮层根
+    bool tipOnOverlay = false;     // tooltip 的祖先链上有浮层根、且**不在** root 子树里
+    bool popupOnOverlay = false;   // 下拉的祖先链上有浮层根
+    bool settingsVisible = false;
+    bool popupOpen = false;        // 模型位（不是控件位）
+    bool tipAlive = false;         // `m_hud.tooltip` 非空
+    bool anyRegistered = false;    // `HasActiveOverlay()`——托管挂载**不该**让它为真
+    int sheetX = 0;                // sheet 左缘（居中判据）
+    int sheetW = 0;
+    int clientW = 0;               // 客户区宽（居中判据的分母）
+    bool matched = true;
+    std::string firstDivergence;
+};
+
 struct UiSnapshot {
     std::vector<std::string> sidebar;   // SnapshotSessionList()
     std::vector<std::string> transcript;// SnapshotRows()

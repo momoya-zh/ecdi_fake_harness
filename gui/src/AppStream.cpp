@@ -107,12 +107,17 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
 
     const auto drainStart = std::chrono::steady_clock::now();
     size_t handled = 0;
+    // ★ 2026-10-30：记下「循环为什么停」。预算是**双界**（行数/时间），
+    //   而哪个界先到取决于单行成本 = 机器速度 ⇒ 判据不能只认其中一个
+    //   （`--regress` 的 C3b 曾因此在本机恒红：4000µs 只够 ~250 行）。
+    bool stoppedByBudget = false;
     std::string line;
     while (handled < kMaxLinesPerCallback) {
         if (handled > 0 &&
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - drainStart)
                                       .count()) >= kBudgetUs) {
+            stoppedByBudget = true;
             break;
         }
         std::chrono::steady_clock::time_point stamp;
@@ -136,6 +141,13 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
             m_probeState.apLinesWake += handled;
             ++m_probeState.apCallbacks;
             if (handled > m_probeState.apMaxLinesPerCallback) m_probeState.apMaxLinesPerCallback = handled;
+            // ★ 停止原因只统计**唤醒回调**（与 `apMaxLinesPerCallback` 同口径）：
+            //   tick 兜底那条路径不是被测对象（它的存在本身是 C2 的兜底项）。
+            if (handled == kMaxLinesPerCallback) {
+                ++m_probeState.apCapStops;
+            } else if (stoppedByBudget) {
+                ++m_probeState.apBudgetStops;
+            }
         } else {
             m_probeState.apLinesTick += handled;
         }
@@ -327,6 +339,10 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::sidebarProbe, &ProbeState::sidebarProbeDone, &HarnessApp::RunSidebarProbe},
                 {&CliOptions::answerProbe, &ProbeState::answerProbeDone, &HarnessApp::RunAnswerProbe},
                 {&CliOptions::menuProbe, &ProbeState::menuProbeDone, &HarnessApp::RunMenuProbe},
+                // ★ 2026-10-30：浮层拓扑。同步组（跑完即 Exit）——它全部判据都在
+                //   一次派发里可观测：`HideOverlay` **立刻**从层里摘除（只有析构延后到
+                //   帧末），所以"孩子数对不对"当场就能读，不需要等下一帧。
+                {&CliOptions::overlayProbe, &ProbeState::overlayProbeDone, &HarnessApp::RunOverlayProbe},
                 {&CliOptions::resizeProbe, &ProbeState::resizeProbeDone, &HarnessApp::RunResizeProbe},
                 {&CliOptions::enterProbe, &ProbeState::enterProbeDone, &HarnessApp::RunEnterProbe},
                 {&CliOptions::growProbe, &ProbeState::growProbeDone, &HarnessApp::RunGrowProbe},

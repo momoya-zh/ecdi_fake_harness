@@ -121,6 +121,13 @@ inline const ECDI::Color kProbeCanvas = ECDI::Color::FromRGBA8(255, 255, 255, 25
 inline const ECDI::Color kProbeBg  = ECDI::Color::FromRGBA8(255, 255, 255, 255);
 inline const ECDI::Color kProbeInk = ECDI::Color::FromRGBA8(0, 0, 0, 255);
 
+// ── ★★ P4 E / 2026-10-30：tooltip 配色（深底浅字）──
+//   两主题通用，**不进 `g_theme`**：它是浮层系统的固定视觉，不是随主题走的表面色。
+//   ★ 2026-10-30 上提：tooltip 迁到 `Window::ShowOverlay`（Tooltip 层）后，浮层
+//     改由 `AppHud.cpp` 的 `OnTooltipFire` 现建现挂 ⇒ 配色要跨 TU 共用（原来是
+//     `AppUiMain.cpp` 的匿名 namespace 常量，只有建树期用）。
+inline const ECDI::Color kTooltipInk = ECDI::Color::FromRGBA8(240, 241, 245);
+
 // 探针态取高对比色，否则取常规令牌（调用点写法统一）。
 //   ★ 这里破例写成 inline：一行谓词，AppTranscript 里 22 处调用点都在建行热路径上，
 //     为它多一个 TU 外调不值得。头文件注释里「不许 inline 实现」那条针对的是

@@ -25,6 +25,8 @@
 
 #include "ECDI/Core/Logger.h"
 #include "ECDI/Core/String.h"   // ECDI::UTF8ToWide（日志与配置路径）
+#include "ECDI/Window/OverlayTypes.h"   // ★ 2026-10-30：模型下拉走浮层根（OverlayOptions）
+#include "ECDI/Window/Window.h"         // ★ 同上：ShowOverlay / HideOverlay
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
 #include "ECDI/Widget/ScrollView.h"
 
@@ -101,10 +103,51 @@ void HarnessApp::SetMoreMenuOpen(bool open) {
     }
 }
 
+// ── ★★ 2026-10-30（浮层迁移）：模态浮层的挂载 / 收回 ───────────────────────
+// 挂载点 = `Window::GetOverlayRoot()`（ECDI Phase 42 的浮层根，几何覆盖全客户区）。
+// ★ 为什么**不用** `Window::ShowOverlay`：它 `std::unique_ptr` 收走所有权，而
+//   `HideOverlay` 把控件塞进 `m_pendingDestroyOverlays` 帧末销毁 ⇒ 关闭即失去控件。
+//   设置面板有 12 个常驻句柄（`m_hud.settings*`），被 `--settings-probe` /
+//   `--valign-probe` / `--key-probe` / `--flow-probe` / `--persist-probe` 读、
+//   被 `OnSettingsSave` 写 ⇒ 重建式改造的代价远超收益。故模态走「托管挂载」：
+//   能力（越界不裁 / 不被布局挤 / 恒在顶层）由浮层根给，所有权仍归 harness。
+// ★ 挂载序 = 先遮罩后 sheet：`Widget::Paint` 正序绘制（sheet 盖遮罩）、
+//   `Widget::HitTest` 逆序命中（先命中 sheet）——两边都对。
+void HarnessApp::MountSettingsOverlay() {
+    if (!m_window) return;
+    ECDI::Widget& overlayRoot = m_window->GetOverlayRoot();
+    // 幂等：已挂 ⇒ 指针已被 `AddChild` 取走 ⇒ 两行都是 no-op。
+    if (m_settingsMaskOwned) overlayRoot.AddChild(std::move(m_settingsMaskOwned));
+    if (m_settingsSheetOwned) overlayRoot.AddChild(std::move(m_settingsSheetOwned));
+}
+
+// 收回：**只给 `RebuildUi` 用**（换令牌重建前必须把旧的摘下来，否则新旧两套同屏）。
+//   ★ `RemoveChild` 在「不是直接子节点」时会 Debug 断言 + Release 返回 nullptr，
+//     所以先查 `GetParent()` 再摘——不能靠返回值兜底。
+void HarnessApp::UnmountSettingsOverlay() {
+    if (!m_window) return;
+    ECDI::Widget& overlayRoot = m_window->GetOverlayRoot();
+    if (m_hud.settingsPanel && m_hud.settingsPanel->GetParent() == &overlayRoot) {
+        m_settingsSheetOwned = overlayRoot.RemoveChild(m_hud.settingsPanel);
+    }
+    if (m_hud.settingsMask && m_hud.settingsMask->GetParent() == &overlayRoot) {
+        m_settingsMaskOwned = overlayRoot.RemoveChild(m_hud.settingsMask);
+    }
+}
+
 void HarnessApp::ApplySettingsVisibility() {
     // 唯一的投影路径：BuildUi 首帧与 RebuildUi 重建都走这里——
     // 「投影只存在于一条路径」是 2026-10-21 起始幻影（34px 空洞）的教训。
     if (!m_hud.settingsPanel) return;
+    // ★★ 2026-10-30（浮层迁移）：**先挂再投影**。挂载是幂等的，且只在需要时发生
+    //   （首次打开前 `m_settingsSheetOwned` 非空 ⇒ 一次 AddChild）。
+    //   ★ 关闭时**不收回**，只 `SetVisible(false)`——两个理由：
+    //     ① 收回会让 `RemoveChild` 走 `ForgetSubtree`，把焦点清成 nullptr；
+    //        而 `Application::OnTimer` 只派给焦点控件 ⇒ 回放 tick 会**停摆**
+    //        （`RebuildUi` 第 ④ 步的注释记的正是这条）。
+    //     ② 不可见的浮层既不绘制（`Widget::Paint` 首行 return）也不参与命中
+    //        （`Widget::HitTest` 首行 return），留着零代价。
+    if (m_settingsVisible) MountSettingsOverlay();
     m_hud.settingsPanel->SetVisible(m_settingsVisible);
     if (m_hud.settingsMask) m_hud.settingsMask->SetVisible(m_settingsVisible);
     // ★★ P4 F（行为变化点）：不再隐藏 scroll/composer——设置是浮在视口上的
@@ -115,6 +158,14 @@ void HarnessApp::ApplySettingsVisibility() {
     if (m_settingsVisible && m_moreMenuOpen) SetMoreMenuOpen(false);
     // ★ P4 Phase I：开设置合预览（两套模态不同开；反向在 ApplyPreviewVisibility）。
     if (m_settingsVisible && m_previewOpen) SetPreviewVisible(false);
+    // ★★ 2026-10-30（浮层迁移，自查补）：开设置必须合**模型下拉**。
+    //   迁移前遮罩与下拉同在 root 子树里，靠「最后 AddChild = 最上层」定序，遮罩后挂
+    //   ⇒ 遮罩盖住下拉。迁移后两者分居两棵树，而 `Window::HitTestWindow` 的探测序是
+    //   [A] Modal 层 → [B] Normal 层 → [C] 浮层根直接子节点（托管挂载走这条）
+    //   ⇒ **Normal 层的下拉会先于遮罩被命中**：模态开着时点下拉区域仍能选中模型。
+    //   靠框架顺序不可控，这里用互斥把状态收成"不可能同时存在"（与 menu/preview 同族）。
+    //   ★ 无递归：`SetModelPopupOpen(false)` 只走 `CloseModelPopup`，不回投影设置。
+    if (m_settingsVisible && m_modelPopupOpen) SetModelPopupOpen(false);
     LayoutSettingsOverlay();
 }
 
@@ -757,22 +808,91 @@ void HarnessApp::RebuildModelList() {
     RequestRepaint();
 }
 
+// ── ★★ 2026-10-30（浮层迁移，docs/overlay-migration-plan.md §4）：模型下拉改走
+//    `Window::ShowOverlay`（Normal 层）——每次打开**现建**，关闭即销毁。
+// ★ 为什么下拉可以走全量（而模态不行）：它的内容本来就每次打开重建
+//   （`RebuildModelPopupList`），没有需要跨开关存活的句柄；换来的三件事都是白拿：
+//   ① 恒在内容之上（不再依赖「最后 AddChild = 最上层」）；
+//   ② **点外关闭**（现状点外面什么都不发生，下拉的通用语义是关掉）；
+//   ③ 打开时焦点进搜索框（`ShowOverlay` 把焦点交给首个可聚焦控件）——直接能打字过滤。
+// ★ `exemptWidget = modelChip`：点 chip 自身走既有 toggle，不能被「点外关闭」抢先
+//   关掉再重新打开（那样看起来像点了没反应）。
+// ★ 位置**不用**框架的 `anchorWidget`：锚点模式会把 X 钉在 chip 左缘，而这里要的是
+//   「贴视口右上角」。位置由 `RepositionModelPopup` 手算（客户区坐标）。
+void HarnessApp::RepositionModelPopup() {
+    if (!m_hud.modelPopup || !m_scroll) return;
+    const ECDI::Point s = m_scroll->GetAbsolutePosition();
+    const int x = static_cast<int>(s.x) +
+                  std::max(0, m_scroll->GetWidth() - m_hud.modelPopup->GetWidth() - 12);
+    m_hud.modelPopup->SetPosition(x, static_cast<int>(s.y));
+}
+
+void HarnessApp::CloseModelPopup() {
+    // ★ 句柄必须**同一处**清空：`HideOverlay` 只是把控件移进延迟销毁队列
+    //   （帧末才析构），中间态里任何一次读取都是悬空指针。
+    if (m_window && m_hud.modelPopup) {
+        m_window->HideOverlay(m_hud.modelPopup);
+    }
+    m_hud.modelPopup = nullptr;
+    m_hud.modelPopupList = nullptr;
+    m_hud.modelSearch = nullptr;
+    m_hud.modelPopupFoot = nullptr;
+}
+
 void HarnessApp::SetModelPopupOpen(bool open) {
-    if (m_modelPopupOpen == open &&
-        (!m_hud.modelPopup || m_hud.modelPopup->IsVisible() == open)) {
-        return;   // 幂等（同 SetSidebarVisible）
+    // 幂等：模型位与控件位一致就什么都不做（同 SetSidebarVisible）。
+    //   ★ 「控件位」现在 = 句柄非空（浮层存在），不再是 `IsVisible()`。
+    const bool shown = (m_hud.modelPopup != nullptr);
+    if (m_modelPopupOpen == open && shown == open) {
+        return;
     }
-    m_modelPopupOpen = open;
-    if (!m_hud.modelPopup) return;
-    m_hud.modelPopup->SetVisible(open);
-    if (open) {
-        if (m_moreMenuOpen) SetMoreMenuOpen(false);   // 互斥：两处下拉不同开
-        if (m_hud.modelSearch) m_hud.modelSearch->SetText("");
-        RebuildModelPopupList();
-        // 顶部下拉、右上角对齐（视口坐标系）。
-        m_hud.modelPopup->SetPosition(
-            std::max(0, m_scroll->GetWidth() - m_hud.modelPopup->GetWidth() - 12), 0);
+    if (!open) {
+        m_modelPopupOpen = false;
+        CloseModelPopup();
+        RequestRepaint();
+        return;
     }
+    if (!m_window || !m_scroll) return;
+    m_modelPopupOpen = true;
+    if (m_moreMenuOpen) SetMoreMenuOpen(false);   // 互斥：两处下拉不同开
+    auto pop = BuildModelPopup();
+    pop->SetVisible(true);
+    if (m_hud.modelSearch) m_hud.modelSearch->SetText("");
+    RebuildModelPopupList();   // 内容随每次打开重建（行是动态的）
+
+    ECDI::OverlayOptions options;
+    options.layer = ECDI::OverlayLayer::Normal;
+    options.lightDismiss = ECDI::LightDismissPolicy::PassThrough;
+    options.exemptWidget = m_hud.modelChip;
+    // ★★ 2026-10-30（`--overlay-probe` 首跑就抓到，`popup-dismiss` 相）：
+    //   点外关闭是**框架**做的——`Application::OnMouseButtonDown` 在 Light Dismiss
+    //   分支里直接调 `Window::HideOverlay(nullptr)`，**完全绕过** `SetModelPopupOpen(false)`。
+    //   后果是模型位与控件位分家：`m_modelPopupOpen` 留在 true，而 `m_hud.modelPopup`
+    //   指向的控件已进 `m_pendingDestroyOverlays`（帧末析构）⇒ **悬空指针**。
+    //   下一次 `Relayout()` → `RepositionModelPopup()` 就是一次悬空读
+    //   （`m_scroll` 每次滚动/尺寸变化都会走到）。
+    //   `onClosed` 是框架给的唯一同步出口：在 `HideOverlay` 摘树之后、析构之前回调。
+    //   ★ 只清状态、不回调 `CloseModelPopup()`——那会再进 `HideOverlay`，
+    //     而此时 entry 已被 erase（返回 false，无害但绕）；清状态是唯一必要动作。
+    options.onClosed = [this] {
+        m_modelPopupOpen = false;
+        m_hud.modelPopup = nullptr;
+        m_hud.modelPopupList = nullptr;
+        m_hud.modelSearch = nullptr;
+        m_hud.modelPopupFoot = nullptr;
+    };
+    if (!m_window->ShowOverlay(std::move(pop), options)) {
+        // 失败 ⇒ 状态必须回退，否则模型位说「开着」而屏幕上没有（下一次 ESC 会
+        //   走到一个空分支上）。
+        m_modelPopupOpen = false;
+        m_hud.modelPopup = nullptr;
+        m_hud.modelPopupList = nullptr;
+        m_hud.modelSearch = nullptr;
+        m_hud.modelPopupFoot = nullptr;
+        return;
+    }
+    RepositionModelPopup();   // ShowOverlay 之后才有真实几何可读
+    RequestRepaint();
 }
 
 void HarnessApp::RebuildModelPopupList() {

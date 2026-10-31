@@ -7,6 +7,9 @@
 //   和"建界面"（1e 的 builder）分开：一个是摆，一个是建。
 // ★ 纪律：本文件**不改树结构**（不 AddChild/RemoveChild，唯一例外是
 //   RebuildProjectList——它是 HUD 自己那棵小列表的全部所有者）。
+//   ★★ 2026-10-30（浮层迁移）追加一个例外：`OnTooltipFire` / `HideTooltipOverlay`
+//   经 `Window::ShowOverlay` / `HideOverlay` 改**浮层树**（不是 root 子树，
+//   且唯一入口是 Window 的公共 API）——见该函数头注。
 // ★ 2026-10-25：从 App.cpp 切出（Stage 1d）。函数体逐字节相同。
 // ============================================================
 
@@ -25,6 +28,8 @@
 
 #include "ECDI/Platform/PlatformWindow.h"   // 同上：Relayout 里设标题/定时器
 #include "ECDI/Theme/PanelStyle.h"
+#include "ECDI/Window/OverlayTypes.h"       // ★ 2026-10-30：tooltip 走浮层根（OverlayOptions）
+#include "ECDI/Window/Window.h"             // ★ 同上：ShowOverlay / HideOverlay / GetOverlayRoot
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/ProgressBar.h"
@@ -54,6 +59,7 @@ using harness::internal::kSidebarListInnerW;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
 using harness::internal::kTooltipDelayMs;
+using harness::internal::kTooltipInk;   // ★ 2026-10-30：tooltip 现建现挂（见 OnTooltipFire）
 
 void HarnessApp::RebuildProjectList() {
     if (!m_hud.projectList) return;
@@ -401,6 +407,11 @@ void HarnessApp::Relayout() {
     LayoutSettingsOverlay();
     // ★★ P4 Phase I：预览浮层几何跟随（同一条 Relayout 几何路径）。
     LayoutPreviewOverlay();
+    // ★★ 2026-10-30（浮层迁移）：模型下拉现在挂在浮层根上（客户区坐标），
+    //   视口位置变了必须跟着重算——否则 resize 后它停在旧坐标（原实现在
+    //   scroll 子表里，视口坐标不随窗口变，所以没有这条需求）。
+    //   `SetPosition` 有同值守卫 ⇒ 空闲帧零代价（不会置脏、不会多一次重绘）。
+    RepositionModelPopup();
 }
 
 void HarnessApp::FollowTailIfPinned() {
@@ -455,8 +466,20 @@ void HarnessApp::DirtyRefreshJumpButton() {
 // ── ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层 ─────────────────────
 // ECDI 无 Tooltip 原语（源码仓核实：TrayIcon szTip 是唯一同名物）——harness 拼：
 // TipButton（UiKit）回调 enter/leave，这里管单例浮层 + 400ms 延迟定时器。
-// ★ 定位纪律：锚点坐标一律 GetAbsolutePosition（不手算父链，App.cpp:4274 同款）；
-//   顶栏/中栏头按钮在视口上方 ⇒ y 钳到 0（浮层挂 m_scroll，负 y 会被视口裁剪）。
+// ★★ 2026-10-30（浮层迁移，docs/overlay-migration-plan.md §4）：**改走
+//   `Window::ShowOverlay` + Tooltip 层**，不再挂 `m_scroll`。三件事一起解决：
+//     ① **不再被视口裁剪**——原来 tooltip 挂在转录视口里，而顶栏/中栏头的按钮
+//        在视口**上方** ⇒ 算出来的 y 是负数 ⇒ 被 `PushClip` 裁掉，只能靠
+//        `clamp(y, 0, ...)` 把提示强行贴到视口顶端（S5 那条绕行，已删）。
+//        现在坐标是**客户区坐标**，锚点在哪就在哪。
+//     ② **点穿**——Tooltip 层在 `Window::HitTestWindow` 里被显式跳过，
+//        提示框永远不会截留鼠标（挂普通子树时它是会参与命中的）。
+//     ③ **单例由销毁保证**——`HideOverlay` 帧末析构，`m_hud.tooltip` 随之置空
+//        ⇒ "同时存在两条 tooltip"在结构上不可能。
+//   ★ 为什么**不用** `anchorWidget`（框架的锚点跟随）：它会覆盖位置为
+//     `anchor.y + anchor.h`（丢掉这里刻意的 +6px 间距），X 也改成锚点左缘。
+//     位置在本函数手算更贴原观感；代价是窗口 resize 时不自动跟随——tooltip
+//     只在悬停期间存在，鼠标一动就重算，这个代价可以接受。
 void HarnessApp::ShowTooltipFor(const ECDI::Widget* anchor, const std::string& text) {
     if (!anchor || !m_window) return;
     m_tooltipAnchor = anchor;
@@ -464,36 +487,69 @@ void HarnessApp::ShowTooltipFor(const ECDI::Widget* anchor, const std::string& t
     m_window->GetPlatformWindow().StartTimer(kTooltipTimer, kTooltipDelayMs);
 }
 
+// 关掉**当前显示中的** tooltip（若有）。句柄必须立刻置空：`HideOverlay` 只是
+//   把控件移进延迟销毁队列，帧末才真的析构——期间任何读取都是悬空指针。
+void HarnessApp::HideTooltipOverlay() {
+    if (m_window && m_hud.tooltip) {
+        m_window->HideOverlay(m_hud.tooltip);
+    }
+    m_hud.tooltip = nullptr;
+    m_hud.tooltipText = nullptr;
+}
+
 void HarnessApp::HideTooltip() {
     if (m_window) m_window->GetPlatformWindow().StopTimer(kTooltipTimer);
     m_tooltipAnchor = nullptr;
     m_tooltipPending.clear();
-    if (m_hud.tooltip) m_hud.tooltip->SetVisible(false);
+    HideTooltipOverlay();
 }
 
 void HarnessApp::OnTooltipFire() {
-    if (!m_hud.tooltip || !m_hud.tooltipText || !m_tooltipAnchor || !m_scroll) {
+    if (!m_window || !m_tooltipAnchor) {
         return;
     }
-    if (m_window) m_window->GetPlatformWindow().StopTimer(kTooltipTimer);
-    // 定时器期间锚点可能已脱树（整树重建）——IsInTree 没有公开口，用宽度/父链
-    // 兜底：GetParent 为空的根除外……直接按绝对坐标定位，锚点已析构的情况由
-    // HideTooltip（leave 先于析构）与重建路径（BuildUi 后浮层隐藏）兜住。
-    const ECDI::Point a = m_tooltipAnchor->GetAbsolutePosition();
-    const ECDI::Point s = m_scroll->GetAbsolutePosition();
-    m_hud.tooltipText->SetText(m_tooltipPending);
+    m_window->GetPlatformWindow().StopTimer(kTooltipTimer);
+    // 同一时刻只有一条：上一条若还在（锚点快速切换），先关掉。
+    HideTooltipOverlay();
+
+    const int cw = m_window->GetRootWidget().GetWidth();
+    const int ch = m_window->GetRootWidget().GetHeight();
     const int w = std::clamp<int>(static_cast<int>(m_tooltipPending.size()) * 7 + 20,
-                                  48, m_scroll->GetWidth());
+                                  48, std::max(48, cw));
     const int h = 26;
-    int x = static_cast<int>(a.x) - static_cast<int>(s.x);
-    int y = static_cast<int>(a.y) + m_tooltipAnchor->GetHeight() + 6 -
-            static_cast<int>(s.y);
-    x = std::clamp(x, 0, std::max(0, m_scroll->GetWidth() - w));
-    y = std::clamp(y, 0, std::max(0, m_scroll->GetHeight() - h));
-    m_hud.tooltipText->SetSize(w - 16, 16);
-    m_hud.tooltip->SetSize(w, h);
-    m_hud.tooltip->SetPosition(x, y);
-    m_hud.tooltip->SetVisible(true);
+    // ★ 锚点坐标 = 客户区绝对坐标（浮层根的坐标系与它同源，不再需要减视口原点）。
+    const ECDI::Point a = m_tooltipAnchor->GetAbsolutePosition();
+    const int x = std::clamp(static_cast<int>(a.x), 0, std::max(0, cw - w));
+    const int y = std::clamp(static_cast<int>(a.y) + m_tooltipAnchor->GetHeight() + 6,
+                             0, std::max(0, ch - h));
+
+    auto tip = std::make_unique<ECDI::Panel>();
+    tip->SetSize(w, h);
+    tip->SetPosition(x, y);
+    tip->SetStyle(ECDI::PanelStyleOverride{
+        .background = kDarkInk,
+        .cornerRadius = kRadiusBtn,
+        .borderWidth = 0.0f});
+    auto txt = std::make_unique<ECDI::Label>();
+    txt->SetTextColor(kTooltipInk);
+    txt->SetFont(harness::SansFont(harness::kFontSmall));
+    txt->SetSize(w - 16, 16);
+    txt->SetPosition(8, 5);
+    txt->SetText(m_tooltipPending);
+    m_hud.tooltipText = txt.get();
+    tip->AddChild(std::move(txt));
+
+    ECDI::OverlayOptions options;
+    options.layer = ECDI::OverlayLayer::Tooltip;
+    // 纯视觉层：不参与点外关闭（Tooltip 层本来就不接命中），ESC 归 harness 的
+    //   逐层关逻辑（`HandleGlobalKeyDown`），框架别抢。
+    options.lightDismiss = ECDI::LightDismissPolicy::None;
+    options.closeOnEsc = false;
+    m_hud.tooltip = tip.get();
+    if (!m_window->ShowOverlay(std::move(tip), options)) {
+        m_hud.tooltip = nullptr;
+        m_hud.tooltipText = nullptr;
+    }
 }
 
 void HarnessApp::RequestRepaint() {

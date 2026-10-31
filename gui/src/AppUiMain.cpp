@@ -64,11 +64,9 @@ using harness::internal::kSidebarRowGap;
 using harness::internal::kSidebarRowH;
 using harness::internal::Pick;
 
-// ★★ P4 E：tooltip 配色（深底浅字——两主题通用，不进 g_theme：它是浮层系统的
-//   固定视觉，不是随主题走的表面色）。只有本文件建 tooltip 时用，故留在这里。
-namespace {
-const ECDI::Color kTooltipInk = ECDI::Color::FromRGBA8(240, 241, 245);
-}   // namespace
+// ★★ P4 E：tooltip 配色。★ 2026-10-30 上提到 `AppInternal.h`——tooltip 迁到浮层根后
+//   由 `AppHud.cpp` 现建现挂，配色要跨 TU 共用（这里只留短名）。
+using harness::internal::kTooltipInk;
 
 // 主区（hi-fi .main）：左栏（新建会话/会话/回放/工作区）+ 中栏（转录 + Composer）+ 右栏检查器
 
@@ -934,7 +932,59 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
     return settingsSheetOwned;
 }
 
-// ── 转录视口：ScrollView + 四个浮层（跳转钮 / 遮罩 / 设置 sheet / 模型浮窗 / tooltip）──
+// ── ★★ 2026-10-30（浮层迁移）：模型下拉浮窗的**建**（挂/收归 `SetModelPopupOpen`）──
+// 为什么单独提成函数：它从「建树期建一次、之后只 SetVisible」改成了
+//   「每次打开现建、关闭即销毁」（`Window::ShowOverlay` 的语义：所有权移交 +
+//   `HideOverlay` 帧末析构）⇒ 必须能反复调用，且每次调用都要重设 `m_hud` 句柄。
+// ★ 尺寸/坐标仍在 `SetModelPopupOpen` 里定（那里才知道视口多宽）。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildModelPopup() {
+    auto pop = std::make_unique<ECDI::Panel>();
+    m_hud.modelPopup = pop.get();
+    pop->SetStyle(ECDI::PanelStyleOverride{
+        .background = kCardBg,
+        .cornerRadius = kRadiusBtn,
+        .borderWidth = 1.0f,
+        .borderColor = kCardBorder});
+    auto search = std::make_unique<ECDI::TextBox>();
+    m_hud.modelSearch = search.get();
+    search->SetSingleLine(true);
+    // ★ REQ-14（Phase 37 verticalAlign）：26 高 / padding 0 ⇒ Top 时行箱贴上沿、
+    //   下方空 9px ⇒ Center。
+    // ★★ 2026-10-27 修（台账「待定夺」落定）：REQ-14 落地时这里「只覆写对齐一项，
+    //   其余全吃主题缺省」——吃缺省吃的正是缺陷：ECDI TextBoxStyle 缺省 background=白
+    //   ⇒ 深色主题下一块白底（P4 H 起漏网）。⇒ 与设置面板输入框同款：kPanel2 底 +
+    //   kLine 描边（borderColor 必须显式给，缺省透明 ⇒ drawBorder 恒假）+
+    //   kDarkInk 文字（缺省黑，深底不可读）。
+    search->SetTextColor(kDarkInk);
+    search->SetStyle(ECDI::TextBoxStyleOverride{
+        .background = kPanel2,
+        .border = kLine,
+        .cornerRadius = kRadiusBtn,
+        .borderWidth = 1.0f,
+        .borderColor = kLine,
+        .verticalAlign = ECDI::VerticalAlignment::Center});
+    search->SetSize(320, 26);
+    search->SetPosition(10, 8);
+    search->SetOnTextChanged([this](const std::string&) { RebuildModelPopupList(); });
+    pop->AddChild(std::move(search));
+    auto list = std::make_unique<ECDI::Panel>();
+    m_hud.modelPopupList = list.get();
+    list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+    list->SetPosition(10, 40);
+    pop->AddChild(std::move(list));
+    auto foot = std::make_unique<ECDI::Label>(
+        "仅 idle 发出 · 运行中自动排队（本轮输出完生效）");
+    m_hud.modelPopupFoot = foot.get();
+    foot->SetTextColor(kDarkMuted);
+    foot->SetFont(harness::SansFont(harness::kFontMicro));
+    foot->SetSize(320, 16);
+    foot->SetPosition(10, 250);
+    pop->AddChild(std::move(foot));
+    pop->SetSize(340, 272);
+    return pop;
+}
+
+// ── 转录视口：ScrollView + 浮层（跳转钮 / 遮罩 / 设置 sheet / 模型浮窗 / tooltip）──
 void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet,
                                          std::unique_ptr<ECDI::Widget> previewSheet) {
     auto scroll = std::make_unique<ECDI::ScrollView>();
@@ -976,14 +1026,13 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
         RefreshJumpButton();
     });
     scroll->AddChild(std::move(jump));   // ScrollView 的最后子节点 = 最上层
-    // ★★ P4 F（2026-10-25）：设置 = 模态浮层（半透明遮罩 + 居中 sheet），与
-    //   jump 按钮同款浮层口（ScrollView 直接子节点：无布局接管、固定视口、
-    //   HitTest 逆序后加者在上）。子序 [.., jump, mask, sheet] ⇒ 设置打开时
-    //   sheet 最先命中、mask 次之（jump 被盖住点不到——模态语义），转录在
-    //   半透明遮罩后继续渲染（用户验收过原型这条）。
-    //   ★★ 修复（实测反馈「变色应该是整个变色」）：mask+sheet 此后由 BuildUi
-    //   尾部转移到 **root 末尾**（盖全窗，含顶栏/侧栏/检查器）——此处先挂
-    //   scroll 只是建树期的临时归属。
+    // ★★ 2026-10-30（浮层迁移，docs/overlay-migration-plan.md §3）：设置/预览的遮罩与
+    //   sheet **不再挂 m_scroll**，也不再由 BuildUi 搬到 root 末尾——所有权交给 harness
+    //   （`m_settings*Owned` / `m_preview*Owned`），首次显示时挂 `Window::GetOverlayRoot()`。
+    //   于是「盖全窗 + 不被视口 PushClip 裁 + 不被布局统计」三件事都由浮层根保证，
+    //   本函数只负责**建**，不负责挂。
+    //   ★ 挂载序仍是「先遮罩后 sheet」（`Widget::Paint` 正序 / `HitTest` 逆序）——
+    //     与原先在 scroll 子表里的相对次序逐位相同，视觉与命中关系不变。
     auto mask = std::make_unique<ECDI::Button>();
     m_hud.settingsMask = mask.get();
     mask->SetVisible(false);
@@ -996,15 +1045,12 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
         .cornerRadius = 0.0f,
         .pressedBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150),
         .hoverBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150)});
-    scroll->AddChild(std::move(mask));
+    m_settingsMaskOwned = std::move(mask);
     if (settingsSheet) {
         m_hud.settingsPanel->SetVisible(false);   // 显隐统一走 ApplySettingsVisibility
-        scroll->AddChild(std::move(settingsSheet));
+        m_settingsSheetOwned = std::move(settingsSheet);
     }
-    // ★★ P4 Phase I（2026-10-26）：文件预览 sheet——与设置同款模态浮层机制
-    //   （scroll 直子：无布局接管；BuildUi 尾部转移 root 末尾盖全窗）。
-    //   z 序：preview 的 mask/sheet 加在 settings 的后面 ⇒ 同开时 preview 在上，
-    //   但互斥逻辑（两边的 Apply*Visibility）保证不同开——z 序只是兜底。
+    // ★★ P4 Phase I（2026-10-26）：文件预览 sheet——与设置同款（同一条迁移）。
     {
         auto pmask = std::make_unique<ECDI::Button>();
         m_hud.previewMask = pmask.get();
@@ -1015,80 +1061,23 @@ void HarnessApp::BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsS
             .cornerRadius = 0.0f,
             .pressedBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150),
             .hoverBackground = ECDI::Color::FromRGBA8(15, 17, 23, 150)});
-        scroll->AddChild(std::move(pmask));
+        m_previewMaskOwned = std::move(pmask);
         if (previewSheet) {
             m_hud.previewPanel->SetVisible(false);   // 显隐统一走 ApplyPreviewVisibility
-            scroll->AddChild(std::move(previewSheet));
+            m_previewSheetOwned = std::move(previewSheet);
         }
     }
-    // ★★ P4 Phase H（2026-10-25）：模型下拉浮窗——顶部下拉（视口坐标系内
-    //   右上角），z 序在 mask/sheet 之上、tooltip 之下。搜索框 + 行列表 + 底注。
-    {
-        auto pop = std::make_unique<ECDI::Panel>();
-        m_hud.modelPopup = pop.get();
-        pop->SetVisible(false);
-        pop->SetStyle(ECDI::PanelStyleOverride{
-            .background = kCardBg,
-            .cornerRadius = kRadiusBtn,
-            .borderWidth = 1.0f,
-            .borderColor = kCardBorder});
-        auto search = std::make_unique<ECDI::TextBox>();
-        m_hud.modelSearch = search.get();
-        search->SetSingleLine(true);
-        // ★ REQ-14（Phase 37 verticalAlign）：26 高 / padding 0 ⇒ Top 时行箱贴上沿、
-        //   下方空 9px ⇒ Center。
-        // ★★ 2026-10-27 修（台账「待定夺」落定）：REQ-14 落地时这里「只覆写对齐一项，
-        //   其余全吃主题缺省」——吃缺省吃的正是缺陷：ECDI TextBoxStyle 缺省 background=白
-        //   ⇒ 深色主题下一块白底（P4 H 起漏网）。⇒ 与设置面板输入框同款：kPanel2 底 +
-        //   kLine 描边（borderColor 必须显式给，缺省透明 ⇒ drawBorder 恒假）+
-        //   kDarkInk 文字（缺省黑，深底不可读）。
-        search->SetTextColor(kDarkInk);
-        search->SetStyle(ECDI::TextBoxStyleOverride{
-            .background = kPanel2,
-            .border = kLine,
-            .cornerRadius = kRadiusBtn,
-            .borderWidth = 1.0f,
-            .borderColor = kLine,
-            .verticalAlign = ECDI::VerticalAlignment::Center});
-        search->SetSize(320, 26);
-        search->SetPosition(10, 8);
-        search->SetOnTextChanged([this](const std::string&) { RebuildModelPopupList(); });
-        pop->AddChild(std::move(search));
-        auto list = std::make_unique<ECDI::Panel>();
-        m_hud.modelPopupList = list.get();
-        list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
-        list->SetPosition(10, 40);
-        pop->AddChild(std::move(list));
-        auto foot = std::make_unique<ECDI::Label>(
-            "仅 idle 发出 · 运行中自动排队（本轮输出完生效）");
-        m_hud.modelPopupFoot = foot.get();
-        foot->SetTextColor(kDarkMuted);
-        foot->SetFont(harness::SansFont(harness::kFontMicro));
-        foot->SetSize(320, 16);
-        foot->SetPosition(10, 250);
-        pop->AddChild(std::move(foot));
-        pop->SetSize(340, 272);
-        scroll->AddChild(std::move(pop));
-    }
-    // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层——最后子 = 最上层（盖过
-    //   jump/遮罩/sheet/模型浮窗）。隐藏态常驻，TipButton enter 起 400ms 定时器后显示。
-    {
-        auto tip = std::make_unique<ECDI::Panel>();
-        m_hud.tooltip = tip.get();
-        tip->SetVisible(false);
-        tip->SetStyle(ECDI::PanelStyleOverride{
-            .background = kDarkInk,
-            .cornerRadius = kRadiusBtn,
-            .borderWidth = 0.0f});
-        auto txt = std::make_unique<ECDI::Label>();
-        m_hud.tooltipText = txt.get();
-        txt->SetTextColor(kTooltipInk);
-        txt->SetFont(harness::SansFont(harness::kFontSmall));
-        txt->SetSize(400, 16);
-        txt->SetPosition(8, 5);
-        tip->AddChild(std::move(txt));
-        scroll->AddChild(std::move(tip));
-    }
+    // ★★ P4 Phase H（2026-10-25）：模型下拉浮窗。
+    // ★★ 2026-10-30（浮层迁移）：**建树期不再创建它**——下拉改成每次打开时
+    //   由 `BuildModelPopup()` 新建、经 `Window::ShowOverlay` 挂 Normal 层
+    //   （关闭即销毁），见 `AppSettings.cpp` 的 `SetModelPopupOpen`。
+    //   于是「恒在内容之上 + 点外关闭 + 打开时焦点进搜索框」由框架给，
+    //   而「最后 AddChild = 最上层」那条 z 序依赖彻底消失。
+    // ★★ P4 Phase E（2026-10-25）：tooltip 单例浮层。
+    // ★★ 2026-10-30（浮层迁移）：**建树期不再创建它**——tooltip 改成每次显示时
+    //   新建并经 `Window::ShowOverlay` 挂 Tooltip 层（关闭即销毁），见
+    //   `AppHud.cpp` 的 `OnTooltipFire`。原来那句「隐藏态常驻」的常驻控件没了，
+    //   换来的是「不被视口裁剪 + 点穿 + 单例由销毁保证」。
     m_counting->AddChild(std::move(scroll));
 }
 
