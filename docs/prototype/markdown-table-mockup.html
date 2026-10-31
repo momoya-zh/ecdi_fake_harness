@@ -390,6 +390,43 @@
     justify-content: space-between;
     color: var(--text-muted);
   }
+
+  /* ── Case 5：处置决策轮（2026-10-31 第二轮）──────────────────────
+     默认 = 落地现状（不折行 / 无列线 / 不限高），三个 .t-* 类即三档开关。
+     ★ 本文件基线 .ecdi-table 自带列线（原型 B 已定稿态），stage5 内先剥掉
+       才能还原「落地现状」；打开 T2 才回到定稿态。 */
+  .treat-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .treat-readout {
+    font-family: Consolas, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--panel2);
+    border: 1px dashed var(--line);
+    border-radius: 6px;
+    padding: 8px 10px;
+    white-space: pre-wrap;
+  }
+
+  #stage5 .ecdi-table th, #stage5 .ecdi-table td { border-right: none; }
+  #stage5.t-cols .ecdi-table th, #stage5.t-cols .ecdi-table td {
+    border-right: 1px solid var(--line-subtle);
+  }
+
+  /* T1 折行：列宽改按版心分配（th 上的 width%），长单元格折行、行高自适应 */
+  #stage5.t-wrap .ecdi-table { white-space: normal; table-layout: fixed; width: 100%; }
+  #stage5.t-wrap .ecdi-table th, #stage5.t-wrap .ecdi-table td { overflow-wrap: anywhere; }
+
+  /* T3 限高：容器封顶 + 内部竖滚 + 表头吸顶 */
+  #stage5.t-cap .ecdi-table-wrap { max-height: 264px; overflow: auto; }
+  #stage5.t-cap .ecdi-table thead th { position: sticky; top: 0; z-index: 1; }
 </style>
 </head>
 <body class="theme-dark">
@@ -433,6 +470,7 @@
         <button class="tab-btn" onclick="switchCase('case2', this)">Case 2: 8 列超宽横滚</button>
         <button class="tab-btn" onclick="switchCase('case3', this)">Case 3: 段落混合流</button>
         <button class="tab-btn" onclick="switchCase('case4', this)">Case 4: 流式态 vs 终态</button>
+        <button class="tab-btn" onclick="switchCase('case5', this)">Case 5: 处置决策轮</button>
       </div>
     </div>
 
@@ -714,6 +752,98 @@
         </div>
       </div>
 
+      <!-- Case 5: 处置决策轮（2026-10-31 第二轮：折行 / 列线 / 限高三档活开关） -->
+      <div id="case5" class="message-row" style="display:none;">
+        <div class="message-header">
+          <div class="avatar">AI</div>
+          <span>助手 (assistant) · 处置决策轮：三档开关实时对比，默认 = 落地现状</span>
+        </div>
+        <div class="message-bubble" id="stage5">
+          <div class="treat-bar">
+            <span>单档：</span>
+            <button id="btnWrap" onclick="toggleTreat('t-wrap')">T1 折行+行高自适应</button>
+            <button id="btnCols" onclick="toggleTreat('t-cols')">T2 竖向列线</button>
+            <button id="btnCap" onclick="toggleTreat('t-cap')">T3 限高 264px+内滚</button>
+            <span>组合预设：</span>
+            <button onclick="applyPreset(false,false,false)">落地现状</button>
+            <button onclick="applyPreset(false,true,false)">原型 B 定稿</button>
+            <button onclick="applyPreset(true,true,false)">折行+列线</button>
+            <button onclick="applyPreset(true,true,true)">三档全开</button>
+          </div>
+          <div id="treatReadout" class="treat-readout"></div>
+          <p style="font-size:12px; color:var(--text-muted);">
+            表 A = 单格超长样张（验 T1 与横滚的取舍）；表 B = 12 行高表样张（验 T3）。
+            T1 关 = 列宽取最长单元格（<code>AppTranscript.cpp:1154-1164</code>），超宽靠横滚；
+            T2 关 = 只剩横线+斑马纹（落地现状）；T3 关 = 行高等于全表高（<code>AppHud.cpp:357-364</code>）。
+          </p>
+
+          <div class="ecdi-table-wrap">
+            <table class="ecdi-table">
+              <thead>
+                <tr>
+                  <th class="align-left" style="width:20%">探针标志</th>
+                  <th class="align-left" style="width:18%">测试目标</th>
+                  <th class="align-left" style="width:48%">关键断言口径与现场结论</th>
+                  <th class="align-right" style="width:14%">平均耗时</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="align-left"><code>--table-probe</code></td>
+                  <td class="align-left">表格渲染期解析与几何</td>
+                  <td class="align-left">断言只覆盖结构/读数：2026-10-31 六相全绿但表格文字全不可见，证明探针绿不等于渲染对，视觉收口必须两主题截图人验</td>
+                  <td class="align-right">61 ms</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--grow-probe</code></td>
+                  <td class="align-left">输入框自适应撑高与折行</td>
+                  <td class="align-left">inputH &gt; singleH &amp;&amp; offset==0；粘贴多行后两 tick 内须落到稳定高度，不得逐帧回弹</td>
+                  <td class="align-right">45 ms</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--workspace-probe</code></td>
+                  <td class="align-left">活 core 工作区确认</td>
+                  <td class="align-left">已知 race 段错误：崩溃点逐轮漂移、加一条 fprintf 改时序即全过（海森 bug），账本 TODO-06 立案，红相不得记在自己改动头上</td>
+                  <td class="align-right">—</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--theme-probe</code></td>
+                  <td class="align-left">双主题令牌与截图收口</td>
+                  <td class="align-left">间歇段错误、与 TODO-06 同源；浅色 kLine 压白卡仅 1.09:1 对比度、整圈轨道不可见，2026-10-18 已修</td>
+                  <td class="align-right">38 ms</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="ecdi-table-wrap">
+            <table class="ecdi-table">
+              <thead>
+                <tr>
+                  <th class="align-left" style="width:34%">会话文件</th>
+                  <th class="align-center" style="width:22%">消息数</th>
+                  <th class="align-left" style="width:44%">最后活跃</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td class="align-left">cot/cot-session.jsonl</td><td class="align-center">49</td><td class="align-left">2026-10-31 14:45</td></tr>
+                <tr><td class="align-left">demo-session.jsonl</td><td class="align-center">137</td><td class="align-left">2026-10-31 11:05</td></tr>
+                <tr><td class="align-left">hostile/duplicate-client-id.jsonl</td><td class="align-center">12</td><td class="align-left">2026-10-30 21:52</td></tr>
+                <tr><td class="align-left">hostile/missing-client-id.jsonl</td><td class="align-center">8</td><td class="align-left">2026-10-30 21:53</td></tr>
+                <tr><td class="align-left">table-visual.jsonl</td><td class="align-center">49</td><td class="align-left">2026-10-31 15:01</td></tr>
+                <tr><td class="align-left">overlay-migrate.jsonl</td><td class="align-center">64</td><td class="align-left">2026-10-30 18:12</td></tr>
+                <tr><td class="align-left">persist-crash.jsonl</td><td class="align-center">23</td><td class="align-left">2026-10-29 09:40</td></tr>
+                <tr><td class="align-left">settings-isolation.jsonl</td><td class="align-center">58</td><td class="align-left">2026-10-28 16:08</td></tr>
+                <tr><td class="align-left">grow-wrap.jsonl</td><td class="align-center">31</td><td class="align-left">2026-10-28 20:15</td></tr>
+                <tr><td class="align-left">valign-probe.jsonl</td><td class="align-center">7</td><td class="align-left">2026-10-27 22:37</td></tr>
+                <tr><td class="align-left">theme-tokens.jsonl</td><td class="align-center">44</td><td class="align-left">2026-10-27 15:24</td></tr>
+                <tr><td class="align-left">subagent-v5-draft.jsonl</td><td class="align-center">96</td><td class="align-left">2026-10-26 19:47</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -740,17 +870,69 @@
         r.style.maxWidth = '100%';
       }
     });
+    updateReadout();
   }
 
   function switchCase(caseId, btn) {
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
 
-    ['case1', 'case2', 'case3', 'case4'].forEach(id => {
+    ['case1', 'case2', 'case3', 'case4', 'case5'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.style.display = (id === caseId) ? 'flex' : 'none';
     });
+    updateReadout();
   }
+
+  // ── Case 5：处置开关 ──────────────────────────────────────────
+  const TREAT_BTNS = [['t-wrap', 'btnWrap'], ['t-cols', 'btnCols'], ['t-cap', 'btnCap']];
+
+  function syncTreatBtns() {
+    const st = document.getElementById('stage5');
+    TREAT_BTNS.forEach(([cls, id]) => {
+      const b = document.getElementById(id);
+      if (b) b.classList.toggle('active', st.classList.contains(cls));
+    });
+  }
+
+  function toggleTreat(cls) {
+    document.getElementById('stage5').classList.toggle(cls);
+    syncTreatBtns();
+    updateReadout();
+  }
+
+  function applyPreset(wrap, cols, cap) {
+    const st = document.getElementById('stage5');
+    st.classList.toggle('t-wrap', wrap);
+    st.classList.toggle('t-cols', cols);
+    st.classList.toggle('t-cap', cap);
+    syncTreatBtns();
+    updateReadout();
+  }
+
+  function updateReadout() {
+    const el = document.getElementById('treatReadout');
+    const caseEl = document.getElementById('case5');
+    if (!el || !caseEl || caseEl.style.display === 'none') return;
+    const names = ['表 A 单格超长', '表 B 12 行高表'];
+    const lines = [];
+    document.querySelectorAll('#stage5 .ecdi-table-wrap').forEach((w, i) => {
+      const hx = w.scrollWidth > w.clientWidth + 1;
+      const vy = w.scrollHeight > w.clientHeight + 1;
+      const tr = w.querySelector('tbody tr');
+      lines.push(
+        (names[i] || ('表' + i)) +
+        ': 可见 ' + w.clientWidth + '×' + w.clientHeight +
+        ' · 内容 ' + w.scrollWidth + '×' + w.scrollHeight +
+        ' · 横滚 ' + (hx ? '出' : '无') +
+        ' · 竖滚 ' + (vy ? '出' : '无') +
+        ' · 首行高 ' + (tr ? tr.offsetHeight : 0) + 'px'
+      );
+    });
+    el.textContent = lines.join('\n');
+  }
+
+  window.addEventListener('resize', updateReadout);
 
   let isFinal = false;
   function toggleStreamDemo() {

@@ -480,6 +480,28 @@ private:
         bool ended = false;                       // 该块是否已 `block_end`（标题两态用）
         bool hasTable = false;                    // 富内容二期：是否包含 Markdown 表格
         std::vector<ECDI::Widget*> segments;      // 富内容段落/表格控件列表（非拥有）
+        // ★★ 富内容二期第二轮（2026-11-01，T1+T2 裁决）：表格内部布局的**可重跑**元数据。
+        //   列宽依赖版心宽（Relayout 期才可知）⇒ 建表期只建控件 + 量自然宽；
+        //   折行 / 行高 / 列线几何全由 `LayoutTableInterior` 在 Relayout 期定稿
+        //   （控件已挂窗 ⇒ `AutoSize` 在 wrap 下「宽钉死、高求解」可用）。
+        struct TableRec {
+            ECDI::ScrollView* sv = nullptr;
+            ECDI::Panel* card = nullptr;
+            ECDI::Panel* headerBar = nullptr;
+            ECDI::Panel* headerLine = nullptr;
+            std::vector<ECDI::Label*> headerLabels;              // [col]，非拥有（树内节点）
+            std::vector<std::vector<ECDI::Label*>> cellLabels;   // [row][col]，非拥有
+            std::vector<ECDI::Panel*> zebra;                     // [row]，偶数行为 nullptr
+            std::vector<ECDI::Panel*> rowLines;                  // [row]，末行为 nullptr
+            std::vector<ECDI::Panel*> colLines;                  // [列界]，numCols-1 条
+            std::vector<MarkdownAlign> alignments;
+            std::vector<int> naturalW;                           // 建表期自然列宽（含双侧 padding）
+            int colPadX = 14;
+            int padY = 7;
+            int lineH = 16;
+            int lastAvailW = 0;                                  // 宽不变不重排（同 lastWrapW 纪律）
+        };
+        std::vector<TableRec> tables;
         std::string blockId;                      // 点开展开时回查块（标题重算用）
         std::string askId;                        // P1.5：协议 ask 的 id（answer 回执用）
         int bodyH = 0;                            // 展开体高度缓存（autosize 布局用）
@@ -845,7 +867,9 @@ private:
                                                  const ECDI::Color& color, RowRec& rec);
     void BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
                                        const std::vector<MarkdownSegment>& segs);
-    std::unique_ptr<ECDI::Widget> BuildTableWidget(const MarkdownTable& table);
+    std::unique_ptr<ECDI::Widget> BuildTableWidget(const MarkdownTable& table,
+                                                   RowRec::TableRec& out);
+    void LayoutTableInterior(RowRec::TableRec& t, int availW);
     void UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
                                        const std::vector<MarkdownSegment>& segs);
 

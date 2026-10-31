@@ -1070,6 +1070,7 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
                                               const std::vector<MarkdownSegment>& segs) {
     const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
     rec.segments.clear();
+    rec.tables.clear();
     rec.label = nullptr;
 
     for (const auto& seg : segs) {
@@ -1099,8 +1100,10 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
                 panel.AddChild(std::move(label));
             }
         } else if (seg.kind == MarkdownSegmentKind::Table) {
-            auto tableWidget = BuildTableWidget(seg.table);
+            RowRec::TableRec trec;
+            auto tableWidget = BuildTableWidget(seg.table, trec);
             if (tableWidget) {
+                rec.tables.push_back(std::move(trec));
                 rec.segments.push_back(tableWidget.get());
                 panel.AddChild(std::move(tableWidget));
             }
@@ -1108,7 +1111,12 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
     }
 }
 
-std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& table) {
+// ★ 表格滚动条薄化（2026-11-01 用户裁决）：4px = 默认厚度 12 的 1/3。
+//   双条都要设：上游 ScrollView::BarThickness() 读**竖条**厚度做双轴占位计算，只薄横条会留 8px 空占位逼出竖条。
+constexpr int kTableBarThickness = 4;
+
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& table,
+                                                          RowRec::TableRec& out) {
     if (table.headers.empty()) return nullptr;
 
     const size_t numCols = table.headers.size();
@@ -1167,6 +1175,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     for (int w : colWidths) totalTableW += w;
     totalTableW = std::max(120, totalTableW);
 
+    // 建表期几何只是**初值**（单行自然宽）：折行/行高/列线由 LayoutTableInterior 定稿
     const int totalTableH = headerH + static_cast<int>(table.rows.size()) * rowH + 2;
 
     auto tableCard = std::make_unique<ECDI::Panel>();
@@ -1176,6 +1185,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         .cornerRadius = 6.0f,
         .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
         .borderColor = kLine});
+    out.card = tableCard.get();
 
     auto headerBar = std::make_unique<ECDI::Panel>();
     headerBar->SetSize(totalTableW, headerH);
@@ -1185,7 +1195,26 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         .cornerRadius = 0.0f,
         .borderWidth = 0.0f,
         .borderColor = kLine});
+    out.headerBar = headerBar.get();
     tableCard->AddChild(std::move(headerBar));
+
+    auto lineStyle = []() {
+        return ECDI::PanelStyleOverride{
+            .background = kLine,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = kLine};
+    };
+
+    out.headerLabels.assign(numCols, nullptr);
+    out.cellLabels.assign(table.rows.size(), std::vector<ECDI::Label*>(numCols, nullptr));
+    out.zebra.assign(table.rows.size(), nullptr);
+    out.rowLines.assign(table.rows.size(), nullptr);
+    out.colLines.assign(numCols > 0 ? numCols - 1 : 0, nullptr);
+    out.alignments = table.alignments;
+    out.naturalW = colWidths;
+    out.colPadX = colPadX;
+    out.lineH = lineH;
 
     int curColX = 0;
     for (size_t c = 0; c < numCols; ++c) {
@@ -1205,6 +1234,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         }
         const int ly = (headerH - labelH) / 2;
         hLabel->SetPosition(lx, ly);
+        out.headerLabels[c] = hLabel.get();
         tableCard->AddChild(std::move(hLabel));
 
         curColX += colW;
@@ -1213,12 +1243,21 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     auto headerLine = std::make_unique<ECDI::Panel>();
     headerLine->SetSize(totalTableW, 1);
     headerLine->SetPosition(0, headerH);
-    headerLine->SetStyle(ECDI::PanelStyleOverride{
-        .background = kLine,
-        .cornerRadius = 0.0f,
-        .borderWidth = 0.0f,
-        .borderColor = kLine});
+    headerLine->SetStyle(lineStyle());
+    out.headerLine = headerLine.get();
     tableCard->AddChild(std::move(headerLine));
+
+    // T2：全高竖向列线（列界一条 1px Panel，与行高无关 ⇒ 折行后仍连续）
+    curColX = 0;
+    for (size_t c = 0; c + 1 < numCols; ++c) {
+        curColX += colWidths[c];
+        auto colLine = std::make_unique<ECDI::Panel>();
+        colLine->SetSize(1, totalTableH);
+        colLine->SetPosition(curColX, 0);
+        colLine->SetStyle(lineStyle());
+        out.colLines[c] = colLine.get();
+        tableCard->AddChild(std::move(colLine));
+    }
 
     for (size_t r = 0; r < table.rows.size(); ++r) {
         const int curRowY = headerH + 1 + static_cast<int>(r) * rowH;
@@ -1234,6 +1273,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
                 .cornerRadius = 0.0f,
                 .borderWidth = 0.0f,
                 .borderColor = kLine});
+            out.zebra[r] = zebra.get();
             tableCard->AddChild(std::move(zebra));
         }
 
@@ -1257,6 +1297,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
             }
             const int ly = curRowY + (rowH - labelH) / 2;
             cLabel->SetPosition(lx, ly);
+            out.cellLabels[r][c] = cLabel.get();
             tableCard->AddChild(std::move(cLabel));
 
             curColX += colW;
@@ -1266,24 +1307,163 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
             auto rowLine = std::make_unique<ECDI::Panel>();
             rowLine->SetSize(totalTableW, 1);
             rowLine->SetPosition(0, curRowY + rowH - 1);
-            rowLine->SetStyle(ECDI::PanelStyleOverride{
-                .background = kLine,
-                .cornerRadius = 0.0f,
-                .borderWidth = 0.0f,
-                .borderColor = kLine});
+            rowLine->SetStyle(lineStyle());
+            out.rowLines[r] = rowLine.get();
             tableCard->AddChild(std::move(rowLine));
         }
     }
 
     auto sv = std::make_unique<ECDI::ScrollView>();
     sv->SetScrollStep(28);
+    if (auto* hsb = sv->GetHorizontalScrollBar()) {
+        hsb->SetStyle(ECDI::ScrollBarStyleOverride{.thickness = kTableBarThickness});
+    }
     if (auto* vsb = sv->GetVerticalScrollBar()) {
-        vsb->SetVisible(false);
+        vsb->SetStyle(ECDI::ScrollBarStyleOverride{.thickness = kTableBarThickness});
     }
     sv->GetContentView().AddChild(std::move(tableCard));
     sv->SetContentExtent(totalTableW, totalTableH);
+    out.sv = sv.get();
 
     return sv;
+}
+
+// ★★ T1+T2（2026-11-01）：表格内部布局定稿。建表期不知道版心宽 ⇒ 列宽/折行/行高
+//   只能在 Relayout 期算；控件已挂窗 ⇒ wrap 态 `AutoSize` = 「宽钉死、高求解」。
+//   列宽策略：注水分配——短列钉自然宽、真长列分余宽、保底 kMinColW 后仍超版心才交横滚。
+void HarnessApp::LayoutTableInterior(RowRec::TableRec& t, int availW) {
+    if (!t.sv || !t.card || t.naturalW.empty()) return;
+    const size_t numCols = t.naturalW.size();
+
+    std::vector<int> colW = t.naturalW;
+    long long sum = 0;
+    for (int w : colW) sum += w;
+    if (sum > availW && availW > 0) {
+        // 注水：自然宽放得进人均份额的列钉死自然宽（短列不白白折行），
+        // 只剩真长列分余宽；分完仍低于保底才取保底、超出交横滚。
+        // ★ 比例缩+统一保底于 2026-11-01 人验否决：保底把短列顶回、偷走长列宽度
+        //   ⇒ 总宽反而超版心出横条（样张第 4 列被推出视口）。
+        constexpr int kMinColW = 48;
+        std::vector<char> fixed(numCols, 0);
+        int remaining = availW;
+        int unfixed = static_cast<int>(numCols);
+        for (;;) {
+            const int share = remaining / std::max(1, unfixed);
+            bool progressed = false;
+            for (size_t c = 0; c < numCols; ++c) {
+                if (!fixed[c] && t.naturalW[c] <= share) {
+                    fixed[c] = 1;
+                    colW[c] = t.naturalW[c];
+                    remaining -= t.naturalW[c];
+                    --unfixed;
+                    progressed = true;
+                }
+            }
+            if (!progressed || unfixed == 0) break;
+        }
+        if (unfixed > 0) {
+            const int share = std::max(kMinColW, remaining / unfixed);
+            for (size_t c = 0; c < numCols; ++c) {
+                if (!fixed[c]) colW[c] = share;
+            }
+        }
+    }
+    int totalW = 0;
+    for (int w : colW) totalW += w;
+    totalW = std::max(120, totalW);
+
+    std::vector<int> colX(numCols + 1, 0);
+    for (size_t c = 0; c < numCols; ++c) colX[c + 1] = colX[c] + colW[c];
+
+    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody);
+    auto measureWidth = [&](const std::string& str) -> int {
+        if (!m_window) return 0;
+        const float w = m_window->GetTextMeasurer().MeasureText(bodyFont, str).width;
+        return static_cast<int>(w + 0.999f);
+    };
+
+    auto wrapLabel = [&](ECDI::Label* lb, size_t c) -> int {
+        if (!lb) return t.lineH;
+        lb->SetWordWrap(true);
+        lb->SetSize(std::max(20, colW[c] - 2 * t.colPadX), t.lineH);
+        lb->AutoSize();
+        return lb->GetHeight();
+    };
+
+    int maxHeadH = t.lineH;
+    for (size_t c = 0; c < numCols && c < t.headerLabels.size(); ++c) {
+        maxHeadH = std::max(maxHeadH, wrapLabel(t.headerLabels[c], c));
+    }
+    const int headerH = std::max(34, maxHeadH + 2 * t.padY);
+
+    const size_t numRows = t.cellLabels.size();
+    std::vector<int> rowH(numRows, 30);
+    for (size_t r = 0; r < numRows; ++r) {
+        int maxCellH = t.lineH;
+        for (size_t c = 0; c < numCols && c < t.cellLabels[r].size(); ++c) {
+            maxCellH = std::max(maxCellH, wrapLabel(t.cellLabels[r][c], c));
+        }
+        rowH[r] = std::max(30, maxCellH + 2 * t.padY);
+    }
+
+    int totalH = headerH + 1;
+    for (int h : rowH) totalH += h;
+    totalH += 1;
+
+    // ECDI Label 无逐行对齐接缝 ⇒ 折行（多行）单元格回落左对齐；单行才按列对齐摆墨宽
+    auto placeLabel = [&](ECDI::Label* lb, size_t c, int top, int boxH) {
+        if (!lb) return;
+        const int innerW = std::max(20, colW[c] - 2 * t.colPadX);
+        const int lh = lb->GetHeight();
+        int lx = colX[c] + t.colPadX;
+        if (lh <= t.lineH) {
+            const int ink = std::min(innerW, measureWidth(lb->GetText()));
+            const MarkdownAlign align = (c < t.alignments.size()) ? t.alignments[c] : MarkdownAlign::Left;
+            if (align == MarkdownAlign::Center) {
+                lx = colX[c] + std::max(0, (colW[c] - ink) / 2);
+            } else if (align == MarkdownAlign::Right) {
+                lx = colX[c] + std::max(0, colW[c] - ink - t.colPadX);
+            }
+            lb->SetSize(ink, lh);
+        } else {
+            lb->SetSize(innerW, lh);
+        }
+        lb->SetPosition(lx, top + (boxH - lh) / 2);
+    };
+
+    if (t.headerBar) t.headerBar->SetSize(totalW, headerH);
+    if (t.headerLine) {
+        t.headerLine->SetSize(totalW, 1);
+        t.headerLine->SetPosition(0, headerH);
+    }
+    for (size_t c = 0; c < numCols && c < t.headerLabels.size(); ++c) {
+        placeLabel(t.headerLabels[c], c, 0, headerH);
+    }
+
+    int y = headerH + 1;
+    for (size_t r = 0; r < numRows; ++r) {
+        if (r < t.zebra.size() && t.zebra[r]) {
+            t.zebra[r]->SetSize(totalW, rowH[r]);
+            t.zebra[r]->SetPosition(0, y);
+        }
+        for (size_t c = 0; c < numCols && c < t.cellLabels[r].size(); ++c) {
+            placeLabel(t.cellLabels[r][c], c, y, rowH[r]);
+        }
+        if (r < t.rowLines.size() && t.rowLines[r]) {
+            t.rowLines[r]->SetSize(totalW, 1);
+            t.rowLines[r]->SetPosition(0, y + rowH[r] - 1);
+        }
+        y += rowH[r];
+    }
+
+    for (size_t b = 0; b + 1 < numCols && b < t.colLines.size(); ++b) {
+        if (!t.colLines[b]) continue;
+        t.colLines[b]->SetSize(1, totalH);
+        t.colLines[b]->SetPosition(colX[b + 1], 0);
+    }
+
+    t.card->SetSize(totalW, totalH);
+    t.sv->SetContentExtent(totalW, totalH);
 }
 
 void HarnessApp::UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,

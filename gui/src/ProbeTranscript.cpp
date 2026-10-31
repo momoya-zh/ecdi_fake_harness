@@ -1156,7 +1156,8 @@ void HarnessApp::RunTableProbe() {
         }
         wideTable.rows.push_back(rowCells);
 
-        auto tableWidget = BuildTableWidget(wideTable);
+        RowRec::TableRec trec;
+        auto tableWidget = BuildTableWidget(wideTable, trec);
         auto* sv = dynamic_cast<ECDI::ScrollView*>(tableWidget.get());
         bool ok = (sv != nullptr);
         if (ok) {

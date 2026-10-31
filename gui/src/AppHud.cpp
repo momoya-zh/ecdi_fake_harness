@@ -345,6 +345,15 @@ void HarnessApp::Relayout() {
             r.panel->SetPosition(canvasX, y);
         } else if (r.hasTable) {
             // ★★ 富内容二期：含有 Markdown 表格的复合 assistant 行
+            //   T1+T2（2026-11-01）：表格内部布局先按版心宽定稿（折行/行高/列线），
+            //   再走下面的 ScrollView 尺寸下发；宽不变不重排（同 lastWrapW 纪律）
+            const int tableAvailW = std::max(40, innerW - 2 * kRowPadX);
+            for (RowRec::TableRec& t : r.tables) {
+                if (t.lastAvailW != tableAvailW) {
+                    LayoutTableInterior(t, tableAvailW);
+                    t.lastAvailW = tableAvailW;
+                }
+            }
             int curY = 8;
             for (ECDI::Widget* w : r.segments) {
                 if (!w) continue;
@@ -359,7 +368,11 @@ void HarnessApp::Relayout() {
                     const int contentH = static_cast<int>(sv->GetContentExtent().height);
                     const int availW = std::max(40, innerW - 2 * kRowPadX);
                     const int tableW = std::min(availW, contentW);
-                    const int barExtraH = (contentW > availW) ? 14 : 0;
+                    // +2 = ScrollView 条四边内缩（与上游 BarFootprint 同式）；表格横条已薄化 ⇒ 不能写死 14
+                    const int barFoot = sv->GetHorizontalScrollBar()
+                                            ? sv->GetHorizontalScrollBar()->GetThickness() + 2
+                                            : 14;
+                    const int barExtraH = (contentW > availW) ? barFoot : 0;
                     const int tableH = contentH + barExtraH;
                     sv->SetSize(tableW, tableH);
                     sv->SetPosition(kRowPadX, curY);
