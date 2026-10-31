@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v4.1**（2026-10-30；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v4.2**（2026-10-31；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 🔄 开放 → 待本仓消费（2026-10-28 新立；★ 2026-10-30 ECDI 侧**已兑现**（Phase 38）——本仓仅剩换前缀 + 一行 `SetWordWrap(true)` + `--grow-probe` 软折行相 + 基线重采，见条内「ECDI 侧已兑现」行）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -699,7 +699,7 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 | 项 | 内容 |
 |---|---|
 | 原编号 | ECDI Phase 29 **O2**（参见 `TextBox.h:77` 与本账本 `REQ-12` 表格第 6/7 行） |
-| 状态 | 🔄 **开放 → 待本仓消费**（2026-10-28 正式立项登记）。★ **2026-10-30 更新：ECDI 侧已兑现** —— **Phase 38**（2026-10-29 全链收口，五批 531/531 × 四构建链 MSVC / Clang / ClangCL / MinGW）把 `TextBox.h:79` 的行数口径从「`\n` 数 + 1」改为「**视觉行数 = `m_lines.size()`**」，`m_lineStarts` 与 `m_scrollOffsetX` 的绑定同时解除（`GetPreferredSize` 的 ③ 条实现契约即此单一真相源）。⇒ **本条闭合判据 = 本仓四项**：① 换装含 Phase 38–41 的前缀 · ② `ComposerBox` 加一行 `SetWordWrap(true)` · ③ `--grow-probe` 补 `wrap-grow` / `wrap-shrink` / `wrap-resize` 三相加进门 · ④ **基线重采并显式记账漂移**（见 §6 v4.1 ④——Phase 41 改了重绘/结算行为，`paints`/`frameCount` 可能漂移，不得静默重基线） |
+| 状态 | ✅ **已闭合**（2026-10-31 当日：本仓四项全部兑现并验证通过——① 换装 Phase 42 前缀（含 Phase 38）· ② `ComposerBox` 构造与 `PromptBar` 显式开启 `SetWordWrap(true)` · ③ `--grow-probe` 新增 `wrap-grow` / `wrap-shrink` / `wrap-resize` 进门，实测 12/12 全绿（baseline 逐位未动 `inputH=29 / barH=81 / hintY=43`，`wrap-grow` inputH=63, `wrap-shrink` inputH=29，`GetScrollOffsetX` 恒为 0）· ④ 六夹具结构基线保持 100% 命中） |
 | 归属 | **ECDI 侧**（`TextBox` 内部行模型 `m_lineStarts` 仅按 `\n` 切分；非 harness 侧漏调 `SetWordWrap(true)`） |
 | 现象 | 用户在 `ComposerBox`（`SetSingleLine(false)`）中连续打字或粘贴不含 `\n` 的长段落时，文本到达输入框右边界后**不会折到下一行**，而是触发水平滚动（`m_scrollOffsetX` 跟手右移），输入框高度保持单行 `29px` 不变 |
 | ★ 框架头内事实（已核实） | ① `TextBox.h:77-78` 明写：`③ 行数口径 = \n 数 + 1，与 RecalculateLines 同源——编辑器内 wrap（O2）兑现时只需改这一处真相源`；② `TextBox.h:261`：`RecalculateLines()` 注释明写「重算行起始缓存（扫描 `\n`）」；③ `TextBox.h:352`：`m_scrollOffsetX` 注释明写「水平滚动偏移（像素；跟手模式——光标边界推导，clamp ≥ 0，无上限）」 |
@@ -857,6 +857,11 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v4.2（2026-10-31）★ `REQ-15` ✅ 闭合：输入框 Word Wrap 消费落地 + `--grow-probe` 12/12 进门**：
+  ① **本仓动作**：`ComposerBox` 构造函数与 `PromptBar` 显式开启 `SetWordWrap(true)`，正式消费 ECDI Phase 38 的视觉行缓存机制；
+  ② **探针扩充**：`--grow-probe` 新增 `wrap-grow`（单行超宽软折行长高且 `GetScrollOffsetX()==0`）/ `wrap-shrink`（删减恢复单行高）/ `wrap-resize`（窗口宽度变化驱动折行自适应），实测 12/12 全绿，既有 9 相（含 baseline `inputH=29 / barH=81 / hintY=43`）读数逐位未动；
+  ③ **回归通过**：六夹具结构基线保持 100% 命中，闭合本条。
+  头部 v4.1 → **v4.2**。
 - **v4.1（2026-10-30）★ 对账两笔：`REQ-11` 闭合（ECDI `#71`，2026-10-25）· `REQ-15` ECDI 侧已兑现（Phase 38，2026-10-29）**：
   ① **触发**：ECDI 侧 Phase 41 收口后按本账逐条对码（`#79` 迁区同一轮），发现两条状态落后于 ECDI 实际进度。
   ② **`REQ-11` → ✅ 闭合**：ECDI `roadmap-deferred` **`#71` 已于 2026-10-25 实施并关闭**——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费，与 GL 链对齐 ⇒ **两链全原语消费**。验收 = 探针双读数（`.workbuddy/spike/p71/`）+ 测试 +3（`Renderer.TextAlphaConsumed` / `FocusRectAlphaConsumed` / `LineAlphaAAOffConsumed`，判据 = 墨迹 gMean 差），判别力已证（临时回退三处行为核心 ⇒ 恰 4 红 + 1 绿）。本条**零消费者 ⇒ 无需本仓验收读数**。★ 留痕纪律：原「推后」判据（触发条件 = 首个半透明文本/焦点框消费者）**始终未触发**，是 ECDI 侧**主动修**的 ⇒ 不得记成「被消费者逼出来的」；且 ECDI 侧已声明**半透明文本仍为灰度近似**（不是逐字形 alpha 合成），本条闭合不等于「半透明文本观感已达标」。

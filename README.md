@@ -191,7 +191,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--resize-probe` | 尺寸链：root / scroll / 中栏 / caption 逐相同步 |
 | `--enter-probe` | Enter 发送 / Shift+Enter 换行 |
 | `--hud-probe` | HUD 字段**读写配对**（抓「只读不写」的死分支） |
-| `--grow-probe` | Composer 自动长高 7 相（含 `shrink` 与 `max-clamp`） |
+| `--grow-probe` | Composer 自动长高 12 相（含软折行 wrap 与 max-clamp） |
 | `--jump-probe` | 「跳到最新」按钮：显隐状态机 + 点击回底（需长夹具，短夹具自述 `skipped-short-fixture`） |
 | `--key-probe` | 全局快捷键：Ctrl+B / I / , / N + Esc 逐层退出 |
 | `--empty-probe` | 空状态引导：回放负对照 + firstRun 正对照（含「卡在树里却被 `extent=0` 裁掉」这一相） |

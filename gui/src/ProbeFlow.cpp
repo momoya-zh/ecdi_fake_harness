@@ -484,6 +484,103 @@ void HarnessApp::RunGrowProbe() {
         snap("exact-fit", why);
     }
 
+    // ⑨ wrap-grow（REQ-15）：单行超宽文本（无 \n）自动软折行并撑高输入框。
+    //   ★ 核心契约：① 高度必须 > singleH（长成多行）；② 水平偏移 GetScrollOffsetX() == 0（不横滚）；
+    //     ③ 兄弟控件（hint/button）未被遮挡。
+    const std::string longWrapText =
+        "This is an extra long text paragraph without any explicit newline characters "
+        "designed specifically to test that TextBox automatically soft-wraps when word-wrap "
+        "is enabled, growing the composer box vertically instead of scrolling horizontally.";
+    int wrapH = 0;
+    {
+        input->SetText(longWrapText);
+        bar->SyncInputHeight();
+        wrapH = bar->inputHeight();
+        std::string why;
+        if (wrapH <= singleH) {
+            why = "soft-wrapped text did not grow the box (" + std::to_string(singleH) +
+                  " -> " + std::to_string(wrapH) + ")";
+        }
+        if (input->GetScrollOffsetX() != 0.0f) {
+            if (!why.empty()) why += "; ";
+            why += "scroll offset X is not zero (" +
+                   std::to_string(input->GetScrollOffsetX()) + ")";
+        }
+        const int inputBottom = input->GetY() + input->GetHeight();
+        for (size_t i = 0; i < bar->GetChildCount() && why.empty(); ++i) {
+            ECDI::Widget* child = bar->GetChildAt(i);
+            if (child == input) continue;
+            if (child->GetY() < inputBottom) {
+                why = "a sibling is overlapped by the wrapped input (sibling y=" +
+                      std::to_string(child->GetY()) + " < input bottom=" +
+                      std::to_string(inputBottom) + ")";
+            }
+        }
+        snap("wrap-grow", why);
+    }
+
+    // ⑩ wrap-shrink（REQ-15）：删减软折行文本至不超宽 ⇒ 恢复单行高。
+    {
+        input->SetText("short text");
+        bar->SyncInputHeight();
+        std::string why;
+        if (bar->inputHeight() >= wrapH) {
+            why = "the box did not shrink after deleting wrapped text (" +
+                  std::to_string(wrapH) + " -> " + std::to_string(bar->inputHeight()) + ")";
+        }
+        if (bar->inputHeight() != singleH) {
+            if (!why.empty()) why += "; ";
+            why += "shrink did not return to single-line height (" +
+                   std::to_string(bar->inputHeight()) + " != " + std::to_string(singleH) + ")";
+        }
+        if (input->GetScrollOffsetX() != 0.0f) {
+            if (!why.empty()) why += "; ";
+            why += "scroll offset X is not zero (" +
+                   std::to_string(input->GetScrollOffsetX()) + ")";
+        }
+        snap("wrap-shrink", why);
+    }
+
+    // ⑪ wrap-resize（REQ-15）：窗口宽度变化时，软折行行数自适应，高度动态跟随重算。
+    {
+        std::string why;
+        ECDI::Size baseClient{};
+        if (m_window) baseClient = m_window->GetPlatformWindow().GetClientSize();
+        const int baseClientW = static_cast<int>(baseClient.width);
+        const int baseClientH = static_cast<int>(baseClient.height);
+        if (!m_window || baseClientW <= 0 || baseClientH <= 0) {
+            why = "cannot exercise wrap-resize without a valid client size";
+            snap("wrap-resize", why);
+        } else {
+            input->SetText(longWrapText);
+            bar->SyncInputHeight();
+
+            // 缩窄窗口宽度（让折行增多，高度更高）
+            const int narrowW = std::max(640, baseClientW - 240);
+            ProbeResizeClient(narrowW, baseClientH);
+            const int narrowH = bar->inputHeight();
+
+            // 拓宽窗口宽度（让折行减少，高度变矮）
+            const int wideW = baseClientW + 240;
+            ProbeResizeClient(wideW, baseClientH);
+            const int wideH = bar->inputHeight();
+
+            if (narrowH <= wideH) {
+                why = "narrower window did not produce more visual lines/height than wider window (narrow=" +
+                      std::to_string(narrowH) + ", wide=" + std::to_string(wideH) + ")";
+            }
+            if (input->GetScrollOffsetX() != 0.0f) {
+                if (!why.empty()) why += "; ";
+                why += "scroll offset X is not zero during wrap-resize (" +
+                       std::to_string(input->GetScrollOffsetX()) + ")";
+            }
+
+            // 恢复原始窗口尺寸
+            ProbeResizeClient(baseClientW, baseClientH);
+            snap("wrap-resize", why);
+        }
+    }
+
     // 收尾：清干净，恢复焦点（同 `RunHitProbe` / `RunEnterProbe` 的收尾纪律）。
     input->SetText("");
     bar->SyncInputHeight();

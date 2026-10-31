@@ -42,7 +42,7 @@
 1. 让用户复现具体场景（打字？粘贴？超长？某主题下？）。
 2. 备一组**纯核对**增量（新相进 --enter/--grow 或独立快照），只证明现状，零产品代码改动。
 3. 证实有缺口才立项；缺口形状由复现决定，本文档不预设修法。
-4. **2026-10-28 核实结论**：用户诉求为「连续输入超宽时**自动软折行（Word Wrap）**并撑高输入框」。查 [`TextBox.h:77-78`](../third_party/ecdi/include/ECDI/Widget/TextBox.h#L77-L78) 确认 `TextBox` 当前行数口径严格等于 `\n 数 + 1`（`RecalculateLines` 仅扫 `\n`，超宽走 `m_scrollOffsetX` 横向滚动），属 ECDI Phase 29 **O2（编辑器内 wrap）** 挂账项。已按本仓铁律在 [ecdi-capability-requests.md](ecdi-capability-requests.md) 正式登记为 **`REQ-15`**，不在应用层做塞 `\n` 绕行；待 ECDI 兑现后 `ComposerBox` 加一行 `SetWordWrap(true)` 并补 `--grow-probe` 软折行相即可闭合。
+4. **2026-10-28 核实结论**：用户诉求为「连续输入超宽时**自动软折行（Word Wrap）**并撑高输入框」。查 [`TextBox.h:77-78`](../third_party/ecdi/include/ECDI/Widget/TextBox.h#L77-L78) 确认 `TextBox` 当前行数口径严格等于 `\n 数 + 1`（`RecalculateLines` 仅扫 `\n`，超宽走 `m_scrollOffsetX` 横向滚动），属 ECDI Phase 29 **O2（编辑器内 wrap）** 挂账项。已按本仓铁律在 [ecdi-capability-requests.md](ecdi-capability-requests.md) 正式登记为 **`REQ-15`**，不在应用层做塞 `\n` 绕行；**已于 2026-10-31 消费闭合**（`ComposerBox` 开启 `SetWordWrap(true)` + `--grow-probe` 补三相达到 12/12 全绿，闭合 `REQ-15`）。
 
 ## B. 表格渲染：渲染期解析，协议与 journal 零改动
 

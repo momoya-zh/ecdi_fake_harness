@@ -60,6 +60,9 @@ class ComposerBox : public ECDI::TextBox {
 public:
     ComposerBox() {
         SetShowFocusRect(false);   // Widget.h:274；焦点改由 borderColor 表达
+        // ★★ 2026-10-31（REQ-15）：开启自动软折行（Word Wrap）。
+        //   ECDI Phase 38 已兑现编辑器内视觉行缓存（WrapRequested() == IsWordWrap() && !m_singleLine）。
+        SetWordWrap(true);
         // ★★ 2026-10-21：**显式钉死字体**。此前本类从未调过 `SetFont`，
         //   于是输入框拿的是 ECDI 默认 `Font{14.0, family=""}`（`Core/Font.h`）
         //   = **SimSun 14**，而旁边 10.5px 的提示行与两个按钮都是 `SansFont()`。
@@ -181,6 +184,8 @@ PromptBar::PromptBar() {
     //     ⇒ 高度由 `LayoutChildren` 固定给 44px，内容超出时 TextBox 自己滚动
     //     （`EnsureCaretVisible` + 内部滚动条）。这是**已知边界**，不是缺陷。
     m_input->SetSingleLine(false);
+    // ★★ 2026-10-31（REQ-15）：开启自动软折行（ECDI Phase 38 兑现 O2 视觉行缓存）。
+    m_input->SetWordWrap(true);
     // ★★ 2026-10-26（首帧压扁的**正解**，订正同日更早的一版）：
     //   症状是真的——`TextBox` 默认高 20，而 `LayoutChildren` 把提示行/按钮的 Y
     //   全部**由输入框高推导**（`hintY = 8 + inputH + 6`），⇒ 没量过之前它们悬在 y=34，
