@@ -1138,14 +1138,27 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         return w;
     };
 
+    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody);
+    // 建表时 Label 尚未挂窗，AutoSize 拿不到测量器（preferred 回落当前尺寸=0）⇒ 显式实测设尺寸
+    auto measureWidth = [&](const std::string& str) -> int {
+        if (!m_window) return estimateWidth(str);
+        const float w = m_window->GetTextMeasurer().MeasureText(bodyFont, str).width;
+        return static_cast<int>(w + 0.999f);
+    };
+    int lineH = 16;
+    if (m_window) {
+        const float h = m_window->GetTextMeasurer().MeasureText(bodyFont, "Ag").height;
+        lineH = static_cast<int>(h + 0.999f);
+    }
+
     for (size_t c = 0; c < numCols; ++c) {
-        int w = estimateWidth(table.headers[c]) + 2 * colPadX;
+        int w = measureWidth(table.headers[c]) + 2 * colPadX;
         if (w > colWidths[c]) colWidths[c] = w;
     }
 
     for (const auto& r : table.rows) {
         for (size_t c = 0; c < numCols && c < r.size(); ++c) {
-            int w = estimateWidth(r[c]) + 2 * colPadX;
+            int w = measureWidth(r[c]) + 2 * colPadX;
             if (w > colWidths[c]) colWidths[c] = w;
         }
     }
@@ -1179,9 +1192,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         const int colW = colWidths[c];
         auto hLabel = std::make_unique<ECDI::Label>(table.headers[c]);
         hLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-        hLabel->SetFont(harness::SansFont(harness::kFontBody));
-        const int labelW = estimateWidth(table.headers[c]);
-        const int labelH = 16;
+        hLabel->SetFont(bodyFont);
+        const int labelW = measureWidth(table.headers[c]);
+        const int labelH = lineH;
+        hLabel->SetSize(labelW, labelH);
         int lx = curColX + colPadX;
         const MarkdownAlign align = (c < table.alignments.size()) ? table.alignments[c] : MarkdownAlign::Left;
         if (align == MarkdownAlign::Center) {
@@ -1230,9 +1244,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
             const std::string text = (c < rowData.size()) ? rowData[c] : "";
             auto cLabel = std::make_unique<ECDI::Label>(text);
             cLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-            cLabel->SetFont(harness::SansFont(harness::kFontBody));
-            const int labelW = estimateWidth(text);
-            const int labelH = 16;
+            cLabel->SetFont(bodyFont);
+            const int labelW = measureWidth(text);
+            const int labelH = lineH;
+            cLabel->SetSize(labelW, labelH);
             int lx = curColX + colPadX;
             const MarkdownAlign align = (c < table.alignments.size()) ? table.alignments[c] : MarkdownAlign::Left;
             if (align == MarkdownAlign::Center) {
