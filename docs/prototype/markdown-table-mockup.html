@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECDI Fake Harness - Markdown 表格渲染交互原型</title>
+<style>
+  :root {
+    --bg-dark: #12151a;
+    --panel-dark: #1a1e26;
+    --panel2-dark: #222733;
+    --line-dark: #2c3342;
+    --line-subtle-dark: #232936;
+    --text-dark: #d8dde8;
+    --text-muted-dark: #828c9e;
+    --accent-dark: #4d82f7;
+    --accent-bg-dark: rgba(77, 130, 247, 0.12);
+    --table-header-dark: #202634;
+    --table-zebra-dark: rgba(255, 255, 255, 0.02);
+    --table-hover-dark: rgba(77, 130, 247, 0.06);
+
+    --bg-light: #f5f6f9;
+    --panel-light: #ffffff;
+    --panel2-light: #ebeef5;
+    --line-light: #dcdfe6;
+    --line-subtle-light: #e4e7ed;
+    --text-light: #2c3e50;
+    --text-muted-light: #7c8594;
+    --accent-light: #3370ff;
+    --accent-bg-light: rgba(51, 112, 255, 0.08);
+    --table-header-light: #f0f2f7;
+    --table-zebra-light: rgba(0, 0, 0, 0.015);
+    --table-hover-light: rgba(51, 112, 255, 0.04);
+  }
+
+  body.theme-dark {
+    --bg: var(--bg-dark);
+    --panel: var(--panel-dark);
+    --panel2: var(--panel2-dark);
+    --line: var(--line-dark);
+    --line-subtle: var(--line-subtle-dark);
+    --text: var(--text-dark);
+    --text-muted: var(--text-muted-dark);
+    --accent: var(--accent-dark);
+    --accent-bg: var(--accent-bg-dark);
+    --table-header: var(--table-header-dark);
+    --table-zebra: var(--table-zebra-dark);
+    --table-hover: var(--table-hover-dark);
+  }
+
+  body.theme-light {
+    --bg: var(--bg-light);
+    --panel: var(--panel-light);
+    --panel2: var(--panel2-light);
+    --line: var(--line-light);
+    --line-subtle: var(--line-subtle-light);
+    --text: var(--text-light);
+    --text-muted: var(--text-muted-light);
+    --accent: var(--accent-light);
+    --accent-bg: var(--accent-bg-light);
+    --table-header: var(--table-header-light);
+    --table-zebra: var(--table-zebra-light);
+    --table-hover: var(--table-hover-light);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 24px;
+    display: flex;
+    justify-content: center;
+    transition: background 0.2s, color 0.2s;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 1100px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  /* 顶部控制栏 */
+  .control-bar {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 18px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .control-bar h1 {
+    font-size: 16px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  button {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s;
+  }
+
+  button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  button.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  /* 规格说明卡片 */
+  .spec-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px;
+  }
+
+  .spec-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px;
+  }
+
+  .spec-card h3 {
+    font-size: 13px;
+    color: var(--accent);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .spec-card p, .spec-card ul {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  .spec-card ul {
+    list-style-position: inside;
+    margin-top: 4px;
+  }
+
+  /* 模拟应用主界面 */
+  .viewport-window {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  }
+
+  .window-header {
+    background: var(--panel2);
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .window-tabs {
+    display: flex;
+    gap: 6px;
+  }
+
+  .tab-btn {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+  }
+
+  .tab-btn.active {
+    background: var(--panel);
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  /* 转录区域版心模型（对齐本仓规范：TranscriptLayoutWidth = min(可用宽, 760)） */
+  .transcript-area {
+    padding: 24px 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 520px;
+    background: var(--bg);
+  }
+
+  .message-row {
+    width: 100%;
+    max-width: 760px; /* ★ 本仓版心封顶 */
+    margin-bottom: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .message-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-weight: bold;
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .message-bubble {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 13.5px;
+  }
+
+  .user-bubble {
+    background: var(--accent-bg);
+    border-color: rgba(77, 130, 247, 0.3);
+    align-self: flex-end;
+    max-width: 80%;
+  }
+
+  /* 核心：Markdown 表格控件容器 */
+  .ecdi-table-wrap {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow-x: auto; /* ★ 超宽时局部横向滚动 */
+    background: var(--panel);
+    margin: 6px 0;
+  }
+
+  .ecdi-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap; /* 保持整洁，超宽靠横向滚动 */
+  }
+
+  .ecdi-table th {
+    background: var(--table-header);
+    color: var(--text);
+    font-weight: 600;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--line);
+    border-right: 1px solid var(--line-subtle);
+    user-select: text;
+  }
+
+  .ecdi-table th:last-child {
+    border-right: none;
+  }
+
+  .ecdi-table td {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line-subtle);
+    border-right: 1px solid var(--line-subtle);
+    color: var(--text);
+    user-select: text;
+  }
+
+  .ecdi-table td:last-child {
+    border-right: none;
+  }
+
+  .ecdi-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  .ecdi-table tr:nth-child(even) {
+    background: var(--table-zebra);
+  }
+
+  .ecdi-table tr:hover {
+    background: var(--table-hover);
+  }
+
+  /* 对齐方式支持 */
+  .align-left { text-align: left; }
+  .align-center { text-align: center; }
+  .align-right { text-align: right; }
+
+  /* 行内样式 */
+  code {
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    background: var(--panel2);
+    padding: 1px 5px;
+    border-radius: 3px;
+    border: 1px solid var(--line-subtle);
+  }
+
+  .status-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .tag-green { background: rgba(63, 178, 127, 0.15); color: #3fb27f; }
+  .tag-amber { background: rgba(217, 161, 63, 0.15); color: #d9a13f; }
+  .tag-blue { background: rgba(77, 130, 247, 0.15); color: #4d82f7; }
+
+  /* 流式对比区 */
+  .streaming-raw {
+    font-family: Consolas, monospace;
+    font-size: 12px;
+    background: var(--panel2);
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px dashed var(--line);
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text-muted);
+  }
+
+  .cursor {
+    display: inline-block;
+    width: 2px;
+    height: 14px;
+    background: var(--accent);
+    vertical-align: middle;
+    animation: blink 0.8s infinite;
+  }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+  .notice-bar {
+    padding: 8px 12px;
+    background: var(--panel2);
+    border-radius: 6px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--text-muted);
+  }
+</style>
+</head>
+<body class="theme-dark">
+
+<div class="container">
+
+  <!-- 顶部控制栏 -->
+  <div class="control-bar">
+    <h1>
+      <span>ECDI Fake Harness · Markdown 表格渲染原型</span>
+      <span class="badge">方案 B 原型</span>
+    </h1>
+    <div class="actions">
+      <button id="themeToggle" onclick="toggleTheme()">☀️ 切换浅色/深色主题</button>
+      <button id="widthToggle" onclick="toggleWidth()">↔ 切换版心宽度 [760px / 100%]</button>
+    </div>
+  </div>
+
+  <!-- 架构规格说明卡片 -->
+  <div class="spec-grid">
+    <div class="spec-card">
+      <h3>① 渲染期解析与无损存储</h3>
+      <p>存储与传输保持 Markdown 纯文本原文，journal/context 不受影响。由 <code>Transcript.cpp</code> 导出纯函数 <code>ParseMarkdownSegments(text)</code> 识别纯文本与管道表格。</p>
+    </div>
+    <div class="spec-card">
+      <h3>② 版心与超宽保护</h3>
+      <p>严格遵守版心上限 <code>TranscriptLayoutWidth = min(宽, 760)</code>。当表格列数较多超宽时，通过自绘容器支持<b>局部水平平滑横向滚动</b>，不破坏消息对齐。</p>
+    </div>
+    <div class="spec-card">
+      <h3>③ 终态切分原则</h3>
+      <p>表格切分只在 <code>block_end</code> 到达后执行结构化网格排布。流式中途保持等宽纯文本呈现，杜绝错乱抖动半态。</p>
+    </div>
+  </div>
+
+  <!-- 主交互视口 -->
+  <div class="viewport-window">
+    <div class="window-header">
+      <span>转录视口预览 (Transcript Viewport)</span>
+      <div class="window-tabs">
+        <button class="tab-btn active" onclick="switchCase('case1', this)">Case 1: 标准表格</button>
+        <button class="tab-btn" onclick="switchCase('case2', this)">Case 2: 8 列超宽横滚</button>
+        <button class="tab-btn" onclick="switchCase('case3', this)">Case 3: 段落混合流</button>
+        <button class="tab-btn" onclick="switchCase('case4', this)">Case 4: 流式态 vs 终态</button>
+      </div>
+    </div>
+
+    <div class="transcript-area">
+
+      <!-- Case 1: 标准表格 -->
+      <div id="case1" class="message-row">
+        <div class="message-header">
+          <div class="avatar">AI</div>
+          <span>助手 (assistant) · 模型决策与状态对比</span>
+        </div>
+        <div class="message-bubble">
+          <p>以下是本次迁移中涉及的 4 个真浮层和 2 个占槽控件的处理方案对比：</p>
+          
+          <div class="ecdi-table-wrap">
+            <table class="ecdi-table">
+              <thead>
+                <tr>
+                  <th class="align-left">控件名称</th>
+                  <th class="align-center">迁移策略</th>
+                  <th class="align-center">挂载层级</th>
+                  <th class="align-center">状态</th>
+                  <th class="align-right">内存开销</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="align-left"><b>设置面板 (Settings)</b></td>
+                  <td class="align-center">L1 托管挂载</td>
+                  <td class="align-center"><code>GetOverlayRoot()</code></td>
+                  <td class="align-center"><span class="status-tag tag-green">已闭环</span></td>
+                  <td class="align-right">常驻 (78 KB)</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><b>文件预览 (Preview)</b></td>
+                  <td class="align-center">L1 托管挂载</td>
+                  <td class="align-center"><code>GetOverlayRoot()</code></td>
+                  <td class="align-center"><span class="status-tag tag-green">已闭环</span></td>
+                  <td class="align-right">常驻 (34 KB)</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><b>模型下拉 (Model Popup)</b></td>
+                  <td class="align-center">L2 注册浮层</td>
+                  <td class="align-center"><code>Normal Layer</code></td>
+                  <td class="align-center"><span class="status-tag tag-green">已闭环</span></td>
+                  <td class="align-right">按需新建/销毁</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><b>快捷提示 (Tooltip)</b></td>
+                  <td class="align-center">L2 注册浮层</td>
+                  <td class="align-center"><code>Tooltip Layer</code></td>
+                  <td class="align-center"><span class="status-tag tag-green">已闭环</span></td>
+                  <td class="align-right">按需新建/销毁</td>
+                </tr>
+                <tr>
+                  <td class="align-left">「···」操作菜单</td>
+                  <td class="align-center">占槽保持</td>
+                  <td class="align-center"><code>VerticalLayout</code></td>
+                  <td class="align-center"><span class="status-tag tag-amber">保持原样</span></td>
+                  <td class="align-right">零开销</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>所有 L1 模态浮层均已免除 <code>HarnessRootLayout</code> 与 <code>Exempt</code> 机制，几何算式逐字不变。</p>
+        </div>
+      </div>
+
+      <!-- Case 2: 8 列超宽横向滚动表 -->
+      <div id="case2" class="message-row" style="display:none;">
+        <div class="message-header">
+          <div class="avatar">AI</div>
+          <span>助手 (assistant) · 全量探针测试矩阵 (多列超宽场景)</span>
+        </div>
+        <div class="message-bubble">
+          <div class="notice-bar">
+            <span>💡 提示：该表格总宽超过 760px 版心，下方已启用局部水平滚动条，请滑动查看完整列。</span>
+          </div>
+
+          <div class="ecdi-table-wrap">
+            <table class="ecdi-table">
+              <thead>
+                <tr>
+                  <th class="align-left">探针标志</th>
+                  <th class="align-left">测试目标</th>
+                  <th class="align-center">总相数</th>
+                  <th class="align-center">通过相</th>
+                  <th class="align-center">设计红 (Designed)</th>
+                  <th class="align-center">跳过相 (Skip)</th>
+                  <th class="align-left">关键断言口径</th>
+                  <th class="align-right">平均耗时</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="align-left"><code>--overlay-probe</code></td>
+                  <td class="align-left">浮层根拓扑与重建</td>
+                  <td class="align-center">10</td>
+                  <td class="align-center"><span class="status-tag tag-green">10/10</span></td>
+                  <td class="align-center">0</td>
+                  <td class="align-center">0</td>
+                  <td class="align-left"><code>overlayRootChildren == 3+N</code></td>
+                  <td class="align-right">18 ms</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--grow-probe</code></td>
+                  <td class="align-left">输入框自适应撑高与折行</td>
+                  <td class="align-center">12</td>
+                  <td class="align-center"><span class="status-tag tag-green">12/12</span></td>
+                  <td class="align-center">0</td>
+                  <td class="align-center">0</td>
+                  <td class="align-left"><code>inputH &gt; singleH &amp;&amp; offset==0</code></td>
+                  <td class="align-right">45 ms</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--settings-probe</code></td>
+                  <td class="align-left">设置面板配置隔离与持久化</td>
+                  <td class="align-center">17</td>
+                  <td class="align-center"><span class="status-tag tag-blue">12/17</span></td>
+                  <td class="align-center">4 (待 live 跑)</td>
+                  <td class="align-center">0</td>
+                  <td class="align-left"><code>settingsPanel-&gt;IsVisible()</code></td>
+                  <td class="align-right">62 ms</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--valign-probe</code></td>
+                  <td class="align-left">单行 TextBox 垂直居中</td>
+                  <td class="align-center">7</td>
+                  <td class="align-center"><span class="status-tag tag-green">7/7</span></td>
+                  <td class="align-center">0</td>
+                  <td class="align-center">0</td>
+                  <td class="align-left"><code>(H - lineH) / 2</code></td>
+                  <td class="align-right">12 ms</td>
+                </tr>
+                <tr>
+                  <td class="align-left"><code>--persist-probe</code></td>
+                  <td class="align-left">会话持久化与崩溃恢复</td>
+                  <td class="align-center">8</td>
+                  <td class="align-center"><span class="status-tag tag-green">8/8</span></td>
+                  <td class="align-center">0</td>
+                  <td class="align-center">0</td>
+                  <td class="align-left"><code>recoveredCount == savedCount</code></td>
+                  <td class="align-right">85 ms</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p>局部横滚保证了列内容不会被挤压截断，单元格文本支持完整选中与复制。</p>
+        </div>
+      </div>
+
+      <!-- Case 3: 段落混合流 -->
+      <div id="case3" class="message-row" style="display:none;">
+        <div class="message-header">
+          <div class="avatar">AI</div>
+          <span>助手 (assistant) · 段落与多表格混合输出</span>
+        </div>
+        <div class="message-bubble">
+          <p>你好！我们已经完成了对当前阶段性能读数的统计分析，主要分为前端绘制开销与后端通信延迟两部分。</p>
+          
+          <div class="ecdi-table-wrap">
+            <table class="ecdi-table">
+              <thead>
+                <tr>
+                  <th class="align-left">指标分类</th>
+                  <th class="align-center">旧版实现</th>
+                  <th class="align-center">本次迁移后</th>
+                  <th class="align-right">改善幅度</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="align-left">单次回调送达中位数</td>
+                  <td class="align-center">23.5 ms</td>
+                  <td class="align-center"><b>0.045 ms</b></td>
+                  <td class="align-right"><span class="status-tag tag-green">+99.8%</span></td>
+                </tr>
+                <tr>
+                  <td class="align-left">浮层树切换重绘帧数</td>
+                  <td class="align-center">14 frames</td>
+                  <td class="align-center"><b>2 frames</b></td>
+                  <td class="align-right"><span class="status-tag tag-green">-85.7%</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>根据上述读数，主 UI 线程的阻塞时间已完全归零（<code>blockedTicks=0</code>）。以下是各组件的接入顺序：</p>
+
+          <div class="ecdi-table-wrap">
+            <table class="ecdi-table">
+              <thead>
+                <tr>
+                  <th class="align-left">阶段</th>
+                  <th class="align-left">里程碑任务</th>
+                  <th class="align-center">预估风险</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="align-left">Phase 1</td>
+                  <td class="align-left">解析器纯函数 <code>ParseMarkdownSegments</code></td>
+                  <td class="align-center"><span class="status-tag tag-green">极低</span></td>
+                </tr>
+                <tr>
+                  <td class="align-left">Phase 2</td>
+                  <td class="align-left">网格控件布局排版自绘</td>
+                  <td class="align-center"><span class="status-tag tag-blue">低</span></td>
+                </tr>
+                <tr>
+                  <td class="align-left">Phase 3</td>
+                  <td class="align-left">接入 <code>--table-probe</code> 自动化回归</td>
+                  <td class="align-center"><span class="status-tag tag-green">极低</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>请确认以上排版与间距风格是否符合整体客户端的一致性要求。</p>
+        </div>
+      </div>
+
+      <!-- Case 4: 流式态 vs 终态对照 -->
+      <div id="case4" class="message-row" style="display:none;">
+        <div class="message-header">
+          <div class="avatar">AI</div>
+          <span>助手 (assistant) · 流式输出态（未闭合）与终态切换机制</span>
+        </div>
+        <div class="message-bubble">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <p><b>【状态演示】点击右侧按钮模拟从模型流式输出到 <code>block_end</code> 接收完成：</b></p>
+            <button onclick="toggleStreamDemo()" id="streamBtn" style="font-size:12px;">▶ 模拟接收 block_end 格式化</button>
+          </div>
+
+          <!-- 流式态：纯文本等宽 -->
+          <div id="streamRawView">
+            <p style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">流式接收中（未收到 block_end，保持纯文本）：</p>
+            <div class="streaming-raw">| 服务提供商 | 支持协议 | 默认模型 | 延迟 |
+|:---|:---:|:---|---:|
+| Unisound Maas | v4 | unisound-glm-4 | 42ms |
+| DeepSeek Open | v4 | deepseek-chat | 38ms |<span class="cursor"></span></div>
+          </div>
+
+          <!-- 终态：结构化格式化表 -->
+          <div id="streamFinalView" style="display:none;">
+            <p style="font-size:12px; color:#3fb27f; margin-bottom:4px;">✔ 收到 block_end 结构化呈现：</p>
+            <div class="ecdi-table-wrap">
+              <table class="ecdi-table">
+                <thead>
+                  <tr>
+                    <th class="align-left">服务提供商</th>
+                    <th class="align-center">支持协议</th>
+                    <th class="align-left">默认模型</th>
+                    <th class="align-right">延迟</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="align-left">Unisound Maas</td>
+                    <td class="align-center"><code>v4</code></td>
+                    <td class="align-left">unisound-glm-4</td>
+                    <td class="align-right">42 ms</td>
+                  </tr>
+                  <tr>
+                    <td class="align-left">DeepSeek Open</td>
+                    <td class="align-center"><code>v4</code></td>
+                    <td class="align-left">deepseek-chat</td>
+                    <td class="align-right">38 ms</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <p style="font-size:12px; color:var(--text-muted);">
+            该机制确保在模型逐字流式吐出 <code>| ... |</code> 时，界面不会因为不完整的管道符号而产生反复闪烁或破损网格，体验最稳定。
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+  function toggleTheme() {
+    const b = document.body;
+    if (b.classList.contains('theme-dark')) {
+      b.classList.remove('theme-dark');
+      b.classList.add('theme-light');
+    } else {
+      b.classList.remove('theme-light');
+      b.classList.add('theme-dark');
+    }
+  }
+
+  function toggleWidth() {
+    const rows = document.querySelectorAll('.message-row');
+    rows.forEach(r => {
+      if (r.style.maxWidth === '100%') {
+        r.style.maxWidth = '760px';
+      } else {
+        r.style.maxWidth = '100%';
+      }
+    });
+  }
+
+  function switchCase(caseId, btn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    ['case1', 'case2', 'case3', 'case4'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = (id === caseId) ? 'flex' : 'none';
+    });
+  }
+
+  let isFinal = false;
+  function toggleStreamDemo() {
+    isFinal = !isFinal;
+    const raw = document.getElementById('streamRawView');
+    const fin = document.getElementById('streamFinalView');
+    const btn = document.getElementById('streamBtn');
+    if (isFinal) {
+      raw.style.display = 'none';
+      fin.style.display = 'block';
+      btn.innerText = '↺ 重置为流式未结束状态';
+    } else {
+      raw.style.display = 'block';
+      fin.style.display = 'none';
+      btn.innerText = '▶ 模拟接收 block_end 格式化';
+    }
+  }
+</script>
+
+</body>
+</html>

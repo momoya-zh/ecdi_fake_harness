@@ -1015,3 +1015,172 @@ void HarnessApp::AppendDelProvProbeSummary(std::string& json) {
     json += "],\n";
 }
 
+
+
+// ── Markdown 表格渲染探针（--table-probe）─────────────────────
+void HarnessApp::RunTableProbe() {
+    if (m_probeState.tableProbeDone) return;
+    m_probeState.tableProbeDone = true;
+
+    // 1. parse-pure：标准管道表格、对齐、前后段落
+    {
+        TableProbeRec rec;
+        rec.phase = "parse-pure";
+        const std::string src =
+            "前置段落\n\n"
+            "| 特性 | 状态 | 覆盖率 |\n"
+            "| :--- | :---: | ---: |\n"
+            "| 软折行 | 已闭合 | 100% |\n"
+            "| 浮层迁移 | 已闭合 | 100% |\n\n"
+            "后置段落";
+
+        auto segs = ParseMarkdownSegments(src);
+        std::string errNote;
+        if (segs.size() != 3) {
+            errNote = "segs.size=" + std::to_string(segs.size());
+        } else if (segs[0].kind != MarkdownSegmentKind::Paragraph || segs[0].text != "前置段落") {
+            errNote = "seg[0] text='" + segs[0].text + "'";
+        } else if (segs[1].kind != MarkdownSegmentKind::Table) {
+            errNote = "seg[1] not table";
+        } else if (segs[2].kind != MarkdownSegmentKind::Paragraph || segs[2].text != "后置段落") {
+            errNote = "seg[2] text='" + segs[2].text + "'";
+        } else {
+            const auto& tbl = segs[1].table;
+            if (tbl.headers.size() != 3 || tbl.headers[0] != "特性" || tbl.headers[1] != "状态" || tbl.headers[2] != "覆盖率") {
+                errNote = "headers mismatch";
+            } else if (tbl.alignments.size() != 3 || tbl.alignments[0] != MarkdownAlign::Left ||
+                       tbl.alignments[1] != MarkdownAlign::Center || tbl.alignments[2] != MarkdownAlign::Right) {
+                errNote = "alignments mismatch";
+            } else if (tbl.rows.size() != 2 || tbl.rows[0][0] != "软折行" || tbl.rows[0][1] != "已闭合" || tbl.rows[0][2] != "100%" ||
+                       tbl.rows[1][0] != "浮层迁移" || tbl.rows[1][1] != "已闭合" || tbl.rows[1][2] != "100%") {
+                errNote = "rows mismatch";
+            }
+        }
+        rec.matched = errNote.empty();
+        if (!rec.matched) rec.note = errNote;
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    // 2. parse-non-table：非表格文本安全退化
+    {
+        TableProbeRec rec;
+        rec.phase = "parse-non-table";
+        const std::string nonTable =
+            "这是一段普通文本\n"
+            "| 看起来像表头 | 但下一行没有分隔线 |\n"
+            "所以不是合法表格\n";
+        auto segs = ParseMarkdownSegments(nonTable);
+        bool ok = (segs.size() == 1 && segs[0].kind == MarkdownSegmentKind::Paragraph && segs[0].text == nonTable);
+        rec.matched = ok;
+        if (!ok) rec.note = "non-table should fallback to single paragraph";
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    // 3. parse-escaped-pipe：转义 \|
+    {
+        TableProbeRec rec;
+        rec.phase = "parse-escaped-pipe";
+        const std::string escaped =
+            "| 表达式 | 含义 |\n"
+            "| --- | --- |\n"
+            "| a \\| b | 或操作 |\n";
+        auto segs = ParseMarkdownSegments(escaped);
+        bool ok = (segs.size() == 1 && segs[0].kind == MarkdownSegmentKind::Table);
+        if (ok) {
+            const auto& tbl = segs[0].table;
+            ok = (tbl.rows.size() == 1 && tbl.rows[0].size() == 2 && tbl.rows[0][0] == "a | b" && tbl.rows[0][1] == "或操作");
+        }
+        rec.matched = ok;
+        if (!ok) rec.note = "escaped pipe mismatch";
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    // 4. streaming-fallback：流式未结束不切分
+    {
+        TableProbeRec rec;
+        rec.phase = "streaming-fallback";
+        Block mockBlock;
+        mockBlock.id = "mock_stream";
+        mockBlock.kind = "assistant";
+        mockBlock.text = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+        mockBlock.ended = false;
+
+        RowRec mockRec;
+        auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+        bool ok = (mockRec.hasTable == false && mockRec.label != nullptr);
+        rec.matched = ok;
+        if (!ok) rec.note = "streaming block must not split table prematurely";
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    // 5. block-end-upgrade：结束块升级为 ScrollView 表格控件
+    {
+        TableProbeRec rec;
+        rec.phase = "block-end-upgrade";
+        Block mockBlock;
+        mockBlock.id = "mock_ended";
+        mockBlock.kind = "assistant";
+        mockBlock.text = "前缀\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n后缀";
+        mockBlock.ended = true;
+
+        RowRec mockRec;
+        auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+        bool ok = (mockRec.hasTable == true && mockRec.segments.size() >= 2);
+        if (ok) {
+            bool foundSv = false;
+            for (auto* w : mockRec.segments) {
+                if (dynamic_cast<ECDI::ScrollView*>(w)) {
+                    foundSv = true;
+                    break;
+                }
+            }
+            ok = foundSv;
+        }
+        rec.matched = ok;
+        if (!ok) rec.note = "ended block must assemble table scrollview";
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    // 6. wide-scroll-container：超宽表格 content extent 超过版心封顶
+    {
+        TableProbeRec rec;
+        rec.phase = "wide-scroll-container";
+        MarkdownTable wideTable;
+        for (int i = 0; i < 8; ++i) {
+            wideTable.headers.push_back("超长字段标题列 " + std::to_string(i + 1));
+            wideTable.alignments.push_back(MarkdownAlign::Left);
+        }
+        std::vector<std::string> rowCells;
+        for (int i = 0; i < 8; ++i) {
+            rowCells.push_back("单元格长内容数据项 " + std::to_string(i + 1));
+        }
+        wideTable.rows.push_back(rowCells);
+
+        auto tableWidget = BuildTableWidget(wideTable);
+        auto* sv = dynamic_cast<ECDI::ScrollView*>(tableWidget.get());
+        bool ok = (sv != nullptr);
+        if (ok) {
+            const int extentW = static_cast<int>(sv->GetContentExtent().width);
+            ok = (extentW > 760);
+        }
+        rec.matched = ok;
+        if (!ok) rec.note = "wide table content extent must exceed transcript layout max width";
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    if (m_application) m_application->Exit();
+}
+
+void HarnessApp::AppendTableProbeSummary(std::string& json) {
+    json += "  \"tableProbe\": [";
+    for (size_t i = 0; i < m_probeState.tableProbeLog.size(); ++i) {
+        const TableProbeRec& r = m_probeState.tableProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}

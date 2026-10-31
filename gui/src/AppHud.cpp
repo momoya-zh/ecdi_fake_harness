@@ -301,6 +301,8 @@ void HarnessApp::Relayout() {
                     r.conclusion->SetPosition(innerW - cw - 14, 2 + (kHeaderH - ch) / 2);
                 }
             }
+        } else if (r.hasTable) {
+            // 富内容二期：复合 assistant 行的高度由下方 segments 累加计算，不走单气泡 wrap
         } else {
             const int maxBubbleW = std::max(120, innerW * 78 / 100);
             const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
@@ -339,6 +341,35 @@ void HarnessApp::Relayout() {
         }
         if (r.tool || r.reasoning || r.ask) {
             // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
+            r.panel->SetSize(innerW, rowH);
+            r.panel->SetPosition(canvasX, y);
+        } else if (r.hasTable) {
+            // ★★ 富内容二期：含有 Markdown 表格的复合 assistant 行
+            int curY = 8;
+            for (ECDI::Widget* w : r.segments) {
+                if (!w) continue;
+                if (auto* tw = dynamic_cast<ECDI::TextWidget*>(w)) {
+                    tw->SetWordWrap(true);
+                    tw->SetSize(std::max(40, innerW - 2 * kRowPadX), tw->GetHeight());
+                    tw->AutoSize();
+                    tw->SetPosition(kRowPadX, curY);
+                    curY += tw->GetHeight() + 10;
+                } else if (auto* sv = dynamic_cast<ECDI::ScrollView*>(w)) {
+                    const int contentW = static_cast<int>(sv->GetContentExtent().width);
+                    const int contentH = static_cast<int>(sv->GetContentExtent().height);
+                    const int availW = std::max(40, innerW - 2 * kRowPadX);
+                    const int tableW = std::min(availW, contentW);
+                    const int barExtraH = (contentW > availW) ? 14 : 0;
+                    const int tableH = contentH + barExtraH;
+                    sv->SetSize(tableW, tableH);
+                    sv->SetPosition(kRowPadX, curY);
+                    curY += tableH + 12;
+                } else {
+                    w->SetPosition(kRowPadX, curY);
+                    curY += w->GetHeight() + 10;
+                }
+            }
+            rowH = curY + 8;
             r.panel->SetSize(innerW, rowH);
             r.panel->SetPosition(canvasX, y);
         } else {

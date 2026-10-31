@@ -15,6 +15,7 @@
 // ============================================================
 
 #include "App.h"
+#include "ECDI/Widget/ScrollBar.h"
 #include "AppInternal.h"
 #include "ThemeUsing.h"
 #include "Transcript.h"
@@ -167,6 +168,23 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             .cornerRadius = 0.0f,
             .borderWidth = 0.0f,
             .borderColor = plainBg});
+
+        // ★★ 富内容二期：若块已完结（ended）且含 Markdown 表格，构建复合网格结构
+        if (block.kind == "assistant" && block.ended) {
+            auto segs = ParseMarkdownSegments(block.text);
+            bool containsTable = false;
+            for (const auto& s : segs) {
+                if (s.kind == MarkdownSegmentKind::Table) {
+                    containsTable = true;
+                    break;
+                }
+            }
+            if (containsTable) {
+                rec.hasTable = true;
+                BuildAssistantMarkdownWidgets(*panel, rec, segs);
+                return panel;
+            }
+        }
         // ★★ P4 G 尖峰（--selectable-rows）：assistant 正文行用只读 TextBox——
         //   「编辑 no-op 但方向键/选区/Ctrl+A/C 照常」（TextBox.h:50 契约）⇒ 转录
         //   可选中/复制不需要框架新能力。视觉与 Label 版同形：透明底/无边框/
@@ -569,34 +587,20 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
     SyncRowViewState();
     m_pendingPromptViews.clear();
 
-    // ★ 重建会让内容重新排一遍 ⇒ 不刻意恢复的话视图会跳回顶部。
-    //   "换主题/切会话之后回到刚才读到的地方"是**可用性**要求，不是装饰：
-    //   转录一长，重排后跳顶等于让人重新找位置。
     const int keepScroll = m_scroll ? m_scroll->GetScrollOffsetY() : 0;
 
-    // ① 先让**指针表**归零，再动控件树：否则 `Relayout()` 会顺着 `rows` 里
-    //    已经指向已删控件的裸指针走（悬垂读）。顺序反了就是 UAF，不是风格问题。
     m_sess->rows.clear();
     m_sess->blockRows.clear();
     if (m_content) {
-        // `RemoveChild` 返回所有权；逐个摘掉即完成子树销毁（`Widget::RemoveChild`
-        // 内部走 `Window::ForgetSubtree`，焦点/捕获/悬停指针一并清掉）
         while (m_content->GetChildCount() > 0) {
             m_content->RemoveChild(m_content->GetChildAt(0));
         }
     }
-    // ★★ P4 C：引导卡挂在 m_content 上，随上面的拆树一并析构——指针必须立刻
-    //   归零（末尾 Relayout → RefreshEmptyGuide 会按需重建）。
     m_hud.emptyGuide = nullptr;
 
-    // ② 按模型重放（或按调用方给的**错误**次序重放——那正是负对照要的形状）
     if (!orderOverride) {
         MaterializeRows();
     } else {
-        // ★ 负对照专用：**只**照块表建块行（不建通知/问句行、不按条目回填状态）
-        //   ——这正是"只拿 `Transcript::m_blocks` 重建视图"这个错误实现的样子。
-        //   `timelineIdx` 给一个越界哨兵值：它**不**参与视图状态写回
-        //   （负对照要复现的是错误实现，不该顺手把状态写坏）。
         const size_t kNoTimeline = static_cast<size_t>(-1);
         for (const std::string& id : *orderOverride) {
             const Block* block = m_sess->transcript.FindBlock(id);
@@ -611,8 +615,6 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
     }
     MaterializePendingPrompts();
 
-    // ★ 重建后必须自己收尾：重排（几何是新的）再把滚动位置放回去。
-    //   让调用方记得补这一步是设计要求里最容易漏的一环，故内置。
     Relayout();
     if (m_scroll) m_scroll->SetContentOffset(0, keepScroll);
 }
@@ -1060,4 +1062,224 @@ void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color)
     RowRec rec;
     auto panel = BuildNoticeRow(text, color, rec);
     AddRow(std::move(panel), rec, std::string(), m_sess->timeline.size() - 1);
+}
+
+
+// ── Markdown 表格渲染与控件组装（富内容二期）─────────────────────
+void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
+                                              const std::vector<MarkdownSegment>& segs) {
+    const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+    rec.segments.clear();
+    rec.label = nullptr;
+
+    for (const auto& seg : segs) {
+        if (seg.kind == MarkdownSegmentKind::Paragraph) {
+            if (seg.text.empty()) continue;
+            if (m_options.selectableRows) {
+                auto box = std::make_unique<ECDI::TextBox>();
+                box->SetText(seg.text);
+                box->SetReadOnly(true);
+                box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+                box->SetFont(harness::SansFont(harness::kFontBody));
+                box->SetStyle(ECDI::TextBoxStyleOverride{
+                    .background = plainBg,
+                    .caretWidth = 0.0f,
+                    .padding = 0.0f,
+                    .cornerRadius = 0.0f,
+                    .borderWidth = 0.0f});
+                if (!rec.label) rec.label = box.get();
+                rec.segments.push_back(box.get());
+                panel.AddChild(std::move(box));
+            } else {
+                auto label = std::make_unique<ECDI::Label>(seg.text);
+                label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+                label->SetFont(harness::SansFont(harness::kFontBody));
+                if (!rec.label) rec.label = label.get();
+                rec.segments.push_back(label.get());
+                panel.AddChild(std::move(label));
+            }
+        } else if (seg.kind == MarkdownSegmentKind::Table) {
+            auto tableWidget = BuildTableWidget(seg.table);
+            if (tableWidget) {
+                rec.segments.push_back(tableWidget.get());
+                panel.AddChild(std::move(tableWidget));
+            }
+        }
+    }
+}
+
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& table) {
+    if (table.headers.empty()) return nullptr;
+
+    const size_t numCols = table.headers.size();
+    std::vector<int> colWidths(numCols, 64);
+    const int colPadX = 14;
+    const int headerH = 34;
+    const int rowH = 30;
+
+    auto estimateWidth = [](const std::string& str) -> int {
+        int w = 0;
+        for (size_t i = 0; i < str.size(); ) {
+            unsigned char c = static_cast<unsigned char>(str[i]);
+            if (c < 0x80) {
+                w += 8;
+                i += 1;
+            } else if ((c & 0xe0) == 0xc0) {
+                w += 14;
+                i += 2;
+            } else if ((c & 0xf0) == 0xe0) {
+                w += 14;
+                i += 3;
+            } else {
+                w += 14;
+                i += 4;
+            }
+        }
+        return w;
+    };
+
+    for (size_t c = 0; c < numCols; ++c) {
+        int w = estimateWidth(table.headers[c]) + 2 * colPadX;
+        if (w > colWidths[c]) colWidths[c] = w;
+    }
+
+    for (const auto& r : table.rows) {
+        for (size_t c = 0; c < numCols && c < r.size(); ++c) {
+            int w = estimateWidth(r[c]) + 2 * colPadX;
+            if (w > colWidths[c]) colWidths[c] = w;
+        }
+    }
+
+    int totalTableW = 0;
+    for (int w : colWidths) totalTableW += w;
+    totalTableW = std::max(120, totalTableW);
+
+    const int totalTableH = headerH + static_cast<int>(table.rows.size()) * rowH + 2;
+
+    auto tableCard = std::make_unique<ECDI::Panel>();
+    tableCard->SetSize(totalTableW, totalTableH);
+    tableCard->SetStyle(ECDI::PanelStyleOverride{
+        .background = Pick(m_options.probeContrast, kCardBg, kProbeBg),
+        .cornerRadius = 6.0f,
+        .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+        .borderColor = kLine});
+
+    auto headerBar = std::make_unique<ECDI::Panel>();
+    headerBar->SetSize(totalTableW, headerH);
+    headerBar->SetPosition(0, 0);
+    headerBar->SetStyle(ECDI::PanelStyleOverride{
+        .background = Pick(m_options.probeContrast, kPanel2, kProbeBg),
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f,
+        .borderColor = kLine});
+    tableCard->AddChild(std::move(headerBar));
+
+    int curColX = 0;
+    for (size_t c = 0; c < numCols; ++c) {
+        const int colW = colWidths[c];
+        auto hLabel = std::make_unique<ECDI::Label>(table.headers[c]);
+        hLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        hLabel->SetFont(harness::SansFont(harness::kFontBody));
+        const int labelW = estimateWidth(table.headers[c]);
+        const int labelH = 16;
+        int lx = curColX + colPadX;
+        const MarkdownAlign align = (c < table.alignments.size()) ? table.alignments[c] : MarkdownAlign::Left;
+        if (align == MarkdownAlign::Center) {
+            lx = curColX + std::max(0, (colW - labelW) / 2);
+        } else if (align == MarkdownAlign::Right) {
+            lx = curColX + std::max(0, colW - labelW - colPadX);
+        }
+        const int ly = (headerH - labelH) / 2;
+        hLabel->SetPosition(lx, ly);
+        tableCard->AddChild(std::move(hLabel));
+
+        curColX += colW;
+    }
+
+    auto headerLine = std::make_unique<ECDI::Panel>();
+    headerLine->SetSize(totalTableW, 1);
+    headerLine->SetPosition(0, headerH);
+    headerLine->SetStyle(ECDI::PanelStyleOverride{
+        .background = kLine,
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f,
+        .borderColor = kLine});
+    tableCard->AddChild(std::move(headerLine));
+
+    for (size_t r = 0; r < table.rows.size(); ++r) {
+        const int curRowY = headerH + 1 + static_cast<int>(r) * rowH;
+
+        if (r % 2 == 1) {
+            auto zebra = std::make_unique<ECDI::Panel>();
+            zebra->SetSize(totalTableW, rowH);
+            zebra->SetPosition(0, curRowY);
+            zebra->SetStyle(ECDI::PanelStyleOverride{
+                .background = Pick(m_options.probeContrast,
+                                   ECDI::Color::FromRGBA8(128, 128, 128, 12),
+                                   kProbeBg),
+                .cornerRadius = 0.0f,
+                .borderWidth = 0.0f,
+                .borderColor = kLine});
+            tableCard->AddChild(std::move(zebra));
+        }
+
+        curColX = 0;
+        const auto& rowData = table.rows[r];
+        for (size_t c = 0; c < numCols; ++c) {
+            const int colW = colWidths[c];
+            const std::string text = (c < rowData.size()) ? rowData[c] : "";
+            auto cLabel = std::make_unique<ECDI::Label>(text);
+            cLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+            cLabel->SetFont(harness::SansFont(harness::kFontBody));
+            const int labelW = estimateWidth(text);
+            const int labelH = 16;
+            int lx = curColX + colPadX;
+            const MarkdownAlign align = (c < table.alignments.size()) ? table.alignments[c] : MarkdownAlign::Left;
+            if (align == MarkdownAlign::Center) {
+                lx = curColX + std::max(0, (colW - labelW) / 2);
+            } else if (align == MarkdownAlign::Right) {
+                lx = curColX + std::max(0, colW - labelW - colPadX);
+            }
+            const int ly = curRowY + (rowH - labelH) / 2;
+            cLabel->SetPosition(lx, ly);
+            tableCard->AddChild(std::move(cLabel));
+
+            curColX += colW;
+        }
+
+        if (r + 1 < table.rows.size()) {
+            auto rowLine = std::make_unique<ECDI::Panel>();
+            rowLine->SetSize(totalTableW, 1);
+            rowLine->SetPosition(0, curRowY + rowH - 1);
+            rowLine->SetStyle(ECDI::PanelStyleOverride{
+                .background = kLine,
+                .cornerRadius = 0.0f,
+                .borderWidth = 0.0f,
+                .borderColor = kLine});
+            tableCard->AddChild(std::move(rowLine));
+        }
+    }
+
+    auto sv = std::make_unique<ECDI::ScrollView>();
+    sv->SetScrollStep(28);
+    if (auto* vsb = sv->GetVerticalScrollBar()) {
+        vsb->SetVisible(false);
+    }
+    sv->GetContentView().AddChild(std::move(tableCard));
+    sv->SetContentExtent(totalTableW, totalTableH);
+
+    return sv;
+}
+
+void HarnessApp::UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
+                                              const std::vector<MarkdownSegment>& segs) {
+    if (!rec.panel) return;
+    auto* panel = dynamic_cast<ECDI::Panel*>(rec.panel);
+    if (!panel) return;
+
+    while (panel->GetChildCount() > 0) {
+        panel->RemoveChild(panel->GetChildAt(0));
+    }
+    rec.hasTable = true;
+    BuildAssistantMarkdownWidgets(*panel, rec, segs);
 }

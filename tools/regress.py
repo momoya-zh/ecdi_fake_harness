@@ -80,6 +80,7 @@ COT = "protocol/fixtures/cot/cot-session.jsonl"
 # ★ designed-red 只收「在该跑法下**结构上不可达**的相」，理由逐条写在注释里；
 #   不收「跑起来才发现红」的相——那叫回归，不叫设计。
 EXTRA_PROBES = [
+    ("--table-probe", "tableProbe", DEMO, [], []),
     ("--empty-probe", "emptyProbe", DEMO, [], []),
     ("--key-probe", "keyProbe", DEMO, [], []),
     # 短夹具装不满视口 ⇒ jump 探针自述 skipped-short-fixture。scale 才有可滚动内容。

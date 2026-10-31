@@ -196,6 +196,9 @@ void HarnessApp::WriteSummary() {
         AppendModelProbeSummary(json);
     }
     // ★★ P4 Phase G（--select-probe）：选中复制判据。
+    if (m_options.tableProbe && !m_probeState.tableProbeLog.empty()) {
+        AppendTableProbeSummary(json);
+    }
     if (m_options.selectProbe && !m_probeState.selectProbeLog.empty()) {
         AppendSelectProbeSummary(json);
     }

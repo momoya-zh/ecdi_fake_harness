@@ -353,6 +353,7 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::emptyProbe, &ProbeState::emptyProbeDone, &HarnessApp::RunEmptyProbe},
                 {&CliOptions::modelProbe, &ProbeState::modelProbeDone, &HarnessApp::RunModelProbe},
                 {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
+                {&CliOptions::tableProbe, &ProbeState::tableProbeDone, &HarnessApp::RunTableProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
@@ -519,7 +520,28 @@ void HarnessApp::RouteLastMessage() {
         const std::string id = msg.GetString("id");
         const Block* block = m_sess->transcript.FindBlock(id);
         const auto row = m_sess->blockRows.find(id);
-        if (row == m_sess->blockRows.end() || !row->second->headerBtn) {
+        if (row == m_sess->blockRows.end()) {
+            return;
+        }
+
+        // ★★ 富内容二期：assistant 块在 block_end 时若包含 Markdown 表格，从流式纯文本升级为表格渲染
+        if (block && block->kind == "assistant" && !row->second->hasTable) {
+            auto segs = ParseMarkdownSegments(block->text);
+            bool containsTable = false;
+            for (const auto& s : segs) {
+                if (s.kind == MarkdownSegmentKind::Table) {
+                    containsTable = true;
+                    break;
+                }
+            }
+            if (containsTable) {
+                UpgradeAssistantRowToMarkdown(*row->second, *block, segs);
+                Relayout();
+                RequestRepaint();
+            }
+        }
+
+        if (!row->second->headerBtn) {
             return;
         }
         // ★ 协议 v2 §7：思维链块结束时标题改为「**已完成**」（用户裁决）。

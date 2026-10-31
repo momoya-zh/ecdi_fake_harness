@@ -206,4 +206,6 @@ struct ProbeState {
     size_t evalProbeCommands = 0;
     size_t evalProbeMax = 0;
     size_t evalProbeAvg = 0;
+    std::vector<TableProbeRec> tableProbeLog;
+    bool tableProbeDone = false;
 };

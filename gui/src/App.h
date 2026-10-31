@@ -478,6 +478,8 @@ private:
         //   「是工具卡还是思维链」的二次判断。
         bool reasoning = false;
         bool ended = false;                       // 该块是否已 `block_end`（标题两态用）
+        bool hasTable = false;                    // 富内容二期：是否包含 Markdown 表格
+        std::vector<ECDI::Widget*> segments;      // 富内容段落/表格控件列表（非拥有）
         std::string blockId;                      // 点开展开时回查块（标题重算用）
         std::string askId;                        // P1.5：协议 ask 的 id（answer 回执用）
         int bodyH = 0;                            // 展开体高度缓存（autosize 布局用）
@@ -841,6 +843,11 @@ private:
     std::unique_ptr<ECDI::Widget> BuildAskRow(const TimelineEntry& entry, RowRec& rec);
     std::unique_ptr<ECDI::Widget> BuildNoticeRow(const std::string& text,
                                                  const ECDI::Color& color, RowRec& rec);
+    void BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
+                                       const std::vector<MarkdownSegment>& segs);
+    std::unique_ptr<ECDI::Widget> BuildTableWidget(const MarkdownTable& table);
+    void UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
+                                       const std::vector<MarkdownSegment>& segs);
 
     // ── ★★ Step 1（2026-10-19）：侧栏会话列表 —— 第二条「模型 → 视图」通道 ────
     // 为什么侧栏也要能被重建：0c 只让**转录区**可重建，理由写在 `RebuildTranscriptView`
@@ -1644,6 +1651,8 @@ private:
 
     // ★★ P4 Phase G（--select-probe）：选中复制判据。形状同 RunJumpProbe。
     void RunSelectProbe();
+    void RunTableProbe();
+    void AppendTableProbeSummary(std::string& json);
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：
     //   dedup-load（同 id 8 份 ⇒ Load 去重剩 1）/ delete-one（2 家删所选剩 1，

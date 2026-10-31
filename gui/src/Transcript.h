@@ -88,3 +88,35 @@ private:
     long long m_lastSeq = -1;
     bool m_seenSeq = false;
 };
+
+// ── Markdown 管道表格数据结构与纯函数解析器（富内容二期）─────────────────────
+// 纯函数解析器收敛于本单元（零副作用、可直接在探针与渲染管线中测试）。
+
+enum class MarkdownAlign {
+    Left,
+    Center,
+    Right
+};
+
+struct MarkdownTable {
+    std::vector<std::string> headers;
+    std::vector<MarkdownAlign> alignments;
+    std::vector<std::vector<std::string>> rows;
+};
+
+enum class MarkdownSegmentKind {
+    Paragraph,
+    Table
+};
+
+struct MarkdownSegment {
+    MarkdownSegmentKind kind = MarkdownSegmentKind::Paragraph;
+    std::string text;             // kind == Paragraph 时有效
+    MarkdownTable table;          // kind == Table 时有效
+};
+
+// 纯函数解析器：
+// 从文本中提取标准 GitHub Flavored Markdown 管道表格（Pipe Table）。
+// 当文本不包含有效闭合表格时，返回单个 Paragraph 片段（内容等于原 text），与未解析等价。
+std::vector<MarkdownSegment> ParseMarkdownSegments(const std::string& text);
+

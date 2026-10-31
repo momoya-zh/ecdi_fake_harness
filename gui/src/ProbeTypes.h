@@ -385,3 +385,9 @@ struct DelProvProbeRec {
     std::string note;
 };
 
+
+struct TableProbeRec {
+    std::string phase;
+    bool matched = true;
+    std::string note;
+};

@@ -168,3 +168,216 @@ bool Transcript::IsKnownKind(const std::string& kind) {
            kind == "tool_call" || kind == "tool_result" || kind == "system" ||
            kind == "error";
 }
+
+
+// ── Markdown 管道表格纯函数解析器实现（富内容二期）─────────────────────
+namespace {
+
+bool ParseDelimiterCell(const std::string& cell, MarkdownAlign& align) {
+    size_t s = cell.find_first_not_of(" \t\r");
+    size_t e = cell.find_last_not_of(" \t\r");
+    if (s == std::string::npos) return false;
+    std::string trimmed = cell.substr(s, e - s + 1);
+    if (trimmed.empty()) return false;
+
+    bool leftColon = (trimmed.front() == ':');
+    bool rightColon = (trimmed.back() == ':');
+
+    size_t startDash = leftColon ? 1 : 0;
+    size_t endDash = rightColon ? trimmed.size() - 1 : trimmed.size();
+    if (startDash >= endDash) return false; // 缺少至少一个 '-'
+
+    for (size_t i = startDash; i < endDash; ++i) {
+        if (trimmed[i] != '-') return false;
+    }
+
+    if (leftColon && rightColon) {
+        align = MarkdownAlign::Center;
+    } else if (rightColon) {
+        align = MarkdownAlign::Right;
+    } else {
+        align = MarkdownAlign::Left;
+    }
+    return true;
+}
+
+std::vector<std::string> SplitPipeRowCells(const std::string& line) {
+    std::vector<std::string> cells;
+    std::string current;
+    bool escaped = false;
+
+    for (size_t i = 0; i < line.size(); ++i) {
+        char c = line[i];
+        if (escaped) {
+            current += c;
+            escaped = false;
+        } else if (c == '\\') {
+            escaped = true;
+        } else if (c == '|') {
+            cells.push_back(current);
+            current.clear();
+        } else {
+            current += c;
+        }
+    }
+    cells.push_back(current);
+
+    size_t firstNonSpace = line.find_first_not_of(" \t\r");
+    if (firstNonSpace != std::string::npos && line[firstNonSpace] == '|') {
+        if (!cells.empty()) cells.erase(cells.begin());
+    }
+
+    size_t lastNonSpace = line.find_last_not_of(" \t\r");
+    if (lastNonSpace != std::string::npos && line[lastNonSpace] == '|') {
+        bool trailingEscaped = false;
+        size_t p = lastNonSpace;
+        while (p > 0 && line[p - 1] == '\\') {
+            trailingEscaped = !trailingEscaped;
+            --p;
+        }
+        if (!trailingEscaped && !cells.empty()) {
+            cells.pop_back();
+        }
+    }
+
+    for (auto& cell : cells) {
+        size_t s = cell.find_first_not_of(" \t\r");
+        size_t e = cell.find_last_not_of(" \t\r");
+        if (s == std::string::npos) {
+            cell.clear();
+        } else {
+            cell = cell.substr(s, e - s + 1);
+        }
+    }
+    return cells;
+}
+
+bool TryParseDelimiterLine(const std::string& line, size_t expectedCols, std::vector<MarkdownAlign>& aligns) {
+    if (line.find('|') == std::string::npos && expectedCols > 1) return false;
+    auto cells = SplitPipeRowCells(line);
+    if (cells.size() != expectedCols || cells.empty()) return false;
+
+    std::vector<MarkdownAlign> parsedAligns;
+    parsedAligns.reserve(cells.size());
+    for (const auto& c : cells) {
+        MarkdownAlign a = MarkdownAlign::Left;
+        if (!ParseDelimiterCell(c, a)) return false;
+        parsedAligns.push_back(a);
+    }
+    aligns = std::move(parsedAligns);
+    return true;
+}
+
+} // namespace
+
+std::vector<MarkdownSegment> ParseMarkdownSegments(const std::string& text) {
+    std::vector<std::string> lines;
+    {
+        std::string current;
+        for (char c : text) {
+            if (c == '\n') {
+                if (!current.empty() && current.back() == '\r') current.pop_back();
+                lines.push_back(current);
+                current.clear();
+            } else {
+                current += c;
+            }
+        }
+        if (!current.empty() && current.back() == '\r') current.pop_back();
+        lines.push_back(current);
+    }
+
+    std::vector<MarkdownSegment> segments;
+    std::string pendingParagraph;
+
+    auto flushParagraph = [&]() {
+        while (!pendingParagraph.empty() && (pendingParagraph.front() == '\n' || pendingParagraph.front() == '\r')) {
+            pendingParagraph.erase(pendingParagraph.begin());
+        }
+        while (!pendingParagraph.empty() && (pendingParagraph.back() == '\n' || pendingParagraph.back() == '\r')) {
+            pendingParagraph.pop_back();
+        }
+        if (!pendingParagraph.empty()) {
+            MarkdownSegment seg;
+            seg.kind = MarkdownSegmentKind::Paragraph;
+            seg.text = pendingParagraph;
+            segments.push_back(std::move(seg));
+            pendingParagraph.clear();
+        }
+    };
+
+    size_t i = 0;
+    while (i < lines.size()) {
+        const std::string& line = lines[i];
+
+        bool isTableStart = false;
+        std::vector<std::string> headers;
+        std::vector<MarkdownAlign> aligns;
+
+        if (line.find('|') != std::string::npos && (i + 1 < lines.size())) {
+            headers = SplitPipeRowCells(line);
+            if (!headers.empty() && TryParseDelimiterLine(lines[i + 1], headers.size(), aligns)) {
+                isTableStart = true;
+            }
+        }
+
+        if (isTableStart) {
+            flushParagraph();
+
+            MarkdownTable table;
+            table.headers = std::move(headers);
+            table.alignments = std::move(aligns);
+
+            size_t j = i + 2;
+            while (j < lines.size()) {
+                const std::string& rowLine = lines[j];
+                if (rowLine.empty() || rowLine.find_first_not_of(" \t\r") == std::string::npos ||
+                    rowLine.find('|') == std::string::npos) {
+                    break;
+                }
+                auto rowCells = SplitPipeRowCells(rowLine);
+                if (rowCells.empty()) break;
+
+                if (rowCells.size() < table.headers.size()) {
+                    rowCells.resize(table.headers.size(), "");
+                } else if (rowCells.size() > table.headers.size()) {
+                    rowCells.resize(table.headers.size());
+                }
+                table.rows.push_back(std::move(rowCells));
+                ++j;
+            }
+
+            MarkdownSegment seg;
+            seg.kind = MarkdownSegmentKind::Table;
+            seg.table = std::move(table);
+            segments.push_back(std::move(seg));
+
+            i = j;
+        } else {
+            if (!pendingParagraph.empty()) {
+                pendingParagraph += "\n";
+            }
+            pendingParagraph += line;
+            ++i;
+        }
+    }
+
+    flushParagraph();
+
+    bool hasTable = false;
+    for (const auto& s : segments) {
+        if (s.kind == MarkdownSegmentKind::Table) {
+            hasTable = true;
+            break;
+        }
+    }
+    if (!hasTable) {
+        segments.clear();
+        MarkdownSegment s;
+        s.kind = MarkdownSegmentKind::Paragraph;
+        s.text = text;
+        segments.push_back(std::move(s));
+    }
+
+    return segments;
+}
