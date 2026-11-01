@@ -445,6 +445,21 @@ private:
     };
 
     // 行记录：m_rows 用 deque（push_back 不失效指针——回调捕获依赖这一点）
+    // ★★ 2026-11-01（账本 `TODO-07` 第一步）：**非拥有控件指针的失效规则**
+    //   下面的 `panel / label / headerBtn / body / allowBtn / denyBtn / conclusion`
+    //   全是**非拥有**指针，只在「建出这一行的那一代控件树」里有效——
+    //   `RebuildTranscriptView` 拆树（`rows.clear()` + `RemoveChild`）即**全部失效**。
+    //   ① **不得跨重建持有** `RowRec*` 或这些控件指针。原先 `blockRows` 存的就是这种
+    //      裸指针（靠「deque 的 push_back 不失效 + 与 `rows.clear()` 成对清空」保命）；
+    //      2026-11-01 已改成**下标句柄** + `FindBlockRow()` 越界检查，那条隐式不变量
+    //      随之作废——新代码别再引入「指向容器元素的裸指针」。
+    //   ② 需要跨重建的标识一律用 `timelineIdx` / `askId` / `blockId`，**不要**用指针
+    //      （`RunAnswerProbe` 记 `askTimeline` 而不是 `RowRec*`，就是这条的样板）。
+    //   ③ 快照类消费点（`SnapshotRows`）已加**存活校验**：指针不在当刻活动控件树里时
+    //      拼成 `<dead:字段名>` 并往 stderr 打 `[snapshot] DEAD row ref`，
+    //      把一个静默悬垂读变成可读的读数差异。
+    //   ★ 背景：`TODO-06` 的崩溃只在本仓部分构建上复现（布局敏感），静态排查无定论，
+    //     故先立规则 + 装绊线，而不是猜一处改一处。
     struct RowRec {
         ECDI::Widget* panel = nullptr;            // 行根（Panel），非拥有
         // ★★ P4 G（2026-10-25）：Label → TextWidget*（Label 与 TextBox 的共同
@@ -538,9 +553,12 @@ private:
     //   ★ 本步是**纯搬运**：仍只有一个会话，回放读数必须逐位不变才算过（0a 立的规矩）。
     //     真正的切换逻辑在 0c，UI 重建在 0d。
     //   ★ 判据不是"字段搬了家"，而是"同一时刻只有一份东西能叫**当前**会话"。
-    //   ★ 不变量（0c 依赖）：`blockRows` 里是指向 `rows` 元素的裸指针，`rows` 用 deque
-    //     保证 push_back 不失效 ⇒ Session 一旦建立就**不得被搬动/拷贝**。0c 用
-    //     unique_ptr 持有正是为了这条；这里先按值放一个，只为把结构立起来。
+    //   ★ 不变量（0c 依赖；**2026-11-01 改写**）：`blockRows` 存的是 **`rows` 的下标**，
+    //     不再是裸指针。`rows` 用 deque 且全仓只 `push_back` / `clear`（无 erase/pop）
+    //     ⇒ 下标在「两次重建之间」稳定；重建时 `blockRows` 与 `rows` **成对清空**。
+    //     取行一律走 `FindBlockRow()`（越界即返回 nullptr），别再直接 find 后解引用。
+    //   ★ 仍然成立的那半条：Session 一旦建立就**不得被搬动/拷贝**（0c 用 unique_ptr
+    //     持有正是为了这条）；下标化消掉的是「指向元素的指针跨操作存活」，不是这条。
 
     // ═══════════════════════════════════════════════════════════════════════
     // ★★ 2026-10-20：**工作区是实体，不是会话上的一根字符串**。
@@ -591,7 +609,7 @@ private:
         //   按 `timeline` 逐条重放构造函数再回填状态。
         std::vector<TimelineEntry> timeline;
         std::deque<RowRec> rows;
-        std::map<std::string, RowRec*> blockRows;  // block id → 行（delta 流式追加用）
+        std::map<std::string, size_t> blockRows;  // block id → rows 下标（delta 流式追加用）
 
         // ── hello / 协议协商 ──
         std::string coreState;
@@ -732,6 +750,9 @@ private:
     //   重建时若有条目建不出行，两者会错位，而下标错位会把 A 的展开态写到 B 上）
     void AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
                 const std::string& blockId, size_t timelineIdx);
+    // ★★ 2026-11-01（TODO-07 第二步）：按 block id 取行——`blockRows` 存**下标**，
+    //   这里做越界检查。行表被重建过（句柄失效）时返回 nullptr，调用方必须判空。
+    RowRec* FindBlockRow(const std::string& blockId);
     void CreateBlockRow(const Block& block);
     void CreateAskRow(const json::Value& msg);
     void MarkAnswered(RowRec& rec, const std::string& choice);
@@ -1105,7 +1126,7 @@ private:
     //   modelPopupFoot` **只在打开期间有效**（关闭由 `CloseModelPopup` 统一置空）。
     void SetModelPopupOpen(bool open);   // 唯一入口（chip 点击 / Ctrl+M / 行点击关）
     void CloseModelPopup();              // 关 + 四个句柄置空（销毁在帧末，置空必须同步）
-    void RepositionModelPopup();         // 贴视口右上角（Relayout 里跟随 resize）
+    void RepositionModelPopup();         // 锚顶栏 chip：右缘对齐 + 下沿 6px（Relayout 里跟随）
     void RebuildModelPopupList();        // 按搜索词重建行（开窗 + 搜索变化时）
     void UpdateModelChip();              // chip 文本（提供商 › 模型 · N% ▾）
 

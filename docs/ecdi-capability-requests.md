@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v4.4**（2026-11-01；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.4**（2026-11-01；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -827,7 +827,8 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 | ★ `TODO-02` | **字体工厂**：全仓 `ECDI::Font` 构造散落 18 处、`family` 只有 `Consolas` 一个值，中文正文全部落到 SimSun；且 `AddLine()` 只在传了字号时才 `SetFont` ⇒ 同一界面里两种中文字形混排 | ✅ **已落地**（2026-10-18）：`harness::SansFont(float)` / `MonoFont(float)` 单一入口；`AddLine()` 改为无条件 `SetFont`（默认 `14.0f` = `Font::size` 出厂值）。★ **2026-10-22 订正**：原写「深色刻意保留 `sansFamily = ""`（SimSun）作回归基线，浅色才用雅黑」——该决定已被**推翻并撤回**：两主题现在**都**用 `Microsoft YaHei`（`Theme.h` 的 `MakeDark()` 里 `t.sansFamily = "Microsoft YaHei"`）。撤回理由见下条 `FONT-UNIFIED` 与 §6 的 v3.0 |
 | ★ `TODO-03` | **输入框焦点视觉**：ECDI 默认 `DrawFocusRect` 点线框，本项目输入框**启动即获焦**（验收 A2）⇒ 常态就是一圈蓝色虚线，与 variant-c 的实线描边形态冲突 | ✅ **已落地**（2026-10-18）：派生 `ComposerBox` 关掉点线框（`SetShowFocusRect(false)`），改让 `borderColor` 表达焦点（失焦 `kInputBorder` / 获焦 `kDarkAccent`）。★ **不是**直接关掉焦点框——那样焦点完全不可见，是拿可访问性换观感 |
 | ★ `FONT-UNIFIED` | **两主题字族统一**（用户报「中间上面三个按键深浅主题样子不同」，收窄为「three dots 暗色每个 dot 的间隔比浅色大」）：`gui/src/Theme.h:184` 深色 `sansFamily = ""` ⇒ ECDI 默认 face = **SimSun**，`Theme.h:281` 浅色 `"Microsoft YaHei"`，而 `SansFont()` 读 `g_theme.sansFamily` ⇒ **同一串字符被两个 face 光栅化** | ✅ **已落地**（2026-10-22）：`MakeDark()` 里 `t.sansFamily = "Microsoft YaHei"`（改一行）。★ 实测比用户报告更严重：浅色把 `·`(U+00B7) 渲成**一条 9px 实心横杠**（三点粘连），深色是**三个独立 2px 点、中心距 12.0px**；浅色 `↗`/`≡` 另带 ClearType 彩边（15 种墨色 vs 3 种）⇒ 根因是**字族**不是间距。修后 `dump_dots3.py` 两主题 run 数/pitch/墨色数完全一致（`SAME=True`）。代价：深色 paints 变（demo 22→23 · realistic 17→19 · cot 21→22 · scale 21→23），**此前深色 paints/frames 不可直接对比**；六夹具 × 两主题的结构读数（blocks/deltas/messages）全不变。★ 这是本仓第一次有意改变深色字形基线，`TODO-02` 里「深色刻意保留 SimSun 作回归基线」一句已随之作废 |
-| ★ `TODO-06` | **回归门 race 段错误（红门不可信项）**：`--workspace-probe`（活 core）确定复现段错误/零输出；`--theme-probe`、`--delprov-probe` 间歇段错误且**崩溃点逐轮漂移**（同轮 theme 红、换轮 delprov 红；加一条 fprintf 改时序即 6/6 全过 ⇒ 海森 bug） | 🔄 **立案 2026-10-31**：干净构建核实为 **HEAD 自带**（b0dd54e 上 theme 同样段错误、ws 同样零输出），与表格修复 f1cfa07 无关。疑与 overlay/定时器悬垂指针族同源（`RebuildUi` 开头 ⓪/⓪b 两条自保注释、审计整改批 A §11.2 未覆盖的 `exemptWidget` 第 5 例）。★ **纪律：本条未闭合前，回归红相先对照本条与 `.scratch/_regress_precommit.log` 族证据，再归因新改动**；★ 2026-11-01 补强（v4.4 ④）：padded-HEAD 对照——干净 HEAD 的 `RowRec` 加 24 字节填充即复现 8/8 段错误 ⇒ 堆布局敏感实锤；取证 `.scratch/_regress_tablefix2.log` / `_regress_precommit.log` / `_tp.err` / `_wp2.err` |
+| ★ `TODO-06` | **回归门 race 段错误（红门不可信项）**：`--workspace-probe`（活 core）确定复现段错误/零输出；`--theme-probe`、`--delprov-probe` 间歇段错误且**崩溃点逐轮漂移**（同轮 theme 红、换轮 delprov 红；加一条 fprintf 改时序即 6/6 全过 ⇒ 海森 bug） | 🔄 **立案 2026-10-31**：干净构建核实为 **HEAD 自带**（b0dd54e 上 theme 同样段错误、ws 同样零输出），与表格修复 f1cfa07 无关。疑与 overlay/定时器悬垂指针族同源（`RebuildUi` 开头 ⓪/⓪b 两条自保注释、审计整改批 A §11.2 未覆盖的 `exemptWidget` 第 5 例）。★ **纪律：本条未闭合前，回归红相先对照本条与 `.scratch/_regress_precommit.log` 族证据，再归因新改动**；★ **2026-11-01 实测订正（v4.6/v4.7，以此为准，取代本条此前所有补强与订正）**：rc 已实测——当前 HEAD 二进制（sha256 `cf4771dd`，01:12 构建）上 answer / theme / history / rebuild 四门 **外加 sidebar / table / hit 三门，全部 `rc=0xC0000005`**，而后三门的 json 已经落盘 ⇒ 「**绿门也在崩**」由推测变实测；连**不带任何探针的普通回放**同样 `rc=0xC0000005`（json 已落盘）⇒ 这不是「某几门红」，是**每次运行都在退出时崩**。崩点已反汇编定位（无 cdb，用 `.scratch/_dbg_lite.py` + `.scratch/_pe_sym.py`）：**F1** = `+0x2410` 处调 `VCRUNTIME140!memcpy` 读 NULL（std::string 扩容路径，`--answer-probe` **5/5 复现、0.22s**）；**F2** = `+0xA533` 的 `mov -0x8(%rax)`（std::string 析构/释放路径，size>0xF 而 buffer==0 = 对象已被复用或二次析构）。⇒ 症状收敛为 **std::string 悬垂 / 二次析构一族**，「堆布局敏感」假说不再需要。详见 §6 v4.6。★★ **v4.7 补**：A/B 证明该崩溃**只在部分构建上复现**（`/Zi`+`/DEBUG` 一加就消失、仅加 `/MAP` 也不崩）⇒「确定性」只对构建 A（sha `cf4771dd`）成立，本质仍是布局/时序敏感；结论一律要带二进制指纹。★ 以下 v4.5 段落保留为过程记录：★ 2026-11-01 订正（**v4.5，撤回 v4.4 ④ 的「堆布局敏感实锤」**）：padded-HEAD 补丁未留痕（`gui/src/App.h:448` `struct RowRec` 现无 pad/reserve 字段、`git status` 空、`git stash list` 空），「干净 HEAD 4/4 绿」与「padded-HEAD 8/8 复现」**均无对应日志**（v4.4 ④ 所引四份文件全为 10-31，且 `_regress_tablefix2.log` 的 theme 是 `3/7 UNEXPECTED-RED`、`_regress_precommit.log` 另有 `--delprov-probe` 红、`_wp2.err` 0 字节、`_tp.err` 是临时 `[tp]` 插桩轨迹）⇒ 该对照降为**假说**。改立两条可复核证据：① 11-01 01:17 轮（01:12 构建 = post-fix HEAD）五门空产物而其余 23 门 json 齐备 ⇒ 仍崩在落盘前（**非 f1cfa07 引入**）；② `_regress_precommit.log`（22:57 四门绿）与 `_regress_t1t2.log`（00:42 四门 + §2c `legacy` + ws 共 6 红）**之间零提交** ⇒ 同源红相漂移。★ 判据含义订正：`FAILED TO PRODUCE OUTPUT` = **崩在 json 落盘前**（`tools/regress.py:209`，`subprocess.run` 的 rc 未采集），**不是**「跑完再崩」。取证 `.scratch/_regress_precommit.log` / `_regress_t1t2.log` / `_reg--{answer,theme,history,rebuild,workspace}-probe.json`（五缺）/ `.scratch/crash.dmp`（有效 MDMP，待解） |
+| ★ `TODO-07` | **`RowRec` 非拥有控件指针的失效规则（`TODO-06` 的排雷入口）**：`panel / label / headerBtn / body / allowBtn / denyBtn / conclusion` 只在「建出这一行的那一代控件树」里有效，`RebuildTranscriptView` 拆树即全失效；此前**没有任何强制约定**（`blockRows` 的裸指针靠「deque + 与 `rows.clear()` 成对清空」保命，注释只写在 `App.h:541`） | 🔄 **2026-11-01 立案 · 第一步已落地**：规则三条写进 `App.h` 的 `RowRec` 头注释（不跨重建持有 / 跨重建用 `timelineIdx·askId·blockId` / 快照点有绊线）；`SnapshotRows` 增加**活控件集校验**——拼行前把 `label`/`headerBtn` 与当刻从 `m_content` 递归收集的真实控件集比对，不命中就写 `<dead:字段名>` 并 `fprintf` 一行 `[snapshot] DEAD row ref`（**判据格式未动**）。★ 实测（`gui/build` 当前构建）：answer / theme / rebuild / history / sidebar 五门 **deadRefs=0**、读数与 10-31 基线逐项一致 ⇒ 本构建上「控件指针已死」未发生。★ **已知覆盖缺口**：绊线只查「指针不在活树里」，**查不到「控件活着但内部 std::string 已坏」**——而 `TODO-06` 现场（`_Ptr==0` 且 `_Mysize==15`）更像后者，故绊线阴性**不构成结论**。★★ **2026-11-01 第二步已落地**：`blockRows` 由 `std::map<std::string, RowRec*>` 改成 **`std::map<std::string, size_t>`（rows 下标）**，取行统一走新增的 `FindBlockRow()`（越界即 `nullptr`）；`AppStream.cpp` 两处消费点（`delta` / `block_end`）改成先判空再解引用，`row->second->x` 全部收敛为 `row->x`（15 处）；`AddRow` 改写 `rows.size()-1`。★ 依据：`rows` 全仓只有 `push_back` / `clear`（无 erase/pop）⇒ 下标在两次重建之间稳定，两张表仍成对清空。★ 实测（sha `9ce5a655`）：八门 `rc=0`、读数与基线逐项一致（answer 6/1 · theme 7/1 · rebuild 3/0 · history 6/0 · sidebar 23/1 · table 6/0 · grow 12/0 · hit 4/0）。★ 下一步：`TODO-06` 的现场（控件活着但内部 string 已坏）仍无绊线覆盖，等一个**留档的复现二进制** |
 
 ---
 
@@ -858,11 +859,101 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.4（2026-11-01）★ 模型行左对齐 + 4 处滚动条文字债收口**
+  ① **左对齐**（用户裁决）：`RebuildModelPopupList` 的模型行补 `.textAlignment = ECDI::TextAlignment::Left`。★ 必须**显式**写：`ButtonStyle::textAlignment` 的主题缺省是 **Center**（`ButtonStyle.h:32` / C30-3），不写就居中——居中在「工具条按钮」上是对的，在「可选列表」上像标题。**不得依赖枚举零值 Left**（缺省恒由主题注入 Center，`VerticalAlignment.h:9` 专门拿这条当反例）。写法与 `AppHistory` / `AppSession` 行根一致。
+  ② **文字债 4 处全部收口**：`AppInternal.h`（`ApplyCompactScrollBars` 头注）、`UiCommon.cpp`（同函数实现注）、`AppTranscript.cpp`（`kTableBarThickness`）、本账本 v4.4 ②（行内划删除线 + 指向本条）。统一改法 = **结论不变、理由换轨**：从「躲上游 `BarThickness()` 只读竖条的缺陷」改成「**设计裁决**：全仓条宽统一」。同时钉住一条**没有变**的：`ApplyCompactScrollBars` 末尾的 `SetSize` 重排**仍必需**，且新头文件反而把它写明了（改厚度不触发重排；`SetContentExtent` 在 extent 未变时提前返回救不了）。
+  ③ **实测**（`sha 4ba59bdf`，`tools/regress.py` 7m43s）：`RESULT: PASS`，全 33 条 `rc=0`；`--overlay-probe` 10/10、`--valign-probe` 7/7、`--table-probe` 6/6、`--grow-probe` 12/12（后三门都吃模型浮窗/文本框，故一并看）。人验：模型行文字起点与标题/分组左缘对齐。
+  ④ 头部 v5.3 → **v5.4**。
+- **v5.3（2026-11-01）★ 模型下拉三缺陷闭合：位置错位 / 列表整块空白 / 「不知所以」**（用户实测反馈，非探针发现）
+  ① **现象**（用户报告 + 我实机复现）：点顶栏「云知声 › ?」胶囊，弹窗出现在**中栏转录区中间偏右**（改前实测弹窗 `x 532..872 / y 142..274`，而胶囊在 `x 847..1044 / y 8..30` ⇒ 横向偏左 ~172px、纵向偏下 ~112px），且**框里只有一个空搜索框和一行灰底注，没有任何模型行**。
+  ② **根因 A（位置）**：`RepositionModelPopup` 锚的是 `m_scroll`——**转录视口**，不是 chip。原注释写「要『贴视口右上角』」，话没说错，错在把「视口」当成了正文视口。改：锚 `m_hud.modelChip` 的**绝对几何**，右缘对齐 + 下沿 6px（弹窗 340 宽、chip 200 宽 ⇒ 必须右对齐，左对齐会向右突出出界），并按客户区 `std::clamp` 夹取（窄窗口下防左缘进负区、矮窗口下防底注被顶出）。用绝对坐标而非父容器内坐标：chip 在顶栏 `HorizontalLayout` 里随时会因重排移动。
+  ③ **根因 B（空列表）**：`BuildModelPopup` 里 `modelPopupList` **从未 `SetSize`** ⇒ 0×0 ⇒ `Widget::Paint` 第一条 `if (!ctx.IsRectVisible(self)) return;`（`Widget.cpp:605`）**整棵列表子树零绘制**。行都建出来了、一个都没画 ⇒ 这就是「探针全绿而屏幕空着」的标准形状（本探针此前只看开合与挂载）。
+     同时**删掉**该容器上的 `VerticalLayout`：它的 `Arrange` 会把每个子项改写成 `(padding, y累进)`（`VerticalLayout.cpp:99`），把 `RebuildModelPopupList` 手工算的 `SetPosition(0,y)` 全部覆盖。**同一个容器不许有两个排布者**；留手工那套——y 游标与溢出收敛（`hidden` 计数 + 底注「另有 N 项未显示」）是配套的，布局不知道这件事。
+  ④ **根因 C（不自明）**：加标题行「切换模型」。即便列表修好，「一列模型名 + 一个空搜索框」仍不像菜单、像一张表。
+  ⑤ **几何收进单一真相源**：`AppInternal.h` 新增 `kModelPopup*` 一族（W340 / H300 / PadX10 / TitleY10 / SearchY32 / ListY64 / ListMaxH210 / FootY276 / DropGap6）。此前 `BuildModelPopup`（AppUiMain.cpp）与 `RebuildModelPopupList`（AppSettings.cpp）**各写一份数字**——正是「标题一加就错位」的漂移面。弹窗 272→300 是**给标题让位**：列表可用高必须仍是 210，否则「能装几个模型」会随标题加不加而变（视觉改动偷渡成行为改动）。
+  ⑥ ★★ **探针补强（本条最该记住的部分）**：`--overlay-probe` 此前**对位置一条断言都没有**——只记「开没开」「挂在哪」，于是弹窗能被扔到正文中间而 10/10 全绿。新增 `OverlayProbeRec::popupX/Y/W/H` 与 `chipX/Y/W/H`（绝对坐标；**-1 = 控件不存在**，与真实的 0 区分）+ `popup` 相四条判据：**元断言**（尺寸 == 规格——先把「几何根本没算」与「算错了」分开，否则 0==0 也能让对齐判据通过）+ 右缘对齐 ±1 + 顶边不高于 chip 下沿 + 间隙 ≤ 规格+1。
+  ⑦ **实测**：`--overlay-probe` 10/10 绿，读数 `popup (714,66 340×300)` / `chip (854,40 200×20)` ⇒ 右缘同为 1054、顶边 66 = 60+6，逐项符合规格。全量回归 `RESULT: PASS`（7m35s，`sha ea3f4548`，33 条全 `rc=0`）。
+  ⑧ **人验**：截图确认弹窗挂在胶囊正下方、右缘对齐；标题 / 搜索框 / 分组「云知声」/ 模型行「u2-flash · 200K」/ 底注全部可见。
+  ⑨ ★ **测量教训（自省）**：我中途用 PrintWindow 位图目测出「弹窗只有 132/152 高、宽 294」，据此怀疑「弹窗被压缩」——**全部是错的**（PrintWindow 位图有缩放偏差，且弹窗底色与正文底色同值、边界判不准）。真实值只有探针读数能定。⇒ **几何结论只认结构化读数，不认像素目测**；此条与项目纪律 2（先证明量具、再谈读数）同源。
+  ⑩ 遗留观察（当时未动，**v5.4 ① 已处理**）：模型行文字是**居中**的（`ButtonStyle.textAlignment` 缺省 Center），列表项通常左对齐。
+  ⑪ 头部 v5.2 → **v5.3**。
+- **v5.2（2026-11-01）★ ECDI 新库换入（Phase 43 / #84 per-axis scrollbar thickness）+ 4 处文字债**
+  ① **换入两件（不是一件）**：`third_party/ecdi/lib/ECDI.lib`（`d9fcdce7`，11,974,214 B，来自 `ECDI/cmake-build-release-visual-studio` 的 11-01 14:58 构建）+ **`include/ECDI/Widget/ScrollView.h`**。只换 lib 会留下「头里写着旧 API、库里没有旧符号」的半截状态。逐文件 diff 102 个头：**只有这一个**有差异（安装前缀在 10-30 之后未再同步），其余全等；现已全同步。
+  ② **库差异 = 单一提交** `daed47c fix(scrollview): per-axis scrollbar thickness (#84 / Phase 43)`：`BarThickness()` **删除且不留别名** → `VerticalBarThickness()` / `HorizontalBarThickness()`（「名字不带轴」正是缺陷根因，留别名等于让补全继续推荐它）；修复 S1/S4/S5/S6（`NeedsVerticalBar` / `ViewportHeight` 扣错轴、`ApplyLayout` 用一个 `t` 设两条 ⇒ 横条 `thickness` 被静默丢弃）。
+  ③ **本仓受影响面 = 零代码改动**：`BarThickness()` 全仓**零调用**（只有 3 处注释 + 本账本引用）；编译 18/18 通过、链接成功、`ECDI.lib` 内已确认新符号。★ **同厚度路径位相同** ⇒ 全仓「两条都设 4px」的几何与绘制**零变化**（回归读数逐项吻合可证）。
+  ④ ✅ **4 处文字债（v5.4 ② 已收口）**：`AppInternal.h` / `UiCommon.cpp` / `AppTranscript.cpp` / 本账本 v4.4 ② —— 表述都是「因为 `BarThickness()` 只读竖条、只薄一条会留幻影占位，所以两条必须同设」。新库下**理由已消失**，但结论「两条同设 4px」仍成立——它是**设计裁决**（全仓统一，4 与 12 混排比 4 本身更扎眼），不是绕行。另：`ApplyCompactScrollBars` 末尾的 `SetSize` 重排**仍必需**（新头文件明说改厚度不触发重排，且 `SetContentExtent` 在 extent 未变时提前返回救不了）。
+  ⑤ 头部 v5.1 → **v5.2**。
+- **v5.1（2026-11-01）★ 改动后首次**全量**回归：功能全绿（含此前红门 `--workspace-probe` 转绿）+ 我的台架补丁自己炸了一次**
+  ① **全量结果**（`sha 9ce5a655`，`tools/regress.py`，耗时 7m46s）：夹具 6/6 OK；13 门 OK；补齐 12 门 OK；读数判据 7 条 OK；REQ-03 A/B 8 条 OK；**`--workspace-probe 8/9 green OK`**（10-31 是 `FAILED TO PRODUCE OUTPUT`）；live 设置探针 16/16；协议 `exit=0`。
+  ② ★ **`--workspace-probe` 与 `--delprov-probe` 在本构建上都转绿**：进一步印证 `TODO-06` 是**布局/构建敏感**——同一份源码、只改构建开关，红相集合就换了一副样子。**不要再拿「某轮红了」当归因证据**，必须先看 `BINARY:` 那行的 sha256。
+  ③ ★★ **教训（自嘲一条）**：v4.6 加的 §4 汇总表第一版写成 `rc={rc:>10s}`，而 `RUNLOG` 存的是**原始 int** ⇒ 第一次全量跑到最后一张表时 `ValueError`，`exit=1` 且**没有 RESULT 行**——前面所有门其实全绿。⇒ **台架补丁必须真跑一遍全量，`py_compile` 不算验证**；这也正是我一直在账本里要求的「0 条要配阳性对照」的同一条纪律，只是这次犯在自己身上。
+  ④ 修复：`rc_str(rc)` 后再格式化（`regress.py` §4）；并用 3 门端到端复跑验证输出形态正确。
+  ⑤ 头部 v5.0 → **v5.1**。
+- **v5.0（2026-11-01）★ `TODO-07` 第二步：`blockRows` 裸指针 → 索引句柄（消掉全仓唯一「跨容器操作仍存活」的指针）**
+  ① **改动**：`Session::blockRows` 类型 `std::map<std::string, RowRec*>` → `std::map<std::string, size_t>`（`rows` 下标）；新增唯一读取入口 `HarnessApp::FindBlockRow(id)`（`AppTranscript.cpp`），越界返回 `nullptr`；`AddRow` 写 `rows.size()-1`；`AppStream.cpp` 的 `delta` 与 `block_end` 两个消费点改为 `RowRec* const row = FindBlockRow(id); if (!row) return;`，`row->second->x` 15 处收敛为 `row->x`。
+  ② **为什么下标而不是别的**：`rows` 全仓只有 `push_back` 与 `clear`（实测 grep 无 erase/pop_back/pop_front）⇒ 下标在「两次重建之间」稳定；`blockRows` 与 `rows` 仍成对清空。下标 + 越界检查把「行表被重建」从**静默悬垂**变成**一次显式判空**。
+  ③ **同时作废一条隐式不变量**：`App.h` 原文写「`blockRows` 里是指向 `rows` 元素的裸指针，靠 deque push_back 不失效」——这条依赖从此不再需要（注释已改写，并注明「仍然成立的那半条 = Session 不得被搬动/拷贝」）。
+  ④ **实测**（sha `9ce5a655`）：八门 `rc=0`、`deadRefs=0`、读数与 10-31 基线逐项一致：answer 6 相红 1 · theme 7 红 1 · rebuild 3 红 0 · history 6 红 0 · sidebar 23 红 1 · table 6 红 0 · grow 12 红 0 · hit 4 红 0。
+  ⑤ **编译坑（记一笔）**：成员函数的返回类型若含**嵌套类型**，类外定义必须写 `HarnessApp::RowRec* HarnessApp::FindBlockRow(...)`——只写 `RowRec*` 会报 C2143/C2761（一次过不去）。
+  ⑥ **仍未闭合**：`TODO-06` 的现场形态是「控件活着而它内部 `std::string` 已坏」，本条绊线覆盖不到；且能稳定复现的二进制已被覆盖、未留档 ⇒ 下一步等复现靶，不再盲改。
+  ⑦ 头部 v4.9 → **v5.0**。
+- **v4.9（2026-11-01）★ 立 `TODO-07` 并落地第一步：`RowRec` 控件指针失效规则 + `SnapshotRows` 存活校验**
+  ① 规则三条写进 `gui/src/App.h` 的 `RowRec` 头注释（不跨重建持有；跨重建用 id；快照点有绊线），并点明 `blockRows` 那条隐式不变量（deque + 成对清空）**动容器前必须先读**。
+  ② `gui/src/ProbeSupport.cpp`：`SnapshotRows` 拼行前从 `m_content` 递归收集「当刻活动控件集」，逐字段校验 `label`/`headerBtn`；失效则写 `<dead:字段名>` + stderr 一行 `[snapshot] DEAD row ref`。**判据格式与字段数一字未动**（仍是 `\x1f` 分隔的七段）。
+  ③ 实测（`gui/build`）：answer / theme / rebuild / history / sidebar 五门 `deadRefs=0`，读数与 10-31 基线逐项一致（answer 6 相红 1 · theme 7 红 1 · rebuild 3 红 0 · history 6 红 0 · sidebar 23 红 1）。
+  ④ **覆盖缺口（必须记）**：绊线查的是「指针不在活树里」，查不到「控件活着而它内部 `std::string` 已坏」——`TODO-06` 的现场正是后者形态 ⇒ **本步是装绊线，不是修复**，`TODO-06` 仍开。
+  ⑤ 下一步（待授权）：`blockRows` 的裸指针改**索引句柄**（把仓库里唯一「跨容器操作仍存活」的指针消掉）；若再拿到稳定复现的二进制，**先 `cp` 留档再动**。
+  ⑥ 头部 v4.8 → **v4.9**。
+- **v4.8（2026-11-01）★ ASAN 独立构建上线 + 六门**阴性**（阳性对照成立）：判据要改成结构性的**
+  ① **构建开关**：`gui/CMakeLists.txt` 新增 `option(HARNESS_ASAN ... OFF)`，`-DHARNESS_ASAN=ON` 时给本目标加 `/fsanitize=address /Zi` + 链接 `/fsanitize=address /DEBUG`。**独立 build 目录**（`gui/build-asan`），不污染门用的 `gui/build`；读数（paints/frames/时延）与发布构建不可比，故**永不进门**。
+  ② **两个必踩的坑（已写进 CMakeLists 注释）**：
+     · **`LNK2038` × 132 条**：`ECDI.lib` 是非 ASAN 构建，其 STL 注解标记 = 0；ASAN TU = 1 ⇒ 链接器直接拒链。解法 = 本目标加 `_DISABLE_STL_ANNOTATION`（两侧都成 0）。代价 = 丢掉「容器未用容量的毒化」，**堆红区/隔离区不受影响**。
+     · **`0xC0000135`（DLL 未找到）**：`clang_rt.asan_dynamic-x86_64.dll` 在 MSVC `bin\Hostx64\x64`，不在 exe 旁 ⇒ 运行前必须把它加进 `PATH`，否则进程起不来、且 stderr 为空（看起来像"跑过了"）。
+  ③ **阳性对照（`0 条` 必须有牙）**：`ASAN_OPTIONS=verbosity=1` 时 stderr 打出 `AddressSanitizer: libc interceptors initialized` + shadow 映射 + `redzone=16` + `Init done` ⇒ 运行时**确实在跑**，"clean" 不是"没加载"。
+  ④ **结果**：`--answer / --theme / --history / --rebuild / --sidebar / --table` **六门全部 `rc=0`、stderr 0 字节、无报告**。
+  ⑤ **解读（只说能说的）**：ASAN 抓的是「已 free 仍在用 / 越界」；它**看不见**「对象已析构但内存没还（或已被复用/清零）」这类 —— 而这恰好是本条的现场特征（std::string 落到 `_Ptr==0 且 _Mysize==15` 的不可能态，`_Ptr` 是被清零而不是指向已释放块）。⇒ 本条更可能是 **use-after-destroy / 陈旧对象读**，不是典型 heap UAF；同时 ASAN 的布局本身也可能避开触发条件（A/B 已证布局一变就不崩）。
+  ⑥ **因此判据要换**：不能再以「ASAN 报不报」为准（它在本条上必然阴性），而应立**结构性判据**——给 `RowRec::label / headerBtn` 这类**非拥有控件指针**定义明确的失效规则（重建即失效 / 换 id 查表），并在 `SnapshotRows` 前后加断言。这是修复阶段的入口，也是 `TODO-06` 真正闭合的条件。
+  ⑦ 工具四件套已齐：`_dbg_lite.py`（即时调试器）、`_pe_sym.py`（.pdata 符号化）、`gui/build/harness_gui.map`（RVA→函数名）、`gui/build-asan`（ASAN）。
+  ⑧ 头部 v4.7 → **v4.8**。
+- **v4.7（2026-11-01）★ `TODO-06` A/B：崩溃**只在部分构建上复现**——「确定性」必须限定到二进制；调试构建会把缺陷吓跑**
+  ① **A/B 实测**（同一份源码 `b6589bb`，只差构建开关；`--answer-probe` + demo 夹具 + `--instant`）：
+     | 构建 | 开关 | exe sha256 | 大小 | 结果 |
+     |---|---|---|---|---|
+     | **A** | 无（01:12 原构建） | `cf4771dd` | 2074112 | **5/5 崩 `0xC0000005`** |
+     | **B** | `/Zi` + `/DEBUG` | `a513de90` | 3266048 | **6/6 通过 `rc=0`** |
+     | **C** | 仅 `/MAP` | `ffbc4796` | 2074112 | **4/4 通过 `rc=0`** |
+     ⇒ 「确定性」只对**构建 A** 成立；v4.6 ② 的「七门全崩」同样是构建 A 的读数。**加调试信息就让缺陷消失**（B）⇒ 它与代码/堆布局强相关：v4.5 ⑤ 撤回的是**无证据的 padded 实验**，不是「布局敏感」这个方向本身——方向反被证实。
+  ② **连 C 也不崩**（C 与 A 大小同为 2074112，仅 `UiCommon.cpp` 重编译导致 sha 不同）：未深究差异来源，但已足够证明**同源码 ≠ 同行为**⇒ 任何全绿/全红结论必须带**二进制指纹**（即 v4.6 ① 给 `regress.py` 加的那一行）。
+  ③ **符号化结论仍有效**（取自构建 A 的致命现场）：`memcpy(dst=堆, src=NULL, n=15)`，位于 `std::string::_Reallocate_grow_by`（`ExceptionInformation=[读, 0]`）；第二处 `_Tidy_deallocate` 读 `[ptr-8]`（ptr=0 而 size>0xF）。两处都要求 std::string 处于「指针为空但长度非零」的**不可能态** ⇒ **悬垂 / 被复用的 std::string 对象**。
+  ④ **调用链**（构建 A，`.map` 符号化 + 栈扫描）：`Win32PlatformWindow::HandleMessage` → `HarnessApp::OnReplayTick` → `RunAnswerProbe` → `SnapshotRows` → `line += …`（`ProbeSupport.cpp::SnapshotRows` 用 `r.label->GetText()` / `r.headerBtn->GetText()` / `r.answer` 拼行）。四门中 answer / theme / rebuild 都过 `SnapshotRows`；history 不过（走 `RebuildHistoryList`）却命中第二处 ⇒ **同族、不同路径**。
+  ⑤ **归因倾向（未定论）**：焦点在 `m_sess->rows` 与 `RowRec::label / headerBtn` 的**生命周期**——是「重建换了控件但 rows 留着旧指针」，还是容器本身被重建后引用悬垂。`RunAnswerProbe` 自己的注释已写明「重建会清空 rows，拿着的引用会立刻悬垂」⇒ 这族风险**被识别过一处**，是否有第二处未清点。
+  ⑥ **下一步**：①**`/fsanitize=address` 独立构建**——ASAN 的判据不依赖布局，能在「缺陷消失」的构建里照样报 UAF；②给 `SnapshotRows` 的指针加「重建后失效」断言；③`/MAPINFO:LINES` 在本机 link 19.51 上 `LNK1117` 链不过（已记进 `gui/CMakeLists.txt` 注释），源行只能走 PDB，而 PDB 又会掩盖缺陷 ⇒ 暂不追行号。归属（ECDI 侧 vs `gui/src` 侧）仍**未定**，但首次有了可指认的宿主函数。
+  ⑦ 头部 v4.6 → **v4.7**。
+- **v4.6（2026-11-01）★ `TODO-06` 从「race 假说」转为「确定性缺陷」：rc 已采集、崩点已定位**
+  ① **台架补丁**（`tools/regress.py`，**只加读数、判据未动**）：每轮开头打 `BINARY: <path> sha256:<8> size mtime`；每个子进程落「门 / rc / json」三元组，`FAILED TO PRODUCE OUTPUT` 后附 `rc=0x…`；末尾新增 §4 汇总表。改动点 = 新增 `rc_str()` / `exe_fingerprint()` / `record()` 三个函数 + 五处 `subprocess.run(...)` 取回返回值（fixtures / 13 门 / EXTRA_PROBES / live A·B 四跑 / workspace）。
+  ② **实测**（当前 HEAD 二进制 sha256 `cf4771dd`、01:12 构建，`--instant --theme light` + demo 夹具）：sidebar / answer / theme / history / rebuild / table / hit **七门全是 `rc=0xC0000005`**。json 落盘：answer / theme / rebuild = **MISSING**（0.22s–2.3s 早崩），sidebar / table / hit = **yes**（写盘之后崩）。
+  ③ **不带任何探针的普通回放同样 `rc=0xC0000005`**，且 json 已落盘 ⇒ 缺陷与探针无关，是**退出路径必崩**；「门绿」仅是「json 已落盘」的产物 —— v4.5 ① 的「绿门也可能崩过」由推测变实测。
+  ④ **崩点定位**（`.scratch/_dbg_lite.py` = ctypes Debug API 即时调试器，`.scratch/_pe_sym.py` = `.pdata` 函数边界 + RIP 相对引用的字符串，构成「无符号表也能认函数」的够用符号化）：
+     · **F1** `harness_gui.exe+0x2410` → `call` 导入跳板 `0x179EC8` → IAT `0x185AD0` = **`VCRUNTIME140!memcpy`**，`ExceptionInformation=[读, 0x0]` ⇒ **memcpy 读 NULL**。所在函数 `0x22EE..0x243F` = **`std::string` 扩容**（`operator new` + 两处 memcpy + 尾写 `\0` + 分配头校验 `int 0x29`）。命中 answer / theme / rebuild。
+     · **F2** `harness_gui.exe+0xA533`：`mov -0x8(%rax),%r8` 读 `0xFFFFFFFFFFFFFFF8` ⇒ buffer 指针为 **0** 而 `size>0xF`，即 **std::string 落在「堆缓冲但指针为空」的不可能态**（二次析构，或对象内存已被复用）。命中 history（2.3s）与**所有正常退出**。
+     ⇒ F1/F2 同族：**悬垂 / 二次析构的 std::string**。方向与「overlay / 定时器悬垂指针族」一致，但**尚未落到具体对象**。
+  ⑤ **撤回 v4.5 ④ 证据 B**：`--answer-probe` **5/5 确定性复现（0.22s）** ⇒ 「22:57 绿 / 00:42 红 = 同源间歇」不成立——「零提交」≠「零改动」，那 105 分钟里工作树一直在改（表格视觉迭代）。padded-HEAD 假说随之**彻底作废**（不再需要堆布局解释）。但「**HEAD 自带、非 f1cfa07 引入**」仍成立：在当前 HEAD 二进制的稳定复现即是证明。
+  ⑥ **工具侧教训**：首版调试器对「首轮 AV」回 `DBG_CONTINUE` ⇒ 程序 SEH 重试同一条指令 ⇒ 同一地址重发 400 次；正确是 `DBG_EXCEPTION_NOT_HANDLED` 交还程序，只有断点（`0x80000003`）才 `DBG_CONTINUE`。另：`ExceptionInformation[0]` 是读写标志、`[1]` 才是访问地址，读 NULL 时 `[1]==0`。
+  ⑦ **下一步（判归属的前置）**：F1/F2 的调用者要落到源行，需符号。两条路：(a) 给 `gui` 目标加 `/MAP`（或 `/Zi`+`/DEBUG` 产 PDB）——一行 link option，一次配置永久可查；(b) 手写 x64 unwind 走 `.pdata` 帧链（成本高、且只到函数边界）。倾向 (a)。**归属未定前不新开 Phase**：调用链若落在 `ECDI::Widget` / `Window` 析构或 overlay / timer 摘链 ⇒ 按 ECDI Phase 处理；若在 `gui/src` 业务侧 ⇒ 记 `TODO-07` 小修。
+  ⑧ 头部 v4.5 → **v4.6**。
+- **v4.5（2026-11-01）★ `TODO-06` 证据订正：撤回「堆布局敏感实锤」，换入两条可复核证据**（纯文档订正，零代码改动）：
+  ① **判据含义订正（本次最要紧的一条）**：`tools/regress.py:209-210` 的判据是 `out.exists()`，而 `200-203` 的 `subprocess.run(...)` 返回值**未被赋值** ⇒ 子进程 rc 从采集环节就被丢弃，全程无人读。故 `FAILED TO PRODUCE OUTPUT` 的语义 = **探针没跑到收尾 `AppendSummary`、json 未落盘就崩了**——**不是**「跑完再崩」。反过来说，**绿的门也可能崩过**（json 已落盘 ⇒ 判据看不见），只是这一点同样无 rc 可证，不得当结论用。v4.4 ④ 把「json 落盘后崩」写成 `TODO-06` 的「签名」属越界外推，撤回。
+  ② **归档红相订正（v4.4 ④ 所引四份文件内容与结论不符）**：`_regress_precommit.log`（10-31 22:57）四门**确**全绿（answer 5/6 · theme 6/7 · history 6/6 · rebuild 3/3），但**同轮 `--delprov-probe` 亦 `FAILED TO PRODUCE OUTPUT`**，落款 `RESULT: 2 FAILURE(S)`（另一红为 ws）；`_regress_tablefix2.log`（10-31 22:38）四门里 **theme 是 `3/7 UNEXPECTED-RED`**，落款 `RESULT: 2 FAILURE(S)`（theme + ws）⇒ 「红的只有 ws」不成立；`_tp.err`（214B）是临时 `[tp] case N / RebuildUi enter` **fprintf 插桩轨迹**，不是崩溃证据；`_wp2.err` **0 字节**，等于没引用。⇒ 「干净 HEAD 4/4 绿」「padded-HEAD 8/8 复现」两份对照**均无对应日志**；「8/8」的 8 在存档里也无出处（`_regress_t1t2.log` 四门各红一次 = 4）。padded 补丁未留痕：`gui/src/App.h:448` `struct RowRec` 现无 pad/reserve 字段，`git status` 干净、`git stash list` 空。
+  ③ **换入的主证 A（post-fix HEAD 上五门仍空产物）**：11-01 01:17–01:19 那轮（01:12 构建）**没留日志**，但产物齐全可判：`.scratch/_reg--*.json` 共 23 个探针齐备，**独缺 `answer / theme / history / rebuild / workspace` 五个**。`regress.py` 无 argv 过滤（全量按序跑、每门先 `unlink` 再跑、`main()` 前无选择开关）⇒ 缺 = 该门崩在落盘前；且其后的 `session`(01:17) / `hit`(01:17) 照常产出 ⇒ 是**逐门判决后的失败**，不是中途被中断。⇒ 「**HEAD 自带、非 f1cfa07 引入**」此条由本条独立支撑（不依赖无存档的干净 HEAD 对照）。
+  ④ **换入的主证 B（同源红相漂移 = race 的直接签名）**：`_regress_precommit.log`(22:57 四门绿) 与 `_regress_t1t2.log`(00:42 四门 + §2c `legacy` + ws，`RESULT: 6 FAILURE(S)`) 之间**无任何代码提交**（`412c4b7` / `b6589bb` 均 01:26 才落）。三份日志的红相集合 `{delprov, ws}` → `{theme, ws}` → `{answer, theme, history, rebuild, legacy, ws}` 逐轮不同 ⇒ 漂移本身就是证据，且**不依赖**任何未留痕实验。
+  ⑤ **降级与保留**：`padded-HEAD ⇒ 堆布局敏感` 由「实锤」降为**假说**（合理但不可复现）；「疑与 overlay/定时器悬垂指针族同源」同为**假说**——`--workspace-probe`（live core）与 §2c `legacy` 同样过 `RebuildUi`，而 `--delprov-probe` 22:57 红、00:42 绿 ⇒ 族归属未定，需一次定向插桩（`RebuildUi` 前后各一条 fprintf + 全门 rc）才能收窄。v4.3 ② 的「b0dd54e 干净构建同样复现」也无日志存档，仅记录在案（结论由 ③ 承接）。★ **栈仍可取**：`.scratch/crash.dmp`（10-31 17:44，头 `4D 44 4D 50` = 有效 minidump）尚未解析；`_cdb_answer.log` 只证明 cdb 未装（`'cdb' 不是内部或外部命令`，vcvars 已初始化）⇒ 是「调试器没走通」，不是「无栈可解」。
+  ⑥ **机制欠账（「红门不可信」的根因）**：`regress.py` 每门须落盘三元组「门 / rc / json 是否存在」，并在每轮开头记运行期 `exe` 指纹（sha256 + mtime）——否则「绿」无法区分「真绿」与「崩在判决之后」，「A 轮绿 B 轮红」也无法排除换二进制。此三项补齐前，红门纪律只能靠人读产物 + 对 `_reg--*.json` 做存在性核对。
+  ⑦ 头部 v4.4 → **v4.5**。
 - **v4.4（2026-11-01）★ 富内容二期第二轮：表格 T1+T2 落地（折行 / 自适应行高 / 全高列线 / 细横条）+ `TODO-06` 证据补强**：
   ① **本仓动作**：`RowRec::TableRec` 携带可重跑的表格内部元数据，`LayoutTableInterior` 于 Relayout 期按版心宽定稿——列宽注水分配（短列钉自然宽、真长列分余宽、保底 48 后仍超版心才交横滚）、wrap 折行高（挂窗态 `AutoSize` = 宽钉死高求解）、行高自适应、全高 1px 列线；表格 ScrollView 双条 `ScrollBarStyleOverride{.thickness=4}`（默认 12 的 1/3，用户裁决）；
-  ② **上游判据**：`ScrollView::BarThickness()`（上游 ScrollView.cpp:193-197）读**竖条**厚度却供双轴占位（`BarFootprint`）用 ⇒ 只薄横条会留 8px 幻影占位、反逼出一条竖条，故双条同薄；`AppHud` 的 `barExtraH` 改读活厚度（`GetThickness()+2`），不再写死 14；
-  ③ **人验**：双主题截图样张（`.scratch/_table-wrap-visual.jsonl` / `_table-wide-visual.jsonl`）——常规表贴合版心**不出横条**；16 列宽表横条 4px 细、无竖条、列线跨折行连续、单行对齐未回归；`--table-probe` 6/6 绿（退出时段错误为 `TODO-06` 签名：json 落盘后崩）；
-  ④ **`TODO-06` 证据补强**：T1+T2 构建上 answer/theme/history/rebuild 8/8 段错误 vs 干净 HEAD 4/4 绿 ⇒ 于干净 HEAD 的 `RowRec` 加 24 字节填充（padded-HEAD 对照）**同样 8/8 复现** ⇒ 堆布局敏感的本条 race 实锤、非新改动引入；红门纪律不变；
+  ② **上游判据**：~~`ScrollView::BarThickness()`（上游 ScrollView.cpp:193-197）读**竖条**厚度却供双轴占位（`BarFootprint`）用 ⇒ 只薄横条会留 8px 幻影占位、反逼出一条竖条，故双条同薄~~ **★ 2026-11-01 订正（见 v5.2 ④）：上游缺陷已由 ECDI `#84` / Phase 43（`daed47c`）修复——`BarThickness()` 删除，改为 `VerticalBarThickness()` / `HorizontalBarThickness()` 两轴各取各的，同厚度路径位相同。本仓「双条同薄」结论不变、理由改为【设计裁决：全仓条宽统一】；三处源码注释（`AppInternal.h` / `UiCommon.cpp` / `AppTranscript.cpp`）已同步。**；`AppHud` 的 `barExtraH` 改读活厚度（`GetThickness()+2`），不再写死 14；
+  ③ **人验**：双主题截图样张（`.scratch/_table-wrap-visual.jsonl` / `_table-wide-visual.jsonl`）——常规表贴合版心**不出横条**；16 列宽表横条 4px 细、无竖条、列线跨折行连续、单行对齐未回归；`--table-probe` 6/6 绿（★ v4.5 订正：该门判据只看 json 是否落盘、rc 未采集 ⇒ **不能**据此断言「退出时段错误」；原写「json 落盘后崩为 `TODO-06` 签名」已撤回）；
+  ④ **`TODO-06` 证据补强**：~~T1+T2 构建上 answer/theme/history/rebuild 8/8 段错误 vs 干净 HEAD 4/4 绿 ⇒ 于干净 HEAD 的 `RowRec` 加 24 字节填充（padded-HEAD 对照）同样 8/8 复现 ⇒ 堆布局敏感的本条 race 实锤、非新改动引入~~ ⇒ **★ 2026-11-01 v4.5 全条撤回**：所引四份取证件内容与本条结论不符（详见 v4.5 ②），padded 补丁亦无留痕；改由 v4.5 ③④ 两条可复核证据承担「HEAD 自带、非 f1cfa07 引入」与「race 间歇」两个判断。红门纪律不变；
   ⑤ 头部 v4.3 → **v4.4**。
 - **v4.3（2026-10-31）★ 立案 `TODO-06`：回归门 race 段错误（红门不可信项）**：
   ① **现象**：`--workspace-probe`（活 core）确定复现段错误/零输出；`--theme-probe`、`--delprov-probe` 间歇段错误且崩溃点逐轮漂移（加一条 fprintf 改时序即全过 ⇒ 海森 bug）；

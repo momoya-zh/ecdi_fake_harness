@@ -146,6 +146,13 @@ struct OverlayProbeRec {
     int sheetX = 0;                // sheet 左缘（居中判据）
     int sheetW = 0;
     int clientW = 0;               // 客户区宽（居中判据的分母）
+    // ★★ 2026-11-01（用户反馈「模型胶囊点开的位置不对」）：下拉的**几何**读数。
+    //   病灶：本探针此前只记「开没开 / 挂在哪」，**对位置一条断言都没有** ⇒ 弹窗被
+    //   定位到转录视口正中，`--overlay-probe` 仍 10/10 全绿——这正是「结构绿了、
+    //   视觉没绿」的标准形状。位置一旦是缺陷，就必须是读数。
+    //   口径：两方都是**绝对坐标**（客户区），-1 = 控件不存在（与真实的 0 区分开）。
+    int popupX = -1, popupY = -1, popupW = -1, popupH = -1;
+    int chipX = -1, chipY = -1, chipW = -1, chipH = -1;
     bool matched = true;
     std::string firstDivergence;
 };

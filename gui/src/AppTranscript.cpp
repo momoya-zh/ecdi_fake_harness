@@ -68,13 +68,27 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
         stored.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
     }
     m_sess->rows.push_back(stored);
-    RowRec& ref = m_sess->rows.back();
     m_content->AddChild(std::move(row));
-    if (!blockId.empty()) m_sess->blockRows[blockId] = &ref;
+    // ★★ 2026-11-01（TODO-07 第二步）：存**下标**，不再存 `&rows.back()`。
+    //   指向 deque 元素的指针在 push_back 后确实还有效（那条不变量成立），但它把
+    //   「行表被清空」变成了一个**静默悬垂指针**；下标配合越界检查只会变成
+    //   nullptr ⇒ 失效表现为一次显式判空。取行统一走 `FindBlockRow()`。
+    if (!blockId.empty()) m_sess->blockRows[blockId] = m_sess->rows.size() - 1;
     MaterializePendingPrompts();  // keep transient rows physically after canonical rows.
     // settle 后新增的行（发送/停止/回答反馈）没有逐 tick 的 Relayout 可蹭——
     // 排一个补重排脉冲，让定时器把它布局出来
     m_relayoutPulse = std::max(m_relayoutPulse, 2);
+}
+
+// ★★ 2026-11-01（TODO-07 第二步）：`blockRows` 的**唯一**读取入口。
+//   为什么必须有这一层：`blockRows` 存的是 `rows` 的下标，而下标只在「两次重建之间」
+//   有效（重建时两张表成对清空）。直接 `find` 后解引用等于把这条时序约定散到每个调用点；
+//   收进一个函数后，失效只剩一种表现——返回 nullptr。
+HarnessApp::RowRec* HarnessApp::FindBlockRow(const std::string& blockId) {
+    const auto it = m_sess->blockRows.find(blockId);
+    if (it == m_sess->blockRows.end()) return nullptr;
+    if (it->second >= m_sess->rows.size()) return nullptr;   // 越界 = 行表已重建
+    return &m_sess->rows[it->second];
 }
 
 // ★★ 0c（2026-10-19）：行构造拆成**两层**。
@@ -1112,7 +1126,13 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
 }
 
 // ★ 表格滚动条薄化（2026-11-01 用户裁决）：4px = 默认厚度 12 的 1/3。
-//   双条都要设：上游 ScrollView::BarThickness() 读**竖条**厚度做双轴占位计算，只薄横条会留 8px 空占位逼出竖条。
+//   双条都要设（设计裁决：全仓条宽统一，见 `kScrollBarThickness` 的注释）。
+//   ★★ 2026-11-01 订正（ECDI `#84` / Phase 43，`daed47c`）：本条原写作「上游
+//   `ScrollView::BarThickness()` 读**竖条**厚度做双轴占位计算，只薄横条会留 8px
+//   空占位逼出竖条」——那描述的是**上游缺陷**，现已修（两轴各取各的厚度）。
+//   ⇒ 现在只薄横条也不会再留幻影占位；两条仍同设，是为了与本仓其余 ScrollView
+//   观感一致，不是为了躲 bug。★ 建树期设样式仍然安全：随后由父容器布局的首次
+//   `SetSize` 走一遍 `ApplyLayout`（改厚度本身不触发重排）。
 constexpr int kTableBarThickness = 4;
 
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& table,

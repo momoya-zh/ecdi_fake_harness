@@ -55,6 +55,17 @@ using harness::internal::kInspW;
 using harness::internal::kJumpBtnH;
 using harness::internal::kJumpBtnW;
 using harness::internal::kListRowHeight;
+using harness::internal::kModelPopupFootH;
+using harness::internal::kModelPopupFootY;
+using harness::internal::kModelPopupH;
+using harness::internal::kModelPopupListMaxH;
+using harness::internal::kModelPopupListY;
+using harness::internal::kModelPopupPadX;
+using harness::internal::kModelPopupSearchH;
+using harness::internal::kModelPopupSearchY;
+using harness::internal::kModelPopupTitleH;
+using harness::internal::kModelPopupTitleY;
+using harness::internal::kModelPopupW;
 using harness::internal::kProbeBg;
 using harness::internal::kProbeInk;
 using harness::internal::kRowGap;
@@ -945,6 +956,16 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildModelPopup() {
         .cornerRadius = kRadiusBtn,
         .borderWidth = 1.0f,
         .borderColor = kCardBorder});
+    // ★ 2026-11-01（用户反馈「功能不知所以」）：标题行把「这是干什么的」写在脸上。
+    //   此前打开只有一个空搜索框——列表因 `list` 尺寸 0×0 被整棵剔除，用户看到的
+    //   是一块「不知道干嘛的空白面板」。标题不是装饰：即便列表修好，一列模型名 +
+    //   一个空搜索框仍然不自明（它不像菜单，像一张表）。
+    auto popTitle = std::make_unique<ECDI::Label>("切换模型");
+    popTitle->SetTextColor(kDarkInk);
+    popTitle->SetFont(harness::SansFont(harness::kFontSmall));
+    popTitle->SetSize(kModelPopupW - 2 * kModelPopupPadX, kModelPopupTitleH);
+    popTitle->SetPosition(kModelPopupPadX, kModelPopupTitleY);
+    pop->AddChild(std::move(popTitle));
     auto search = std::make_unique<ECDI::TextBox>();
     m_hud.modelSearch = search.get();
     search->SetSingleLine(true);
@@ -963,24 +984,33 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildModelPopup() {
         .borderWidth = 1.0f,
         .borderColor = kLine,
         .verticalAlign = ECDI::VerticalAlignment::Center});
-    search->SetSize(320, 26);
-    search->SetPosition(10, 8);
+    search->SetSize(kModelPopupW - 2 * kModelPopupPadX, kModelPopupSearchH);
+    search->SetPosition(kModelPopupPadX, kModelPopupSearchY);
     search->SetOnTextChanged([this](const std::string&) { RebuildModelPopupList(); });
     pop->AddChild(std::move(search));
+    // ★★ 2026-11-01 修（用户反馈「点开一片空白」+「功能不知所以」）：两条缺陷叠在
+    //   同一个控件上——
+    //   ① **`SetSize` 缺失** ⇒ 0×0 ⇒ `Widget::Paint` 的第一条 `IsRectVisible(self)`
+    //      （Widget.cpp:605）直接 return ⇒ 整棵列表子树零绘制。行**建了**、一个都没画，
+    //      所以探针（只看开合与挂载）一直绿，屏幕却空着——这正是「结构绿了、视觉没绿」。
+    //   ② **两个排布者抢同一个容器**：`VerticalLayout` 的 `Arrange` 会把每个子项改写成
+    //      `(padding, y累进)`（VerticalLayout.cpp:99），把 `RebuildModelPopupList` 里
+    //      手工算的 `SetPosition(0, y)` 全部覆盖。留手工那套——它和 `kModelPopupListMaxH`
+    //      的溢出收敛（`hidden` 计数 + 底注「另有 N 项未显示」）是配套的，布局不知道这件事。
     auto list = std::make_unique<ECDI::Panel>();
     m_hud.modelPopupList = list.get();
-    list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
-    list->SetPosition(10, 40);
+    list->SetSize(kModelPopupW - 2 * kModelPopupPadX, kModelPopupListMaxH);
+    list->SetPosition(kModelPopupPadX, kModelPopupListY);
     pop->AddChild(std::move(list));
     auto foot = std::make_unique<ECDI::Label>(
         "仅 idle 发出 · 运行中自动排队（本轮输出完生效）");
     m_hud.modelPopupFoot = foot.get();
     foot->SetTextColor(kDarkMuted);
     foot->SetFont(harness::SansFont(harness::kFontMicro));
-    foot->SetSize(320, 16);
-    foot->SetPosition(10, 250);
+    foot->SetSize(kModelPopupW - 2 * kModelPopupPadX, kModelPopupFootH);
+    foot->SetPosition(kModelPopupPadX, kModelPopupFootY);
     pop->AddChild(std::move(foot));
-    pop->SetSize(340, 272);
+    pop->SetSize(kModelPopupW, kModelPopupH);
     return pop;
 }
 

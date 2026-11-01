@@ -15,6 +15,7 @@
 #       UNEXPECTED  （其余一切 = 真回归）
 #     `unavailable` 不算 skipped —— 前条件本该成立却没有，是失败。
 # ============================================================
+import hashlib
 import json
 import pathlib
 import shutil
@@ -35,6 +36,58 @@ _EXE_CANDIDATES = [
 EXE = next(p for p in _EXE_CANDIDATES if p.exists()) if any(
     p.exists() for p in _EXE_CANDIDATES) else _EXE_CANDIDATES[0]
 OUT = ROOT / ".scratch"
+
+# ============================================================
+# ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹
+# ------------------------------------------------------------
+# 病灶（账本 v4.5 ①⑥ 记的就是这条）：本文件判「门绿」只看 `out.exists()`
+#   （见 run_probe 与各节的 `if not out.exists()`），而 `subprocess.run(...)`
+#   的返回值从 2026-10 起一直**没被赋值** ⇒ 子进程 rc 在采集环节就丢了。
+#   后果有两头，方向相反、都很贵：
+#     · 红门：`FAILED TO PRODUCE OUTPUT` 只说明「json 没落盘」，分不清
+#       「崩在写盘前」和「根本没起来」；也正因为写盘在收尾，它**不能**证明
+#       崩的时刻，账本里「退出时段错误」这类措辞就是这样滑进来的。
+#     · 绿门：写盘后崩掉的门**照样绿**——判据看不见进程怎么死的。
+#   修法：**只加读数，不改判据**（判据仍是 json 存在性 + 相分类，逐位等价）。
+#     每次起子进程后落一行 RUNLOG：门名 | rc | json 有无。
+#     每轮开头再落一次 exe 指纹（sha256 前 8 位 + size + mtime）——
+#     没有它，两轮红相不同就永远无法排除「换了二进制」，那正是 TODO-06
+#     立案时最缺的一环。
+#   ★ rc 的口径：Windows 上进程被结构化异常终止时 rc 是 0xC0000005 这类值，
+#     Python 拿到的是同一个 DWORD ⇒ 按 `0x` 大写十六进制打印，别写成负数。
+# ============================================================
+RUNLOG = []          # [(label, rc, json_state)] —— 供 §4 汇总，不参与 fail 计数
+
+
+def rc_str(rc):
+    """rc → 可读串。未采到返回 '?'，正常退出返回十进制 0。"""
+    if rc is None:
+        return "?"
+    if rc < 0 or rc >= 0xC0000000:
+        return f"0x{rc & 0xFFFFFFFF:08X}"
+    return str(rc)
+
+
+def exe_fingerprint():
+    """(sha256 前 8 位, size, mtime ISO) —— 门的「被测对象」身份。"""
+    try:
+        h = hashlib.sha256()
+        with open(EXE, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        st = EXE.stat()
+        import datetime
+        mt = datetime.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
+        return h.hexdigest()[:8], st.st_size, mt
+    except OSError as e:
+        return f"?{e.errno}", 0, "?"
+
+
+def record(label, rc, out_path):
+    """落一行可复核性读数。out_path=None 表示该跑法本就没有 json 产物。"""
+    state = "-" if out_path is None else ("yes" if out_path.exists() else "MISSING")
+    RUNLOG.append((label, rc, state))
+
 
 FIXTURES = [
     ("demo", "protocol/fixtures/demo-session.jsonl", (8, 19, 43)),
@@ -200,14 +253,16 @@ def run_probe(flag, key, fixture, extra, designed, configs):
     out = OUT / f"_reg{flag}.json"
     out.unlink(missing_ok=True)
     try:
-        subprocess.run([str(EXE), "--replay", str(ROOT / fixture), "--instant",
-                        "--theme", "light", flag] + resolved +
-                       ["--auto-close", "30000", "--out", str(out)],
-                       cwd=ROOT, capture_output=True, timeout=180)
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / fixture), "--instant",
+                            "--theme", "light", flag] + resolved +
+                           ["--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
     except subprocess.TimeoutExpired:
+        record(flag, None, out)
         return False, "TIMEOUT"
+    record(flag, r.returncode, out)          # ★ 只看读数，判据仍是下面那行存在性
     if not out.exists():
-        return False, "FAILED TO PRODUCE OUTPUT"
+        return False, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
     d = json.loads(out.read_text(encoding="utf-8"))
     rows = d.get(key) or []
     if not rows:
@@ -343,10 +398,11 @@ def run_live(core, core_args, auto_close_ms, extra, out_name):
     一个 token：`--core-args` 的值按空格切分，带空格就变成两个参数。"""
     out = OUT / out_name
     out.unlink(missing_ok=True)
-    subprocess.run([str(EXE), "--core", str(core), "--core-args", core_args,
-                    "--auto-prompt", "hello", "--async-probe",
-                    "--auto-close", str(auto_close_ms), "--out", str(out)] + extra,
-                   cwd=ROOT, capture_output=True)
+    r = subprocess.run([str(EXE), "--core", str(core), "--core-args", core_args,
+                        "--auto-prompt", "hello", "--async-probe",
+                        "--auto-close", str(auto_close_ms), "--out", str(out)] + extra,
+                       cwd=ROOT, capture_output=True)
+    record(f"live:{out_name}", r.returncode, out)
     if not out.exists():
         return None
     return json.loads(out.read_text(encoding="utf-8"))
@@ -509,14 +565,16 @@ def check_workspace_probe(core):
     out = OUT / "_reg--workspace-probe.json"
     out.unlink(missing_ok=True)
     try:
-        subprocess.run([str(EXE), "--core", str(core), "--auto-prompt", "hello",
-                        "--workspace-probe", "--auto-close", "100000", "--out", str(out)],
-                       cwd=ROOT, capture_output=True, timeout=240)
+        r = subprocess.run([str(EXE), "--core", str(core), "--auto-prompt", "hello",
+                            "--workspace-probe", "--auto-close", "100000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=240)
     except subprocess.TimeoutExpired:
+        record("--workspace-probe", None, out)
         print("  --workspace-probe    TIMEOUT")
         return 1
+    record("--workspace-probe", r.returncode, out)
     if not out.exists():
-        print("  --workspace-probe    FAILED TO PRODUCE OUTPUT")
+        print(f"  --workspace-probe    FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
         return 1
     rows = json.loads(out.read_text(encoding="utf-8")).get("workspaceProbe") or []
     if not rows:
@@ -539,15 +597,21 @@ def main():
     OUT.mkdir(exist_ok=True)
     fail = 0
 
+    # ★ 2026-11-01：被测对象的身份，打在最前面。跨轮比较红相前先看这一行——
+    #   两轮 sha256 不同，红相差异就不能当「同一构建的抖动」来解读。
+    _sha, _size, _mt = exe_fingerprint()
+    print(f"BINARY: {EXE}  sha256:{_sha}  size={_size}  mtime={_mt}")
+
     print("== 1. 夹具结构基线 (6 fixtures) ==")
     for name, rel, exp in FIXTURES:
         out = OUT / f"_reg_{name}.json"
         out.unlink(missing_ok=True)
-        subprocess.run([str(EXE), "--replay", str(ROOT / rel), "--instant",
-                        "--theme", "light", "--auto-close", "40000", "--out", str(out)],
-                       cwd=ROOT, capture_output=True)
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / rel), "--instant",
+                            "--theme", "light", "--auto-close", "40000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True)
+        record(name, r.returncode, out)
         if not out.exists():
-            print(f"  {name:20s} FAILED TO PRODUCE OUTPUT")
+            print(f"  {name:20s} FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
             fail += 1
             continue
         d = json.loads(out.read_text(encoding="utf-8"))
@@ -560,11 +624,12 @@ def main():
     for flag, key in PROBES:
         out = OUT / f"_reg{flag}.json"
         out.unlink(missing_ok=True)
-        subprocess.run([str(EXE), "--replay", str(ROOT / "protocol/fixtures/demo-session.jsonl"),
-                        "--instant", "--theme", "light", flag, "--auto-close", "20000",
-                        "--out", str(out)], cwd=ROOT, capture_output=True)
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / "protocol/fixtures/demo-session.jsonl"),
+                            "--instant", "--theme", "light", flag, "--auto-close", "20000",
+                            "--out", str(out)], cwd=ROOT, capture_output=True)
+        record(flag, r.returncode, out)
         if not out.exists():
-            print(f"  {flag:18s} FAILED TO PRODUCE OUTPUT")
+            print(f"  {flag:18s} FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
             fail += 1
             continue
         d = json.loads(out.read_text(encoding="utf-8"))
@@ -624,6 +689,17 @@ def main():
                        cwd=ROOT, capture_output=True, text=True)
     print(f"  exit={r.returncode}")
     fail += 0 if r.returncode == 0 else 1
+
+    print("\n== 4. 可复核性读数（rc / 落盘；TODO-06 机制欠账的补齐）==")
+    print("  （判据未改，仍是 json 存在性 + 相分类。本节只把 rc 摆出来：")
+    print("    rc=0 且 json=yes ⇒ 真跑完；json=MISSING ⇒ 崩在写盘前；")
+    print("    json=yes 但 rc≠0 ⇒ **写盘后崩**——旧判据对这一格全盲，门照样绿）")
+    for label, rc, state in RUNLOG:
+        # ★ 2026-11-01：RUNLOG 里存的是**原始 rc（int）**，打印时才转字符串——
+        #   第一版写成 `rc={rc:>10s}`，第一次全量跑就在这里 ValueError 炸掉
+        #   （前面所有门都跑完了，却因为最后一张表拿不到 RESULT 行）。
+        #   ⇒ 台架补丁必须真跑一遍全量，光 py_compile 不够。
+        print(f"  {label:26s} rc={rc_str(rc):>10s}  json={state}")
 
     print()
     print(f"RESULT: {'PASS' if fail == 0 else f'{fail} FAILURE(S)'}")

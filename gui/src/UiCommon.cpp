@@ -40,8 +40,13 @@ int ContentWidth(const ECDI::ScrollView* scroll) {
 //     ① `SetStyle` 只 `Invalidate` 自身，**不重排**（条几何/viewport/maxOffset 都在
 //        `ApplyLayout` 里算，只由 `SetSize`/`SetContentExtent`/`SetScrollBarVisible` 触发）
 //        ⇒ 末尾补一次 `SetSize` 等价调用；
-//     ② `BarThickness()` 只读**垂直**条 ⇒ 两条同设，否则一轴的"画出的厚度"与
-//        "扣掉的厚度"不一致，内容压在条底下；
+//     ② 两条**都设**（设计裁决，不是绕行）：全仓条宽统一，中栏 4px 而侧栏 12px
+//        比 "4px 本身"更显眼。
+//        ★★ 2026-11-01 订正（ECDI `#84` / Phase 43，`daed47c`）：本条原写作
+//        「`BarThickness()` 只读**垂直**条 ⇒ 两条同设，否则一轴的'画出的厚度'与
+//        '扣掉的厚度'不一致」——那描述的是**上游缺陷**，现已修（拆成
+//        `VerticalBarThickness()` / `HorizontalBarThickness()`，两轴各取各的）。
+//        ⇒ **结论不变、理由变了**：不再为了躲 bug，而是统一观感。
 //     ③ 实际占位 = `thickness + 2`（`kBarInset` 四边内缩）⇒ 改厚度会连带改
 //        `GetMaxOffsetY()`，所以必须在**建树期**设，别在运行期偷偷改。
 void ApplyCompactScrollBars(ECDI::ScrollView& sv) {

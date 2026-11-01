@@ -501,17 +501,21 @@ void HarnessApp::RouteLastMessage() {
     }
     if (t == "delta") {
         const std::string id = msg.GetString("id");
-        const auto row = m_sess->blockRows.find(id);
+        // ★★ 2026-11-01（TODO-07 第二步）：`blockRows` 存的是**索引句柄**，
+        //   不再是指向 `rows` 元素的裸指针。取行统一走 `FindBlockRow`——
+        //   句柄越界（行表被重建过）时返回 nullptr，让「行没了」表现为
+        //   **一次显式的空判断**，而不是一个指向已释放内存的指针。
+        RowRec* const row = FindBlockRow(id);
         const Block* block = m_sess->transcript.FindBlock(id);
-        if (row != m_sess->blockRows.end() && block && row->second->label) {
+        if (row && block && row->label) {
             // ★ 未知 kind 的行有**前缀**（`[未知 kind: xxx]`）——不能整段覆盖，
             //   否则流式 delta 一到就把前缀擦掉（2026-10-13 实测：截图里 r2 的
             //   `[未知 kind: thinking]` 前缀正是这样丢的）。此处保持与
             //   `CreateBlockRow` 同一拼法。
             if (block->unknownKind) {
-                row->second->label->SetText(UnknownKindText(*block));
+                row->label->SetText(UnknownKindText(*block));
             } else {
-                row->second->label->SetText(block->text);   // 合并：只追加到文本缓冲，不逐字符刷新
+                row->label->SetText(block->text);   // 合并：只追加到文本缓冲，不逐字符刷新
             }
         }
         return;
@@ -519,13 +523,13 @@ void HarnessApp::RouteLastMessage() {
     if (t == "block_end") {
         const std::string id = msg.GetString("id");
         const Block* block = m_sess->transcript.FindBlock(id);
-        const auto row = m_sess->blockRows.find(id);
-        if (row == m_sess->blockRows.end()) {
+        RowRec* const row = FindBlockRow(id);      // 索引句柄，见 delta 分支的说明
+        if (!row) {
             return;
         }
 
         // ★★ 富内容二期：assistant 块在 block_end 时若包含 Markdown 表格，从流式纯文本升级为表格渲染
-        if (block && block->kind == "assistant" && !row->second->hasTable) {
+        if (block && block->kind == "assistant" && !row->hasTable) {
             auto segs = ParseMarkdownSegments(block->text);
             bool containsTable = false;
             for (const auto& s : segs) {
@@ -535,13 +539,13 @@ void HarnessApp::RouteLastMessage() {
                 }
             }
             if (containsTable) {
-                UpgradeAssistantRowToMarkdown(*row->second, *block, segs);
+                UpgradeAssistantRowToMarkdown(*row, *block, segs);
                 Relayout();
                 RequestRepaint();
             }
         }
 
-        if (!row->second->headerBtn) {
+        if (!row->headerBtn) {
             return;
         }
         // ★ 协议 v2 §7：思维链块结束时标题改为「**已完成**」（用户裁决）。
@@ -551,11 +555,11 @@ void HarnessApp::RouteLastMessage() {
         //   ★ 展开态也要更新文案：用户看到的是「已完成」+ `︿`。
         //     （2026-10-18 订正：此处原文写 `▲`，但思维链标题的箭头单一真相源是
         //      `ReasoningTitle()`，用的正是用户指定的钝角 `﹀`/`︿`，不是 `▲`。）
-        if (row->second->reasoning && block) {
-            row->second->ended = true;
-            if (row->second->headerBtn) {
-                row->second->headerBtn->SetText(
-                    ReasoningTitle(*block, row->second->expanded));
+        if (row->reasoning && block) {
+            row->ended = true;
+            if (row->headerBtn) {
+                row->headerBtn->SetText(
+                    ReasoningTitle(*block, row->expanded));
             }
             RequestRepaint();
             return;
@@ -583,8 +587,8 @@ void HarnessApp::RouteLastMessage() {
             } else if (!block->ok) {
                 title += " · 失败";
             }
-            row->second->headerBtn->SetText(title);
-            if (!block->ok) row->second->headerBtn->SetTextColor(kErrorDark);
+            row->headerBtn->SetText(title);
+            if (!block->ok) row->headerBtn->SetTextColor(kErrorDark);
         } else if (isCall) {
             // 工具调用：标题 = 工具名（+ 可选摘要）——此前 summary 在此被丢弃
             // ★ 2026-10-18：`▸` → `›`（字形可用性实测，见上方 isResult 分支注释）
@@ -595,8 +599,8 @@ void HarnessApp::RouteLastMessage() {
             } else if (!block->ok) {
                 title += " · 失败";
             }
-            row->second->headerBtn->SetText(title);
-            if (!block->ok) row->second->headerBtn->SetTextColor(kErrorDark);
+            row->headerBtn->SetText(title);
+            if (!block->ok) row->headerBtn->SetTextColor(kErrorDark);
         }
         return;
     }

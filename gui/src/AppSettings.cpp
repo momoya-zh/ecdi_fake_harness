@@ -27,9 +27,11 @@
 #include "ECDI/Core/String.h"   // ECDI::UTF8ToWide（日志与配置路径）
 #include "ECDI/Window/OverlayTypes.h"   // ★ 2026-10-30：模型下拉走浮层根（OverlayOptions）
 #include "ECDI/Window/Window.h"         // ★ 同上：ShowOverlay / HideOverlay
+#include "ECDI/Platform/PlatformWindow.h"   // ★ 2026-11-01：RepositionModelPopup 的客户区夹取
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
 #include "ECDI/Widget/ScrollView.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <map>
 #include <set>
@@ -817,14 +819,45 @@ void HarnessApp::RebuildModelList() {
 //   ③ 打开时焦点进搜索框（`ShowOverlay` 把焦点交给首个可聚焦控件）——直接能打字过滤。
 // ★ `exemptWidget = modelChip`：点 chip 自身走既有 toggle，不能被「点外关闭」抢先
 //   关掉再重新打开（那样看起来像点了没反应）。
-// ★ 位置**不用**框架的 `anchorWidget`：锚点模式会把 X 钉在 chip 左缘，而这里要的是
-//   「贴视口右上角」。位置由 `RepositionModelPopup` 手算（客户区坐标）。
+// ★ 位置**不用**框架的 `anchorWidget`：锚点模式只会把 X 钉在 chip 左缘（本仓要的是
+//   **右对齐**——弹窗 340 宽、chip 200 宽，右对齐才不会向右突出到窗口外）。手算，
+//   锚 = chip 的**绝对几何**（客户区坐标）。
+// ★★ 2026-11-01（用户反馈「点开的位置不对」）：此前锚的是 `m_scroll`——**转录视口**，
+//   不是顶栏。于是弹窗落在「中栏转录区的右上角」：实测客户区 x 532..872 / y 142..274，
+//   而 chip 在 x 847..1044 / y 8..30 ⇒ 横向偏左 172px、纵向偏下 112px，看上去像
+//   "凭空浮在正文中间"。原注释写的是「要『贴视口右上角』」——这句话没错，错在把
+//   "视口"理解成了正文视口；下拉的通用语义是锚在**触发它的那个控件**上。
+//   ★ 用绝对坐标而不是"父容器内坐标"：chip 在顶栏 HorizontalLayout 里，重排会让它的
+//     位置随时变；绝对坐标读的是**已定稿的本帧几何**，resize / 主题切换后重算一次即跟随。
 void HarnessApp::RepositionModelPopup() {
-    if (!m_hud.modelPopup || !m_scroll) return;
-    const ECDI::Point s = m_scroll->GetAbsolutePosition();
-    const int x = static_cast<int>(s.x) +
-                  std::max(0, m_scroll->GetWidth() - m_hud.modelPopup->GetWidth() - 12);
-    m_hud.modelPopup->SetPosition(x, static_cast<int>(s.y));
+    if (!m_hud.modelPopup) return;
+    const int pw = m_hud.modelPopup->GetWidth();
+    const int ph = m_hud.modelPopup->GetHeight();
+
+    int x = 0;
+    int y = 0;
+    if (m_hud.modelChip) {
+        const ECDI::Point c = m_hud.modelChip->GetAbsolutePosition();
+        x = static_cast<int>(c.x) + m_hud.modelChip->GetWidth() - pw;   // 右缘对齐 chip
+        y = static_cast<int>(c.y) + m_hud.modelChip->GetHeight() +
+            harness::internal::kModelPopupDropGap;                      // 挂在 chip 下沿
+    } else if (m_scroll) {
+        // chip 缺失只可能发生在建树中途；退回旧口径，保底不把弹窗丢到 (0,0)。
+        const ECDI::Point s = m_scroll->GetAbsolutePosition();
+        x = static_cast<int>(s.x) + std::max(0, m_scroll->GetWidth() - pw - 12);
+        y = static_cast<int>(s.y);
+    }
+
+    // 客户区夹取：右对齐会向左伸出 140px，窗口收窄时左缘可能进负区；
+    //   纵向在矮窗口下（< 300 + chip 底）也要收住，否则底注被顶出可视区。
+    if (m_window) {
+        const ECDI::Size client = m_window->GetPlatformWindow().GetClientSize();
+        const int cw = static_cast<int>(client.width);
+        const int ch = static_cast<int>(client.height);
+        x = std::clamp(x, 8, std::max(8, cw - pw - 8));
+        y = std::clamp(y, 0, std::max(0, ch - ph - 8));
+    }
+    m_hud.modelPopup->SetPosition(x, y);
 }
 
 void HarnessApp::CloseModelPopup() {
@@ -914,10 +947,13 @@ void HarnessApp::RebuildModelPopupList() {
     for (const auto& pc : m_appConfig.providers) ++nameCounts[ProviderDisplayName(pc)];
     const std::string activeProv = m_sess ? m_sess->providerId : std::string();
     const std::string activeModel = m_sess ? m_sess->modelName : std::string();
-    // ★ 列表区可用高：弹窗固定 272，搜索框占 40、底注在 250 ⇒ 210px。
+    // ★ 列表区可用高：**不再写死**，取 `AppInternal.h` 的弹窗几何真相源
+    //   （弹窗 300 / 标题 10..26 / 搜索 32..58 / 列表 64 起 210 高 / 底注 276）。
+    //   ★ 2026-11-01：这里原先是本地 `constexpr 210`，与 `BuildModelPopup()` 里那串
+    //     硬编码坐标各算一份——同一个几何被两处共建，标题一加就会对不上。
     //   超出的行不画，由底注说明"还有几项"。**不改弹窗几何**：它是不滚动的固定
     //   浮窗，加滚动等于换一套交互；等"提供商多到装不下"成为真实反馈再说。
-    constexpr int kListMaxH = 210;
+    constexpr int kListMaxH = harness::internal::kModelPopupListMaxH;
     int y = 0;
     int rows = 0;
     int hidden = 0;
@@ -961,7 +997,13 @@ void HarnessApp::RebuildModelPopupList() {
                 .borderWidth = 1.0f,
                 .cornerRadius = kRadiusBtn,
                 .pressedBackground = kToolHeaderPressed,
-                .hoverBackground = kToolHeaderHover});
+                .hoverBackground = kToolHeaderHover,
+                // ★ 2026-11-01（用户裁决「改左对齐」）：列表项左对齐。
+                //   `ButtonStyle::textAlignment` 的主题缺省是 **Center**（ButtonStyle.h:32
+                //   的 C30-3），不显式给就居中——居中在"工具条按钮"上对，在"可选列表"
+                //   上像标题。**必须显式写 Left，不得依赖枚举零值**（缺省恒由主题注入
+                //   Center）。同 `AppHistory`/`AppSession` 行根的写法。
+                .textAlignment = ECDI::TextAlignment::Left});
             row->SetSize(320, 24);
             row->SetPosition(0, y);
             y += 28;

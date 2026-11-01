@@ -21,11 +21,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ECDI/Core/Color.h"
@@ -85,9 +87,53 @@ std::string HarnessApp::WidgetKindName(const ECDI::Widget* w) {
     return "Widget";
 }
 
+// ============================================================
+// ★★ 2026-11-01（账本 `TODO-07` 第一步：`RowRec` 控件指针的**失效规则**）
+// ------------------------------------------------------------
+// 规则（字段注释写在 App.h 的 `RowRec` 上）：
+//   `panel / label / headerBtn / body / allowBtn / denyBtn / conclusion` 是
+//   **非拥有**指针，只在「建出这一行的那一代控件树」里有效；
+//   `RebuildTranscriptView` 拆树（`rows.clear()` + `RemoveChild`）即**全部失效**。
+//
+// 为什么要在快照里**主动校验**而不是信任调用方：`TODO-06` 的崩溃现场是
+//   `std::string` 落到 `_Ptr==0 且 _Mysize==15` 的不可能态，且只在那几个
+//   「会调 `SnapshotRows`」的探针里出现。两种解释都指向同一个动作——先查本函数
+//   有没有读到**已失效的行指针**：
+//     (a) 行指针本身陈旧（容器被换/被清后仍被引用）；
+//     (b) 行是活的，但它指的控件已被拆掉重建（旧 Widget 已被销毁）。
+//   两者都在这里现形：`live` 是**当场**从 `m_content` 子树收集的真实控件集。
+//
+// ★ 本校验**不改判据**：仍然读同一批字段、仍然拼同一格式的行；只是把
+//   「指针已不在活动控件树里」显式写成 `<dead:字段名>` 并往 stderr 打一行。
+//   ⇒ 一次静默 UAF 变成**可读的读数差异**（`CompareRows` 会把它当字段差异报出来）。
+// ============================================================
+namespace {
+
+void CollectLiveWidgets(ECDI::Widget* w, std::unordered_set<const ECDI::Widget*>& out) {
+    if (!w) return;
+    out.insert(w);
+    for (size_t i = 0; i < w->GetChildCount(); ++i) CollectLiveWidgets(w->GetChildAt(i), out);
+}
+
+int g_deadRowRefs = 0;   // 命中次数：只在 stderr 上报，不进门、不进 JSON
+
+bool RowAlive(const std::unordered_set<const ECDI::Widget*>& live,
+              const ECDI::Widget* p, const char* field, const char* rowId) {
+    if (!p || live.count(p) != 0) return true;
+    ++g_deadRowRefs;
+    std::fprintf(stderr, "[snapshot] DEAD row ref: field=%s row=%s ptr=%p (total %d)\n",
+                 field, rowId ? rowId : "?", static_cast<const void*>(p), g_deadRowRefs);
+    std::fflush(stderr);
+    return false;
+}
+
+}  // namespace
+
 std::vector<std::string> HarnessApp::SnapshotRows() const {
     std::vector<std::string> out;
     out.reserve(m_sess->rows.size());
+    std::unordered_set<const ECDI::Widget*> live;
+    CollectLiveWidgets(m_content, live);
     for (const RowRec& r : m_sess->rows) {
         // 行种类：A=权限门 / B=块行 / N=通知行
         //   ★ 判据必须只用 `RowRec` 上**已经存在**的信息，不能再回头问模型
@@ -112,9 +158,18 @@ std::vector<std::string> HarnessApp::SnapshotRows() const {
         line += '\x1f';
         line += r.answered ? "1" : "0";
         line += '\x1f';
-        line += r.headerBtn ? r.headerBtn->GetText() : std::string();
+        // ★ 2026-11-01：先验存活再解引用（规则见本文件 SnapshotRows 上方的长注释）
+        if (r.headerBtn && !RowAlive(live, r.headerBtn, "headerBtn", id ? id->c_str() : "")) {
+            line += "<dead:headerBtn>";
+        } else {
+            line += r.headerBtn ? r.headerBtn->GetText() : std::string();
+        }
         line += '\x1f';
-        if (r.label) line += r.label->GetText();
+        if (r.label && !RowAlive(live, r.label, "label", id ? id->c_str() : "")) {
+            line += "<dead:label>";
+        } else if (r.label) {
+            line += r.label->GetText();
+        }
         line += '\x1f';
         // ★★ Step 3：`answer` 段放**最后**——既有字段的编号一位不动，
         //   `CompareRows` 的 `kFieldName[]` 只需在尾部追加一个名字；

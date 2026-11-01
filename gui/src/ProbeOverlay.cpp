@@ -145,6 +145,21 @@ void HarnessApp::RunOverlayProbe() {
         rec.sheetX = m_hud.settingsPanel ? static_cast<int>(m_hud.settingsPanel->GetX()) : 0;
         rec.sheetW = m_hud.settingsPanel ? static_cast<int>(m_hud.settingsPanel->GetWidth()) : 0;
         rec.clientW = clientW;
+        // ★ 2026-11-01：几何读数（-1 = 控件不存在，与真实的 0 区分）。
+        if (m_hud.modelPopup) {
+            const ECDI::Point p = m_hud.modelPopup->GetAbsolutePosition();
+            rec.popupX = static_cast<int>(p.x);
+            rec.popupY = static_cast<int>(p.y);
+            rec.popupW = m_hud.modelPopup->GetWidth();
+            rec.popupH = m_hud.modelPopup->GetHeight();
+        }
+        if (m_hud.modelChip) {
+            const ECDI::Point c = m_hud.modelChip->GetAbsolutePosition();
+            rec.chipX = static_cast<int>(c.x);
+            rec.chipY = static_cast<int>(c.y);
+            rec.chipW = m_hud.modelChip->GetWidth();
+            rec.chipH = m_hud.modelChip->GetHeight();
+        }
         m_probeState.overlayProbeLog.push_back(std::move(rec));
     };
     auto expect = [&](const char* phase,
@@ -345,11 +360,49 @@ void HarnessApp::RunOverlayProbe() {
         HideTooltip();          // 先收提示框：⑧ 的 `HasActiveOverlay()` 只该看到下拉
         SetModelPopupOpen(true);
         const bool openOk = m_modelPopupOpen && m_hud.modelPopup != nullptr;
+        // ★★ 2026-11-01（用户反馈「模型胶囊点开的位置不对」）：位置判据。
+        //   此前本探针对位置**一条断言都没有**——只记「开没开」「挂在哪」，于是弹窗
+        //   能被定位到转录视口正中（实测横向偏左 ~170px、纵向偏下 ~110px）而 10/10 全绿。
+        //   三条判据 + 一条元断言：
+        //     元断言（尺寸 == 规格）先把「几何根本没算」与「算错了」分开——
+        //     否则 0==0 也能让对齐判据通过。
+        //     ① 右缘对齐 chip 右缘（±1，容浮点取整）
+        //     ② 顶边不高于 chip 下沿（不许压住顶栏）
+        //     ③ chip 下沿到弹窗顶的间隙 ≤ 规格值 +1
+        int popL = 0, popT = 0, popW = 0, popH = 0;
+        int chipL = 0, chipT = 0, chipW = 0, chipH = 0;
+        if (m_hud.modelPopup) {
+            const ECDI::Point p = m_hud.modelPopup->GetAbsolutePosition();
+            popL = static_cast<int>(p.x);
+            popT = static_cast<int>(p.y);
+            popW = m_hud.modelPopup->GetWidth();
+            popH = m_hud.modelPopup->GetHeight();
+        }
+        if (m_hud.modelChip) {
+            const ECDI::Point c = m_hud.modelChip->GetAbsolutePosition();
+            chipL = static_cast<int>(c.x);
+            chipT = static_cast<int>(c.y);
+            chipW = m_hud.modelChip->GetWidth();
+            chipH = m_hud.modelChip->GetHeight();
+        }
+        const int popR = popL + popW;
+        const int chipR = chipL + chipW;
+        const int chipB = chipT + chipH;
         expect("popup", {{openOk, "model popup did not open"},
                          {m_hud.modelPopup && ReachesAncestor(m_hud.modelPopup, &overlayRoot),
                           "model popup is not on the overlay root"},
                          {m_hud.modelPopup && !ReachesAncestor(m_hud.modelPopup, &root),
                           "model popup is inside the root subtree"},
+                         // ★ 元断言：几何真的算过（尺寸 == 规格），才谈得上对齐。
+                         {popW == harness::internal::kModelPopupW &&
+                              popH == harness::internal::kModelPopupH,
+                          "popup size != spec (geometry never laid out?)"},
+                         {std::abs(popR - chipR) <= 1,
+                          "popup right edge is not aligned with the model chip's right edge"},
+                         {popT >= chipB,
+                          "popup top overlaps the top bar (it must hang below the chip)"},
+                         {popT - chipB <= harness::internal::kModelPopupDropGap + 1,
+                          "popup hangs too far below the model chip"},
                          // ★ 负对照：注册式浮层**必须**让这个读数为真——否则 ① 里
                          //   "托管挂载不注册"那条就成了空真（读数恒 false 时它也通过）。
                          {m_window->HasActiveOverlay(),
@@ -463,14 +516,17 @@ void HarnessApp::AppendOverlayProbeSummary(std::string& json) {
     for (size_t i = 0; i < m_probeState.overlayProbeLog.size(); ++i) {
         const OverlayProbeRec& r = m_probeState.overlayProbeLog[i];
         json += (i ? ", " : "");
-        char b[640];
+        char b[1024];
         std::snprintf(b, sizeof(b),
                       "{\"phase\": \"%s\", \"overlayRootChildren\": %d, "
                       "\"mountedManaged\": %d, \"settingsOnOverlay\": %s, "
                       "\"maskOnOverlay\": %s, \"tipOnOverlay\": %s, \"popupOnOverlay\": %s, "
                       "\"settingsVisible\": %s, \"popupOpen\": %s, \"tipAlive\": %s, "
                       "\"anyRegistered\": %s, \"sheetX\": %d, \"sheetW\": %d, "
-                      "\"clientW\": %d, \"matched\": %s, \"firstDivergence\": \"%s\"}",
+                      "\"clientW\": %d, "
+                      "\"popupX\": %d, \"popupY\": %d, \"popupW\": %d, \"popupH\": %d, "
+                      "\"chipX\": %d, \"chipY\": %d, \"chipW\": %d, \"chipH\": %d, "
+                      "\"matched\": %s, \"firstDivergence\": \"%s\"}",
                       r.phase.c_str(), r.overlayRootChildren, r.mountedManaged,
                       r.settingsOnOverlay ? "true" : "false",
                       r.maskOnOverlay ? "true" : "false",
@@ -481,6 +537,8 @@ void HarnessApp::AppendOverlayProbeSummary(std::string& json) {
                       r.tipAlive ? "true" : "false",
                       r.anyRegistered ? "true" : "false",
                       r.sheetX, r.sheetW, r.clientW,
+                      r.popupX, r.popupY, r.popupW, r.popupH,
+                      r.chipX, r.chipY, r.chipW, r.chipH,
                       r.matched ? "true" : "false", escO(r.firstDivergence).c_str());
         json += b;
     }

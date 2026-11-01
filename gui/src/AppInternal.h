@@ -104,6 +104,30 @@ inline constexpr int kScrollBarThickness = 4;
 //   ★ 行宽与 extent 共用这一个数：内容宽 = 内容真实需要的宽，不撒谎。
 inline constexpr int kSidebarListInnerW = kSidebarListW - kScrollBarThickness - 4;
 
+// ── 模型下拉浮窗的几何（2026-11-01，**单一真相源**）──
+//   ★ 为什么必须集中：它是**两处**共建的——`BuildModelPopup()`（AppUiMain.cpp，建
+//     容器/定坐标）与 `RebuildModelPopupList()`（AppSettings.cpp，按 y 游标塞行，
+//     撞到 `kModelListMaxH` 就收敛）。各写一个数必然漂移。
+//   ★★ 2026-11-01 的「点开只有一个空框」正是这个形状的后果：`list` 面板从未
+//     `SetSize`（0×0），而 `Widget::Paint` 的第一条是 `if (!ctx.IsRectVisible(self))
+//     return;`（Widget.cpp:605）⇒ 整棵列表子树零绘制，行建了、一个都没画。
+//   ★ 272 → 300 是**给标题让位**，不是美学：标题吃掉 24px 后，列表可用高必须仍是
+//     210——否则「能装几个模型」会随标题加不加而变，那是把视觉改动偷渡成行为改动。
+inline constexpr int kModelPopupW = 340;
+inline constexpr int kModelPopupH = 300;
+inline constexpr int kModelPopupPadX = 10;
+inline constexpr int kModelPopupTitleY = 10;
+inline constexpr int kModelPopupTitleH = 16;
+inline constexpr int kModelPopupSearchY = 32;
+inline constexpr int kModelPopupSearchH = 26;
+inline constexpr int kModelPopupListY = 64;
+inline constexpr int kModelPopupListMaxH = 210;
+inline constexpr int kModelPopupFootY = 276;
+inline constexpr int kModelPopupFootH = 16;
+// 下拉与锚（顶栏 chip）之间的垂直间隙——太小贴合得像嵌进顶栏，太大会让人怀疑
+// 「这不是它的下拉」。6px 与 tooltip 的偏移同量级。
+inline constexpr int kModelPopupDropGap = 6;
+
 // ── 「跳到最新」按钮 + tooltip 延时（Stage 1d 上提）──
 inline constexpr int kJumpBtnW = 104;
 inline constexpr int kJumpBtnH = 30;
@@ -141,13 +165,21 @@ inline ECDI::Color Pick(bool probe, const ECDI::Color& normal, const ECDI::Color
 //   （本项目踩过两次：UnknownKindText 首版两处各写一份、ReasoningTitle 三处各写一份）。
 int ContentWidth(const ECDI::ScrollView* scroll);
 // ── 滚动条瘦身（2026-10-27）：把两条都设成 `kScrollBarThickness` 并补一次重排 ──
-//   ★ 为什么必须**两条都设**：`ScrollView::BarThickness()` 只读**垂直**条来扣 viewport，
-//     只改一条 ⇒ 另一轴"画出来的厚度"与"扣掉的厚度"不一致（内容压在条底下）。
+//   ★ 为什么**两条都设**：这是**设计裁决**，不是绕行——全仓条宽必须一致（中栏 4px 而
+//     侧栏 12px 比 "4px 本身"更显眼），所以两条各设一次，别指望"只改一条另一边跟着变"。
+//   ★★ 2026-11-01 订正（ECDI `#84` / Phase 43）：本条原写作「因为 `BarThickness()` 只读
+//     **垂直**条来扣 viewport，只改一条 ⇒ 另一轴画出来的厚度与扣掉的厚度不一致」——
+//     那描述的是**上游缺陷**，现已被 `daed47c` 修掉（`BarThickness()` 删除，改为
+//     `VerticalBarThickness()` / `HorizontalBarThickness()` 两轴各取各的，S1/S4/S5/S6）。
+//     ⇒ 结论不变（两条照设），但**理由变了**：不再是为了躲 bug，而是为了统一观感。
+//     ★ 同厚度路径上游是**位相同**的，所以本仓画面零变化。
 //   ★ 为什么必须补重排：`ScrollBar::SetStyle` 只 `Invalidate()` 自身，而条几何 /
 //     viewport / maxOffset 全在 `ApplyLayout` 里算，它只被 `SetSize` /
 //     `SetContentExtent` / `SetScrollBarVisible` 触发 ⇒ 光设样式不重排 = 条变窄了、
-//     视口还按旧厚度让位。函数内已做"宽高为 0 就跳过"的守卫（建树期尺寸未定，
-//     随后布局分配的第一次 `SetSize` 自然会用新厚度）。
+//     视口还按旧厚度让位。★ 这条**与 #84 无关、仍然必需**：新头文件反而把它写明了
+//     （改厚度不触发重排，且 `SetContentExtent` 在 extent 未变时提前返回救不了）。
+//     函数内已做"宽高为 0 就跳过"的守卫（建树期尺寸未定，随后布局分配的第一次
+//     `SetSize` 自然会用新厚度）。
 void ApplyCompactScrollBars(ECDI::ScrollView& sv);
 std::string ConversationTitle();
 std::string ConversationSubtitle();
