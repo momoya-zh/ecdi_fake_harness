@@ -104,6 +104,7 @@ public:
 
     // HarnessApplication 回调
     void OnReplayTick();
+    void ExpireCopiedButtons();   // 「已复制」1.5s 后还原为「复制」
     void OnAutoClose();
     void OnSweepTick();
     // ★★ 2026-10-21：窗口客户区变了（用户拉伸窗口）。
@@ -475,6 +476,7 @@ private:
         ECDI::CollapsiblePanel* body = nullptr;   // tool 卡片展开体，非拥有
         ECDI::Button* allowBtn = nullptr;         // ask 行按钮，非拥有
         ECDI::Button* denyBtn = nullptr;
+        ECDI::Button* copyBtn = nullptr;          // 智能体回答末尾的轮次复制按钮，非拥有
         // ★★ P4 Phase D：已答结论行（● 已允许/已拒绝 · 时刻）。BuildAskRow 预建
         //   （隐藏），ApplyAnsweredLook 填文本/色并显示——首答与重建同一函数 ⇒ 同形。
         ECDI::Label* conclusion = nullptr;
@@ -834,7 +836,12 @@ private:
     //   **返回**它（live 子进程启动失败 ⇒ 返回 nullptr 且不 push）。
     //   ★ 只"创建"不"激活"——激活（含视图重建）由调用方经 `SwitchToSession` 做。
     //     若创建时就改 `m_sess`，`SwitchToSession` 会因"已在该会话"早退而不重建视图。
-    Session* CreateSessionFromOptions();
+    //   ★★ 2026-11-02：`workspacePath` 非空 ⇒ 子 core 用 `--workspace "<path>"` 起，
+    //     **出生就在那个目录里**（与 `ResumeSession` 同一条手法）。空 = 沿用历史
+    //     行为（子进程继承 GUI 进程 cwd）。为什么这个参数必须由调用方给：只有
+    //     「工作区分组标题行的＋」知道用户点的是哪个工作区；首会话 / `NewSession()`
+    //     走的是协议侧的 workspace 继承，不该在命令行上抢答。
+    Session* CreateSessionFromOptions(const std::string& workspacePath = std::string());
     // `NewSession()`：`＋ 新建会话` 的真实行为。live 模式拉起新 core（真新会话）；
     //   回放模式建一个空会话并如实提示（没有 core 会说话，不伪造转录）。
     void NewSession();
@@ -1026,6 +1033,13 @@ private:
     //   `WriteTranscriptExport()` 只负责落盘；失败时把原因写进 `*error`。
     std::string BuildTranscriptExportText() const;
     bool WriteTranscriptExport(const std::filesystem::path& path, std::string* error);
+    // 复制相关（按轮次合并复制智能体回答，跳过用户消息、工具调用/结果、思维链与权限门）
+    void SyncTurnCopyButtons();
+    std::string GetTurnCopyText(const std::string& blockId) const;
+    std::string BuildAllAssistantCopyText() const;
+    void CopyTurnTextByBlockId(const std::string& blockId, ECDI::Button* btn = nullptr);
+    void CopyAllTranscriptText();
+    std::vector<std::pair<ECDI::Button*, std::chrono::steady_clock::time_point>> m_copiedBtns;
     // 探针专用：非空 ⇒ `ExportTranscript()` 跳过保存对话框，直接写这个路径。
     //   ★ 唯一的存在理由：`GetSaveFileNameW` 是模态循环，探针点上去会挂死。
     //     默认空 ⇒ 产品路径零行为变化。
@@ -1216,6 +1230,7 @@ private:
     void AppendEmptyProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendModelProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendSelectProbeSummary(std::string& json);   // ProbeTranscript.cpp
+    void AppendCopyProbeSummary(std::string& json);     // ProbeTranscript.cpp
     void AppendDelProvProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendPreviewProbeSummary(std::string& json);   // ProbePreview.cpp
     void AppendPersistProbeSummary(std::string& json);   // ProbePersist.cpp
@@ -1703,6 +1718,7 @@ private:
     // ★★ P4 Phase G（--select-probe）：选中复制判据。形状同 RunJumpProbe。
     void RunSelectProbe();
     void RunTableProbe();
+    void RunCopyProbe();
     void AppendTableProbeSummary(std::string& json);
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：

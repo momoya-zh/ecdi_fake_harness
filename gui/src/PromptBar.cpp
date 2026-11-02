@@ -100,10 +100,12 @@ protected:
     void OnFocusGained() override {
         ECDI::TextBox::OnFocusGained();
         ApplyBorder(true);
+        if (m_enterSink) m_enterSink->SetCardFocused(true);
     }
     void OnFocusLost() override {
         ECDI::TextBox::OnFocusLost();
         ApplyBorder(false);
+        if (m_enterSink) m_enterSink->SetCardFocused(false);
     }
 
     // ★★ 2026-10-21：编辑导致的文本变化 → 立即上报（自动长高的**键盘路径**）。
@@ -143,22 +145,17 @@ protected:
     }
 
 private:
-    void ApplyBorder(bool focused) {
+    void ApplyBorder(bool /*focused*/) {
         SetStyle(ECDI::TextBoxStyleOverride{
-            // ★ 2026-10-27：kInputBg 是「白底输入」令牌——深色主题下纯白一块，
-            //   白字落不上去。与设置面板/浮窗搜索框同款：kPanel2 作底，浅色下
-            //   它仍是亮面（241,243,247），观感不回退。
+            // ★ 2026-11-02：与外层大圆角卡片一体化——输入框本身透明无独立边框，
+            //   卡片外框负责统一的圆角、底色（kPanel2）与获焦高亮描边。
             .background = harness::kPanel2,
             .caretColor = harness::kInputCaret,
             .padding = 6.0f,
-            .cornerRadius = harness::kRadiusInput,
-            .borderWidth = 1.0f,
-            .borderColor = focused ? harness::kDarkAccent : harness::kInputBorder,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = ECDI::Color(0, 0, 0, 0),
             // ★ REQ-14（ECDI Phase 37 verticalAlign）：单行内容垂直居中。
-            //   Composer 29 = lineH 17 + padding 6×2，Top 与 Center 读数相同
-            //   （--valign-probe 的 composer 相会记录 delta=0）——这里选 Center
-            //   是把「恰好居中」钉成「契约居中」：将来 padding 或行高漂移
-            //   （DPI/字体），行箱仍按几何中心落，不再依赖 29=17+6×2 的巧合。
             .verticalAlign = ECDI::VerticalAlignment::Center});
     }
 
@@ -221,10 +218,10 @@ PromptBar::PromptBar() {
     auto send = std::make_unique<ECDI::Button>("发送");
     m_send = send.get();
     m_send->SetTextColor(harness::kBtnPrimaryInk);
-    m_send->SetFont(harness::SansFont(15.0f));
+    m_send->SetFont(harness::SansFont(14.0f));
     m_send->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
-        .cornerRadius = 8.0f,
+        .cornerRadius = 6.0f,
         .pressedBackground = harness::kBtnPrimaryPressed,
         .hoverBackground = harness::kBtnPrimaryHover});
     m_send->SetOnClick([this] { Submit(); });
@@ -233,12 +230,12 @@ PromptBar::PromptBar() {
     auto stop = std::make_unique<ECDI::Button>("停止");
     m_stop = stop.get();
     m_stop->SetTextColor(harness::kDarkMuted);
-    m_stop->SetFont(harness::SansFont(15.0f));
+    m_stop->SetFont(harness::SansFont(14.0f));
     m_stop->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kInspBg,
         .border = harness::kLine,
         .borderWidth = 1.0f,
-        .cornerRadius = 8.0f,
+        .cornerRadius = 6.0f,
         .hoverBackground = harness::kPanel2});
     m_stop->SetOnClick([this] {
         if (m_onStop) m_onStop(std::string());
@@ -248,10 +245,10 @@ PromptBar::PromptBar() {
     auto cont = std::make_unique<ECDI::Button>("继续");
     m_continue = cont.get();
     m_continue->SetTextColor(harness::kBtnPrimaryInk);
-    m_continue->SetFont(harness::SansFont(15.0f));
+    m_continue->SetFont(harness::SansFont(14.0f));
     m_continue->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
-        .cornerRadius = 8.0f,
+        .cornerRadius = 6.0f,
         .pressedBackground = harness::kBtnPrimaryPressed,
         .hoverBackground = harness::kBtnPrimaryHover});
     m_continue->SetOnClick([this] {
@@ -259,6 +256,40 @@ PromptBar::PromptBar() {
     });
     m_continue->SetVisible(false);
     AddChild(std::move(cont));
+}
+
+void PromptBar::SetCardFocused(bool focused) {
+    if (m_cardFocused != focused) {
+        m_cardFocused = focused;
+        Invalidate();
+    }
+}
+
+void PromptBar::OnPaint(ECDI::PaintContext& ctx, int x, int y) {
+    // 1. 底栏通栏底色与顶部分割线
+    ECDI::Panel::OnPaint(ctx, x, y);
+
+    // 2. 绘制一体化大圆角卡片（将输入文本、提示文字和发送/停止按钮收纳在同一个圆角框内）
+    const int padX = 12;
+    const int cardX = x + padX;
+    const int cardY = y + 4;
+    const int cardW = GetWidth() - 2 * padX;
+    const int cardH = GetHeight() - 8;
+    if (cardW <= 0 || cardH <= 0) return;
+
+    const float radius = 10.0f;
+    const float bw = 1.0f;
+    const ECDI::Color& borderColor = m_cardFocused ? harness::kDarkAccent : harness::kInputBorder;
+    const ECDI::Color& cardBg = harness::kPanel2;
+
+    // 外层边框（双矩形描边环：外层 borderColor 圆角矩形 + 内层 cardBg 背景圆角矩形）
+    ctx.DrawRoundedRect(ECDI::Rect{static_cast<float>(cardX), static_cast<float>(cardY),
+                                  static_cast<float>(cardW), static_cast<float>(cardH)},
+                        radius, borderColor);
+    const float innerRadius = std::max(0.0f, radius - bw);
+    ctx.DrawRoundedRect(ECDI::Rect{static_cast<float>(cardX + bw), static_cast<float>(cardY + bw),
+                                  static_cast<float>(cardW - 2 * bw), static_cast<float>(cardH - 2 * bw)},
+                        innerRadius, cardBg);
 }
 
 void PromptBar::SetSize(int w, int h) {
@@ -307,7 +338,7 @@ void PromptBar::ApplySendStyle(bool enabled) {
     m_send->SetTextColor(enabled ? harness::kBtnPrimaryInk : harness::kBtnDisabledInk);
     m_send->SetStyle(ECDI::ButtonStyleOverride{
         .background = enabled ? harness::kBtnPrimary : harness::kBtnDisabledBg,
-        .cornerRadius = 8.0f,
+        .cornerRadius = 6.0f,
         .pressedBackground = enabled ? harness::kBtnPrimaryPressed : harness::kBtnDisabledBg,
         .hoverBackground = enabled ? harness::kBtnPrimaryHover : harness::kBtnDisabledBg});
 }
@@ -320,7 +351,7 @@ void PromptBar::ApplyStopStyle(bool enabled) {
         .background = harness::kInspBg,
         .border = enabled ? harness::kLine : harness::kBtnDisabledLine,
         .borderWidth = 1.0f,
-        .cornerRadius = 8.0f,
+        .cornerRadius = 6.0f,
         .hoverBackground = enabled ? harness::kPanel2 : harness::kInspBg});
 }
 
@@ -427,6 +458,7 @@ void PromptBar::LayoutChildren() {
     if (!m_input) return;
     const int buttonW = 64;
     const int padX = 12;
+    const int cardInnerPad = 8;
     // 输入框在上（高由 `SyncInputHeight` 写）、提示行与按钮行在下——**全部由输入框高推导**，
     // 不再有 44 / 66 / 58 三个硬编码。此前它们是硬编码的：输入框一旦变高，
     // 提示行与按钮会被输入框压住（一次静默的重叠，没有任何读数会报）。
@@ -434,21 +466,22 @@ void PromptBar::LayoutChildren() {
     const int hintY = 8 + inputH + 6;
     const int buttonY = 8 + inputH + 6;
 
-    m_input->SetSize(GetWidth() - 2 * padX, inputH);
-    m_input->SetPosition(padX, 8);
+    // 一体化圆角卡片内部布局：左右预留 cardInnerPad，避开外层大圆角
+    m_input->SetSize(GetWidth() - 2 * padX - 8, inputH);
+    m_input->SetPosition(padX + 4, 8);
     if (m_hint) {
-        m_hint->SetPosition(padX + 2, hintY);
+        m_hint->SetPosition(padX + cardInnerPad + 2, hintY + 6);
     }
     if (m_send) {
         m_send->SetSize(buttonW, 28);
-        m_send->SetPosition(GetWidth() - padX - buttonW, buttonY);
+        m_send->SetPosition(GetWidth() - padX - cardInnerPad - buttonW, buttonY);
     }
     if (m_continue) {
         m_continue->SetSize(buttonW, 28);
-        m_continue->SetPosition(GetWidth() - padX - buttonW, buttonY);
+        m_continue->SetPosition(GetWidth() - padX - cardInnerPad - buttonW, buttonY);
     }
     if (m_stop) {
         m_stop->SetSize(buttonW, 28);
-        m_stop->SetPosition(GetWidth() - padX - 2 * buttonW - 10, buttonY);
+        m_stop->SetPosition(GetWidth() - padX - cardInnerPad - 2 * buttonW - 8, buttonY);
     }
 }

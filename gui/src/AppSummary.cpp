@@ -202,6 +202,9 @@ void HarnessApp::WriteSummary() {
     if (m_options.selectProbe && !m_probeState.selectProbeLog.empty()) {
         AppendSelectProbeSummary(json);
     }
+    if (m_options.copyProbe && !m_probeState.copyProbeLog.empty()) {
+        AppendCopyProbeSummary(json);
+    }
     // ★★ P4（--delprov-probe）：删除所选判据。
     if (m_options.delProvProbe && !m_probeState.delProvProbeLog.empty()) {
         AppendDelProvProbeSummary(json);

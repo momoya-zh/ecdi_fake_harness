@@ -12,6 +12,7 @@
 #include "App.h"
 #include "AppInternal.h"
 #include "ThemeUsing.h"
+#include "ECDI/Platform/PlatformWindow.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -31,6 +32,8 @@
 using harness::internal::PathToUtf8;
 using harness::internal::Utf8FromWidePath;
 using harness::internal::WideFromUtf8Path;
+using harness::internal::Pick;
+using harness::internal::kProbeInk;
 
 // 把活动会话的转录渲染成文本。**只读**：不碰模型、不碰协议、不改 seq。
 // ★ 导出源是 `timeline`（视图看到的那一份），**不是** `Transcript::m_blocks`。
@@ -195,4 +198,127 @@ bool HarnessApp::ExportTranscript() {
     Relayout();
     RequestRepaint();
     return true;
+}
+
+// ── 复制相关（按轮次合并复制智能体回答与复制全部智能体回答）─────────
+
+std::string HarnessApp::GetTurnCopyText(const std::string& blockId) const {
+    if (!m_sess || blockId.empty()) return {};
+
+    size_t targetIdx = m_sess->timeline.size();
+    for (size_t i = 0; i < m_sess->timeline.size(); ++i) {
+        const auto& e = m_sess->timeline[i];
+        if (e.kind == TimelineEntry::Kind::Block && e.id == blockId) {
+            targetIdx = i;
+            break;
+        }
+    }
+    if (targetIdx >= m_sess->timeline.size()) {
+        const Block* block = m_sess->transcript.FindBlock(blockId);
+        return (block && block->kind == "assistant") ? block->text : std::string{};
+    }
+
+    size_t turnStart = targetIdx;
+    while (turnStart > 0) {
+        const auto& prev = m_sess->timeline[turnStart - 1];
+        if (prev.kind == TimelineEntry::Kind::Block) {
+            const Block* b = m_sess->transcript.FindBlock(prev.id);
+            if (b && b->kind == "user") break;
+        }
+        --turnStart;
+    }
+
+    size_t turnEnd = targetIdx + 1;
+    while (turnEnd < m_sess->timeline.size()) {
+        const auto& next = m_sess->timeline[turnEnd];
+        if (next.kind == TimelineEntry::Kind::Block) {
+            const Block* b = m_sess->transcript.FindBlock(next.id);
+            if (b && b->kind == "user") break;
+        }
+        ++turnEnd;
+    }
+
+    std::string out;
+    for (size_t i = turnStart; i < turnEnd; ++i) {
+        const auto& e = m_sess->timeline[i];
+        if (e.kind != TimelineEntry::Kind::Block) continue;
+        const Block* b = m_sess->transcript.FindBlock(e.id);
+        if (!b || b->kind != "assistant" || b->text.empty()) continue;
+        if (!out.empty()) out += "\n\n";
+        out += b->text;
+    }
+    return out;
+}
+
+std::string HarnessApp::BuildAllAssistantCopyText() const {
+    if (!m_sess) return {};
+    std::string out;
+    std::string turnOut;
+    auto flushTurn = [&]() {
+        if (turnOut.empty()) return;
+        if (!out.empty()) out += "\n\n";
+        out += turnOut;
+        turnOut.clear();
+    };
+    for (const auto& e : m_sess->timeline) {
+        if (e.kind != TimelineEntry::Kind::Block) continue;
+        const Block* b = m_sess->transcript.FindBlock(e.id);
+        if (!b) continue;
+        if (b->kind == "user") {
+            flushTurn();
+            continue;
+        }
+        if (b->kind == "assistant" && !b->text.empty()) {
+            if (!turnOut.empty()) turnOut += "\n\n";
+            turnOut += b->text;
+        }
+    }
+    flushTurn();
+    return out;
+}
+
+void HarnessApp::CopyTurnTextByBlockId(const std::string& blockId, ECDI::Button* btn) {
+    if (!m_sess || !m_window) return;
+    const std::string text = GetTurnCopyText(blockId);
+    if (text.empty()) return;
+    m_window->GetPlatformWindow().SetClipboardText(text);
+    if (btn) {
+        btn->SetText("已复制");
+        m_copiedBtns.emplace_back(btn, std::chrono::steady_clock::now());
+    }
+    if (m_promptBar) {
+        m_promptBar->SetHint("已复制本轮智能体回答到剪贴板", Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    }
+}
+
+void HarnessApp::CopyAllTranscriptText() {
+    if (!m_sess || !m_window) return;
+    const std::string text = BuildAllAssistantCopyText();
+    // ★ 空文本必须早退：否则空会话点「复制全部」会**清空用户剪贴板**——
+    //   与 CopyTurnTextByBlockId 的空查保持一致（那里同样 text.empty() 直接返回）。
+    if (text.empty()) {
+        if (m_promptBar) {
+            m_promptBar->SetHint("没有可复制的智能体回答", Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+        }
+        return;
+    }
+    m_window->GetPlatformWindow().SetClipboardText(text);
+    if (m_promptBar) {
+        m_promptBar->SetHint("已复制全部智能体回答到剪贴板", Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    }
+}
+
+void HarnessApp::ExpireCopiedButtons() {
+    if (m_copiedBtns.empty()) return;
+    const auto now = std::chrono::steady_clock::now();
+    // 按钮可能已随行重建而销毁：只有仍挂在某个存活行上的指针才解引用。
+    for (auto it = m_copiedBtns.begin(); it != m_copiedBtns.end();) {
+        if (now - it->second < std::chrono::milliseconds(1500)) { ++it; continue; }
+        if (m_sess) {
+            for (RowRec& r : m_sess->rows) {
+                if (r.copyBtn == it->first) { r.copyBtn->SetText("复制"); break; }
+            }
+        }
+        it = m_copiedBtns.erase(it);
+    }
 }

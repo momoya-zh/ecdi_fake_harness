@@ -1185,3 +1185,231 @@ void HarnessApp::AppendTableProbeSummary(std::string& json) {
     }
     json += "],\n";
 }
+
+// ★★ 按轮次合并复制体系（--copy-probe）：仅在每轮智能体回答末尾显示复制按钮，复制本轮全部 assistant 文本
+void HarnessApp::RunCopyProbe() {
+    if (!m_sess || !m_sess->replay || !m_window) {
+        m_probeState.copyProbeDone = true;
+        return;
+    }
+
+    auto readClip = [&]() {
+        return m_window->GetPlatformWindow().GetClipboardText();
+    };
+
+    auto clickBtn = [&](ECDI::Button* b, ECDI::Widget* rowPanel = nullptr) {
+        if (!b) return false;
+        if (m_scroll && rowPanel) {
+            const int panelY = rowPanel->GetY();
+            m_scroll->SetContentOffset(0, std::min(panelY, m_scroll->GetMaxOffsetY()));
+        }
+        const ECDI::Point abs = b->GetAbsolutePosition();
+        SynthesizeClickAt(static_cast<int>(abs.x) + b->GetWidth() / 2,
+                          static_cast<int>(abs.y) + b->GetHeight() / 2);
+        return true;
+    };
+
+    // 1. turn-button-placement：用户消息、工具调用/结果、思考块、权限门均无复制按钮；
+    //    每轮对话只有最后一个已完成的 assistant 块显示复制按钮，中间 assistant 块隐藏复制按钮。
+    {
+        CopyProbeRec rec;
+        rec.phase = "turn-button-placement";
+        bool noNonAssistantCopyBtn = true;
+        int visibleAsstCopyBtns = 0;
+        int hiddenIntermediateAsstBtns = 0;
+        for (const RowRec& r : m_sess->rows) {
+            const bool isAsst = (!r.alignRight && !r.tool && !r.reasoning && !r.ask && !r.blockId.empty());
+            if (!isAsst) {
+                if (r.copyBtn != nullptr) {
+                    noNonAssistantCopyBtn = false;
+                }
+            } else if (r.copyBtn) {
+                if (r.copyBtn->IsVisible()) {
+                    ++visibleAsstCopyBtns;
+                } else {
+                    ++hiddenIntermediateAsstBtns;
+                }
+            }
+        }
+        rec.matched = (noNonAssistantCopyBtn && visibleAsstCopyBtns > 0);
+        if (!rec.matched) {
+            rec.note = "noNonAsst=" + std::to_string(noNonAssistantCopyBtn) +
+                       " visible=" + std::to_string(visibleAsstCopyBtns) +
+                       " hiddenIntermediate=" + std::to_string(hiddenIntermediateAsstBtns);
+        } else {
+            rec.note = "visibleTurns=" + std::to_string(visibleAsstCopyBtns) +
+                       " hiddenIntermediate=" + std::to_string(hiddenIntermediateAsstBtns);
+        }
+        m_probeState.copyProbeLog.push_back(std::move(rec));
+    }
+
+    // 2. copy-turn-merged：点击首轮末尾 assistant 的复制按钮，验证复制内容合并了本轮全部 assistant 文本，
+    //    且不包含 user 消息或 tool_call/tool_result 过程性内容。
+    {
+        CopyProbeRec rec;
+        rec.phase = "copy-turn-merged";
+        RowRec* firstTurnLastAsst = nullptr;
+        for (RowRec& r : m_sess->rows) {
+            if (!r.alignRight && !r.tool && !r.reasoning && !r.ask && r.copyBtn && r.copyBtn->IsVisible()) {
+                firstTurnLastAsst = &r;
+                break;
+            }
+        }
+        if (!firstTurnLastAsst) {
+            rec.matched = false;
+            rec.note = "no visible turn copyBtn";
+        } else {
+            const std::string expected = GetTurnCopyText(firstTurnLastAsst->blockId);
+            clickBtn(firstTurnLastAsst->copyBtn, firstTurnLastAsst->panel);
+            const std::string clip = readClip();
+            const bool textMatched = (clip == expected && !clip.empty());
+            const bool btnUpdated = (firstTurnLastAsst->copyBtn->GetText() == "已复制");
+            rec.matched = (textMatched && btnUpdated);
+            if (!rec.matched) {
+                rec.note = "textMatched=" + std::to_string(textMatched) +
+                           " btnUpdated=" + std::to_string(btnUpdated);
+            }
+        }
+        m_probeState.copyProbeLog.push_back(std::move(rec));
+    }
+
+    // 3. copy-turn-with-table：若存在包含 Markdown 表格的轮次（哪怕表格在该轮中间块），
+    //    点击该轮末尾复制按钮也能完整复制出 Markdown 表格源码与后续结论。
+    {
+        CopyProbeRec rec;
+        rec.phase = "copy-turn-with-table";
+        RowRec* tableTurnEndRow = nullptr;
+        for (RowRec& r : m_sess->rows) {
+            if (!r.alignRight && !r.tool && !r.reasoning && !r.ask && r.copyBtn && r.copyBtn->IsVisible()) {
+                const std::string turnText = GetTurnCopyText(r.blockId);
+                if (turnText.find('|') != std::string::npos) {
+                    tableTurnEndRow = &r;
+                    break;
+                }
+            }
+        }
+        if (!tableTurnEndRow) {
+            rec.phase = "skipped-no-table-turn";
+            rec.matched = true;
+            rec.note = "run with fixture containing markdown table";
+        } else {
+            const std::string expected = GetTurnCopyText(tableTurnEndRow->blockId);
+            clickBtn(tableTurnEndRow->copyBtn, tableTurnEndRow->panel);
+            const std::string clip = readClip();
+            const bool hasPipe = (clip.find('|') != std::string::npos);
+            const bool textMatched = (clip == expected && !clip.empty());
+            rec.matched = (textMatched && hasPipe);
+            if (!rec.matched) {
+                rec.note = "textMatched=" + std::to_string(textMatched) +
+                           " hasPipe=" + std::to_string(hasPipe);
+            }
+        }
+        m_probeState.copyProbeLog.push_back(std::move(rec));
+    }
+
+    // 4. streaming-hidden：当轮次内有块处于未完成流式态（!ended）时，该轮复制按钮隐藏；完成后恢复显示。
+    {
+        CopyProbeRec rec;
+        rec.phase = "streaming-hidden";
+        RowRec* targetRow = nullptr;
+        for (RowRec& r : m_sess->rows) {
+            if (!r.alignRight && !r.tool && !r.reasoning && !r.ask && r.copyBtn && r.copyBtn->IsVisible()) {
+                targetRow = &r;
+                break;
+            }
+        }
+        if (!targetRow) {
+            rec.matched = false;
+            rec.note = "no target row";
+        } else {
+            targetRow->ended = false;
+            SyncTurnCopyButtons();
+            const bool hiddenWhileStreaming = !targetRow->copyBtn->IsVisible();
+            targetRow->ended = true;
+            SyncTurnCopyButtons();
+            const bool visibleAfterEnd = targetRow->copyBtn->IsVisible();
+            rec.matched = (hiddenWhileStreaming && visibleAfterEnd);
+            if (!rec.matched) {
+                rec.note = "hiddenWhileStreaming=" + std::to_string(hiddenWhileStreaming) +
+                           " visibleAfterEnd=" + std::to_string(visibleAfterEnd);
+            }
+        }
+        m_probeState.copyProbeLog.push_back(std::move(rec));
+    }
+
+    // 5. copy-all-assistant：顶栏菜单「复制全部」仅复制所有轮次的智能体回答文本
+    {
+        CopyProbeRec rec;
+        rec.phase = "copy-all-assistant";
+        CopyAllTranscriptText();
+        const std::string clip = readClip();
+        const std::string expected = BuildAllAssistantCopyText();
+        const bool noToolTag = (clip.find("[tool_call]") == std::string::npos &&
+                                clip.find("[tool_result]") == std::string::npos &&
+                                clip.find("[user]") == std::string::npos);
+        rec.matched = (!clip.empty() && clip == expected && noToolTag);
+        if (!rec.matched) {
+            rec.note = "clip len=" + std::to_string(clip.size()) +
+                       " expected len=" + std::to_string(expected.size()) +
+                       " noToolTag=" + std::to_string(noToolTag);
+        }
+        m_probeState.copyProbeLog.push_back(std::move(rec));
+    }
+
+    // 6. copy-turn-anchor：锚点断言（**非自洽**）。copy-turn-merged 的 expected 由
+    //    GetTurnCopyText 本人生成，clip==expected 只证明「按钮把函数结果写进剪贴板」，
+    //    合并逻辑若错则两边一起错（自洽 ≠ 正确）。本相的期望值直接来自夹具原文：
+    //    合并结果必须包含首轮首个 assistant 块的已知开头，且不得混入 user 消息。
+    //    skipped 判据也只查模型里的块原文（不经过合并函数），避免真缺陷被掩成 skipped。
+    {
+        CopyProbeRec rec;
+        rec.phase = "copy-turn-anchor";
+        // protocol/fixtures/realistic/realistic-session.jsonl：b1（assistant）/ b0（user）
+        const std::string kAnchor = "先说结论：**判据必须是严格大于零**";
+        const std::string kUserAnchor = "我在整理渲染管线的资料";
+        const Block* b1 = m_sess->transcript.FindBlock("b1");
+        RowRec* firstTurnLastAsst = nullptr;
+        for (RowRec& r : m_sess->rows) {
+            if (!r.alignRight && !r.tool && !r.reasoning && !r.ask && r.copyBtn && r.copyBtn->IsVisible()) {
+                firstTurnLastAsst = &r;
+                break;
+            }
+        }
+        if (!b1 || b1->text.find(kAnchor) == std::string::npos) {
+            rec.phase = "skipped-anchor-not-in-fixture";
+            rec.matched = true;
+            rec.note = "run with realistic fixture for anchor assertions";
+        } else if (!firstTurnLastAsst) {
+            rec.matched = false;
+            rec.note = "no visible turn copyBtn";
+        } else {
+            clickBtn(firstTurnLastAsst->copyBtn, firstTurnLastAsst->panel);
+            const std::string clip = readClip();
+            const bool hasAnchor = (clip.find(kAnchor) != std::string::npos);
+            const bool noUser = (clip.find(kUserAnchor) == std::string::npos);
+            rec.matched = (hasAnchor && noUser);
+            if (!rec.matched) {
+                rec.note = "hasAnchor=" + std::to_string(hasAnchor) +
+                           " noUser=" + std::to_string(noUser);
+            }
+        }
+        m_probeState.copyProbeLog.push_back(std::move(rec));
+    }
+
+    m_probeState.copyProbeDone = true;
+    if (m_application) m_application->Exit();
+}
+
+void HarnessApp::AppendCopyProbeSummary(std::string& json) {
+    json += "  \"copyProbe\": [";
+    for (size_t i = 0; i < m_probeState.copyProbeLog.size(); ++i) {
+        const CopyProbeRec& r = m_probeState.copyProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}

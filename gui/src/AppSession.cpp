@@ -131,7 +131,8 @@ size_t HarnessApp::ElideBudgetCp(int labelW) {
 //   ★ 这段就是原构造函数体：--core ⇒ 拉起子进程（真 live），否则夹具回放。
 //   抽成方法是为了让 `NewSession()` 能复用同一套源创建逻辑。
 //   ★ 返回 nullptr = live 启动失败（不 push 坏会话）；调用方必须判空。
-HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
+//   ★★ 2026-11-02：`workspacePath` 非空 ⇒ 子 core 带 `--workspace "<path>"` 启动。
+HarnessApp::Session* HarnessApp::CreateSessionFromOptions(const std::string& workspacePath) {
     auto session = std::make_unique<Session>();
     Session& s = *session;
 
@@ -186,6 +187,27 @@ HarnessApp::Session* HarnessApp::CreateSessionFromOptions() {
         if (!m_options.sourceFromCli && startArgs.find("--session") == std::string::npos) {
             if (!startArgs.empty()) startArgs += " ";
             startArgs += "--session " + s.sessionId;
+        }
+        // ★★ 2026-11-02（修「工作区分组＋新建会话挂错组」）：
+        //   临时会话必须让 core **出生就在被点的工作区**里。缺这一段时的实测链条：
+        //     ① 子 core 的 cwd = GUI 进程 cwd（`ChildSource::Start` 的 `CreateProcessW`
+        //        不传 `lpCurrentDirectory`，子进程继承父进程 cwd）；
+        //     ② `NewTemporarySession` 只置了 `workspaceSyncComplete`、漏了
+        //        `workspaceSyncStarted` ⇒ 新 core 的 hello 一回来，`MaybeStartWorkspaceSync`
+        //        的守卫就放行；
+        //     ③ 临时会话没有 `workspaceInheritedPath` ⇒ 回落 `current_path()`（= GUI cwd）
+        //        ⇒ GUI 主动**要求** core 切到 GUI cwd；
+        //     ④ core chdir 后 ack，`AssignSessionWorkspace` 把建会话时设对的外键覆盖掉。
+        //   ⇒ 会话落进错的组，且 core 真的在错的目录里跑工具（后者更严重）。
+        //   ★ 与 `ResumeSession`（本文件下方 `--workspace` 那段）同一条手法：路径交给
+        //     core 自己在启动时 Normalize + chdir，**任一侧失败都不静默留在错目录**——
+        //     真 core 直接 exit(2)。fake core 的 `--workspace` 是宽松的（Normalize 失败
+        //     就回落自己的 cwd），故本参数只是必要条件的下限，不是充分保证。
+        //   ★ 与 `m_options.coreArgs` 里可能已有的 `--workspace` 共存：Go 的 `flag`
+        //     对同一 flag 的后一次出现覆盖前一次 ⇒ 这里追加的（用户点的那一个）生效。
+        if (!workspacePath.empty()) {
+            if (!startArgs.empty()) startArgs += " ";
+            startArgs += "--workspace \"" + workspacePath + "\"";
         }
         if (!child->Start(m_options.corePath, startArgs, error)) {
             ECDI::Logger::Log(ECDI::LogLevel::Error,

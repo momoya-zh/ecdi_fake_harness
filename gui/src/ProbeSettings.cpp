@@ -989,8 +989,14 @@ void HarnessApp::RunWorkspaceProbe() {
         stopFailed("unavailable", {}, 0);
         return;
     }
+    // ★★ 2026-11-02：step 13/14（ws-plus 相）也要放行。step 10 为了让后两相的
+    //   「未确认」态可复现而**主动 Stop 了 core**，旧会话因此恒为 disconnected；
+    //   而 ws-plus 相起的是**另一个新 core**（`NewTemporarySession` → 新子进程），
+    //   与那个断开的会话无关。不放行就等于这两相永远进不去（探针会静默判负）。
+    const bool wsPhaseAfterDisconnect =
+        m_probeState.workspaceProbeStep >= 11 && m_probeState.workspaceProbeStep <= 14;
     if (m_sess->protocolIncompatible ||
-        (m_sess->disconnected && m_probeState.workspaceProbeStep != 11 && m_probeState.workspaceProbeStep != 12)) {
+        (m_sess->disconnected && !wsPhaseAfterDisconnect)) {
         stopFailed("disconnected", {}, 0);
         return;
     }
@@ -1253,6 +1259,110 @@ void HarnessApp::RunWorkspaceProbe() {
                 }
             }
             append("negative", {}, 0, false, expectedMismatch && shapeNegControl);
+            // ★★ 2026-11-02：不再就此收尾 —— 末尾接 **ws-plus 相**（step 13/14），
+            //   验「点某个工作区分组的＋ ⇒ 新会话真的挂在那一个工作区下」。
+            //   为什么必须挂在 live 探针里：回放会话没有 core，`NewTemporarySession`
+            //   首行 `if (m_options.corePath.empty()) return;` 就返回了，侧栏探针
+            //   永远走不到这条链（`ProbeSidebar.cpp` ⑫ 的注释明说了这一点）。
+            if (expectedMismatch && shapeNegControl) {
+                m_probeState.workspaceProbeStep = 13;
+                return;
+            }
+            // 上一相的负对照没翻红 ⇒ 前面的判据本身没有区分力，不必再跑 ws-plus。
+            m_probeState.workspaceProbeDone = true;
+            if (m_application) m_application->Exit();
+            return;
+        }
+        case 13: {
+            // ── ws-plus 相（发起端）──
+            //   被点的工作区 = step 0 记下的原路径：它一定已在注册表里（首会话初始
+            //   同步建的第一条），且与当前会话所在的工作区**不是同一个**——后者正是
+            //   "挂错组"可观测的前提。前置不成立就直接判负，而不是拿一个可能恒真的
+            //   场景去跑（夹具没区分力 = 对错实现都绿，本仓的老坑）。
+            Workspace* target = WorkspaceByPath(m_probeState.workspaceProbeOriginalPath);
+            auto failFast = [&](const std::string& why) {
+                m_probeState.wsPlusProbeDetail = why;
+                m_probeState.wsPlusProbeOk = false;
+                m_probeState.wsPlusProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+            };
+            if (!target) {
+                failFast("target workspace is not registered");
+                return;
+            }
+            if (target->id == m_sess->workspaceId) {
+                failFast("fixture lacks discrimination: clicked workspace == active workspace");
+                return;
+            }
+            m_probeState.wsPlusProbeTargetId = target->id;
+            m_probeState.wsPlusProbeTargetPath = target->path;
+            m_probeState.wsPlusProbeCountBefore = m_sessions.size();
+
+            NewTemporarySession(target->id);   // ★ 走真实入口（与点「＋」同一个函数）
+
+            if (m_sessions.size() != m_probeState.wsPlusProbeCountBefore + 1) {
+                failFast("NewTemporarySession did not add exactly one session");
+                return;
+            }
+            // 身份锚：`SwitchToSession` 可能摘掉旧的临时会话，下表会漂 —— 存 id 不存下标。
+            m_probeState.wsPlusProbeNewSessionId = m_sess->sessionId;
+            m_probeState.workspaceProbeStep = 14;
+            return;
+        }
+        case 14: {
+            // ── ws-plus 相（断言端）──
+            Session* ns = nullptr;
+            for (const auto& p : m_sessions) {
+                if (p && p->sessionId == m_probeState.wsPlusProbeNewSessionId) {
+                    ns = p.get();
+                    break;
+                }
+            }
+            if (!ns) {
+                m_probeState.wsPlusProbeDetail = "new session vanished before the assertion";
+                m_probeState.wsPlusProbeOk = false;
+                m_probeState.wsPlusProbeDone = true;
+                m_probeState.workspaceProbeDone = true;
+                if (m_application) m_application->Exit();
+                return;
+            }
+            // ★★ 元断言（必须先成立，否则"外键没变"可能只是 ack 还没到 ⇒ 恒真空转）：
+            //   新 core 的 hello 必须**真的被处理过** —— `liveLines>0` 证明确实读到了
+            //   它的行，`workspaceCap` 证明 caps 已解析，`coreState=="idle"` 证明
+            //   `MaybeStartWorkspaceSync` 的放行条件当时成立。旧实现正是在这三者都
+            //   成立之后才发出那次多余的请求、才把外键覆盖掉；三者缺一，下面的断言
+            //   就不具备区分力。
+            if (!(ns->liveLines > 0 && ns->workspaceCap && ns->coreState == "idle")) return;
+            // 稳定窗口：再多等 12 个 tick（≈400ms）。request/ack 是往返的，只判一帧
+            // 会在"请求已发、ack 未到"的中间态误绿——那正是这条缺陷的形状。
+            if (++m_probeState.wsPlusProbeStableTicks < 12) return;
+
+            const bool countOk = (m_sessions.size() == m_probeState.wsPlusProbeCountBefore + 1);
+            const bool idOk = (ns->workspaceId == m_probeState.wsPlusProbeTargetId);
+            const bool syncOk = ns->workspaceSyncStarted && ns->workspaceSyncComplete;
+            const bool pathOk = equivalent(
+                ns->workspacePath,
+                std::filesystem::path(WideFromUtf8Path(m_probeState.wsPlusProbeTargetPath)));
+            const bool quietOk = ns->pendingWorkspaceId.empty();
+            m_probeState.wsPlusProbeOk = countOk && idOk && syncOk && pathOk && quietOk;
+            if (m_probeState.wsPlusProbeOk) {
+                m_probeState.wsPlusProbeDetail = "new session stays in the clicked workspace";
+            } else if (!idOk) {
+                m_probeState.wsPlusProbeDetail =
+                    "foreign key drifted to another workspace (a late ack overwrote it)";
+            } else if (!syncOk) {
+                m_probeState.wsPlusProbeDetail =
+                    "workspaceSyncStarted/Complete not both set at creation";
+            } else if (!pathOk) {
+                m_probeState.wsPlusProbeDetail =
+                    "workspacePath does not match the clicked workspace";
+            } else if (!quietOk) {
+                m_probeState.wsPlusProbeDetail = "a workspace request is still pending";
+            } else {
+                m_probeState.wsPlusProbeDetail = "session count did not grow by one";
+            }
+            m_probeState.wsPlusProbeDone = true;
             m_probeState.workspaceProbeDone = true;
             if (m_application) m_application->Exit();
             return;
@@ -1347,8 +1457,29 @@ void HarnessApp::AppendWorkspaceProbeSummary(std::string& json) {
         }
     }
     const bool probePassed = m_probeState.workspaceProbeDone && m_probeState.workspaceProbeLog.size() == 9 &&
-                             expectedMismatches == 1 && checksPassed;
+                             expectedMismatches == 1 && checksPassed &&
+                             // ★★ 2026-11-02：ws-plus 相（点某个工作区分组的「＋」
+                             //   ⇒ 新会话必须挂在那一个工作区下）也并入总判据 ——
+                             //   否则 regress 不会因它翻红，等于又退回"只有人眼能发现"。
+                             m_probeState.wsPlusProbeDone && m_probeState.wsPlusProbeOk;
     json += "  \"workspaceProbe\": " + records.Dump() + ",\n";
+    // ★★ 2026-11-02：ws-plus 相单独成段，**不**塞进上面那 9 条 —— 那 9 条的
+    //   `size() == 9` 是既有基线，塞进去会让历史读数失去可比性。
+    //   `detail` 只由本文件的 ASCII 常量填，`targetPath` 是 core 规范化后的
+    //   `/` 分隔路径 ⇒ 不需要额外转义。
+    {
+        json += "  \"wsPlusProbe\": {\"targetWorkspaceId\": \"" + m_probeState.wsPlusProbeTargetId + "\",";
+        json += " \"targetPath\": \"" + m_probeState.wsPlusProbeTargetPath + "\",";
+        json += " \"newSessionId\": \"" + m_probeState.wsPlusProbeNewSessionId + "\",";
+        json += " \"sessionCountBefore\": " +
+                std::to_string(m_probeState.wsPlusProbeCountBefore) + ",";
+        json += " \"stableTicks\": " + std::to_string(m_probeState.wsPlusProbeStableTicks) + ",";
+        json += " \"done\": ";
+        json += (m_probeState.wsPlusProbeDone ? "true," : "false,");
+        json += " \"ok\": ";
+        json += (m_probeState.wsPlusProbeOk ? "true," : "false,");
+        json += " \"detail\": \"" + m_probeState.wsPlusProbeDetail + "\"},\n";
+    }
     json += std::string("  \"workspaceProbePassed\": ") +
             (probePassed ? "true,\n" : "false,\n");
 }

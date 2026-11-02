@@ -327,6 +327,7 @@ struct CliOptions {
     //   · 运行期可通过 `Ctrl+Shift+D` 或 `···` 菜单随时切换。
     bool devMode = false;              // --dev：无参启动也强制进入开发者模式
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
+    bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
 
     [[nodiscard]] bool HasAnyProbe() const {
         return cullProbe || scrollSweepStep > 0 || settingsProbe || jumpProbe ||
@@ -335,7 +336,7 @@ struct CliOptions {
                reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
-               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe;
+               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe;
     }
 };
 

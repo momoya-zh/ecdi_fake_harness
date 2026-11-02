@@ -194,7 +194,44 @@ int HarnessApp::TranscriptCanvasX() const {
     return std::max(0, (m_scroll->GetWidth() - rowW) / 2);
 }
 
+void HarnessApp::SyncTurnCopyButtons() {
+    if (!m_sess) return;
+    const size_t n = m_sess->rows.size();
+    size_t i = 0;
+    while (i < n) {
+        if (m_sess->rows[i].alignRight) {
+            ++i;
+        }
+        size_t turnEnd = i;
+        bool turnHasStreamingBlock = false;
+        size_t lastEndedAssistantIdx = static_cast<size_t>(-1);
+        while (turnEnd < n && !m_sess->rows[turnEnd].alignRight) {
+            RowRec& r = m_sess->rows[turnEnd];
+            if (!r.blockId.empty()) {
+                if (const Block* b = m_sess->transcript.FindBlock(r.blockId)) {
+                    if (!b->ended || !r.ended) {
+                        turnHasStreamingBlock = true;
+                    } else if (b->kind == "assistant" && !b->text.empty() && r.copyBtn) {
+                        lastEndedAssistantIdx = turnEnd;
+                    }
+                }
+            }
+            ++turnEnd;
+        }
+        const size_t visibleIdx = turnHasStreamingBlock ? static_cast<size_t>(-1)
+                                                        : lastEndedAssistantIdx;
+        for (size_t k = i; k < turnEnd; ++k) {
+            RowRec& r = m_sess->rows[k];
+            if (r.copyBtn) {
+                r.copyBtn->SetVisible(k == visibleIdx);
+            }
+        }
+        i = turnEnd;
+    }
+}
+
 void HarnessApp::Relayout() {
+    SyncTurnCopyButtons();
     // 版心宽 = min(可视带宽, 最大阅读宽)。两种行模式共用同一个数，
     // 免得「list 模式满宽、autosize 版本心宽」这种只在某个模式下露出来的不一致。
     const int layoutW = TranscriptLayoutWidth();
@@ -337,7 +374,13 @@ void HarnessApp::Relayout() {
                 }
                 r.label->SetPosition(kRowPadX, 8);
             }
-            rowH = r.label ? r.label->GetHeight() + 16 : 0;
+            if (r.copyBtn && r.copyBtn->IsVisible()) {
+                r.copyBtn->SetSize(48, 22);
+                r.copyBtn->SetPosition(kRowPadX, r.label ? r.label->GetHeight() + 10 : 8);
+                rowH = (r.label ? r.label->GetHeight() + 10 : 0) + 22 + 8;
+            } else {
+                rowH = r.label ? r.label->GetHeight() + 16 : 0;
+            }
         }
         if (r.tool || r.reasoning || r.ask) {
             // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
@@ -382,6 +425,11 @@ void HarnessApp::Relayout() {
                     curY += w->GetHeight() + 10;
                 }
             }
+            if (r.copyBtn && r.copyBtn->IsVisible()) {
+                r.copyBtn->SetSize(48, 22);
+                r.copyBtn->SetPosition(kRowPadX, curY);
+                curY += 22 + 8;
+            }
             rowH = curY + 8;
             r.panel->SetSize(innerW, rowH);
             r.panel->SetPosition(canvasX, y);
@@ -394,6 +442,9 @@ void HarnessApp::Relayout() {
                               ? maxBubbleW
                               : std::min(maxBubbleW,
                                          r.label->GetWidth() + 2 * kRowPadX + 2);
+            }
+            if (r.copyBtn && r.copyBtn->IsVisible()) {
+                bubbleW = std::max(bubbleW, 48 + 2 * kRowPadX);
             }
             r.panel->SetSize(bubbleW, rowH);
             r.panel->SetPosition(r.alignRight ? canvasX + innerW - bubbleW

@@ -545,6 +545,7 @@ void HarnessApp::BuildMoreMenu() {
             menu->AddChild(std::move(b));
         };
         mkMenuItem("导出", "导出转录到文件", [this] { (void)ExportTranscript(); });
+        mkMenuItem("复制全部", "复制全部智能体回答到剪贴板", [this] { CopyAllTranscriptText(); });
         // ★★ 2026-10-27（v4 第三步）：预填逻辑上提到 `OpenSettingsPanel()`——
         //   空态引导卡上的「打开设置」按钮也要走同一条预填，否则从那里进面板时
         //   字段全空、模型子列表也是空的（实测截图抓到：只有一个"模型"标签，
@@ -1232,7 +1233,12 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     insp->SetStyle(ECDI::PanelStyleOverride{
         .background = kInspBg,
         .borderWidth = 1.0f, .borderColor = kLine});
-    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(14, true, harness::kPadFrame));
+    // ★ 2026-11-02 疏松（用户实测「右侧栏过于紧凑」）：卡片间距 14→16；
+    //   卡内边距 10→12、卡内行距 6→8；行盒统一 kInspRowH=22
+    //   （原 16/14 经 uikit::Row 兜底实为 19，行间净距仅 6px）。
+    //   六张卡的硬编码高已按新几何逐张重算（算式见各卡注释）。
+    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(16, true, harness::kPadFrame));
+    constexpr int kInspRowH = 22;
 
     auto makeCard = [](int h) {
         auto card = std::make_unique<ECDI::Panel>();
@@ -1245,11 +1251,11 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     auto cardTitle = [](ECDI::Panel& card, const char* title) {
         card.AddChild(uikit::Label(title, 178, 14, kDarkMuted, harness::kFontMicro));
     };
-    auto kvRow = [](ECDI::Panel& parent, const std::string& k,
-                    ECDI::Label** vOut, int kw = 56) {
-        auto row = uikit::Row(178, 16, 10);
-        row->AddChild(uikit::Label(k, kw, 16, kDarkMuted));
-        auto vl = uikit::Label("—", 110, 18, kDarkInk, 12.5f, /*mono=*/true);
+    auto kvRow = [kInspRowH](ECDI::Panel& parent, const std::string& k,
+                             ECDI::Label** vOut, int kw = 56) {
+        auto row = uikit::Row(178, kInspRowH, 10);
+        row->AddChild(uikit::Label(k, kw, kInspRowH, kDarkMuted));
+        auto vl = uikit::Label("—", 110, kInspRowH, kDarkInk, 12.5f, /*mono=*/true);
         *vOut = vl.get();
         row->AddChild(std::move(vl));
         parent.AddChild(std::move(row));
@@ -1257,10 +1263,10 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
 
     // 卡片白底和内置标题对齐原型 C 的信息层级；统计项仍保留 harness 专用读数。
     {
-        // ★ 2026-11-01：卡高必须 ≥ 内容：pad10 + 标题17 + 3×(6+19) + pad10 = 112
-        auto card = makeCard(112);
+        // ★ 2026-11-02：pad12 + 标题17 + 3×(8+22) + pad12 = 131 → 132
+        auto card = makeCard(132);
         m_hud.inspProbeCard = card.get();
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
         cardTitle(*card, "渲染探针");
         kvRow(*card, "重绘", &m_hud.evalPaints);
         kvRow(*card, "命令/帧", &m_hud.probeCmds);
@@ -1271,9 +1277,9 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     {
         // 标题收进白卡，与原型 C 的卡片层级一致。上下文环仍保留为评估读数。
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
-        // ★ 2026-11-01：pad10 + 标题17 + 8 + 列表110 + pad10 = 155（列表恒定 110，见 BuildInspector）
-        auto card = makeCard(155);
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        // ★ 2026-11-02：pad12 + 标题17 + 8 + 列表110 + pad12 = 159 → 160（列表恒定 110）
+        auto card = makeCard(160);
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
         cardTitle(*card, "模型");
         {
             // ★ P3.6：提供商切换列表（行由 RebuildModelList 重建；
@@ -1290,9 +1296,9 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     {
         // 标题收进白卡，与原型 C 的卡片层级一致。上下文环仍保留为评估读数。
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
-        // ★ 2026-11-01：pad10 + 标题17 + 8 + 环行48 + 8 + 19 + 8 + 19 + pad10 = 147 → 148
-        auto card = makeCard(148);
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
+        // ★ 2026-11-02：pad12 + 标题17 + 8 + 环行48 + 8 + 22 + 8 + 22 + pad12 = 157 → 158
+        auto card = makeCard(158);
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
         cardTitle(*card, "用量");
         // ★★ 协议 v2（2026-10-14）上下文占用百分比——**用户要求**。
         //   ★ 为什么必须有 `hello.context`：百分比**需要分母**，而 v1 协议里
@@ -1310,18 +1316,24 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         //   ★ 环内**不叠百分比文字**（用户裁决）：`RingProgressBar` 是纯视觉控件
         //     （`RingProgressBarStyle.h:10` 明写无 TextStyle），叠字要靠应用侧手算居中，
         //     而 ECDI 布局无居中能力 ⇒ 数值仍由右侧 `ctxPct` 标签承担。
-        auto urow = [&card](const std::string& k, ECDI::Label** vOut,
-                            ECDI::ProgressBar** barOut, const ECDI::Color& fill) {
-            auto row = uikit::Row(178, 16, 8);
-            row->AddChild(uikit::Label(k, 40, 16, kDarkMuted));
+        auto urow = [&card, kInspRowH](const std::string& k, ECDI::Label** vOut,
+                                       ECDI::ProgressBar** barOut, const ECDI::Color& fill) {
+            auto row = uikit::Row(178, kInspRowH, 8);
+            row->AddChild(uikit::Label(k, 40, kInspRowH, kDarkMuted));
             auto bar = std::make_unique<ECDI::ProgressBar>();
             *barOut = bar.get();
             bar->SetSize(70, 5);
             bar->SetStyle(ECDI::ProgressBarStyleOverride{
                 .trackColor = kTrackBg, .fillColor = fill,
                 .cornerRadius = 2.0f});
-            row->AddChild(std::move(bar));
-            auto vl = uikit::Label("—", 52, 18, kDarkInk, 13.0f, /*mono=*/true);
+            // ★ 2026-11-02：行盒抬高到 22 后，5px 细条在 fillCross=false 的行里
+            //   会顶对齐贴到文字上方——套一个等高 cell 手动垂直居中（同环行手法）。
+            auto barCell = std::make_unique<ECDI::Panel>();
+            barCell->SetSize(70, kInspRowH);
+            bar->SetPosition(0, (kInspRowH - 5) / 2);
+            barCell->AddChild(std::move(bar));
+            row->AddChild(std::move(barCell));
+            auto vl = uikit::Label("—", 52, kInspRowH, kDarkInk, 13.0f, /*mono=*/true);
             *vOut = vl.get();
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
@@ -1363,11 +1375,11 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
 
     {
         // ── ★★ L3（2026-10-28）：记忆卡片（docs/session-persistence-decisions.md §8）──
-        // ★ 2026-11-01：pad10 + 标题17 + 6 + 列表50 + pad10 = 93
-        auto card = makeCard(93);
+        // ★ 2026-11-02：pad12 + 标题17 + 8 + 列表50 + pad12 = 99 → 100
+        auto card = makeCard(100);
         m_hud.inspMemoryCard = card.get();
         card->SetVisible(false); // 默认隐藏，有记忆文件时展示
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
         cardTitle(*card, "记忆");
         auto list = std::make_unique<ECDI::Panel>();
         m_hud.memoryList = list.get();
@@ -1378,23 +1390,23 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     }
 
     {
-        // ★ 2026-11-01：pad10 + 标题17 + 3×(6+19) + pad10 = 112（原 100 是旧行高 16 的账，
-        //   实测第 3 行「未知 kind」被卡片底边切掉一半）
-        auto card = makeCard(112);
+        // ★ 2026-11-02：pad12 + 标题17 + 3×(8+22) + pad12 = 131 → 132
+        auto card = makeCard(132);
         m_hud.inspHealthCard = card.get();
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
         cardTitle(*card, "协议健康");
         // ★ 第三行（2026-10-13）：未知 kind 单独一行。
         //   为何不并进 healthViol：实测把「未知kind N」追加到同一 label 后**被裁掉**
         //   （该 label 宽 150，`违规 N · 未知 N · 未知kind N` 放不下，截图可见「未知k」）。
         //   单独一行既避免裁切，也让「协议未规定的事」有一处固定的可见落点。
-        auto hrow = [&card](ECDI::Label** vOut, const char* initial = "—") {
-            auto row = uikit::Row(178, 16, 8);
+        auto hrow = [&card, kInspRowH](ECDI::Label** vOut, const char* initial = "—") {
+            auto row = uikit::Row(178, kInspRowH, 8);
             // ★ 2026-11-01：点必须按**行盒**在格内居中——`Dot` 直接塞进
             //   fillCross=false 的行里是顶对齐的（点中心 4 vs 文字中心 9.5，差 4px，
             //   用户实测反馈「协议健康下面三个点和文字没对齐」）。
-            row->AddChild(uikit::DotCell(8, kOkDark, uikit::kRowMinH, nullptr));
-            auto vl = uikit::Label(initial, 150, 16, kDarkInk);
+            //   2026-11-02：cell 高随行盒抬到 22，居中基准不变。
+            row->AddChild(uikit::DotCell(8, kOkDark, kInspRowH, nullptr));
+            auto vl = uikit::Label(initial, 150, kInspRowH, kDarkInk);
             *vOut = vl.get();
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
@@ -1406,16 +1418,16 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     }
 
     {
-        // ★ 2026-11-01：pad10 + 标题17 + 3×(6+19) + pad10 = 112（原 92 只够 3×14 的旧行高）
-        auto card = makeCard(112);
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
+        // ★ 2026-11-02：pad12 + 标题17 + 3×(8+22) + pad12 = 131 → 132
+        auto card = makeCard(132);
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
         cardTitle(*card, "权限历史");
         for (size_t i = 0; i < 3; ++i) {
-            auto row = uikit::Row(178, 14, 8);
-            auto chip = uikit::Label("", 42, 16, kDarkMuted, 12.5f, /*mono=*/true);
+            auto row = uikit::Row(178, kInspRowH, 8);
+            auto chip = uikit::Label("", 42, kInspRowH, kDarkMuted, 12.5f, /*mono=*/true);
             m_hud.histChip[i] = chip.get();
             row->AddChild(std::move(chip));
-            auto what = uikit::Label("", 122, 16, kDarkMuted, 13.0f);
+            auto what = uikit::Label("", 122, kInspRowH, kDarkMuted, 13.0f);
             m_hud.histWhat[i] = what.get();
             row->AddChild(std::move(what));
             card->AddChild(std::move(row));

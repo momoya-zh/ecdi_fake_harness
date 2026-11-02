@@ -151,6 +151,7 @@ void HarnessApplication::OnTimer(const ECDI::TimerEvent& event) {
         //   offset 没变就返回）。拖滚动条滑块没有事件回调，靠 caret 闪烁定时器
         //   的节拍兜底是唯一覆盖口——故放在定时器 id 分流**之前**。
         m_owner->DirtyRefreshJumpButton();
+        m_owner->ExpireCopiedButtons();
         if (event.GetTimerId() == HarnessApp::kTooltipTimer) {
             m_owner->OnTooltipFire();   // ★ P4 E：400ms 到点，显示 tooltip
             return;

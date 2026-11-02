@@ -137,6 +137,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     //      是 0/42/218/1998）⇒ **负对照失去了判别力**，正向全等也就不算证据。
     //   ② 行不知道自己来自哪个块，任何"按块回查"的诊断都只能靠猜。
     rec.blockId = block.id;
+    rec.ended = block.ended;
 
     if (block.kind == "user") {
         rec.alignRight = true;
@@ -216,16 +217,37 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
                 .padding = 0.0f,
                 .cornerRadius = 0.0f,
                 .borderWidth = 0.0f});
+            if (block.kind == "system") box->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+            if (block.kind == "error") box->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
             panel->AddChild(std::move(box));
-            return panel;
+        } else {
+            auto label = std::make_unique<ECDI::Label>(block.text);
+            rec.label = label.get();
+            label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+            label->SetFont(harness::SansFont(harness::kFontBody));   // 同 user 分支：统一中文 face
+            if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+            if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
+            panel->AddChild(std::move(label));
         }
-        auto label = std::make_unique<ECDI::Label>(block.text);
-        rec.label = label.get();
-        label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-        label->SetFont(harness::SansFont(harness::kFontBody));   // 同 user 分支：统一中文 face
-        if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
-        if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
-        panel->AddChild(std::move(label));
+
+        if (block.kind == "assistant") {
+            auto copy = std::make_unique<ECDI::Button>("复制");
+            rec.copyBtn = copy.get();
+            copy->SetVisible(false);   // 由 SyncTurnCopyButtons 统一控制仅在每轮回答末尾显示
+            copy->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+            copy->SetFont(harness::SansFont(12.0f));
+            copy->SetStyle(ECDI::ButtonStyleOverride{
+                .background = plainBg,
+                .border = plainBg,
+                .borderWidth = 0.0f,
+                .cornerRadius = kRadiusBtn,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+            const std::string bid = block.id;
+            auto* copyRaw = copy.get();
+            copy->SetOnClick([this, bid, copyRaw] { CopyTurnTextByBlockId(bid, copyRaw); });
+            panel->AddChild(std::move(copy));
+        }
         return panel;
     }
 
@@ -1135,6 +1157,23 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
             }
         }
     }
+
+    auto copy = std::make_unique<ECDI::Button>("复制");
+    rec.copyBtn = copy.get();
+    copy->SetVisible(false);   // 由 SyncTurnCopyButtons 统一控制仅在每轮回答末尾显示
+    copy->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    copy->SetFont(harness::SansFont(12.0f));
+    copy->SetStyle(ECDI::ButtonStyleOverride{
+        .background = plainBg,
+        .border = plainBg,
+        .borderWidth = 0.0f,
+        .cornerRadius = kRadiusBtn,
+        .pressedBackground = kToolHeaderPressed,
+        .hoverBackground = kToolHeaderHover});
+    const std::string bid = rec.blockId;
+    auto* copyRaw = copy.get();
+    copy->SetOnClick([this, bid, copyRaw] { CopyTurnTextByBlockId(bid, copyRaw); });
+    panel.AddChild(std::move(copy));
 }
 
 // ★ 表格滚动条薄化（2026-11-01 用户裁决）：4px = 默认厚度 12 的 1/3。
@@ -1508,5 +1547,6 @@ void HarnessApp::UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
         panel->RemoveChild(panel->GetChildAt(0));
     }
     rec.hasTable = true;
+    rec.blockId = block.id;
     BuildAssistantMarkdownWidgets(*panel, rec, segs);
 }

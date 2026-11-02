@@ -354,6 +354,7 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::modelProbe, &ProbeState::modelProbeDone, &HarnessApp::RunModelProbe},
                 {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
                 {&CliOptions::tableProbe, &ProbeState::tableProbeDone, &HarnessApp::RunTableProbe},
+                {&CliOptions::copyProbe, &ProbeState::copyProbeDone, &HarnessApp::RunCopyProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
@@ -527,6 +528,7 @@ void HarnessApp::RouteLastMessage() {
         if (!row) {
             return;
         }
+        row->ended = true;
 
         // ★★ 富内容二期：assistant 块在 block_end 时若包含 Markdown 表格，从流式纯文本升级为表格渲染
         if (block && block->kind == "assistant" && !row->hasTable) {

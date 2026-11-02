@@ -246,7 +246,7 @@ void HarnessApp::NewTemporarySession(const std::string& workspaceId) {
     const Workspace* ws = WorkspaceById(workspaceId);
     if (!ws) return;
 
-    Session* created = CreateSessionFromOptions();
+    Session* created = CreateSessionFromOptions(ws->path);
     if (!created) {
         AddNoticeRow("[新建会话失败：core 启动失败，见日志]", kErrorDark);
         Relayout();
@@ -255,11 +255,21 @@ void HarnessApp::NewTemporarySession(const std::string& workspaceId) {
     }
     created->label = "会话 " + std::to_string(m_sessions.size());
     created->temporary = true;
-    // 外键在创建时就设好——路径已经确认过了，工作区实体已经存在，
-    // 不需要等 ack（与 `MaybeStartWorkspaceSync` 的继承口径不同：
-    // 那里是"还没确认"，这里是"已经确认"）。
+    // 外键在创建时就设好——被点的工作区路径早已由 core 确认过（注册表里只存在
+    // core 回显过的路径），而新 core 就是用**这个路径**起的（`--workspace`，
+    // 见 `CreateSessionFromOptions` 的调用点注释），所以不必再等一次 ack 才敢认。
+    // ★★ 2026-11-02 修缺陷：这里以前只置 `workspaceSyncComplete`，**漏了
+    //   `workspaceSyncStarted`** ⇒ 新 core 的 hello 一回来，`MaybeStartWorkspaceSync`
+    //   的守卫（它只卡 `workspaceSyncStarted`）就把这个临时会话当成"还没同步过的
+    //   首会话"放行，用 GUI 进程 cwd 发出一次多余的 workspace 请求；其 ack 在
+    //   `AppStream.cpp` 的 workspace 分支里执行 `AssignSessionWorkspace(...)`，
+    //   **反过来把这里刚设对的外键覆盖成 GUI cwd 那个工作区** ⇒ 新建会话落进
+    //   错的组，且 core 被切到 GUI cwd 里干活。
+    //   ⇒ 两个标志必须一起置，语义是"初始工作区同步已完成，别再发请求"。
+    //     与 `ResumeSession` 里 `--workspace` 之后那两行同构（同族先例）。
     created->workspaceId = workspaceId;
     created->workspacePath = ws->path;
+    created->workspaceSyncStarted = true;
     created->workspaceSyncComplete = true;
     created->workspaceStatus = "已由 core 确认";
 

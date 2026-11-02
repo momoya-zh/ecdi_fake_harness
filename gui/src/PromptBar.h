@@ -11,6 +11,7 @@
 //   caretColor 样式化落地前输入框保持浅底"浅井"。
 // 子控件所有权归 Widget 树（AddChild 转移），成员只存非拥有指针。
 
+#include "ECDI/Render/PaintContext.h"
 #include "ECDI/Widget/Button.h"
 #include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/Panel.h"
@@ -61,6 +62,10 @@ public:
     void SetButtonStates(bool sendEnabled, bool stopEnabled);
     // 用户模式下更新底部提示文案与颜色（如等待授权时提示先点击允许/拒绝）。
     void SetHint(const std::string& text, const ECDI::Color& color);
+
+    // 一体化大圆角卡片获焦状态同步（由 ComposerBox 在获焦/失焦时驱动外框高亮）
+    void SetCardFocused(bool focused);
+    [[nodiscard]] bool IsCardFocused() const { return m_cardFocused; }
 
     // ★★ 2026-10-21：**Enter 发送的单一入口**（按钮点击与按键最终都走这里）。
     //   ★ 为什么不把 `m_onSend` 直接交给 `ComposerBox`：那会让"按 Enter"与
@@ -115,6 +120,9 @@ public:
     static constexpr int kInputMaxH = 132;
     [[nodiscard]] int MaxInputHeight();
 
+protected:
+    void OnPaint(ECDI::PaintContext& ctx, int x, int y) override;
+
 private:
     void LayoutChildren();
 
@@ -131,4 +139,5 @@ private:
     Action m_onStop;
     ContinueAction m_onContinue;
     bool m_isReadOnly = false;
+    bool m_cardFocused = false;
 };

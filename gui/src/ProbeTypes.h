@@ -398,3 +398,9 @@ struct TableProbeRec {
     bool matched = true;
     std::string note;
 };
+
+struct CopyProbeRec {
+    std::string phase;
+    bool matched = true;
+    std::string note;
+};

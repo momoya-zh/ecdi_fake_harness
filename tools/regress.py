@@ -115,6 +115,7 @@ PROBES = [
 ]
 
 DEMO = "protocol/fixtures/demo-session.jsonl"
+REALISTIC = "protocol/fixtures/realistic/realistic-session.jsonl"
 SCALE = "protocol/fixtures/scale/scale-transcript-2000.jsonl"
 COT = "protocol/fixtures/cot/cot-session.jsonl"
 
@@ -134,6 +135,7 @@ COT = "protocol/fixtures/cot/cot-session.jsonl"
 #   不收「跑起来才发现红」的相——那叫回归，不叫设计。
 EXTRA_PROBES = [
     ("--table-probe", "tableProbe", DEMO, [], []),
+    ("--copy-probe", "copyProbe", REALISTIC, [], []),
     ("--empty-probe", "emptyProbe", DEMO, [], []),
     ("--key-probe", "keyProbe", DEMO, [], []),
     # 短夹具装不满视口 ⇒ jump 探针自述 skipped-short-fixture。scale 才有可滚动内容。
@@ -576,15 +578,28 @@ def check_workspace_probe(core):
     if not out.exists():
         print(f"  --workspace-probe    FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
         return 1
-    rows = json.loads(out.read_text(encoding="utf-8")).get("workspaceProbe") or []
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    rows = doc.get("workspaceProbe") or []
     if not rows:
         print("  --workspace-probe    NO ROWS (key=workspaceProbe)")
         return 1
     green, designed_red, skipped, unexpected = classify(rows, [])
-    ok = not unexpected
+    # ★★ 2026-11-02：ws-plus 相（点工作区分组标题行的「＋」⇒ 新会话必须挂在**那一个**
+    #   工作区下）。它不塞进 `workspaceProbe` 那 9 条里（那 9 条的计数断言是既有基线，
+    #   塞进去会让历史读数失去可比性），而是单独成键 —— 所以这里必须**显式**读，
+    #   否则判据写在探针里却没人判，等于又退回"只有人眼能发现"。
+    plus = doc.get("wsPlusProbe") or {}
+    plus_ok = bool(plus.get("ok"))
+    ok = (not unexpected) and plus_ok
+    if not plus_ok:
+        status = "WS-PLUS-RED: " + str(plus.get("detail") or "(phase did not run)")
+    elif unexpected:
+        status = "UNEXPECTED-RED=" + str(unexpected)
+    else:
+        status = "OK"
     print(f"  {'--workspace-probe':18s} {len(green)}/{len(rows)} green  "
           f"designed-red={designed_red or '-'}  "
-          f"{'OK' if ok else 'UNEXPECTED-RED=' + str(unexpected)}")
+          f"ws-plus={'OK' if plus_ok else 'RED'}  {status}")
     return 0 if ok else 1
 
 

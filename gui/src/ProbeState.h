@@ -125,6 +125,23 @@ struct ProbeState {
     std::string workspaceProbeRejectedId;
     std::chrono::steady_clock::time_point workspaceProbeDeadline{};
 
+    // ★★ 2026-11-02：工作区分组标题行「＋」的**归属判据**（ws-plus 相，挂在
+    //   `--workspace-probe` 末尾）。
+    //   为什么必须有它：此前这条链**零机器判据**——侧栏探针 ⑫ 刻意不走 live 的「＋」
+    //   （回放无 core，`NewTemporarySession` 首行就 return），于是"点 B 组的＋却挂到
+    //   A 组"只能靠人眼看出来。实测缺陷（`workspaceSyncStarted` 漏置位 ⇒ hello 后的
+    //   初始同步把外键覆盖回 GUI cwd）就是这么漏过去的。
+    //   ★ 判据用 **sessionId 作身份锚**、不用下标：`SwitchToSession` 会摘掉旧的临时
+    //     会话，下表会漂（同族缺陷见 `NewTemporarySession` 的注释）。
+    std::string wsPlusProbeTargetId;       // 被点的工作区 id（必须 ≠ 建会话前所在的）
+    std::string wsPlusProbeTargetPath;     // 该工作区 core 回显过的路径
+    std::string wsPlusProbeNewSessionId;   // 新建会话的 sessionId（身份锚）
+    size_t wsPlusProbeCountBefore = 0;     // 建会话前的会话数（验"确实多了一个"）
+    int wsPlusProbeStableTicks = 0;        // hello 已处理后的稳定窗口计数
+    bool wsPlusProbeDone = false;
+    bool wsPlusProbeOk = false;
+    std::string wsPlusProbeDetail;         // 翻红时的定性原因（数值同时进摘要）
+
     std::vector<MenuProbeRec> menuProbeLog;
     bool menuProbeDone = false;
 
@@ -208,4 +225,6 @@ struct ProbeState {
     size_t evalProbeAvg = 0;
     std::vector<TableProbeRec> tableProbeLog;
     bool tableProbeDone = false;
+    std::vector<CopyProbeRec> copyProbeLog;
+    bool copyProbeDone = false;
 };
