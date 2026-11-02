@@ -141,8 +141,10 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 ```
 
 ★ 密钥推荐走环境变量 `ECDI_CORE_KEY`（不进命令行历史）；`--key` 与环境变量都空 ⇒ 拒绝启动。
-★ 工具集第一版 = 只读三件（read_file / list_dir / grep），**默认每个调用都过 ask 门**；
-`--allow-tools=list_dir,grep` 显式豁免（运行者的配置，core 不做策略）。
+★ 工具集第一版 = 只读三件（read_file / list_dir / grep），**默认免 ask**（2026-11-02 起）：
+三件全只读，且路径按**解析后的真实路径**钉在工作区内（`..` 逃逸、根外绝对路径、
+工作区内的符号链接/junction 指向外部——全部拒绝）⇒ 逐次确认没有增量保护，只剩摩擦。
+`--allow-tools=<a,b>` 整体改写名单，`--allow-tools=`（显式空）恢复全 ask；写工具必须留在 ask 门内侧。
 ★ **OS 级隔离是运行者的前置条件**（`docs/positioning.md` §4）——只读把风险降了，没有除。
 
 **④c 无参数启动**（P3.5，2026-10-24）

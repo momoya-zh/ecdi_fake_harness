@@ -107,7 +107,58 @@ func resolveInWorkspace(root, p string) (string, error) {
 	if !withinRoot(rootClean, abs) {
 		return "", fmt.Errorf("路径越界：%s 不在工作区内（%s）", p, rootClean)
 	}
+	// ★★ 2026-11-02：符号链接 / junction 逃逸。
+	//   上面的判断是**字符串**归一（Clean），不解析链接——工作区内一个指向外面的
+	//   symlink/junction 会以「看起来在根内」的形态通过，然后真读到工作区外。
+	//   只读三件默认免 ask（main.go 的 --allow-tools 默认值）之后，这条从"理论"
+	//   变成"实际"：中间没有人再拦一下了，闸必须在这里。
+	//   ★ root 自身可能就是链接（junction 到别的盘），所以两边都解析后再比。
+	//   ★ 为什么不用 filepath.EvalSymlinks：实测（2026-11-02，本机）它对 **junction**
+	//     报 "The system cannot find the path specified"（`os.Readlink` 却是有效的），
+	//     于是"解析失败 ⇒ 按原样放行"会让 junction 逃逸**整条漏过去**——第一版就是这么
+	//     漏的，`TestResolveInWorkspace_SymlinkEscape` 当场把它抓出来。故改用逐段
+	//     `os.Readlink` 自己走（对 symlink 与 junction 都有效）。
+	//   ★ 返回**原始** abs 而不是解析后的真实路径：调用方拿到的路径与模型/用户写的
+	//     一致（错误信息、`path` 回显都还在工作区语义里）；边界已判过。
+	if real := realPathWithin(abs); real != "" {
+		if !withinRoot(realPathWithin(rootClean), real) {
+			return "", fmt.Errorf("路径越界：%s 经符号链接指向工作区外（%s）", p, real)
+		}
+	}
 	return abs, nil
+}
+
+// realPathWithin：沿路径**逐段**解析重解析点（symlink / junction），返回真实路径。
+//   - 每遇到一个能 `os.Readlink` 的段，就把它的目标拼上剩余段**重新从头走**——
+//     链接目标本身还可能是链接（`budget` 是防环上界，用完就返回当前结果）。
+//   - 解析不动（段不存在 / 无权限 / 不是链接）⇒ 原样返回已走过的部分。这是
+//     **不猜**：宁可让后续 `os.Stat` 报"不可访问"，也不在这里凭空换一条路径。
+func realPathWithin(p string) string { return realPathDepth(p, 32) }
+
+func realPathDepth(p string, budget int) string {
+	vol := filepath.VolumeName(p)
+	sep := string(filepath.Separator)
+	cur := filepath.Clean(vol + sep)
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(p), vol+sep), sep)
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		cur = filepath.Join(cur, part)
+		tgt, err := os.Readlink(cur)
+		if err != nil {
+			continue // 不是链接（或读不了）——按字面路径继续
+		}
+		if !filepath.IsAbs(tgt) {
+			tgt = filepath.Join(filepath.Dir(cur), tgt)
+		}
+		rest := filepath.Join(append([]string{tgt}, parts[i+1:]...)...)
+		if budget <= 0 {
+			return filepath.Clean(rest) // 防环：跳数用尽，如实返回当前猜测（后续 Stat 兜）
+		}
+		return realPathDepth(rest, budget-1)
+	}
+	return cur
 }
 
 func withinRoot(root, abs string) bool {
@@ -215,6 +266,20 @@ func toolGrep(args map[string]any, root string) toolResult {
 	truncated := false
 	rootAbs, _ := filepath.Abs(root)
 	err = filepath.WalkDir(abs, func(path string, d fs.DirEntry, werr error) error {
+		// ★★ 2026-11-02：链接逃逸（与 resolveInWorkspace 同一条边界）。
+		//   实测（本机，Go 1.2x）：`WalkDir` **不**跟随 junction——junction 在
+		//   `DirEntry.IsDir()` 里是 false，被当成普通文件、`os.ReadFile` 打不开，
+		//   所以"整棵走下去"这条不成立。真正的口子是**文件级符号链接**：
+		//   它也报成非目录，但 `os.ReadFile` 会跟着它把根外的内容读进来。
+		//   ⇒ 对每个重解析点按**真实路径**判一次边界，越界的不读。
+		if _, lerr := os.Readlink(path); lerr == nil {
+			if !withinRoot(rootAbs, realPathWithin(path)) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
 		if werr != nil || d.IsDir() {
 			if d != nil && d.IsDir() && d.Name() == ".git" {
 				return filepath.SkipDir

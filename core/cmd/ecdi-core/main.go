@@ -15,7 +15,8 @@
 //
 // ★ 安全边界（docs/positioning.md §4）：协议不是安全边界；ask 门是人在环控制；
 // OS 级隔离是**运行者**的前置条件。只读三件把风险降了，没有除——
-// read_file 读得到一切可读文件，这正是默认全 ask 的原因。
+// read_file 读得到**工作区内**一切可读文件（`resolveInWorkspace` 兜住越界，
+// tools.go:96），这正是它们可以默认免 ask、而写工具将来必须过 ask 的分别。
 package main
 
 import (
@@ -35,7 +36,16 @@ func main() {
 	contextTokens := flag.Int("context", 0, "上下文窗口容量（token）；0 = 不发 hello.context（GUI 显示 —）")
 	maxOutput := flag.Int("max-output", 0, "请求体 max_tokens；0 = 不发（端点默认）")
 	providerID := flag.String("provider-id", "", "初始提供商 id（model 切换按它寻址；切走再切回靠它注册）")
-	allowTools := flag.String("allow-tools", "", "免 ask 工具名单（逗号分隔）；空 = 全部 ask（默认）")
+	// ★★ 2026-11-02：默认豁免只读三件（用户实测反馈「权限门过于严格」）。
+	//   为什么可以免确认：ask 门拦的是**会改变世界**的动作；这三件都只读，且
+	//   `resolveInWorkspace` 已把路径**解析后**钉在工作区内（tools.go:96——
+	//   绝对路径越界、`..` 逃逸全部拒绝）⇒ 逐次确认不增加任何保护，只剩摩擦。
+	//   为什么是"默认值"而不是运行时启发式：core 不去看路径猜「该不该问」，
+	//   名单永远由运行者用这个 flag 整体改写（`--allow-tools=` 空值 = 恢复全 ask）。
+	//   ★ 将来加写工具（write_file / shell / 网络）**不要**塞进这个默认值——
+	//     它们必须过 ask，这才是 ask 门存在的理由。
+	allowTools := flag.String("allow-tools", "read_file,list_dir,grep",
+		"免 ask 工具名单（逗号分隔）；默认只读三件；`--allow-tools=` = 全部 ask")
 	workspace := flag.String("workspace", "", "初始工作区；缺省 = 进程 cwd")
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
 	resumeID := flag.String("resume", "", "恢复会话 ID（从 .ecdi/sessions/<id> 续接）")

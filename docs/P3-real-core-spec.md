@@ -29,7 +29,7 @@
 | 2 | **OpenAI 兼容客户端**（`llm.go`）：`POST {base-url}/chat/completions`，`stream:true` SSE；标准库 `net/http` + `encoding/json`，**不引入 SDK**。增量聚合 `tool_calls`（按 `index` 拼 `name` / `arguments` 分片）与 `reasoning_content` |
 | 3 | **agent loop**（`session.go`）：`prompt` → LLM 流式回复（文本/思维链 delta）→ `tool_calls` → 执行只读工具 → `tool` role 消息回模型 → 续推 → 轮结束发 `usage` → `idle` |
 | 4 | **只读三件真执行**（`tools.go`）：`read_file`（文本，上限见 §4.4）/ `list_dir`（单层）/ `grep`（正则，工作区内递归，上限命中数）。路径以 **workspace 为根**解析 |
-| 5 | **ask 门首次在真实路径承重**：每个真实工具调用**默认先过 `ask`**（§4.3）；`--allow-tools` 显式豁免名单（运行者的明确授权，不是 harness 启发式） |
+| 5 | **ask 门首次在真实路径承重**：真实工具调用默认先过 `ask`（§4.3）；**2026-11-02 起只读三件默认免 ask**（`--allow-tools` 默认值 = `read_file,list_dir,grep`，运行者可整体改写，空值 = 恢复全 ask）；写工具不进名单 |
 | 6 | **workspace 真消费**：`hello.caps = ["tools","ask","workspace"]`；收到 `workspace` 请求 → 校验目录存在 → `os.Chdir` → 按协议 §3.9 规范化回显。GUI 侧工作区功能自此有真实对端 |
 | 7 | **真值纪律**：`usage` 的 `turn/input/output` 全部取 API 返回的真值；`hello.context` 默认**不发**（分母未知 ⇒ GUI 显示 `—`），可 `--context N` 显式声明；`block_end.tokens` **不发**（流式 per-block token 不可得，估算 = 编造读数，协议 §3.5 明令禁止） |
 
@@ -85,7 +85,7 @@
 --model string       模型名（如 glm-4.6）；必填
 --key string         API 密钥；缺省读环境变量 ECDI_CORE_KEY；两者皆空 → 启动即退出（stderr 说明）
 --context int        上下文窗口容量（token）；0 = 不发 hello.context（GUI 显示 —）
---allow-tools string 逗号分隔的免 ask 工具名单（如 "list_dir,grep"）；空 = 全部 ask（默认）
+--allow-tools string 逗号分隔的免 ask 工具名单；默认 "read_file,list_dir,grep"（只读三件）；`--allow-tools=` 空值 = 全部 ask
 --workspace string   初始工作区；缺省 = 进程 cwd（与假 core 同形，stderr 记 initial workspace）
 --quiet              关闭 stderr 日志
 ```
@@ -119,13 +119,14 @@ prompt(text, client_id)
 - 每个工具调用执行前发 `ask {kind:"permission", question:"<name> <参数摘要>", options:[allow/deny], default:"deny"}` → `state=waiting` → **阻塞等 `answer`**（I3 自守）。
 - `deny` ⇒ **不执行**；回模型的消息为工具结果「用户拒绝了该操作」（模型可据此调整），GUI 侧 `tool_result(ok:false, summary:"用户拒绝")`。
 - ★ 豁免只经 `--allow-tools`（运行者的**配置**）——harness/core 不做任何「这个该不该问」的启发式（`positioning.md` §5.2 配套纪律：只做配置 + 展示 + 转发，不做策略）。
-- ★ 只读 ≠ 无害：`read_file` 读得到任何可读文件（包括别的项目的密钥文件）——默认全 ask 是**实际安全意义**，不只是仪式。
+- ★ **2026-11-02 修订**：`--allow-tools` 默认值由空改为 `read_file,list_dir,grep`。修订理由是"边界可证明"而不是"信任模型"：三件全只读，且 `resolveInWorkspace` 按**解析后的真实路径**判边界（`..` 逃逸、根外绝对路径、工作区内符号链接/junction 指向外部，全部拒绝；`grep` 遍历对每个重解析点再判一次）。逐次确认不增加保护，只剩摩擦。**`--allow-tools=`（显式空）恢复全 ask**；这是 flag 默认值，不是运行时启发式——core 仍然不看路径去猜"该不该问"。
+- ★ 只读 ≠ 无害，但无危害的边界变了：`read_file` 读得到的是**工作区内**一切可读文件（别的项目的密钥只在你把它复制/链接进来时才有风险，而链接那条已被 `realPathWithin` 堵上）。写工具（write / shell / 网络）**必须留在 ask 门内侧**，不得进入默认名单。
 
 ### 4.4 工具规格（只读三件）
 
 | 工具 | 参数 | 行为 | 限制 |
 |---|---|---|---|
-| `read_file` | `path` | 读文本（UTF-8；含 BOM 原样保留） | 相对路径以 workspace 为根；**越界拒绝**（解析后不在 workspace 内 → 工具报错，不执行）；上限 40 KB，超出截断并在结果尾部标注「（截断，共 N 字节）」 |
+| `read_file` | `path` | 读文本（UTF-8；含 BOM 原样保留） | 相对路径以 workspace 为根；**越界拒绝**（解析后不在 workspace 内 → 工具报错，不执行；★ 按**真实路径**判，工作区内指向外部的符号链接/junction 同样拒绝）；上限 40 KB，超出截断并在结果尾部标注「（截断，共 N 字节）」 |
 | `list_dir` | `path`（缺省 `.`） | 单层目录：目录在前带 `/` 尾、文件在后，按名排序 | 同越界拒绝；单层不递归（GUI 侧栏语义一致） |
 | `grep` | `pattern`, `path`（缺省 `.`） | Go 正则，workspace 内递归文本文件，输出 `相对路径:行号: 行内容` | 命中上限 200 行 + 截断标注；跳过二进制（NUL 探测）与超大文件（>1 MB） |
 

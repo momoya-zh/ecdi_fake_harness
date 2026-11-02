@@ -7,6 +7,7 @@
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,6 +63,77 @@ func TestResolveInWorkspace_Boundary(t *testing.T) {
 		}
 	}
 	_ = rootN
+}
+
+// makeDirLink：尽力建一个「指向目录」的链接——先试 os.Symlink，失败退回 junction。
+//   ★ 为什么要有这个兜底：Windows 上 os.Symlink 需要 SeCreateSymbolicLinkPrivilege
+//     （非管理员默认没有），而 `mklink /J` 建 junction **不需要**任何特权。
+//     少了这层兜底，本机这条用例会恒 SKIP ⇒ 判据变成"恒成立的负向用例"≈ 没有
+//     （本仓已踩过同款坑：`truncated-final-line.jsonl` 恒以 0x0A 结尾）。
+func makeDirLink(t *testing.T, link, target string) bool {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return true
+	}
+	out, err := exec.Command("cmd", "/C", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Logf("junction 创建失败：%v %s", err, strings.TrimSpace(string(out)))
+		return false
+	}
+	return true
+}
+
+// ── 符号链接逃逸：链接在根内、目标是根外（2026-11-02）──────────────
+//   ★ 为什么单独一条：`Filepath.Clean` 只做字符串归一，链接必须按**真实路径**
+//     判边界。只读三件默认免 ask（`--allow-tools` 默认值）之后，这里已经没有
+//     第二道人闸兜底了。
+//   ★ Windows 上 os.Symlink 需要 SeCreateSymbolicLinkPrivilege / 开发者模式；
+//     建不出来就 SKIP 并**说出原因**（跳过不等于通过）。
+//   ★ 带对照臂：指向**根内**的链接必须放行——否则这个闸会把正常路径一起掐了，
+//     而那种"过度拦截"在单臂用例里看不出来。
+func TestResolveInWorkspace_SymlinkEscape(t *testing.T) {
+	root := setupWS(t)
+	rootWin := filepath.Clean(root)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("outside-secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !makeDirLink(t, filepath.Join(rootWin, "escape"), outside) {
+		t.Skipf("SKIP：符号链接与 junction 都建不出来——本机无法形成这条判据")
+	}
+
+	_, err := resolveInWorkspace(rootWin, "escape/secret.txt")
+	if err == nil {
+		t.Fatalf("经根内符号链接读到根外文件，边界未拦下")
+	}
+	if !strings.Contains(err.Error(), "越界") {
+		t.Fatalf("错误信息应说明越界（模型/GUI 才不会误读成「文件不存在」），got %v", err)
+	}
+	// 工具层同一条：read_file 也不许穿过链接
+	if r := executeTool("read_file", map[string]any{"path": "escape/secret.txt"}, rootWin); r.OK {
+		t.Fatalf("read_file 经符号链接读到根外文件: %s", tailOf(r.Output, 60))
+	}
+	// grep 是第二个入口。★ 只能拿**文件级符号链接**验：junction 实测不被 `WalkDir`
+	// 跟随（`DirEntry.IsDir()` 为 false，`os.ReadFile` 打不开），拿它做的断言**修前修后
+	// 都绿**——那是没有区分力的判据。文件符号链接需要 SeCreateSymbolicLinkPrivilege，
+	// 建不出来就如实跳过，并说明"grep 那条闸本机未覆盖"。
+	leak := filepath.Join(rootWin, "leak.txt")
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), leak); err != nil {
+		t.Logf("grep 链接臂跳过（建不出文件符号链接，故 grep 的 realPathWithin 闸本机未覆盖）：%v", err)
+	} else if r := executeTool("grep", map[string]any{"pattern": "outside-secret", "path": "."}, rootWin); r.OK &&
+		strings.Contains(r.Output, "outside-secret") {
+		t.Fatalf("grep 沿文件符号链接读到了根外内容: %s", tailOf(r.Output, 80))
+	}
+
+	// 对照臂：根内链接必须照常放行
+	if !makeDirLink(t, filepath.Join(rootWin, "inside"), filepath.Join(rootWin, "sub")) {
+		t.Logf("对照臂跳过（第二个链接建不出来）——主判据仍有效，但「不过度拦截」这一侧未验")
+		return
+	}
+	if _, err := resolveInWorkspace(rootWin, "inside/deep.txt"); err != nil {
+		t.Fatalf("根内符号链接被误判越界（过度拦截）：%v", err)
+	}
 }
 
 // ── read_file：正常 / 截断 / 二进制拒绝 ─────────────────────────
