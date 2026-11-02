@@ -36,6 +36,7 @@
 #include <vector>
 
 // 跨 TU 共享符号（定义见 AppInternal.h）
+using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
 
@@ -93,8 +94,9 @@ std::vector<std::filesystem::path> HarnessApp::FindHistoryFiles() const {
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildHistoryRow(const std::filesystem::path& file) {
     // ★ 行根同样是 Button：`Panel::ContainsPoint` 恒 false（`Panel.cpp:34-40`），
     //   可点的行根只能是 Button（同 `BuildSessionRow` 的理由）。
+    const int curRowW = m_hud.historyList ? std::max(kSidebarRowW, m_hud.historyList->GetWidth() - kScrollBarThickness - 8) : kSidebarRowW;
     auto row = std::make_unique<ECDI::Button>();
-    row->SetSize(kSidebarRowW, kSidebarRowH);
+    row->SetSize(curRowW, kSidebarRowH);
     row->SetStyle(ECDI::ButtonStyleOverride{
         .background = kPanel2,
         .border = kLine,
@@ -111,8 +113,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildHistoryRow(const std::filesystem:
         const std::filesystem::path rel = file.lexically_relative(root);
         if (!rel.empty()) shown = rel.generic_string();
     }
-    auto label = uikit::Label(shown, kSidebarRowW - 16, 16, kDarkInk, harness::kFontSmall);
-    label->SetPosition(8, (kSidebarRowH - 16) / 2);
+    auto label = uikit::Label(shown, curRowW - 16, 16, kDarkInk, harness::kFontSmall);
+    // ★ 2026-11-01：居中公式要跟着**行盒高**走（原来写死 16，字号 +2 后
+    //   标签盒变成 19 ⇒ 仍按 16 算会把文字整体顶偏 2px，与行内圆点错位）。
+    label->SetPosition(8, (kSidebarRowH - uikit::LineBox(harness::kFontSmall)) / 2);
     // 禁用 ⇒ 不参与命中（点行中心一定命中行根），且 `IsEnabled` 无绘制消费者 ⇒ 视觉零变化。
     label->SetEnabled(false);
     row->AddChild(std::move(label));
@@ -147,8 +151,10 @@ void HarnessApp::RebuildHistoryList() {
     const int totalH = n > 0 ? static_cast<int>(n * rowStride) - kSidebarRowGap : 0;
     const int visibleH = std::min(totalH, kSidebarMaxRows * static_cast<int>(rowStride)
                                               - kSidebarRowGap);
-    m_hud.historyList->SetSize(kSidebarListW, std::max(visibleH, kSidebarRowH));
-    m_hud.historyList->SetContentExtent(kSidebarRowW, std::max(totalH, kSidebarRowH));
+    const int listW = m_hud.historyList ? std::max(kSidebarListW, m_hud.historyList->GetWidth()) : kSidebarListW;
+    const int curRowW = std::max(kSidebarRowW, listW - kScrollBarThickness - 8);
+    m_hud.historyList->SetSize(listW, std::max(visibleH, kSidebarRowH));
+    m_hud.historyList->SetContentExtent(curRowW, std::max(totalH, kSidebarRowH));
     m_hud.historyList->SetContentOffset(0, m_hud.historyList->GetScrollOffsetY());
     if (m_hud.historyCount) {
         m_hud.historyCount->SetText(std::to_string(n) + " 个历史文件");

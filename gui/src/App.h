@@ -48,6 +48,8 @@ class ScrollView;
 class TextBox;
 }  // namespace ECDI
 
+class SplitterBar;
+
 #include <chrono>
 #include <deque>
 #include <filesystem>
@@ -290,6 +292,7 @@ private:
         //     `SetSidebarVisible` 要在任意时刻把 `SetVisible` 打到侧栏上，
         //     而那次调用可能来自顶栏按钮回调（局部变量早没了）。
         ECDI::Panel* sidebar = nullptr;         // 左栏容器（收起 = SetVisible(false)）
+        SplitterBar* leftSplitter = nullptr;   // 左分割条（跟随侧栏显隐）
         ECDI::Button* sidebarToggle = nullptr;  // 顶栏 `≡`：侧栏显隐（Step 2 前是死的 Label）
         // ★★ Step 4（2026-10-19）：主题切换钮。**必须是 Button**——这是本步唯一
         //   让用户能触发"整树重建"的入口，而重建的唯一正确触发方式就是一次真实点击
@@ -297,6 +300,7 @@ private:
         //   ★ 句柄进 Hud 的理由同 `sidebarToggle`：重建后要能被探针摸到并合成点击。
         ECDI::Button* themeToggle = nullptr;    // 顶栏：深色/浅色切换
         ECDI::Panel* inspector = nullptr;       // 右栏检查器容器（可切换显隐）
+        SplitterBar* rightSplitter = nullptr;  // 右分割条（跟随检查器显隐）
         // ★★ 2026-10-20：中栏头 `≡` = 检查器显隐钮。此前它是**无判据**的装饰回调：
         //   一旦 `parent->Arrange()` 漏掉，屏幕会把检查器留在原位而探针全绿。
         //   句柄进 Hud 才能被合成点击（同 `sidebarToggle`/`themeToggle`）。
@@ -1352,6 +1356,8 @@ private:
     //     把用户的收起状态丢掉——这正是 0c 踩过的坑（视图状态只存在控件里，
     //     重建即丢失）。模型侧留一份，重建后按它恢复。
     bool m_sidebarVisible = true;
+    int m_sidebarWidth = 200;                    // 侧栏模型宽度（默认 200，支持拖拽调整与记忆）
+    int m_inspectorWidth = 230;                  // 检查器模型宽度（默认 kInspW=230，支持拖拽调整与记忆）
     // ★★ P3.5（2026-10-24）：设置面板显隐是**模型侧状态**（与 m_sidebarVisible
     //   同一条纪律：只存在于控件上的显隐会被任何重建丢掉）。首启无配置 ⇒ true。
     bool m_settingsVisible = false;

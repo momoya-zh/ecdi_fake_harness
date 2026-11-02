@@ -13,6 +13,7 @@
 
 #include "App.h"
 #include "AppInternal.h"
+#include "SplitterBar.h"
 #include "ThemeUsing.h"
 #include "UiKit.h"
 
@@ -93,6 +94,38 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     BuildSidebar(*main);
 
+    // ★ 2026-11-01：用户模式默认 220 / 240（原 240 / 260）。这两个数只做
+    //   **分割条双击复位**的目标值；首帧实际宽度来自 `AppConfig` 的记忆值。
+    const int defSideW = m_options.HasAnyProbe() ? 200 : 220;
+    const int defInspW = m_options.HasAnyProbe() ? kInspW : 240;
+
+    // ★ 左分割条
+    auto leftSplitter = std::make_unique<SplitterBar>(
+        SplitterBar::Side::Left, m_hud.sidebar,
+        /*minW=*/160, /*maxW=*/480, /*defaultW=*/defSideW);
+    m_hud.leftSplitter = leftSplitter.get();
+    leftSplitter->SetVisible(true);
+    leftSplitter->SetOnResize([this, mainPtr = main.get()](int newW) {
+        m_sidebarWidth = newW;
+        if (mainPtr) mainPtr->Arrange();
+        SyncHeadTitlesWidth();
+        RequestRepaint();
+    });
+    leftSplitter->SetOnDragEnd([this](int finalW) {
+        m_sidebarWidth = finalW;
+        m_sidebarDirty = true;
+        m_historyDirty = true;
+        Relayout();
+        SyncHeadTitlesWidth();
+        RequestRepaint();
+        if (!m_options.HasAnyProbe()) {
+            m_appConfig.sidebarWidth = finalW;
+            std::string err;
+            m_appConfig.Save(err);
+        }
+    });
+    main->AddChild(std::move(leftSplitter));
+
     // ── 中栏（转录 + Composer）──
     auto counting = std::make_unique<CountingPanel>();
     m_counting = counting.get();
@@ -121,7 +154,33 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     m_modelListDirty = true;
     main->AddChild(std::move(counting));
 
+    // ★ 右分割条
+    auto rightSplitter = std::make_unique<SplitterBar>(
+        SplitterBar::Side::Right, nullptr,
+        /*minW=*/180, /*maxW=*/500, /*defaultW=*/defInspW);
+    m_hud.rightSplitter = rightSplitter.get();
+    rightSplitter->SetVisible(true);
+    rightSplitter->SetOnResize([this, mainPtr = main.get()](int newW) {
+        m_inspectorWidth = newW;
+        if (mainPtr) mainPtr->Arrange();
+        SyncHeadTitlesWidth();
+        RequestRepaint();
+    });
+    rightSplitter->SetOnDragEnd([this](int finalW) {
+        m_inspectorWidth = finalW;
+        Relayout();
+        SyncHeadTitlesWidth();
+        RequestRepaint();
+        if (!m_options.HasAnyProbe()) {
+            m_appConfig.inspectorWidth = finalW;
+            std::string err;
+            m_appConfig.Save(err);
+        }
+    });
+    main->AddChild(std::move(rightSplitter));
+
     BuildInspector(*main);
+    m_hud.rightSplitter->SetTarget(m_hud.inspector);
 
     root.AddChild(std::move(main));
 }
@@ -132,11 +191,11 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     // ── 左栏（hi-fi .side）──
     auto side = std::make_unique<ECDI::Panel>();
     m_hud.sidebar = side.get();   // Step 2：显隐入口要能摸到侧栏本体
-    side->SetSize(200, 100);
+    side->SetSize(m_sidebarWidth, 100);
     side->SetStyle(ECDI::PanelStyleOverride{
         .background = kSidebarBg,
         .borderWidth = 1.0f, .borderColor = kLine});
-    side->SetLayout(std::make_unique<ECDI::VerticalLayout>(harness::kRowGapSide, false, harness::kPadFrame));
+    side->SetLayout(std::make_unique<ECDI::VerticalLayout>(harness::kRowGapSide, true, harness::kPadFrame));
 
     auto newSess = std::make_unique<ECDI::Button>("＋ 新建会话");
     newSess->SetTextColor(kAccentInk);
@@ -163,7 +222,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
         auto path = std::make_unique<ECDI::Label>("等待 core 确认实际路径");
         m_hud.workspacePath = path.get();
         path->SetTextColor(kDarkInk);
-        path->SetFont(harness::MonoFont(10.0f));
+        path->SetFont(harness::MonoFont(12.0f));
         path->SetWordWrap(true);
         path->SetSize(172, 34);
         side->AddChild(std::move(path));
@@ -271,16 +330,35 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     }
 
     // ── 侧栏底部身份行（C 的 `.side-bottom`）──
-    //   `margin-top:auto` 在 ECDI 里没有等价物（布局无弹性余量分配）⇒ 用
-    //   一根 1px 分隔线 + 紧跟的身份行近似「贴在底部的一行」。
+    //   ★★ 2026-11-01：下面这条注释原来的理由是「`margin-top:auto` 在 ECDI 里
+    //     没有等价物（布局无弹性余量分配）」——**那条已作废**：`VerticalLayout`
+    //     的主轴 stretch 权重就是弹性余量分配（`VerticalLayout.cpp` D2：末位可见
+    //     stretch 吃余数，Σ == remaining）。用一个 0 高 Panel 当弹簧即可，
+    //     于是身份行**真的**贴在侧栏底部，多出来的高度变成「历史区与身份行之间
+    //     的一段留白」，而不是全堆在身份行下面（后者看起来像界面没画完）。
+    //   ★ 为什么弹簧不吃 `side` 自己的 stretch：`VerticalLayout` 只给**子控件**
+    //     分余量，父容器自己没有 stretch 概念。
+    //   ★ 透明底 + 无边框：它只占位，不许出一块异色。
+    {
+        auto spring = std::make_unique<ECDI::Panel>();
+        spring->SetSize(172, 1);      // 首帧高度 1（Arrange 前），之后由 stretch 接管
+        spring->SetStretch(1);
+        spring->SetStyle(ECDI::PanelStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f});
+        side->AddChild(std::move(spring));
+    }
     {
         auto sep = std::make_unique<ECDI::Panel>();
         sep->SetSize(172, 1);
         sep->SetStyle(ECDI::PanelStyleOverride{
             .background = kLine, .borderWidth = 0.0f});
         side->AddChild(std::move(sep));
-        auto row = uikit::Row(172, 24, 8, 8);
-        row->AddChild(uikit::Dot(14, kPanel2));
+        // ★ 2026-11-01：行高 = 上下 padding(8×2) + 行盒(19) = 35。
+        //   原 24 只够旧行盒 16 ⇒ 子标签被行容器的裁剪区切掉 3px（文字底部发虚）。
+        auto row = uikit::Row(172, 35, 8, 8);
+        row->AddChild(uikit::DotCell(14, kPanel2, uikit::kRowMinH, nullptr));
         auto who = uikit::Label("本地工作区", 100, 16, kDarkMuted, harness::kFontSmall);
         row->AddChild(std::move(who));
         auto dots = uikit::Label("· · ·", 40, 16, kDarkMuted, harness::kFontSmall);
@@ -301,7 +379,7 @@ void HarnessApp::BuildConversationHead() {
     //   ⇒ 落地为**文字按钮**（诚实降级：不画没有字形的图标）。
     {
         auto head = std::make_unique<ECDI::Panel>();
-        head->SetSize(600, 62);
+        head->SetSize(600, 76);
         head->SetStyle(ECDI::PanelStyleOverride{
             .background = m_options.probeContrast ? kProbeBg : kContentBg,
             .borderWidth = 1.0f,
@@ -310,7 +388,7 @@ void HarnessApp::BuildConversationHead() {
 
         // 标题（拉丁 = 夹具名，可用 Semibold 出口）+ 元信息
         auto titles = std::make_unique<ECDI::Panel>();
-        titles->SetSize(300, 36);
+        titles->SetSize(300, 44);
         titles->SetLayout(std::make_unique<ECDI::VerticalLayout>(2, false, 0));
         {
             auto h1 = std::make_unique<ECDI::Label>(ConversationTitle());
@@ -321,16 +399,16 @@ void HarnessApp::BuildConversationHead() {
             //   两链不同 face ⇒ 中文串绝不能用。标题目前是「harness 会话」混排串，
             //   **故意不用 SemiFont**（见 Theme.h 里那条硬约束的注释）。
             h1->SetFont(harness::SansFont(harness::kFontTitle));
-            h1->SetSize(300, 18);
+            h1->SetSize(300, 22);
             titles->AddChild(std::move(h1));
             auto sub = std::make_unique<ECDI::Label>(ConversationSubtitle());
             m_hud.convSub = sub.get();
             sub->SetTextColor(m_options.probeContrast ? kProbeInk : kDarkMuted);
             sub->SetFont(harness::SansFont(harness::kFontMicro));
-            sub->SetSize(m_devMode ? 300 : 480, 14);
+            sub->SetSize(m_devMode ? 300 : 480, 18);
             titles->AddChild(std::move(sub));
         }
-        titles->SetSize(m_devMode ? 300 : 480, 36);
+        titles->SetSize(m_devMode ? 300 : 480, 44);
         head->AddChild(std::move(titles));
 
         auto grow = std::make_unique<ECDI::Panel>();
@@ -531,7 +609,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
 
         auto title = std::make_unique<ECDI::Label>("连接设置");
         title->SetTextColor(kDarkInk);
-        title->SetFont(harness::SansFont(16.0f));
+        title->SetFont(harness::SansFont(18.0f));
         title->SetSize(520, 26);
         panel->AddChild(std::move(title));
 
@@ -880,7 +958,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             auto save = std::make_unique<ECDI::Button>("保存并连接");
             m_hud.settingsSave = save.get();
             save->SetTextColor(harness::kBtnPrimaryInk);
-            save->SetFont(harness::SansFont(14.0f));
+            save->SetFont(harness::SansFont(16.0f));
             save->SetStyle(ECDI::ButtonStyleOverride{
                 .background = harness::kBtnPrimary,
                 .border = harness::kBtnPrimary,
@@ -894,7 +972,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
 
             auto closeBtn = std::make_unique<ECDI::Button>("关闭");
             closeBtn->SetTextColor(kDarkInk);
-            closeBtn->SetFont(harness::SansFont(14.0f));
+            closeBtn->SetFont(harness::SansFont(16.0f));
             closeBtn->SetStyle(ECDI::ButtonStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
@@ -1150,11 +1228,11 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     auto insp = std::make_unique<ECDI::Panel>();
     m_hud.inspector = insp.get();
     insp->SetVisible(m_inspectorVisible);
-    insp->SetSize(kInspW, 100);
+    insp->SetSize(m_inspectorWidth, 100);
     insp->SetStyle(ECDI::PanelStyleOverride{
         .background = kInspBg,
         .borderWidth = 1.0f, .borderColor = kLine});
-    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(14, false, harness::kPadFrame));
+    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(14, true, harness::kPadFrame));
 
     auto makeCard = [](int h) {
         auto card = std::make_unique<ECDI::Panel>();
@@ -1171,7 +1249,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
                     ECDI::Label** vOut, int kw = 56) {
         auto row = uikit::Row(178, 16, 10);
         row->AddChild(uikit::Label(k, kw, 16, kDarkMuted));
-        auto vl = uikit::Label("—", 110, 16, kDarkInk, 10.5f, /*mono=*/true);
+        auto vl = uikit::Label("—", 110, 18, kDarkInk, 12.5f, /*mono=*/true);
         *vOut = vl.get();
         row->AddChild(std::move(vl));
         parent.AddChild(std::move(row));
@@ -1179,7 +1257,8 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
 
     // 卡片白底和内置标题对齐原型 C 的信息层级；统计项仍保留 harness 专用读数。
     {
-        auto card = makeCard(108);
+        // ★ 2026-11-01：卡高必须 ≥ 内容：pad10 + 标题17 + 3×(6+19) + pad10 = 112
+        auto card = makeCard(112);
         m_hud.inspProbeCard = card.get();
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
         cardTitle(*card, "渲染探针");
@@ -1192,7 +1271,8 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     {
         // 标题收进白卡，与原型 C 的卡片层级一致。上下文环仍保留为评估读数。
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
-        auto card = makeCard(140);
+        // ★ 2026-11-01：pad10 + 标题17 + 8 + 列表110 + pad10 = 155（列表恒定 110，见 BuildInspector）
+        auto card = makeCard(155);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
         cardTitle(*card, "模型");
         {
@@ -1210,7 +1290,8 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     {
         // 标题收进白卡，与原型 C 的卡片层级一致。上下文环仍保留为评估读数。
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
-        auto card = makeCard(140);
+        // ★ 2026-11-01：pad10 + 标题17 + 8 + 环行48 + 8 + 19 + 8 + 19 + pad10 = 147 → 148
+        auto card = makeCard(148);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 10));
         cardTitle(*card, "用量");
         // ★★ 协议 v2（2026-10-14）上下文占用百分比——**用户要求**。
@@ -1240,7 +1321,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
                 .trackColor = kTrackBg, .fillColor = fill,
                 .cornerRadius = 2.0f});
             row->AddChild(std::move(bar));
-            auto vl = uikit::Label("—", 52, 16, kDarkInk, 11.0f, /*mono=*/true);
+            auto vl = uikit::Label("—", 52, 18, kDarkInk, 13.0f, /*mono=*/true);
             *vOut = vl.get();
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
@@ -1270,7 +1351,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
                 .thickness = 5.0f});
             row->AddChild(cell(std::move(ring)));
 
-            auto vl = uikit::Label("—", 52, 16, kDarkInk, 11.0f, /*mono=*/true);
+            auto vl = uikit::Label("—", 52, 18, kDarkInk, 13.0f, /*mono=*/true);
             m_hud.ctxPct = vl.get();
             row->AddChild(cell(std::move(vl)));
             card->AddChild(std::move(row));
@@ -1282,7 +1363,8 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
 
     {
         // ── ★★ L3（2026-10-28）：记忆卡片（docs/session-persistence-decisions.md §8）──
-        auto card = makeCard(80);
+        // ★ 2026-11-01：pad10 + 标题17 + 6 + 列表50 + pad10 = 93
+        auto card = makeCard(93);
         m_hud.inspMemoryCard = card.get();
         card->SetVisible(false); // 默认隐藏，有记忆文件时展示
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
@@ -1296,7 +1378,9 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     }
 
     {
-        auto card = makeCard(100);
+        // ★ 2026-11-01：pad10 + 标题17 + 3×(6+19) + pad10 = 112（原 100 是旧行高 16 的账，
+        //   实测第 3 行「未知 kind」被卡片底边切掉一半）
+        auto card = makeCard(112);
         m_hud.inspHealthCard = card.get();
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
         cardTitle(*card, "协议健康");
@@ -1306,7 +1390,10 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         //   单独一行既避免裁切，也让「协议未规定的事」有一处固定的可见落点。
         auto hrow = [&card](ECDI::Label** vOut, const char* initial = "—") {
             auto row = uikit::Row(178, 16, 8);
-            row->AddChild(uikit::Dot(8, kOkDark));
+            // ★ 2026-11-01：点必须按**行盒**在格内居中——`Dot` 直接塞进
+            //   fillCross=false 的行里是顶对齐的（点中心 4 vs 文字中心 9.5，差 4px，
+            //   用户实测反馈「协议健康下面三个点和文字没对齐」）。
+            row->AddChild(uikit::DotCell(8, kOkDark, uikit::kRowMinH, nullptr));
             auto vl = uikit::Label(initial, 150, 16, kDarkInk);
             *vOut = vl.get();
             row->AddChild(std::move(vl));
@@ -1319,15 +1406,16 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     }
 
     {
-        auto card = makeCard(92);
+        // ★ 2026-11-01：pad10 + 标题17 + 3×(6+19) + pad10 = 112（原 92 只够 3×14 的旧行高）
+        auto card = makeCard(112);
         card->SetLayout(std::make_unique<ECDI::VerticalLayout>(6, false, 10));
         cardTitle(*card, "权限历史");
         for (size_t i = 0; i < 3; ++i) {
             auto row = uikit::Row(178, 14, 8);
-            auto chip = uikit::Label("", 42, 14, kDarkMuted, 10.5f, /*mono=*/true);
+            auto chip = uikit::Label("", 42, 16, kDarkMuted, 12.5f, /*mono=*/true);
             m_hud.histChip[i] = chip.get();
             row->AddChild(std::move(chip));
-            auto what = uikit::Label("", 122, 14, kDarkMuted, 11.0f);
+            auto what = uikit::Label("", 122, 16, kDarkMuted, 13.0f);
             m_hud.histWhat[i] = what.get();
             row->AddChild(std::move(what));
             card->AddChild(std::move(row));

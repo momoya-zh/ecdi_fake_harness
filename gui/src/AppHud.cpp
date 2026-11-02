@@ -753,16 +753,16 @@ void HarnessApp::SyncHeadTitlesWidth() {
 
     bool dirty = false;
     if (m_hud.convTitle && m_hud.convTitle->GetWidth() != tw) {
-        m_hud.convTitle->SetSize(tw, 18);
+        m_hud.convTitle->SetSize(tw, 22);
         dirty = true;
     }
     if (m_hud.convSub && m_hud.convSub->GetWidth() != tw) {
-        m_hud.convSub->SetSize(tw, 14);
+        m_hud.convSub->SetSize(tw, 18);
         dirty = true;
     }
     ECDI::Widget* titles = m_hud.convSub ? m_hud.convSub->GetParent() : nullptr;
     if (titles && titles->GetWidth() != tw) {
-        titles->SetSize(tw, 36);
+        titles->SetSize(tw, 44);
         dirty = true;
     }
     if (!dirty) return;
@@ -1016,7 +1016,7 @@ void HarnessApp::RefreshHud() {
     }
     if (HudTouch("workspacePath"), m_hud.workspacePath) {
         if (m_devMode) {
-            m_hud.workspacePath->SetFont(harness::MonoFont(10.0f));
+            m_hud.workspacePath->SetFont(harness::MonoFont(12.0f));
             m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
                 ? "core 实际工作区：尚未确认" : "core 实际工作区：" + m_sess->workspacePath);
         } else {
@@ -1363,7 +1363,7 @@ void HarnessApp::RebuildMemoryList() {
             }
         }
         auto metaLbl = std::make_unique<ECDI::Label>(metaStr);
-        metaLbl->SetFont(harness::MonoFont(10.0f));
+        metaLbl->SetFont(harness::MonoFont(12.0f));
         metaLbl->SetSize(65, 16);
         metaLbl->SetPosition(112, 1);
         metaLbl->SetTextColor(m.skipped ? kWarn : kDarkMuted);

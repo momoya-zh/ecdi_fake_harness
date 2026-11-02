@@ -255,7 +255,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         rec.headerBtn = header.get();
         header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
         {
-            ECDI::Font f = harness::SansFont(12.0f);
+            ECDI::Font f = harness::SansFont(14.0f);
             header->SetFont(f);
         }
         header->SetStyle(ECDI::ButtonStyleOverride{
@@ -282,7 +282,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         label->SetWordWrap(true);   // 思维链很长，必须按宽断行
         {
-            ECDI::Font f = harness::SansFont(12.0f);
+            ECDI::Font f = harness::SansFont(14.0f);
             label->SetFont(f);
         }
         rec.body->GetContent()->AddChild(std::move(label));
@@ -355,7 +355,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
                              ? kErrorDark
                              : Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
     {
-        ECDI::Font f = harness::SansFont(12.0f);
+        ECDI::Font f = harness::SansFont(14.0f);
         header->SetFont(f);
     }
     header->SetStyle(ECDI::ButtonStyleOverride{
@@ -383,7 +383,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         headRow->AddChild(std::move(header));
         auto pv = std::make_unique<ECDI::Button>("⤢");
         pv->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
-        pv->SetFont(harness::SansFont(12.0f));
+        pv->SetFont(harness::SansFont(14.0f));
         // ★★ 去卡片化后这里**刻意保留 hover**（与文本标题不同）：`⤢` 是个只有字形
         //   的图标钮，没有文字语义、没有箭头可读，hover 是它唯一的"可点"信号。
         //   文本标题不需要 hover —— 它左边有 `›`/`︿` 箭头，点下去展开体真的出现。
@@ -415,7 +415,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
     label->SetWordWrap(true);   // Phase 29：工具体按 bodyW 断行（JSON/日志长串）
     {
-        ECDI::Font f = harness::MonoFont(12.0f);
+        ECDI::Font f = harness::MonoFont(14.0f);
         label->SetFont(f);
     }
     // Phase 30 批二：CollapsiblePanel 收起态钉住内容可见性（#51④）——
@@ -675,7 +675,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
     auto header = std::make_unique<ECDI::Button>(AskTitle(entry.text, rec.expanded, foldable));
     rec.headerBtn = header.get();
     header->SetTextColor(kAskQInk);
-    header->SetFont(harness::SansFont(13.0f));
+    header->SetFont(harness::SansFont(15.0f));
     header->SetStyle(ECDI::ButtonStyleOverride{
         .background = askPlainBg,
         .border = askPlainBg,
@@ -708,7 +708,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
         auto label = std::make_unique<ECDI::Label>("权限 " + entry.text);
         rec.label = label.get();
         label->SetTextColor(kAskQInk);
-        label->SetFont(harness::SansFont(13.0f));
+        label->SetFont(harness::SansFont(15.0f));
         label->SetWordWrap(true);   // ★ 换行是本轮改造的核心：原来这条路径上完全没有
         // 内容容器（裸 Widget，不画底），与工具卡/思维链同一挂法
         body->GetContent()->AddChild(std::move(label));
@@ -720,7 +720,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
     rec.allowBtn = allow.get();
     allow->SetTextColor(kWarnInk);
     {
-        ECDI::Font f = harness::SansFont(12.0f);
+        ECDI::Font f = harness::SansFont(14.0f);
         allow->SetFont(f);
     }
     allow->SetStyle(ECDI::ButtonStyleOverride{
@@ -734,7 +734,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
     rec.denyBtn = deny.get();
     deny->SetTextColor(kDenyInk);
     {
-        ECDI::Font f = harness::SansFont(12.0f);
+        ECDI::Font f = harness::SansFont(14.0f);
         deny->SetFont(f);
     }
     deny->SetStyle(ECDI::ButtonStyleOverride{
@@ -750,7 +750,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
     rec.conclusion = concl.get();
     concl->SetVisible(false);
     concl->SetTextColor(kOkDark);
-    concl->SetFont(harness::SansFont(12.0f));
+    concl->SetFont(harness::SansFont(14.0f));
     panel->AddChild(std::move(concl));
     return panel;
 }
@@ -973,7 +973,7 @@ void HarnessApp::RefreshEmptyGuide() {
         auto title = std::make_unique<ECDI::Label>("开始新对话");
         title->SetTextColor(kDarkInk);
         title->SetFont(harness::SansFont(harness::kFontTitle));
-        title->SetSize(400, 20);
+        title->SetSize(460, 22);
         panel->AddChild(std::move(title));
         auto mkBtn = [](const std::string& label) {
             auto b = std::make_unique<ECDI::Button>(label);
@@ -994,7 +994,7 @@ void HarnessApp::RefreshEmptyGuide() {
             auto sub = std::make_unique<ECDI::Label>("输入消息，或从下面的建议开始：");
             sub->SetTextColor(kDarkMuted);
             sub->SetFont(harness::SansFont(harness::kFontSmall));
-            sub->SetSize(400, 16);
+            sub->SetSize(460, 18);
             panel->AddChild(std::move(sub));
             auto row = std::make_unique<ECDI::Panel>();
             row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, false, 0));
@@ -1013,7 +1013,7 @@ void HarnessApp::RefreshEmptyGuide() {
                 "还没有连接任何提供商——先在设置里配好 BaseURL 和 API Key。");
             sub->SetTextColor(kDarkMuted);
             sub->SetFont(harness::SansFont(harness::kFontSmall));
-            sub->SetSize(400, 16);
+            sub->SetSize(460, 18);
             panel->AddChild(std::move(sub));
             auto b = mkBtn("打开设置");
             b->SetSize(110, 30);
@@ -1035,9 +1035,18 @@ void HarnessApp::RefreshEmptyGuide() {
     //   （视口）——检视栏收起时视口宽出 230px，若让这张卡跟着变宽，它就会与正文
     //   列宽不一致、并压到右侧留白区里（切换检视栏时肉眼可见的宽度跳变）。
     const int w = std::max(200, TranscriptLayoutWidth() - 2 * kCanvasPadX);
-    m_hud.emptyGuide->SetSize(w, 128);
+    // ★★ 2026-11-01（收口「太空」）：垂直居中。此前恒 y=0 ⇒ 卡片贴在中栏顶部，
+    //   下面一屏（实测 395px）全是纯背景，读起来像"内容没画完"而不是"空状态"。
+    //   ★ 居中位是**相对视口**算的，不是相对内容：空态下内容就是这张卡，
+    //     extent 也跟着卡片底边走（见下），所以两者不会打架（不会因此冒竖条）。
+    //   ★ 视口高度取 `m_scroll->GetHeight()`：它由中栏那条 VerticalLayout 的
+    //     stretch 分配，是本函数此刻唯一可信的"能看见多高"。
+    constexpr int kGuideH = 140;
+    const int viewH = m_scroll ? m_scroll->GetHeight() : 0;
+    const int guideY = std::max(0, (viewH - kGuideH) / 2);
+    m_hud.emptyGuide->SetSize(w, kGuideH);
     // 横向与正文列同一左偏移（按行宽居中，两侧留白恒等）
-    m_hud.emptyGuide->SetPosition(TranscriptCanvasX(), 0);
+    m_hud.emptyGuide->SetPosition(TranscriptCanvasX(), guideY);
     // ★ 必须显式 Arrange：本卡是浮在 content 里的独立块（不进内容流），
     //   没有父布局会替它摆位——`SetSize` 只改自身矩形，子控件仍停在上一轮的
     //   坐标上（首帧即 (0,0) 全叠在一起）。此前卡片被 extent=0 裁掉、从没真正
@@ -1051,7 +1060,10 @@ void HarnessApp::RefreshEmptyGuide() {
     //   ⇒ 空态下把 extent 抬到卡片底边：这张卡就是此刻唯一的"内容"。
     if (m_scroll) {
         const ECDI::Size ext = m_scroll->GetContentExtent();
-        const int needH = 128;
+        // ★ 2026-11-01：卡片不再贴顶 ⇒ 内容高度必须抬到**卡片底边**（y + h），
+        //   否则居中下来的卡片会被视口从底部裁掉一半（此前恒等于卡片高是
+        //   因为 y 恒 0，两个量恰好相等，改成居中后就不再相等了）。
+        const int needH = guideY + kGuideH;
         if (static_cast<int>(ext.height) < needH) {
             // ★★ 2026-10-27：宽用 `canvasX + w`（内容列右边界），不是 `w + 2×pad`。
             //   后者比真实右边界多出 2×pad − canvasX ⇒ 占满档会超出视口 ⇒ 恒出一条

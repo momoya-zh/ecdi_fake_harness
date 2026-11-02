@@ -281,7 +281,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     menu->SetTextColor(kDarkMuted);
     // ★ 不调 SetFont：原 `Label("≡")` 用的是**主题默认字体**（TextWidget 的
     //   TextStyle 缺省），Button 的 `ApplyTheme` 同样先走 `TextWidget::ApplyTheme`
-    //   ⇒ 不覆盖就与改前同源。这里曾经多写了一行 `SansFont(14.0f)`，截图逐像素
+    //   ⇒ 不覆盖就与改前同源。这里曾经多写了一行 `SansFont(16.0f)`，截图逐像素
     //   比对时发现字形整体下移 2px、笔画变短（y=14/17/20 → 16/19/22）——
     //   `SansFont` 注入的是 `g_theme.sansFamily`，与主题缺省 family 不是同一个字体。
     menu->SetStyle(ECDI::ButtonStyleOverride{
@@ -342,13 +342,13 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     //   （`Label.h` 只声明 `OnPaint`；全库只有 `Button` 做水平对齐）。
     //   胶囊是定宽容器 ⇒ 文字必须居中才不显偏。
     auto chipLabel = [](const std::string& text, const ECDI::Color& color, int width) {
-        return uikit::Centered(text, width, 20, color, 11.0f, /*mono=*/true);
+        return uikit::Centered(text, width, 22, color, 13.0f, /*mono=*/true);
     };
 
-    auto sessChipLabel = chipLabel("s-____", kAccentInk, 84);
+    auto sessChipLabel = chipLabel("s-____", kAccentInk, 92);
     m_hud.sessChip = sessChipLabel.get();
     {
-        auto pill = makeChip(std::move(sessChipLabel), 84, true);
+        auto pill = makeChip(std::move(sessChipLabel), 92, true);
         m_hud.sessChipPill = pill.get();
         bar->AddChild(std::move(pill));
     }
@@ -406,7 +406,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     m_hud.stateChip = state.get();
     state->SetTextColor(kDarkMuted);
     {
-        state->SetFont(harness::SansFont(12.0f));
+        state->SetFont(harness::SansFont(14.0f));
     }
     state->SetSize(60, 20);
     bar->AddChild(std::move(state));
@@ -492,7 +492,7 @@ void HarnessApp::BuildBottom(ECDI::Widget& root) {
     auto monoLine = [](const std::string& text, int width) {
         auto lbl = std::make_unique<ECDI::Label>(text);
         lbl->SetTextColor(kDarkMuted);
-        ECDI::Font f = harness::MonoFont(11.0f);
+        ECDI::Font f = harness::MonoFont(13.0f);
         lbl->SetFont(f);
         lbl->SetSize(width, 16);
         return lbl;

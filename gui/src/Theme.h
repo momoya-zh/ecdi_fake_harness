@@ -403,11 +403,18 @@ inline const char* kMonoFamily = "Consolas";   // hi-fi --app-mono（Cascadia �
 // ★ 判据：**中文不进 10px**（雅黑/SimSun 在 10px 下笔画糊成一团，§3.3 实测），
 //   所以「分区标签」这一档用 **11px + kDarkMuted + 不加空格**实现
 //   （现状的 `"会 话"` 是手撒空格伪装 letter-spacing，在等宽观感下反而散）。
-inline constexpr float kFontMicro  = 11.0f;   // 分区标签 / 卡片标题 / 底栏
-inline constexpr float kFontSmall  = 12.0f;   // 会话条目 / chip / 元信息
-inline constexpr float kFontBody   = 13.0f;   // 正文（气泡 / 工具标题）
-inline constexpr float kFontTitle  = 14.0f;   // 会话头标题 / 主按钮
-inline constexpr float kFontBrand  = 15.0f;   // 品牌字（顶栏 harness）
+// ★★ 2026-11-01（用户实测反馈「字太小」）：**五档集体 +2px**（11/12/13/14/15 → 13/14/15/16/17）。
+//   为什么不各档单独调：这五档的价值在**相对关系**（分区 < 条目 < 正文 < 标题 < 品牌），
+//   只抬其中一档会把层级压平。连带规则：`harness::SansFont()/MonoFont()` 的**所有
+//   字面量实参**同步 +2（29 处），`uikit::Label/Centered/Right` 的默认字号 12 → 14——
+//   否则"抬了令牌没抬默认"，两条路径出来的字号又分叉。
+//   ★ 下面这几行注释里的原型尺寸（10/12/13/14/11/15）是**原型 C 的原始值**，
+//     不是当前值，别拿它当读数。
+inline constexpr float kFontMicro  = 13.0f;   // 分区标签 / 卡片标题 / 底栏
+inline constexpr float kFontSmall  = 14.0f;   // 会话条目 / chip / 元信息
+inline constexpr float kFontBody   = 15.0f;   // 正文（气泡 / 工具标题）
+inline constexpr float kFontTitle  = 16.0f;   // 会话头标题 / 主按钮
+inline constexpr float kFontBrand  = 17.0f;   // 品牌字（顶栏 harness）
 
 // ── 间距档位（原型 C：画布留白 22px、消息间距 23px、气泡内边距 10-12px）──
 inline constexpr int kPadFrame    = 14;   // 三栏容器内边距

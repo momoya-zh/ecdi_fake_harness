@@ -2,10 +2,14 @@
 
 #include "Json.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <Windows.h>
 // SHGetKnownFolderPath（FOLDERID_RoamingAppData）
 #include <shlobj.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 
@@ -192,6 +196,22 @@ bool AppConfig::Load(std::string& error) {
                 knownWorkspaces.push_back(item.text);
             }
         }
+    }
+
+    if (const auto* w = root.Find("windowWidth"); w && w->IsNumber()) {
+        windowWidth = std::max(880, static_cast<int>(w->number));
+    }
+    if (const auto* h = root.Find("windowHeight"); h && h->IsNumber()) {
+        windowHeight = std::max(460, static_cast<int>(h->number));
+    }
+    if (const auto* m = root.Find("isMaximized"); m && m->IsBool()) {
+        isMaximized = m->boolean;
+    }
+    if (const auto* sw = root.Find("sidebarWidth"); sw && sw->IsNumber()) {
+        sidebarWidth = std::clamp(static_cast<int>(sw->number), 140, 400);
+    }
+    if (const auto* iw = root.Find("inspectorWidth"); iw && iw->IsNumber()) {
+        inspectorWidth = std::clamp(static_cast<int>(iw->number), 180, 450);
     }
 
     // 单提供商的载入/自愈逻辑 v1 与 v2 共用（"credentialTarget 缺失 ⇒ 从
@@ -391,6 +411,31 @@ bool AppConfig::Save(std::string& error) const {
             kwArr.array.push_back(std::move(v));
         }
         root.object["knownWorkspaces"] = std::move(kwArr);
+    }
+    {
+        json::Value v; v.type = json::Value::Type::Number;
+        v.number = static_cast<double>(windowWidth);
+        root.object["windowWidth"] = std::move(v);
+    }
+    {
+        json::Value v; v.type = json::Value::Type::Number;
+        v.number = static_cast<double>(windowHeight);
+        root.object["windowHeight"] = std::move(v);
+    }
+    {
+        json::Value v; v.type = json::Value::Type::Bool;
+        v.boolean = isMaximized;
+        root.object["isMaximized"] = std::move(v);
+    }
+    {
+        json::Value v; v.type = json::Value::Type::Number;
+        v.number = static_cast<double>(sidebarWidth);
+        root.object["sidebarWidth"] = std::move(v);
+    }
+    {
+        json::Value v; v.type = json::Value::Type::Number;
+        v.number = static_cast<double>(inspectorWidth);
+        root.object["inspectorWidth"] = std::move(v);
     }
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);

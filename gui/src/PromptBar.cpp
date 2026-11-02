@@ -211,7 +211,7 @@ PromptBar::PromptBar() {
     auto hint = std::make_unique<ECDI::Label>("Enter 发送 · Shift+Enter 换行");
     m_hint = hint.get();
     m_hint->SetTextColor(harness::kDarkMuted);
-    m_hint->SetFont(harness::SansFont(10.5f));
+    m_hint->SetFont(harness::SansFont(12.5f));
     // ★ 必须给尺寸：`Label` 默认 0×0 且不参与布局（`PromptBar` 是裸 `Panel`，
     //   没有 Layout）⇒ 不给就是**可见但零尺寸**的静默消失
     //   （正是 `uikit::WarnZeroSized` 在巡检的那类缺陷）。
@@ -221,7 +221,7 @@ PromptBar::PromptBar() {
     auto send = std::make_unique<ECDI::Button>("发送");
     m_send = send.get();
     m_send->SetTextColor(harness::kBtnPrimaryInk);
-    m_send->SetFont(harness::SansFont(13.0f));
+    m_send->SetFont(harness::SansFont(15.0f));
     m_send->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
         .cornerRadius = 8.0f,
@@ -233,7 +233,7 @@ PromptBar::PromptBar() {
     auto stop = std::make_unique<ECDI::Button>("停止");
     m_stop = stop.get();
     m_stop->SetTextColor(harness::kDarkMuted);
-    m_stop->SetFont(harness::SansFont(13.0f));
+    m_stop->SetFont(harness::SansFont(15.0f));
     m_stop->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kInspBg,
         .border = harness::kLine,
@@ -248,7 +248,7 @@ PromptBar::PromptBar() {
     auto cont = std::make_unique<ECDI::Button>("继续");
     m_continue = cont.get();
     m_continue->SetTextColor(harness::kBtnPrimaryInk);
-    m_continue->SetFont(harness::SansFont(13.0f));
+    m_continue->SetFont(harness::SansFont(15.0f));
     m_continue->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
         .cornerRadius = 8.0f,

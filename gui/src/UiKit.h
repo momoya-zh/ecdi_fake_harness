@@ -36,13 +36,42 @@ namespace uikit {
 //   本头不再自己定义字族常量 —— 单一真相源在 Theme.h。
 inline const char* kMonoFamily = harness::kMonoFamily;
 
+// ── 行盒高（2026-11-01）────────────────────────────────────────
+// ★★ 为什么需要它：`Widget::Paint` 把裁剪区压到**控件自身矩形**（`Widget.cpp:610`
+//   `ctx.PushClip(self)`），而 `TextWidget::DrawTextContent` 按**行盒**（`LineHeight()`，
+//   hhea 口径）在盒内**垂直居中**、并用 `TextOutW` 从行盒顶部落笔。
+//   ⇒ 盒高 < 行高时，行盒上下各溢出一半，**底部那 1–2px 被自己的裁剪区切掉**。
+//   实测（`GetOutlineTextMetricsW` 的 otmMacAscent/Descent/LineGap，96 DPI，微软雅黑）：
+//     13px→17 · 14px→19 · 15px→20 · 16px→21 · 17px→22
+//   ★ 字面量 14（不是 12）的旧盒子在新字号下全都偏小 1–3px——这就是 2026-11-01
+//     用户实测「大部分文字最后一行被裁 1px」的根因（字号 +2 而未同步抬盒子）。
+//   ★ 只对"装文字"的控件有意义；纯色块/间隔不应走这个函数。
+inline int LineBox(float size) {
+    if (size <= 13.0f) return 17;
+    if (size <= 14.0f) return 19;
+    if (size <= 15.0f) return 20;
+    if (size <= 16.0f) return 21;
+    return 22;
+}
+
+// 文字行容器的最小高度 = 默认字号（14）的行盒高。`uikit::Row` 用它兜底。
+inline constexpr int kRowMinH = 19;
+
+// ★★ 墨迹中线相对**行盒中线**的下移量（2026-11-01，用户实测裁决）。
+//   行盒 ≠ 墨迹：GDI `TextOutW` 从行盒顶落笔，但 CJK 字形只占行盒中段——
+//   14px 档（行盒 19）实测墨迹在行盒的 **6..17**，中线 **11.5**，而行盒中线是 9.5。
+//   ⇒ 任何"按行盒居中"的圆点都会比文字视觉中线**高 2px**（截图量到 −2.0px × 3 行）。
+//   ★ 所以圆点类控件要在行盒居中的基础上**再下移 2px**。
+inline constexpr int kTextInkDy = 2;
+
 // 行容器：HorizontalLayout + 强制成对尺寸。
 // fillCross 默认 false——行内子控件保留各自高度（圆点是圆、进度条是细条）；
 // 需要"行内等高"的场景显式传 true。
 inline std::unique_ptr<ECDI::Panel> Row(int w, int h, int spacing = 8,
                                         int padding = 0, bool fillCross = false) {
     auto row = std::make_unique<ECDI::Panel>();
-    row->SetSize(w, h);
+    // ★ 行高不足行盒 ⇒ 行容器自身的裁剪区会把子标签底部切掉（同 LineBox 注释）
+    row->SetSize(w, h < kRowMinH ? kRowMinH : h);
     row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(spacing, fillCross, padding));
     return row;
 }
@@ -59,11 +88,12 @@ inline std::unique_ptr<ECDI::Panel> VStack(int w, int h, int spacing = 6,
 // 定尺寸标签。AutoSize 之外的一切标签都该走这里（漏尺寸 = 0×0 不可见）。
 inline std::unique_ptr<ECDI::Label> Label(const std::string& text, int w, int h,
                                           const ECDI::Color& color,
-                                          float size = 12.0f, bool mono = false) {
+                                          float size = 14.0f, bool mono = false) {
     auto label = std::make_unique<ECDI::Label>(text);
     label->SetTextColor(color);
     label->SetFont(mono ? harness::MonoFont(size) : harness::SansFont(size));
-    label->SetSize(w, h);
+    // ★ 盒子不得矮于行盒（否则底部被自裁切咬掉 1–2px，见 LineBox 注释）
+    label->SetSize(w, h < LineBox(size) ? LineBox(size) : h);
     return label;
 }
 
@@ -103,11 +133,12 @@ protected:
 // 居中标签工厂（尺寸与创建强制成对，同 `Label`）。
 inline std::unique_ptr<CenteredLabel> Centered(const std::string& text, int w, int h,
                                                const ECDI::Color& color,
-                                               float size = 12.0f, bool mono = false) {
+                                               float size = 14.0f, bool mono = false) {
     auto label = std::make_unique<CenteredLabel>(text);
     label->SetTextColor(color);
     label->SetFont(mono ? harness::MonoFont(size) : harness::SansFont(size));
-    label->SetSize(w, h);
+    // ★ 盒子不得矮于行盒（否则底部被自裁切咬掉 1–2px，见 LineBox 注释）
+    label->SetSize(w, h < LineBox(size) ? LineBox(size) : h);
     return label;
 }
 
@@ -138,11 +169,12 @@ protected:
 // 右对齐标签工厂（尺寸与创建强制成对，同 `Label`）。
 inline std::unique_ptr<RightLabel> Right(const std::string& text, int w, int h,
                                          const ECDI::Color& color,
-                                         float size = 12.0f, bool mono = false) {
+                                         float size = 14.0f, bool mono = false) {
     auto label = std::make_unique<RightLabel>(text);
     label->SetTextColor(color);
     label->SetFont(mono ? harness::MonoFont(size) : harness::SansFont(size));
-    label->SetSize(w, h);
+    // ★ 盒子不得矮于行盒（否则底部被自裁切咬掉 1–2px，见 LineBox 注释）
+    label->SetSize(w, h < LineBox(size) ? LineBox(size) : h);
     return label;
 }
 
@@ -168,7 +200,8 @@ inline std::unique_ptr<ECDI::Panel> DotCell(int d, const ECDI::Color& color, int
     dot->SetStyle(ECDI::PanelStyleOverride{
         .background = color, .cornerRadius = d / 2.0f});
     if (dotOut) *dotOut = dot.get();
-    dot->SetPosition((w - d) / 2, (cellH - d) / 2);
+    // ★ 下移 `kTextInkDy`：行盒内居中 ≠ 墨迹居中（见常量注释，实测差 2px）
+    dot->SetPosition((w - d) / 2, (cellH - d) / 2 + kTextInkDy);
     cell->AddChild(std::move(dot));
     return cell;
 }

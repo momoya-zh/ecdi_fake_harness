@@ -84,6 +84,16 @@ struct AppConfig {
     std::string corePath;           // 可选：ecdi-core.exe 路径覆盖；空 = 自动解析
     std::vector<std::string> knownWorkspaces; // 已知工作区路径列表
 
+    // ── 布局与窗口尺寸记忆 ──
+    //   ★ 2026-11-01（收口「太空」）：默认值从 1360×860 收到 1180×800。
+    //     1360×860 是本机实测**装不下**的尺寸（1920×1080 屏、工作区只有 1032 高），
+    //     而且它只影响「首启 / 双击分割条复位」，老用户已记忆的值原样保留。
+    int windowWidth = 1180;
+    int windowHeight = 800;
+    bool isMaximized = false;
+    int sidebarWidth = 220;
+    int inspectorWidth = 240;
+
     // 便捷访问：默认提供商（defaultProviderId 找不到 ⇒ providers[0]；空表 ⇒ nullptr）。
     const ProviderConfig* DefaultProvider() const;
     // 按 id 查找；找不到 ⇒ nullptr。

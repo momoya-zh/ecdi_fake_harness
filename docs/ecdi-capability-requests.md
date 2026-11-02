@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.4**（2026-11-01；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.5**（2026-11-01；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -710,6 +710,20 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 
 ---
 
+### REQ-16 ✅ 按钮快速进出时背景过渡动画未取消导致 hover 残留
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-01 用户反馈（「鼠标如果经过的特别快的话会出现鼠标已经远离该控件，但是依旧为鼠标悬停在上面的效果」） |
+| 状态 | ✅ **已闭合**（2026-11-01 当日：ECDI `Button.cpp:AnimateBackgroundTo` 修正 `target == m_displayedBackground` 分支漏 Cancel 旧动画的缺陷；ECDI 侧新增受控单测 `Widget.ButtonFastHoverLeaveCancelsAnimation` 验证推进 300ms 终态不漂移；harness 重新链接最新 `ECDI.lib` 通过） |
+| 归属 | **ECDI 侧**（`Button::AnimateBackgroundTo` 动画状态机退出路径漏取消排队中动画；非 harness 控件派发缺陷） |
+| 现象 | 鼠标高速掠过按钮（在动画第一帧未产生有效数值插值前移出）时，按钮在鼠标已经远离后依然永久保持高亮悬停效果 |
+| ★ 根因（已核实到源码） | `Button.cpp` 的 `AnimateBackgroundTo(const Color& target)` 开头写了 `if (target == m_displayedBackground) return;`（防空转）。当鼠标极快进出时：① `OnMouseEnter` 提交了指向 `hoverBackground` 的动画，此时 `m_displayedBackground` 仍为 `normalBackground` 初值；② 紧接着的 `OnMouseLeave` 算出的目标为 `normalBackground`，此时 `target == m_displayedBackground` 命中并直接 `return`；③ **直接 return 未调用 `AnimationManager::Cancel(m_backgroundAnimToken)` 取消旧动画**，导致走向 hover 的旧动画在后续 Tick 中继续插值并在 200ms 后把按钮强制变亮停在 hover 态 |
+| 修复措施 | 在 `target == m_displayedBackground` 提前返回分支内，前置 `if (window != nullptr) window->GetAnimationManager().Cancel(m_backgroundAnimToken);`，彻底消除旧动画残留 |
+| 验证结果 | ECDI 侧单测 `Widget.ButtonFastHoverLeaveCancelsAnimation` 挂载真 Window、模拟连续 Enter+Leave 并以 10 帧 Tick 推进 300ms，验证呈现值恒保持 `normalBackground` 成功；全量回归测试套件通过 |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -859,6 +873,12 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.5（2026-11-01）★ REQ-16 闭合：按钮快速进出时背景过渡动画未取消导致 hover 残留**
+  ① **问题复现**：用户反馈「鼠标如果经过的特别快的话会出现鼠标已经远离该控件，但是依旧为鼠标悬停在上面的效果」。
+  ② **根因定位**：`ECDI\src\Widget\Button.cpp` 的 `Button::AnimateBackgroundTo` 中，开头有 `if (target == m_displayedBackground) return;`。当鼠标高速划过时，进入时提交了指向 hover 的 200ms 过渡动画（此时 `m_displayedBackground` 仍为 normal 初值）；在首帧插值前移出时，目标还原 normal，导致 `target == m_displayedBackground` 触发提前 return，**漏调用了 `AnimationManager::Cancel(m_backgroundAnimToken)`**。旧动画在后续 Tick 中继续运行，在 200ms 后强行把按钮刷成 hover 高亮态且不再恢复。
+  ③ **ECDI 侧修复**：在提前返回分支中补上 `if (window != nullptr) window->GetAnimationManager().Cancel(m_backgroundAnimToken);`。
+  ④ **测试闭合**：ECDI 侧新增受控真窗口单测 `Widget.ButtonFastHoverLeaveCancelsAnimation`（进入后未 Tick 立即离开，随后逐帧推进 300ms 验证呈现值恒保持 normal 不变），测试通过；本仓重新链接最新 `ECDI.lib`，全量回归套件绿。
+  ⑤ 头部 v5.4 → **v5.5**。
 - **v5.4（2026-11-01）★ 模型行左对齐 + 4 处滚动条文字债收口**
   ① **左对齐**（用户裁决）：`RebuildModelPopupList` 的模型行补 `.textAlignment = ECDI::TextAlignment::Left`。★ 必须**显式**写：`ButtonStyle::textAlignment` 的主题缺省是 **Center**（`ButtonStyle.h:32` / C30-3），不写就居中——居中在「工具条按钮」上是对的，在「可选列表」上像标题。**不得依赖枚举零值 Left**（缺省恒由主题注入 Center，`VerticalAlignment.h:9` 专门拿这条当反例）。写法与 `AppHistory` / `AppSession` 行根一致。
   ② **文字债 4 处全部收口**：`AppInternal.h`（`ApplyCompactScrollBars` 头注）、`UiCommon.cpp`（同函数实现注）、`AppTranscript.cpp`（`kTableBarThickness`）、本账本 v4.4 ②（行内划删除线 + 指向本条）。统一改法 = **结论不变、理由换轨**：从「躲上游 `BarThickness()` 只读竖条的缺陷」改成「**设计裁决**：全仓条宽统一」。同时钉住一条**没有变**的：`ApplyCompactScrollBars` 末尾的 `SetSize` 重排**仍必需**，且新头文件反而把它写明了（改厚度不触发重排；`SetContentExtent` 在 extent 未变时提前返回救不了）。

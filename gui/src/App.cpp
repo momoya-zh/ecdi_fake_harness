@@ -1,4 +1,5 @@
 #include "App.h"
+#include "SplitterBar.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -236,6 +237,13 @@ HarnessApp::HarnessApp(CliOptions options)
             ECDI::Logger::Log(ECDI::LogLevel::Warning,
                               ECDI::UTF8ToWide("AppConfig: " + cfgError));
         }
+        if (!m_options.HasAnyProbe()) {
+            m_sidebarWidth = std::clamp(m_appConfig.sidebarWidth, 140, 400);
+            m_inspectorWidth = std::clamp(m_appConfig.inspectorWidth, 180, 450);
+        } else {
+            m_sidebarWidth = 200;
+            m_inspectorWidth = 230;
+        }
     }
     // ★★ P3.5（规格 §8.5 D7）：无参启动的解析在**建会话之前**——
     //   配置 + 凭据都可用 ⇒ 填 corePath/coreArgs/m_coreApiKey，下面照常建 live 会话；
@@ -466,6 +474,22 @@ bool HarnessApp::HandleGlobalKeyDown(const ECDI::KeyDownEvent& event) {
 //   ★ 为何需要补偿：elapsedMs = now - anchor。会话被切走期间 anchor 不动而 now 前进，
 //     切回来若不补偿，elapsedMs 会凭空多出"离开的那段墙上时间" ⇒ 一次性抽干夹具。
 
+namespace {
+
+// 当前工作区（**不含任务栏**）的像素尺寸；0 = 查询失败（调用方当作"不夹"）。
+void QueryWorkAreaPx(int& outW, int& outH) {
+    RECT r{};
+    if (::SystemParametersInfoW(SPI_GETWORKAREA, 0, &r, 0) != 0) {
+        outW = r.right - r.left;
+        outH = r.bottom - r.top;
+    } else {
+        outW = 0;
+        outH = 0;
+    }
+}
+
+}  // namespace
+
 int HarnessApp::Run() {
     // ★ 0d：会话创建失败时 m_sess 为**空指针**（构造失败不再 push 坏会话），
     //   故先判空再解引用。
@@ -503,7 +527,30 @@ int HarnessApp::Run() {
     ECDI::RenderingBackend* const requestedBackend = services.renderer.get();
 
     const std::string windowTitle = "ECDI harness - " + m_options.fixtureName;
-    ECDI::Window& win = application.Create(windowTitle, 1120, 760, std::move(services));
+    int initialWinW = m_options.HasAnyProbe() ? 1120 : std::max(kMinClientW, m_appConfig.windowWidth);
+    int initialWinH = m_options.HasAnyProbe() ? 760 : std::max(kMinClientH, m_appConfig.windowHeight);
+    // ★★ 2026-11-01：尺寸夹取**必须发生在 `Create` 之前**。
+    //   实测教训（受控对照：配置 1800×1200 → 期望 1800×960，实际 1800×1100）：
+    //   `Show()` 会再调一次 `Win32PlatformWindow::ApplyStartupSize()`，它按**启动尺寸**
+    //   重设窗口（`SWP_NOMOVE`，只动尺寸）⇒ 在 `Create` 之后 `SetBounds` 改的尺寸会被
+    //   Show 原样还原，最后只剩系统 `WM_GETMINMAXINFO` 的上限（1080 屏 ⇒ 1100）在生效。
+    //   ⇒ 想让夹取活下来，唯一的位置是把它交给 `Create` 的形参（= 启动尺寸本体）。
+    //   ★ 单位：`Create` 的形参是 **DIP**，`SPI_GETWORKAREA` 给**像素** ⇒ 此处只能用
+    //     `GetDpiForSystem()`（窗口尚未存在，拿不到窗口 DPI；启动窗口落在主屏，语义正确）。
+    if (!m_options.HasAnyProbe()) {
+        int workPxW = 0;
+        int workPxH = 0;
+        QueryWorkAreaPx(workPxW, workPxH);
+        const float sysScale = static_cast<float>(::GetDpiForSystem()) / 96.0f;
+        if (workPxW > 0 && workPxH > 0 && sysScale > 0.0f) {
+            // 余量 = 边框 + 标题栏 + 一点呼吸位；下限永远让给 kMinClient*（宁可出界不可不可用）。
+            const int maxW = std::max(kMinClientW, static_cast<int>(workPxW / sysScale) - 24);
+            const int maxH = std::max(kMinClientH, static_cast<int>(workPxH / sysScale) - 72);
+            initialWinW = std::min(initialWinW, maxW);
+            initialWinH = std::min(initialWinH, maxH);
+        }
+    }
+    ECDI::Window& win = application.Create(windowTitle, initialWinW, initialWinH, std::move(services));
     // 使用 ECDI CaptionBar（参照 examples/ModelProbe）：逻辑命中区和实体栏高保持一致，
     // 必须在 Show()/Application::Run() 之前配置窗口 chrome。
     win.SetChromeMode(ECDI::ChromeMode::Borderless);
@@ -515,6 +562,29 @@ int HarnessApp::Run() {
     //     先以 1120×760 之外的任何尺寸出现一瞬。1120×760 本身就在下限之上，
     //     故此处登记不改变任何既有读数。
     win.SetMinimumSize(kMinClientW, kMinClientH);
+
+    // ★★ 2026-11-01：位置夹取（尺寸已由 `Create` 之前的块夹过，这里**只动位置**）。
+    //   为什么只夹位置：`Show()` 的 `ApplyStartupSize()` 用 `SWP_NOMOVE` ⇒ **不动位置**，
+    //   所以在 Create 之后、Show 之前把位置改对，是能活到上屏的（实测有效）。
+    //   而尺寸若在这里改，会被 Show 原样还原（见上面那段受控对照记录）。
+    //   余量给 0：位置只要不越界即可，不与尺寸抢。
+    //   ★ 单位：`GetBounds`/`SetBounds` 是 DIP，`SPI_GETWORKAREA` 是像素 ⇒ 过窗口 DPI。
+    if (!m_options.HasAnyProbe()) {
+        int workPxW = 0;
+        int workPxH = 0;
+        QueryWorkAreaPx(workPxW, workPxH);
+        const float dpiScale = win.GetDpiScale();
+        if (workPxW > 0 && workPxH > 0 && dpiScale > 0.0f) {
+            const float workW = static_cast<float>(workPxW) / dpiScale;
+            const float workH = static_cast<float>(workPxH) / dpiScale;
+            const ECDI::Rect cur = win.GetBounds();
+            const float x = std::max(0.0f, std::min(cur.x, workW - cur.width));
+            const float y = std::max(0.0f, std::min(cur.y, workH - cur.height));
+            if (x != cur.x || y != cur.y) {
+                win.SetBounds(ECDI::Rect(x, y, cur.width, cur.height));
+            }
+        }
+    }
 
     if (m_options.useGl) {
         if (requestedBackend == nullptr || !requestedBackend->IsReady()) {
@@ -649,6 +719,10 @@ int HarnessApp::Run() {
     }
 
     WriteSummary();
+    if (!m_options.HasAnyProbe()) {
+        std::string saveErr;
+        m_appConfig.Save(saveErr);
+    }
     m_application = nullptr;
     return code;
 }
@@ -725,6 +799,11 @@ void HarnessApp::OnWindowResized(int width, int height) {
     //   再把下限登记回去、重发同一请求 ⇒ 落在 >= 下限。见 `RunResizeProbe` ⑥。
     const int effW = width;
     const int effH = height;
+
+    if (!m_options.HasAnyProbe()) {
+        m_appConfig.windowWidth = effW;
+        m_appConfig.windowHeight = effH;
+    }
 
     // ① 标题栏跟着改宽（它创建时是定宽的）
     if (m_caption) {

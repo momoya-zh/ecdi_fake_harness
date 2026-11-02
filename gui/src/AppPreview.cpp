@@ -189,17 +189,17 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
     head->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, true, 0));
     auto badge = std::make_unique<ECDI::Label>("[只读]");
     badge->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kOkDark));
-    badge->SetFont(harness::SansFont(12.0f));
+    badge->SetFont(harness::SansFont(14.0f));
     head->AddChild(std::move(badge));
     auto title = std::make_unique<ECDI::Label>("（未打开）");
     m_hud.previewTitle = title.get();
     title->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkInk));
-    title->SetFont(harness::SansFont(12.0f));
+    title->SetFont(harness::SansFont(14.0f));
     title->SetStretch(1);   // 弹性吃掉剩余宽度，× 靠右
     head->AddChild(std::move(title));
     auto close = std::make_unique<ECDI::Button>("×");
     close->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkMuted));
-    close->SetFont(harness::SansFont(13.0f));
+    close->SetFont(harness::SansFont(15.0f));
     close->SetStyle(ECDI::ButtonStyleOverride{
         .background = Pick(m_options.probeContrast, kProbeBg, kCardBg),
         .border = Pick(m_options.probeContrast, kProbeBg, kCardBorder),
@@ -227,7 +227,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
     auto foot = std::make_unique<ECDI::Panel>();
     foot->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, false, 0));
     auto reveal = std::make_unique<ECDI::Button>("在资源管理器中显示");
-    reveal->SetFont(harness::SansFont(12.0f));
+    reveal->SetFont(harness::SansFont(14.0f));
     reveal->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkInk));
     reveal->SetStyle(ECDI::ButtonStyleOverride{
         .background = Pick(m_options.probeContrast, kProbeBg, kToolHeaderBg),
@@ -250,7 +250,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
     });
     foot->AddChild(std::move(reveal));
     auto copy = std::make_unique<ECDI::Button>("复制路径");
-    copy->SetFont(harness::SansFont(12.0f));
+    copy->SetFont(harness::SansFont(14.0f));
     copy->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkInk));
     copy->SetStyle(ECDI::ButtonStyleOverride{
         .background = Pick(m_options.probeContrast, kProbeBg, kToolHeaderBg),
@@ -286,7 +286,7 @@ void HarnessApp::RebuildPreviewContent() {
     const auto mkRow = [&](const std::string& text, const ECDI::Color& color) {
         auto row = std::make_unique<ECDI::Label>(text);
         row->SetTextColor(color);
-        row->SetFont(harness::MonoFont(12.0f));   // §11：等宽（kMonoFamily=Consolas）
+        row->SetFont(harness::MonoFont(14.0f));   // §11：等宽（kMonoFamily=Consolas）
         body.AddChild(std::move(row));
     };
 

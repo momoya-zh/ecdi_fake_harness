@@ -40,6 +40,7 @@
 
 // 跨 TU 共享符号（定义见 AppInternal.h / PathUtil.cpp）
 using harness::internal::PathToUtf8;
+using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarGroupH;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
@@ -76,7 +77,21 @@ std::string ElideMiddleByCodepoints(const std::string& text, size_t maxCp) {
     //   至少保留叶子段」是中间省略的**存在理由**（见上方 ★★ 注释），不是可牺牲项。
     //   封顶 3 后：19 预算 → tail 15（叶子恰好整体存活）；100% 的 24 预算 →
     //   tail 20（比旧规则还多留）。尾部信息更密（末级目录 + 叶子段），多偏尾合理。
-    const size_t headCp = std::min<size_t>(3, maxCp / 4);
+    // ★★ 2026-11-01（字号 +2 的连带修复）：**末级段优先**。
+    //   原规则「头 3 尾余」在 13px 等宽 + 200px 侧栏（探针跑法，labelW=130 ⇒ 18 码点）
+    //   下装不下 `workspace-alpha`（15）+ 头 3 + 省略号 1 = 19 ⇒ 尾部还是被削成
+    //   `orkspace-alpha`，`--sidebar-probe` 的 grouping 相当场翻红。
+    //   ⇒ 先保住末级段（这是中间省略的**存在理由**），头部按剩余预算让到 3→1→0。
+    size_t segCp = 0;
+    for (size_t i = total; i > 0; --i) {
+        const char c = text[ECDI::CodepointIndexToByteOffset(text, i - 1)];
+        if (c == '/' || c == '\\') break;
+        ++segCp;
+    }
+    size_t headCp = std::min<size_t>(3, maxCp / 4);
+    if (segCp + headCp + 1 > maxCp) {
+        headCp = (maxCp >= segCp + 2) ? (maxCp - segCp - 1) : 0;
+    }
     const size_t tailCp = maxCp - headCp - 1;   // 减 1 = 省略号本身占一个码点
     const std::string head =
         text.substr(0, ECDI::CodepointIndexToByteOffset(text, headCp));
@@ -556,7 +571,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     //   ECDI 的 Button/Panel 都没有 style getter（`Button::SetStyle` 只写不读），
     //   所以探针要靠 `Label::GetTextColor()` 判"这一行是不是选中项"。
     //   ⇒ 文字色不是纯装饰，它同时承担**读数**职责，改配色时别把它改没了。
-    row->SetSize(kSidebarRowW, kSidebarRowH);
+    const int curRowW = m_hud.sessList ? std::max(kSidebarRowW, m_hud.sessList->GetWidth() - kScrollBarThickness - 8) : kSidebarRowW;
+    row->SetSize(curRowW, kSidebarRowH);
     row->SetStyle(ECDI::ButtonStyleOverride{
         .background = active ? kUserBg : kPanel2,
         .border = active ? harness::kDarkAccent : kLine,
@@ -566,7 +582,9 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
         .foreground = active ? kAccentInk : kDarkInk});
 
     auto dot = uikit::Dot(7, active ? harness::kDarkAccent : kLine);
-    dot->SetPosition(8, (kSidebarRowH - 7) / 2);
+    // ★ 2026-11-01：与 `uikit::DotCell` 同一条规则——按行居中后再下移
+    //   `kTextInkDy`（行盒中线比墨迹中线高 2px，实测）。
+    dot->SetPosition(8, (kSidebarRowH - 7) / 2 + uikit::kTextInkDy);
     row->AddChild(std::move(dot));
 
     // 名称 = `Session::label`（「会话 N」/ 夹具名 /「xxx (live)」）。
@@ -579,8 +597,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     // ★ 宽度随「有没有按钮」变：两个按钮占 20+18+6=44 ⇒ 名称到 90；
     //   一个按钮占 18+6=24 ⇒ 名称到 110；无按钮 ⇒ 铺到行右边距。
     const int nameW = (canDelete || isArchived)
-        ? ((canDelete && !isArchived) || (isArchived && canDelete) ? 90 : 110)
-        : (kSidebarRowW - 22 - 2);
+        ? ((canDelete && !isArchived) || (isArchived && canDelete) ? (curRowW - 68) : (curRowW - 48))
+        : (curRowW - 24);
     std::string rowLabel = session->label.empty() ? "会话" : session->label;
     if (session->originKind == "journal") {
         rowLabel += " [只读]";
@@ -589,7 +607,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
                              nameW, 16,
                              active ? kAccentInk : (session->originKind == "journal" ? kDarkMuted : kDarkInk),
                              harness::kFontSmall);
-    name->SetPosition(22, (kSidebarRowH - 16) / 2);
+    // ★ 2026-11-01：居中按行盒高算（同 AppHistory）——否则与行首圆点错位 2px。
+    name->SetPosition(22, (kSidebarRowH - uikit::LineBox(harness::kFontSmall)) / 2);
     // ★ 名称标签禁用 ⇒ 它**不参与命中**（`Widget::HitTest` 的 `!IsEnabled()` 早退，
     //   `Widget.cpp:321`），鼠标落点直接归行根 Button。两个后果都是想要的：
     //   ① 行根的 hover/press 视觉真的会亮（若 Label 抢了命中，`UpdateHoverState`
@@ -607,7 +626,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     if (isArchived) {
         auto restore = std::make_unique<ECDI::Button>("↩");
         restore->SetSize(18, 18);
-        const int restoreX = canDelete ? (kSidebarRowW - 44) : (kSidebarRowW - 24);
+        const int restoreX = canDelete ? (curRowW - 44) : (curRowW - 24);
         restore->SetPosition(restoreX, (kSidebarRowH - 18) / 2);
         restore->SetFont(harness::SansFont(harness::kFontSmall));
         restore->SetStyle(ECDI::ButtonStyleOverride{
@@ -630,7 +649,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     } else if (canDelete) {
         auto archive = std::make_unique<ECDI::Button>("↓");
         archive->SetSize(18, 18);
-        archive->SetPosition(kSidebarRowW - 44, (kSidebarRowH - 18) / 2);
+        archive->SetPosition(curRowW - 44, (kSidebarRowH - 18) / 2);
         archive->SetFont(harness::SansFont(harness::kFontSmall));
         archive->SetStyle(ECDI::ButtonStyleOverride{
             .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
@@ -656,7 +675,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
         //   （`✕`(U+2715)/`✖` 在浅色 YaHei 缺字形 ⇒ 会画成空白）。
         auto del = std::make_unique<ECDI::Button>("×");
         del->SetSize(18, 18);
-        del->SetPosition(kSidebarRowW - 24, (kSidebarRowH - 18) / 2);
+        del->SetPosition(curRowW - 24, (kSidebarRowH - 18) / 2);
         del->SetFont(harness::SansFont(harness::kFontSmall));
         del->SetStyle(ECDI::ButtonStyleOverride{
             .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
@@ -701,8 +720,9 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
 //   `SnapshotSessionList` 靠“行根是不是 Button”区分两类行（第 5 段 `kind`）。
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string& title,
                                                                const std::string& workspaceId) {
+    const int curRowW = m_hud.sessList ? std::max(kSidebarRowW, m_hud.sessList->GetWidth() - kScrollBarThickness - 8) : kSidebarRowW;
     auto row = std::make_unique<ECDI::Panel>();
-    row->SetSize(kSidebarRowW, kSidebarGroupH);
+    row->SetSize(curRowW, kSidebarGroupH);
     // 透明底 + 无边框：标题是分隔，不是按钮。透明度用 alpha=0（与 `×` 子钮同一手法）。
     row->SetStyle(ECDI::PanelStyleOverride{.background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
                                            .cornerRadius = 0.0f,
@@ -717,7 +737,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string
     //     尾部一丢，“按工作区区分”就退化成“按前缀区分”：两个都在 `D:/Project/` 下的
     //     工作区在屏幕上会是同一行。把省略放在中间，尾部至少保留叶子段。
     // ★ 有「＋」按钮时标题宽度让出 22px（按钮 18 + 间隙 4）。
-    const int labelW = workspaceId.empty() ? (kSidebarRowW - 8) : (kSidebarRowW - 30);
+    const int labelW = workspaceId.empty() ? (curRowW - 8) : (curRowW - 30);
     // ★★ 省略预算 = 实测校准（修法 D，DPI 可移植）：预算天然跟着 labelW 走——
     //   有按钮时可用宽少 22px，预算自动少 ~3-4 码点，不再需要手工 −1 补丁。
     const size_t elideCp = ElideBudgetCp(labelW);
@@ -737,7 +757,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string
         auto plus = std::make_unique<ECDI::Button>();
         plus->SetText("＋");
         plus->SetSize(18, 18);
-        plus->SetPosition(kSidebarRowW - 24, (kSidebarGroupH - 18) / 2);
+        plus->SetPosition(curRowW - 24, (kSidebarGroupH - 18) / 2);
         plus->SetFont(harness::SansFont(harness::kFontSmall));
         plus->SetStyle(ECDI::ButtonStyleOverride{
             .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
@@ -865,8 +885,10 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
                                               - kSidebarRowGap);
     // ★ 先 SetSize（决定 viewport）再 SetContentExtent（决定要不要出条）：
     //   反过来的话第一帧会按旧 viewport 判一次"不需要滚动条"，出条后行宽被挤。
-    m_hud.sessList->SetSize(kSidebarListW, std::max(visibleH, kSidebarRowH));
-    m_hud.sessList->SetContentExtent(kSidebarRowW, std::max(totalH, kSidebarRowH));
+    const int listW = m_hud.sessList ? std::max(kSidebarListW, m_hud.sessList->GetWidth()) : kSidebarListW;
+    const int curRowW = std::max(kSidebarRowW, listW - kScrollBarThickness - 8);
+    m_hud.sessList->SetSize(listW, std::max(visibleH, kSidebarRowH));
+    m_hud.sessList->SetContentExtent(curRowW, std::max(totalH, kSidebarRowH));
     m_hud.sessList->SetContentOffset(0, m_hud.sessList->GetScrollOffsetY());
 
     // 列表高度是**变**的（会话越多越高，到 4 行封顶）⇒ 侧栏那条 VerticalLayout
