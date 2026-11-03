@@ -191,7 +191,14 @@ inline Theme MakeDark() {
     //   ⇒ 逐字节基线让位于"同一份 UI 在两种主题下是同一套字形"。
     //   ★ 代价（实测记录，不隐藏）：深色正文行高按雅黑重算，`paints`/`frames`
     //     与回改之前**不再逐字节相等**；这是本仓第一次有意改变深色的字形基线。
-    t.sansFamily  = "Microsoft YaHei";
+    // ★ 2026-11-03：雅黑 → Noto Sans SC（= 思源黑体同设计，同 Noto Sans CJK）。
+    //   动因：雅黑收笔锐利、不适合 agent 长文阅读（用户观感），思源血统更圆润开放。
+    //   实探（GDI ctypes 直调）：族名直中；weight 400/700 各取到**真字面**
+    //   （VF 命名实例，量宽 270→284 非合成加粗）；`﹀`U+FE40 / `︿`U+FE3F 等
+    //   UI 符号全覆盖（缺的 ✕/✓/⌄ 本来就被代码回避）；行高 29 vs 雅黑 27
+    //   @20px em ⇒ 换行全局重排。族名陷阱（实测）：`"Source Han Sans CN"`
+    //   会回落宋体（该 OTF 族名带样式后缀），Noto 无此问题。
+    t.sansFamily  = "Noto Sans SC";
     // 自绘标题栏 —— 与 ECDI 原生 caption 同值（CaptionBar.cpp:31/37 · CaptionButton.cpp:14-27），
     // 保证深色主题下外观与接入本仓之前逐字节一致。
     t.captionBg            = ECDI::Color::FromRGBA8(38, 40, 45, 255);
@@ -286,9 +293,10 @@ inline Theme MakeLight() {
     t.darkPillBg  = ECDI::Color::FromRGBA8(241, 243, 247, 255);
     t.inputBorder = ECDI::Color::FromRGBA8(224, 227, 233, 255);
     t.inputCaret  = ECDI::Color::FromRGBA8(76, 96, 215, 255);
-    // ★ 浅色下中文换成雅黑（原型 --font 里 "Microsoft YaHei" 就在第二顺位）。
-    //   两链都能解析（`docs/variant-c-ecdi-mapping.md` §2.3）。
-    t.sansFamily  = "Microsoft YaHei";
+    // ★ 2026-11-03：浅色与深色同族（Noto Sans SC，= 思源黑体同设计）——沿用
+    //   「同一份 UI 在两种主题下是同一套字形」的既定原则（见深色 init 注释）。
+    //   两链解析依据 `docs/variant-c-ecdi-mapping.md` §2.3；GDI 实探读数见深色处。
+    t.sansFamily  = "Noto Sans SC";
     // 自绘标题栏 —— 浅色不能沿用深色那组「越亮越重要」的相对关系：
     //   captionBg 与顶栏 `kDarkTopBg (248,249,251)` 同色（标题栏与顶栏是同一层级的面），
     //   分隔由紧贴其下的顶栏自身 1px `kLine` 环承担；
@@ -443,7 +451,7 @@ inline constexpr int kSidebarPad  = 16;   // 侧栏容器内边距（原共用 1
 
 // ── 字体工厂（2026-10-18；2026-11-03 加 weight 分档）────────────────
 // 全仓构造 `ECDI::Font` 都该走这里，理由：
-//   · **中文正文族名要能随主题变**（深色保持 SimSun 回归基线，浅色换雅黑）；
+//   · **中文正文族名要能随主题变**（现两主题同为 Noto Sans SC，见各自 init 注释）；
 //   · 漏写 `family` 的子控件会各自拿到"空 = SimSun"，**同一界面里两种中文字形**——
 //     这是 2026-10-18 之前实际存在的情况（只有 Consolas 被显式指定过）。
 // ★ 等宽（代码/工具体）**不受主题影响**，恒 Consolas。
@@ -452,11 +460,13 @@ inline constexpr int kSidebarPad  = 16;   // 侧栏容器内边距（原共用 1
 //   · **UI 文字默认 700**（侧栏 / chips / 按钮 / 卡头 / 分区标签 / 标题 / HUD）；
 //   · **长文正文显式传 400**（气泡 / 思维链体 / ask 问句 / 表格数据 / 输入框）——
 //     Bold 大段落累眼，正文保持常规。
-//   ★ 雅黑只有 400/700 两个**真字面**：weight 500 → 映射回 400（C36-2 平手取轻），
-//     600/700 → Bold（最近字面）⇒ **没有"稍粗半档"可言**，要粗就是 Bold。
-//   ★ 旧约束「CJK 加粗两链无公共解」只堵**族名内嵌样式**（`"Microsoft YaHei Bold"`
-//     走 GDI 会回落宋体）；weight 字段走字体映射器正路，雅黑 Bold 有真字面
-//     （msyhbd.ttc）⇒ GDI/GL 两链都拿真 Bold，无合成分歧（C36-4 不触发）。
+//   ★ 2026-11-03 换 Noto Sans SC 后字面余量变宽：VF 有 7 个命名字重实例
+//     （100 Thin / 300 Light / 350 DemiLight / 400 Regular / 500 Medium /
+//      700 Bold / 900 Black，GDI 实探 400/700 均取到真字面）⇒「稍粗半档」
+//     **现在有了**（weight 500 = Medium）；嫌 700 太重可改这里或逐点传 500。
+//   ★ 旧约束「CJK 加粗两链无公共解」只堵**族名内嵌样式**（`"... Bold"` 走 GDI
+//     会回落宋体，实测 `"Source Han Sans CN"` 亦回落宋体）；weight 字段走字体
+//     映射器正路 ⇒ 两链拿真 Bold，无合成分歧（C36-4 不触发）。
 inline ECDI::Font SansFont(float size, std::uint16_t weight = 700) {
     ECDI::Font f;
     f.size = size;

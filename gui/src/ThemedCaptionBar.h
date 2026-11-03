@@ -170,7 +170,10 @@ public:
         auto* label = dynamic_cast<ECDI::TextWidget*>(GetChildAt(0));
         if (label) {
             label->SetTextColor(kCaptionInk);
-            label->SetFont(SansFont(kFontBody));
+            // ★ 500 = Medium（字重半档，见 Theme.h 字体工厂注释）：fa0db7a 之前这里
+            //   随 SansFont 旧默认一直是 400（与 ECDI 原生 caption 同为常规体），
+            //   换档时被动跟到 700；换 Noto 后 Bold 观感更重（用户反馈），降半档。
+            label->SetFont(SansFont(kFontBody, 500));
         }
 
         auto minBtn = std::make_unique<ThemedCaptionButton>(

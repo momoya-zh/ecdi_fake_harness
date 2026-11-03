@@ -568,7 +568,9 @@ void HarnessApp::BuildMoreMenu() {
                                         std::function<void()> action) {
             auto b = std::make_unique<ECDI::Button>(label);
             b->SetTextColor(kDarkInk);
-            b->SetFont(harness::SansFont(harness::kFontSmall));
+            // ★ 500 = Medium（字重半档，见 Theme.h 字体工厂注释）：换 Noto 后
+            //   Bold 观感比雅黑更重，菜单项降半档，仍比正文 400 略强调。
+            b->SetFont(harness::SansFont(harness::kFontSmall, 500));
             b->SetStyle(ECDI::ButtonStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
@@ -612,7 +614,7 @@ void HarnessApp::BuildMoreMenu() {
             auto b = std::make_unique<ECDI::Button>(m_devMode ? "简洁视图" : "开发者视图");
             m_hud.devModeMenuBtn = b.get();
             b->SetTextColor(kDarkInk);
-            b->SetFont(harness::SansFont(harness::kFontSmall));
+            b->SetFont(harness::SansFont(harness::kFontSmall, 500));   // 同上：菜单项半档 Medium
             b->SetStyle(ECDI::ButtonStyleOverride{
                 .background = kPanel2,
                 .border = kLine,
@@ -1386,15 +1388,25 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         //   明写「ECDI 布局无居中」）⇒ 16px 的文字会贴到环顶。故左右各套一个
         //   **48px cell** 手动垂直居中（沿用 `UiKit.h:76-89` `DotCell` 的既有手法）。
         {
-            auto row = uikit::Row(178, 48, 8);
-            auto cell = [](std::unique_ptr<ECDI::Widget> inner) {
+            // ★ 2026-11-03：换 Noto 后「上下文」三字 @14px 实需 42px，原标签格 40px
+            //   把「文」右缘硬切（Label 单行裁剪；雅黑墨迹恰收在界内故此前未露）。
+            //   修法**不是**加宽标签格了事——HorizontalLayout 定距 8 会把环推到
+            //   x=52，破坏环与下方输入/输出两根条左缘的同列对齐（x=48）。故本行
+            //   改**无布局手工摆位**：三格 x 逐像素保持 H 布局旧值（0/48/100 =
+            //   40+8 / +44+8），只把标签格自身加宽 40→48（吃掉右侧 8px 死空隙：
+            //   文字左对齐位置不动、墨迹间隙 ~6px 不变）⇒「文」完整、环与条的
+            //   列对齐、百分比位置全部不变。
+            auto row = std::make_unique<ECDI::Panel>();
+            row->SetSize(178, 48);
+            auto cell = [](std::unique_ptr<ECDI::Widget> inner, int x) {
                 auto c = std::make_unique<ECDI::Panel>();   // 无 layout ⇒ 保留子控件 SetPosition
+                c->SetPosition(x, 0);
                 c->SetSize(inner->GetWidth(), 48);
                 inner->SetPosition(0, (48 - inner->GetHeight()) / 2);
                 c->AddChild(std::move(inner));
                 return c;
             };
-            row->AddChild(cell(uikit::Label("上下文", 40, 16, kDarkMuted)));
+            row->AddChild(cell(uikit::Label("上下文", 48, 16, kDarkMuted), 0));
 
             auto ring = std::make_unique<ECDI::RingProgressBar>();
             m_ctxRing = ring.get();
@@ -1403,11 +1415,11 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
                 .trackColor = kRingTrack,     // ★ 独立令牌：kLine 浅色下压白卡只有 1.09:1，整圈会消失
                 .fillColor = harness::kOkDark,
                 .thickness = 5.0f});
-            row->AddChild(cell(std::move(ring)));
+            row->AddChild(cell(std::move(ring), 48));
 
             auto vl = uikit::Label("—", 52, 18, kDarkInk, 13.0f, /*mono=*/true);
             m_hud.ctxPct = vl.get();
-            row->AddChild(cell(std::move(vl)));
+            row->AddChild(cell(std::move(vl), 100));
             card->AddChild(std::move(row));
         }
         urow("输入", &m_hud.usageInV, &m_usageBarIn, harness::kDarkAccent);
