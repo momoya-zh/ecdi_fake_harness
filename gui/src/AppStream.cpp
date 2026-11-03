@@ -182,9 +182,6 @@ void HarnessApp::OnReplayTick() {
     if (m_sidebarDirty) {
         m_sidebarDirty = false;
         RebuildSessionList();
-        // ★★ 2026-10-20：「项目」段与「会话列表」同一条链：活动会话变了
-        //   ⇒ 工作区可能变了 ⇒ 目录内容要跟着刷。
-        RebuildProjectList();
         RequestRepaint();
     }
     // ★★ Step 4：整树重建的**唯一执行点**（同族的派发栈 UAF 理由见
@@ -820,7 +817,14 @@ void HarnessApp::RouteLastMessage() {
                 //     漏了这一行的实测症状：新会话的 ack 到达后侧栏**从不重建**，
                 //     于是一个已经确认到路径的会话永远挂在“未归属工作区”下面，
                 //     而顶部的工作区块却正确地显示着同一个路径——自相矛盾的界面。
+                const bool wasKnown = (WorkspaceByPath(path->text) != nullptr);
                 AssignSessionWorkspace(*m_sess, AcquireWorkspace(path->text));
+                if (!isJournalReplay && !wasKnown && !m_options.HasAnyProbe()) {
+                    m_appConfig.AddKnownWorkspace(path->text);
+                    std::string cfgErr;
+                    m_appConfig.Save(cfgErr);
+                    RestoreWorkspaceJournalSessions(path->text);
+                }
                 m_sidebarDirty = true;
             }
         } else {

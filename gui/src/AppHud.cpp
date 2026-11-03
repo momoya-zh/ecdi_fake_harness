@@ -50,97 +50,16 @@ using harness::internal::kHeaderH;
 using harness::internal::kJumpBtnH;
 using harness::internal::kJumpBtnW;
 using harness::internal::kListRowHeight;
-using harness::internal::kMaxTranscriptW;
 using harness::internal::kPinThreshold;
 using harness::internal::kRowGap;
 using harness::internal::kRowPadX;
 using harness::internal::kScrollBarThickness;
-using harness::internal::kSidebarListInnerW;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
 using harness::internal::kTooltipDelayMs;
 using harness::internal::kTooltipInk;   // ★ 2026-10-30：tooltip 现建现挂（见 OnTooltipFire）
-
-void HarnessApp::RebuildProjectList() {
-    if (!m_hud.projectList) return;
-    ECDI::Widget& content = m_hud.projectList->GetContentView();
-    while (content.GetChildCount() > 0) {
-        content.RemoveChild(content.GetChildAt(0));
-    }
-
-    // 数据源：活动会话的已确认工作区路径。
-    std::string wsPath;
-    if (m_sess && !m_sess->workspacePath.empty()) {
-        wsPath = m_sess->workspacePath;
-    }
-
-    int y = 0;
-    const int rowH = 16;
-    const int gap = 2;
-
-    if (wsPath.empty()) {
-        // 回放会话 / 无工作区：诚实显示。
-        auto lbl = uikit::Label("无工作区", kSidebarListInnerW, rowH, kDarkMuted,
-                                harness::kFontMicro);
-        lbl->SetPosition(0, y);
-        content.AddChild(std::move(lbl));
-        y += rowH + gap;
-    } else {
-        // 列一级目录内容。
-        std::error_code ec;
-        std::vector<std::string> dirs;
-        std::vector<std::string> files;
-        for (const auto& entry : std::filesystem::directory_iterator(
-                 std::filesystem::path(wsPath), ec)) {
-            const std::string name = entry.path().filename().generic_string();
-            if (name.empty()) continue;
-            if (entry.is_directory(ec)) {
-                dirs.push_back(name + "/");
-            } else {
-                files.push_back(name);
-            }
-            ec.clear();
-        }
-        // 目录在前、文件在后，各自按名称排序（确定性）。
-        std::sort(dirs.begin(), dirs.end());
-        std::sort(files.begin(), files.end());
-
-        for (const auto& d : dirs) {
-            auto lbl = uikit::Label("▽ " + d, kSidebarListInnerW, rowH, kDarkInk,
-                                    harness::kFontMicro, true);
-            lbl->SetPosition(0, y);
-            content.AddChild(std::move(lbl));
-            y += rowH + gap;
-        }
-        for (const auto& f : files) {
-            auto lbl = uikit::Label("· " + f, kSidebarListInnerW, rowH, kDarkMuted,
-                                    harness::kFontMicro, true);
-            lbl->SetPosition(0, y);
-            content.AddChild(std::move(lbl));
-            y += rowH + gap;
-        }
-        if (dirs.empty() && files.empty()) {
-            auto lbl = uikit::Label("（空目录）", kSidebarListInnerW, rowH, kDarkMuted,
-                                    harness::kFontMicro);
-            lbl->SetPosition(0, y);
-            content.AddChild(std::move(lbl));
-            y += rowH + gap;
-        }
-    }
-
-    const int totalH = y > 0 ? y - gap : 0;
-    const int visibleH = std::min(totalH, kSidebarMaxRows * (rowH + gap) - gap);
-    m_hud.projectList->SetSize(kSidebarListW, std::max(visibleH, rowH));
-    // ★★ 2026-10-27：extent **宽**必须比控件宽小（= 视口宽），否则横向条恒出。
-    //   判定是 `contentW > ViewportWidth()`，而 viewport = 控件宽 − 条厚 − kBarInset；
-    //   此前这里传的是 `kSidebarListW`（控件宽）⇒ 172 > 166 恒真 ⇒「没超出也挂横向条」。
-    //   改传 `kSidebarListInnerW`（行宽同值）⇒ 内容宽 == 行宽 == 真实需要，不再撒谎。
-    m_hud.projectList->SetContentExtent(kSidebarListInnerW, std::max(totalH, rowH));
-    m_hud.projectList->SetContentOffset(0, m_hud.projectList->GetScrollOffsetY());
-
-
-    if (ECDI::Widget* parent = m_hud.projectList->GetParent()) parent->Arrange();
-}
+using harness::internal::kTranscriptWMax;
+using harness::internal::kTranscriptWMin;
 
 // ★★ 2026-10-27：版心**可视带宽**的唯一计算口（下面两个函数都读它）。
 //   ★ 为什么不用 `ContentWidth(m_scroll)`：它是 `scrollW - 40`，那个 40 是
@@ -165,16 +84,20 @@ int HarnessApp::TranscriptAvailWidth() const {
 }
 
 // ★★ 2026-10-27：转录列**版心宽**的唯一计算口（声明注释见 App.h）。
-//   ★ 模型 = 参考载体的 max-width：`min(可用宽, kMaxTranscriptW)`。
+//   ★ 模型 = 参考载体的**分级** max-width（2026-11-03）：
+//     `min(可用宽, clamp(可用宽 × 72%, kTranscriptWMin, kTranscriptWMax))`。
 //       · 窗口窄 ⇒ 占满（不再像上一版那样平白扣掉检视栏的 230px）；
-//       · 窗口宽 ⇒ 钉在最大阅读宽，余量由 `TranscriptCanvasX()` 左右平分。
+//       · 中段 ⇒ 72% 渐宽；宽屏 ⇒ 钉在硬顶，余量由 `TranscriptCanvasX()` 左右平分。
+//   ★ 不变性：可用宽 ≤ 1056（= 760/0.72）时与旧式 `min(可用宽, 760)` **逐位相同**
+//     ——原校准点下的既有探针读数因此不动（两常量的来历见 `AppInternal.h`）。
 //   ★ 性能含义（必须写明，别让人以为零成本）：检视栏开/关会改变**可用宽**，
-//     因而在"可用宽 < 最大宽"的窗口里，版心宽会真的变化 ⇒ 行内换行缓存失效 ⇒
-//     一次全文档重测。只有窗口宽到「扣掉 230 之后仍 ≥ kMaxTranscriptW」时才免疫
-//     （≈ 1225px 以上的窗口）。这是"内容占满"必须付的账——上一版用"永远扣 230"
-//     换零重测，代价是小窗口里永远窄一条，观感上更糟。
+//     因而在"版心未顶到硬顶"的窗口里，版心宽会真的变化 ⇒ 行内换行缓存失效 ⇒
+//     一次全文档重测。只有窗口宽到「可用宽仍 ≥ 硬顶」时才免疫（侧栏 200 +
+//     检视栏收起时 ≈ 1285px 以上的窗口）。这是"内容占满"必须付的账——上一版
+//     用"永远扣 230"换零重测，代价是小窗口里永远窄一条，观感上更糟。
 int HarnessApp::TranscriptLayoutWidth() const {
-    return std::min(TranscriptAvailWidth(), kMaxTranscriptW);
+    const int avail = TranscriptAvailWidth();
+    return std::min(avail, std::clamp(avail * 72 / 100, kTranscriptWMin, kTranscriptWMax));
 }
 
 // ★★ 2026-10-27：版心左偏移的唯一计算口（声明注释见 App.h）。
@@ -724,7 +647,10 @@ void HarnessApp::ApplyDevModeVisibility() {
     // ③ 侧栏：回放进度条与测试夹具「历史」区仅在开发者模式显示；
     //   用户模式下若尚未连接真实工作区，把多余的 `workspaceStatus`（「等待 core 确认」）收起。
     bool sideDirty = false;
-    setVis(m_hud.sessProgressRow, m_devMode, sideDirty);
+    // ★★ 2026-11-03（P2）：计数行合并后，这里隐的是**进度文字**而不是整行——
+    //   那一行现在同时装着「N 个会话」（用户模式也要显示）。行容器 `sessProgressRow`
+    //   于是变成**恒可见**的骨架，只有 `n/N` 与细轨还是开发者专属读数。
+    setVis(m_hud.sessProgress, m_devMode, sideDirty);
     setVis(m_replayBar, m_devMode, sideDirty);
     setVis(m_hud.historyHeader, m_devMode, sideDirty);
     setVis(m_hud.historyList, m_devMode, sideDirty);
@@ -833,6 +759,15 @@ void HarnessApp::SetDevMode(bool dev) {
         if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
     }
     ApplyDevModeVisibility();
+    // ★★ 2026-11-03（P0）：隐显一变，列表的行宽就可能失效——必须重算。
+    //   机制：`VerticalLayout` **跳过不可见子**（C-VIS-1），所以「历史」段在用户模式下
+    //   根本没被 Arrange 过，`historyList->GetWidth()` 一直停在 `SetSize` 的 172；
+    //   行宽是从它算出来的（`AppHistory.cpp` 的 `curRowW`）⇒ 切回开发者模式时
+    //   列表被拉到栏宽、行却仍是 172−12，同一栏里再出现"行比视口窄一截"。
+    //   ★ 只置标志、不在这里重建：本函数可能在派发栈上（顶栏菜单回调），
+    //     拆树留给 `OnReplayTick` 顶部（同 `m_sidebarDirty` 的 UAF 纪律）。
+    m_historyDirty = true;
+    m_sidebarDirty = true;
     Relayout();
     m_hudDirty = true;
     RefreshHud();
@@ -865,7 +800,6 @@ std::vector<std::string> HarnessApp::HudUnbuilt() const {
         if (n == "workspacePick") return h.workspacePick != nullptr;
         if (n == "historyList") return h.historyList != nullptr;
         if (n == "historyCount") return h.historyCount != nullptr;
-        if (n == "projectList") return h.projectList != nullptr;
         if (n == "sessList") return h.sessList != nullptr;
         if (n == "sessCount") return h.sessCount != nullptr;
         if (n == "healthSeq") return h.healthSeq != nullptr;
@@ -1057,7 +991,6 @@ void HarnessApp::RefreshHud() {
     };
     applyWorkspaceVis(m_hud.workspacePath);
     applyWorkspaceVis(m_hud.workspacePick);
-    applyWorkspaceVis(m_hud.projectList);
     if (workspaceVisChanged) {
         // VerticalLayout 只在 Arrange 时给隐藏子不占槽（C-VIS-1）⇒ 不重排就会留个空洞。
         if (ECDI::Widget* p = m_hud.workspaceStatus ? m_hud.workspaceStatus->GetParent()
@@ -1068,8 +1001,13 @@ void HarnessApp::RefreshHud() {
     if (HudTouch("workspacePath"), m_hud.workspacePath) {
         if (m_devMode) {
             m_hud.workspacePath->SetFont(harness::MonoFont(12.0f));
+            // ★★ 2026-11-03（P2）：空路径不再写「尚未确认」——下一行
+            //   `workspaceStatus` 此刻正是「等待 core 确认（…）」，两行说同一句话，
+            //   读起来像界面在结巴。这里只留一个「未确立」的占位，把"为什么还没有"
+            //   交给状态行（它同时还要承载「core 未声明 workspace 能力」「切换失败：…」
+            //   这类**非**同义的诊断，所以不能反过来把它并进这一行）。
             m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
-                ? "core 实际工作区：尚未确认" : "core 实际工作区：" + m_sess->workspacePath);
+                ? "core 实际工作区：—" : "core 实际工作区：" + m_sess->workspacePath);
         } else {
             m_hud.workspacePath->SetFont(harness::SansFont(harness::kFontMicro));
             m_hud.workspacePath->SetText(m_sess->workspacePath.empty()

@@ -42,16 +42,24 @@ std::string PathToUtf8(const std::filesystem::path& value);
 //     共用同一条语义，两处各写一个数会漂移，故只留一份。
 inline constexpr int kPinThreshold = 60;   // 距底 ≤ 此值 = 贴底（跟随新行 / 按钮隐藏）
 //   ★ 侧栏行几何：探针（--sidebar-probe 量行高/标题行高）与产品侧建行共用。
-inline constexpr int kSidebarRowH = 28;
-inline constexpr int kSidebarGroupH = 18;  // 分组标题行高（分隔的高度，不带"条目"语义）
+//   ★★ 2026-11-03（用户反馈「左侧栏过于紧凑」）：28→30 / 18→20 / 4→6。
+//     只改**值**，消费者一个没动——探针的 `rowAt(i)->GetHeight() == kSidebarRowH`
+//     读的就是这里，所以改完仍自洽（判据是「与常量相等」，不是「等于 28」）。
+//     行高 30 的额外收益：14px 名称的行盒是 19（`uikit::LineBox`），(30−19)/2 = 5
+//     两侧都是 5 ⇒ 顺带修掉了 28 时的 4/5 不对称（文字整体高 1px）。
+inline constexpr int kSidebarRowH = 30;
+inline constexpr int kSidebarGroupH = 20;  // 分组标题行高（分隔的高度，不带"条目"语义）
 //   ★ 2026-10-25（Stage 1c）：整块侧栏几何上提。原先只在 App.cpp 用，搬出
 //     AppHistory.cpp（历史会话列表建行）后成跨 TU 依赖；1e 拆 UI builder 时
 //     BuildMainArea 侧栏段也要用同一组数。**值一字未改**。
 //     行宽 158 而非容器宽 172 的原因见 App.cpp 原注释（滚动条占 14px）。
 inline constexpr int kSidebarListW = 172;
 inline constexpr int kSidebarRowW = 158;
-inline constexpr int kSidebarRowGap = 4;
-inline constexpr int kSidebarNameW = 106;  // 22(dot 右缘) → 128，给右侧 18px 删除钮留 6px 间隙
+inline constexpr int kSidebarRowGap = 6;
+//   ★ 2026-11-03：`kSidebarNameW`（原 106）已删——它是死常量（全库只剩两处 using，
+//     真实名称宽在 `AppSession.cpp` 的 `BuildSessionRow` 按 `curRowW` 动态算）。
+//   ★ 同日：`kSidebarMaxRows` 语义从「固定可见行数」降为「**下限**」——
+//     `RebuildSessionList` 按窗口高度分级放大（4 → 10），理由与预算见那边的注释。
 inline constexpr int kSidebarMaxRows = 4;
 
 // ── 转录行几何（Stage 1d 上提）──
@@ -65,19 +73,26 @@ inline constexpr int kRowPadX = 10;
 inline constexpr int kCanvasPadX = 16;
 inline constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C 的 39px
 
-// ── 转录版心的最大宽度（2026-10-27，对齐参考载体的 max-width 模型）──
+// ── 转录版心宽度（2026-10-27 max-width 模型；2026-11-03 改**分级** max-width）──
 //   ★ 模型（照 WorkBuddy 客户端的实际表现归纳，5 张不同窗口宽度的截图）：
-//       · 可用宽 < 该值 ⇒ 内容列**占满**（只留 `kCanvasPadX` 画布边）；
-//       · 可用宽 > 该值 ⇒ 内容列**固定在最大宽**，余量**左右平分**（居中版心）。
+//       · 可用宽 < 校准锚 ⇒ 内容列**占满**（只留 `kCanvasPadX` 画布边）；
+//       · 校准锚 ~ 硬顶之间 ⇒ 按可用宽的 72% 渐宽（斜率见 `TranscriptLayoutWidth()`）；
+//       · 可用宽 > 硬顶 ⇒ 内容列**固定在硬顶宽**，余量**左右平分**（居中版心）。
 //     这 ≠「永远扣掉检视栏的 230px」——那样小窗口里也会平白留白，观感是"布局坏了"。
-//   ★ 取值理由：`kRowGap`/气泡 78% 上限的前提下，760 让气泡最宽 ≈ 593（一行 40+ 汉字），
-//     在 1080 宽窗口 + 侧栏 195 + 检视栏收起时（可用 ≈ 845）左右各剩 ≈ 42 —— 饱满而不贴边。
-inline constexpr int kMaxTranscriptW = 760;
+//   ★ 为什么 760 不能再当唯一上限（2026-11-03 用户反馈「中栏空旷，最大宽度设小了」）：
+//     760 是按「1080 宽窗口 + 侧栏 195」校准的——锚值的取值理由原样保留：
+//     `kRowGap`/气泡 78% 上限的前提下，760 让气泡最宽 ≈ 593（一行 40+ 汉字）。
+//     但 1920 屏 + 检视栏收起时可用 ≈ 1490，版心只占 760 ⇒ 两侧各空 ~365px，肉眼就是"空旷"。
+//     ⇒ 拆两个数：`kTranscriptWMin` 保住原校准点（**可用宽 ≤ 1056 时布局逐位不变**，
+//     1056 = 760/0.72 ⇒ 既有探针在原校准尺寸下读数不动），`kTranscriptWMax` 给宽屏
+//     一个真正的阅读上限（1080 ≈ 一行 55 个汉字）。
+inline constexpr int kTranscriptWMin = 760;   // 校准锚 / 72% 斜率的下限档
+inline constexpr int kTranscriptWMax = 1080;  // 硬顶（宽屏阅读上限）
 
 // ── 右栏检视栏宽度（2026-10-27）──
 //   ★ 定宽的**唯一真相源**，消费者只有 `BuildInspector`（设检视栏本体宽）。
 //   ★ 版心**不再**按它扣减：那版"永远扣 230"会让小窗口里也平白窄一条，
-//     观感像布局坏了（实测）。版心改走 `kMaxTranscriptW` 的 max-width 模型。
+//     观感像布局坏了（实测）。版心改走分级 max-width 模型（`kTranscriptWMin`/`kTranscriptWMax`）。
 inline constexpr int kInspW = 230;
 
 // ── 滚动条厚度（2026-10-27）──

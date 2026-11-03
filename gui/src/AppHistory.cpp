@@ -38,11 +38,20 @@
 // 跨 TU 共享符号（定义见 AppInternal.h）
 using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarListW;
-using harness::internal::kSidebarMaxRows;
 
 using harness::internal::kSidebarRowGap;
 using harness::internal::kSidebarRowH;
 using harness::internal::kSidebarRowW;
+
+// ── 历史列表的可见行数上限（2026-11-03，P2）────────────────────────
+// ★ 为什么不再复用 `kSidebarMaxRows`（=4）：那个数同时管着**会话列表**与
+//   「工作区目录」列表，抬它会连带那两块一起长高；而「历史」是磁盘夹具的索引，
+//   多一行 = 少滚一次，代价只落在它自己身上。
+// ★ 取值受侧栏竖向预算约束（见 `Theme.h` 的 `kSidebarPad` 那段实测）：
+//   4 → 5 多占 `kSidebarRowH + kSidebarRowGap` = 36px，而同一批 P2 改动把
+//   「计数 + 进度」两行合并成一行省下 24px ⇒ 净 +12，客户区 700 的底线仍然守住。
+// ★ 它只被本 TU 使用 ⇒ 按本仓纪律留在 .cpp 里，不进 `AppInternal.h`。
+constexpr int kHistoryMaxRows = 5;
 
 std::filesystem::path HarnessApp::HistoryRoot() const {
     namespace fs = std::filesystem;
@@ -149,7 +158,7 @@ void HarnessApp::RebuildHistoryList() {
         y += static_cast<int>(rowStride);
     }
     const int totalH = n > 0 ? static_cast<int>(n * rowStride) - kSidebarRowGap : 0;
-    const int visibleH = std::min(totalH, kSidebarMaxRows * static_cast<int>(rowStride)
+    const int visibleH = std::min(totalH, kHistoryMaxRows * static_cast<int>(rowStride)
                                               - kSidebarRowGap);
     const int listW = m_hud.historyList ? std::max(kSidebarListW, m_hud.historyList->GetWidth()) : kSidebarListW;
     const int curRowW = std::max(kSidebarRowW, listW - kScrollBarThickness - 8);
@@ -430,6 +439,44 @@ void HarnessApp::DiscoverAndRestoreJournalSessions() {
             continue;
         }
         RestoreSingleJournalSession(ds.workspacePath, ds.meta, journalPath);
+    }
+}
+
+void HarnessApp::RestoreWorkspaceJournalSessions(const std::string& wsPath) {
+    if (wsPath.empty()) return;
+    std::string err;
+    auto metas = SessionStore::ScanSessionMetas(wsPath, err);
+    if (metas.empty()) return;
+
+    std::sort(metas.begin(), metas.end(), [](const SessionMeta& a, const SessionMeta& b) {
+        if (a.createdAt != b.createdAt) return a.createdAt < b.createdAt;
+        return a.id < b.id;
+    });
+
+    Session* const prevActive = m_sess;
+    const bool prevTemp = prevActive ? prevActive->temporary : false;
+    if (prevActive) prevActive->temporary = false;
+
+    bool anyRestored = false;
+    for (const auto& meta : metas) {
+        auto existing = std::find_if(m_sessions.begin(), m_sessions.end(),
+                                     [&](const std::unique_ptr<Session>& s) {
+                                         return s && s->sessionId == meta.id;
+                                     });
+        if (existing != m_sessions.end()) continue;
+        const auto journalPath = SessionStore::JournalPath(wsPath, meta.id);
+        std::error_code ec;
+        if (!std::filesystem::exists(journalPath, ec)) continue;
+        if (RestoreSingleJournalSession(wsPath, meta, journalPath)) {
+            anyRestored = true;
+        }
+    }
+
+    if (prevActive) {
+        if (anyRestored) {
+            SwitchToSessionByPtr(prevActive);
+        }
+        prevActive->temporary = prevTemp;
     }
 }
 

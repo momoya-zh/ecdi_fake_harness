@@ -562,6 +562,34 @@ def check_readout_probes():
     return fail
 
 
+def check_sidebar_geom():
+    """侧栏**行宽**判据（2026-11-03）：读 `sidebarGeom.ok`。
+
+    为什么必须在脚本侧再判一次：判据写在探针里（`RunSidebarProbe` ⑯），但它在摘要里
+    是**独立键**，不在这条门读的 `sidebarProbe` 数组里 —— 不显式读，新键就会悬空，
+    "行宽又脱钩"时门照样绿（`wsPlusProbe` 的同款教训，2026-11-02 栽过一次）。
+    """
+    out = OUT / "_reg--sidebar-probe.json"
+    if not out.exists():
+        print("  sidebarGeom         RED: --sidebar-probe 没有产物（它自己那条会先红）")
+        return 1
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    g = doc.get("sidebarGeom") or {}
+    if not g.get("done"):
+        print("  sidebarGeom         RED: 相没有跑到（done=false）")
+        return 1
+    ok = bool(g.get("ok"))
+    detail = (f"side={g.get('sideWidth')} row={g.get('rowWidth')}/{g.get('expectWidth')} "
+              f"hist={g.get('histRowWidth')} "
+              f"wide({g.get('wideSideWidth')})={g.get('wideRowWidth')}/{g.get('wideExpectWidth')}")
+    if ok:
+        print(f"  sidebarGeom         OK      {detail}")
+        return 0
+    print(f"  sidebarGeom         RED     {detail}")
+    print(f"                      {g.get('detail') or '(no detail)'}")
+    return 1
+
+
 def check_workspace_probe(core):
     """workspace 探针需要**活会话的写通道**：回放没有 writer ⇒ unavailable（那是失败，不是跳过）。"""
     out = OUT / "_reg--workspace-probe.json"
@@ -661,6 +689,9 @@ def main():
         tag = "OK" if not unexpected else "UNEXPECTED-RED"
         print(f"  {flag:18s} {len(rows)-len(red)}/{len(rows)} green  "
               f"designed-red={designed or '-'}  {tag}")
+
+    print("\n== 1b. 侧栏行宽判据 (sidebarGeom) ==")
+    fail += check_sidebar_geom()
 
     print("\n== 2a. 补齐探针 (8) ==")
     # 配置必须在跑批前落盘：delprov 要有 provider（否则自述 skipped-empty-config），

@@ -259,6 +259,64 @@ void HarnessApp::RunPersistProbe() {
     snap("negative-missing-file", negativeOk, negativeOk ? "missing journal safely ignored"
                                                          : "missing journal caused invalid session");
 
+    // ── ⑥b delete-session-files：删除会话（含打开的 journal 句柄）必须真删磁盘文件 ──
+    {
+        bool delDiskOk = false;
+        size_t idxA = static_cast<size_t>(-1);
+        for (size_t i = 0; i < m_sessions.size(); ++i) {
+            if (m_sessions[i] && m_sessions[i]->sessionId == m1.id) {
+                idxA = i;
+                break;
+            }
+        }
+        if (idxA != static_cast<size_t>(-1)) {
+            m_sessions[idxA]->journal = std::make_unique<SessionStore::JournalWriter>();
+            std::string jOpenErr;
+            m_sessions[idxA]->journal->Open(j1Path, jOpenErr);
+            const bool deleted = DeleteSessionAt(idxA);
+            const auto m1MetaPath = SessionStore::MetaPath(wsA_str, m1.id);
+            std::error_code ec1, ec2;
+            const bool j1Gone = !fs::exists(j1Path, ec1);
+            const bool meta1Gone = !fs::exists(m1MetaPath, ec2);
+            delDiskOk = deleted && j1Gone && meta1Gone;
+        }
+        snap("delete-session-files", delDiskOk,
+             delDiskOk ? "session and its disk files removed even with open journal handle"
+                       : "failed to remove session disk files");
+    }
+
+    // ── ⑥c remove-workspace-preserves-ecdi：移除工作区应清理内存与配置但保留磁盘 .ecdi ──
+    {
+        bool remWsOk = false;
+        Workspace* wsBObj = WorkspaceByPath(wsB_str);
+        if (wsBObj) {
+            const std::string wsBId = wsBObj->id;
+            const bool removed = RemoveWorkspace(wsBId);
+            const bool wsGoneFromMem = (WorkspaceByPath(wsB_str) == nullptr);
+            bool sessGoneFromMem = true;
+            for (const auto& s : m_sessions) {
+                if (s && s->workspaceId == wsBId) {
+                    sessGoneFromMem = false;
+                    break;
+                }
+            }
+            bool goneFromConfig = true;
+            for (const auto& kw : m_appConfig.knownWorkspaces) {
+                if (kw == wsB_str) {
+                    goneFromConfig = false;
+                    break;
+                }
+            }
+            std::error_code ecEcdi, ecJ2;
+            const bool ecdiPreserved = fs::exists(SessionStore::EcdiDir(wsB), ecEcdi) &&
+                                       fs::exists(j2Path, ecJ2);
+            remWsOk = removed && wsGoneFromMem && sessGoneFromMem && goneFromConfig && ecdiPreserved;
+        }
+        snap("remove-workspace-preserves-ecdi", remWsOk,
+             remWsOk ? "workspace removed from UI/config while preserving .ecdi on disk"
+                     : "workspace removal or .ecdi preservation check failed");
+    }
+
     // ── ⑦ cleanup ──
     fs::remove_all(rootDir, ec);
     snap("cleanup", !ec, ec ? "cleanup failed: " + ec.message() : "temporary test workspaces cleaned up");

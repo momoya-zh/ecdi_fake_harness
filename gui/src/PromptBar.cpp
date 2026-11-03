@@ -69,7 +69,7 @@ public:
         //   FONT-UNIFIED（同日）刚刚统一了主题字体，输入框是唯一被漏掉的那个。
         //   ★ 这不只是观感：自动长高的行高正是由字体算出来的（见 `PromptBar::
         //     DesiredInputHeight`）——字体未钉死时，长高量测的是一个与用户所见不同的 face。
-        SetFont(harness::SansFont(harness::kFontBody));
+        SetFont(harness::SansFont(harness::kFontBody, 400));   // ★ 2026-11-03：输入框是长文正文档（UI 默认 700，正文显式 400）
         // ★★ 2026-10-27：文字色从未 Set ⇒ ECDI TextStyle 缺省黑；叠加下方 ApplyBorder
         //   的 kPanel2 深灰底后黑字不可读。输入框文字与 Label 同族，吃 kDarkInk
         //   （深色≈白字，浅色仍是深墨）。SetTextColor 内部走 TextStyleOverride，

@@ -39,6 +39,7 @@ using harness::kReasoningBg;
 using harness::kReasoningBorder;
 using harness::kReasoningHeaderBg;
 using harness::kReasoningHover;
+using harness::kReasoningPressed;
 using harness::kReasoningInk;
 using harness::kAskBg;
 using harness::kAskBorder;

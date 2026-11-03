@@ -67,6 +67,7 @@ struct Theme {
     ECDI::Color reasoningBorder;
     ECDI::Color reasoningHeaderBg;
     ECDI::Color reasoningHover;
+    ECDI::Color reasoningPressed;   // ★ 2026-11-03 C 批：按下档（与 toolHeaderPressed 同一梯级）
     ECDI::Color reasoningInk;
 
     // 权限门（ask）
@@ -155,6 +156,7 @@ inline Theme MakeDark() {
     t.reasoningBorder   = ECDI::Color::FromRGBA8(40, 45, 55, 255);
     t.reasoningHeaderBg = ECDI::Color::FromRGBA8(33, 37, 45, 255);
     t.reasoningHover    = ECDI::Color::FromRGBA8(38, 43, 52, 255);
+    t.reasoningPressed  = ECDI::Color::FromRGBA8(42, 48, 58, 255);   // hover +4/+5/+6，同 tool 梯级
     t.reasoningInk      = ECDI::Color::FromRGBA8(154, 162, 177, 255);
     // ask
     t.askBg     = ECDI::Color::FromRGBA8(58, 47, 29, 255);
@@ -254,6 +256,7 @@ inline Theme MakeLight() {
     t.reasoningBorder   = ECDI::Color::FromRGBA8(226, 230, 238, 255);   // #e2e6ee
     t.reasoningHeaderBg = ECDI::Color::FromRGBA8(242, 244, 248, 255);   // #f2f4f8，dL* -3.9
     t.reasoningHover    = ECDI::Color::FromRGBA8(235, 238, 244, 255);
+    t.reasoningPressed  = ECDI::Color::FromRGBA8(227, 231, 239, 255);   // hover −8/−7/−5，同 tool 梯级
     t.reasoningInk      = ECDI::Color::FromRGBA8(107, 112, 120, 255);
     // ask（--amber-bg #fdf7ea / --amber-line #ecdcb6 / --amber-ink #7a5a1e）
     t.askBg     = ECDI::Color::FromRGBA8(253, 247, 234, 255);
@@ -350,6 +353,7 @@ inline const ECDI::Color& kReasoningBg       = g_theme.reasoningBg;
 inline const ECDI::Color& kReasoningBorder   = g_theme.reasoningBorder;
 inline const ECDI::Color& kReasoningHeaderBg = g_theme.reasoningHeaderBg;
 inline const ECDI::Color& kReasoningHover    = g_theme.reasoningHover;
+inline const ECDI::Color& kReasoningPressed  = g_theme.reasoningPressed;
 inline const ECDI::Color& kReasoningInk      = g_theme.reasoningInk;
 
 inline const ECDI::Color& kAskBg        = g_theme.askBg;
@@ -419,19 +423,45 @@ inline constexpr float kFontBrand  = 17.0f;   // 品牌字（顶栏 harness）
 // ── 间距档位（原型 C：画布留白 22px、消息间距 23px、气泡内边距 10-12px）──
 inline constexpr int kPadFrame    = 14;   // 三栏容器内边距
 inline constexpr int kGapSection  = 18;   // 分区之间
-inline constexpr int kRowGapSide  = 6;    // 侧栏条目之间（现状 4）
+// ★ 2026-11-03（用户反馈「左侧栏过于紧凑」）：6 → 7。**不再往上加**——见下条
+//   `kSidebarPad` 的竖向预算说明：侧栏的留白要压在**段界**，条目之间只松一档，
+//   否则 18 个兄弟各加 1px 就要吃掉近 20px 的竖向预算。
+inline constexpr int kRowGapSide  = 7;    // 侧栏条目之间
 inline constexpr int kPadCard     = 10;   // 卡片内边距
 
-// ── 字体工厂（2026-10-18）──────────────────────────────────────
+// ★★ 2026-11-03：侧栏内边距**独立**成令牌，不再共用 `kPadFrame`。
+//   为什么必须拆：`kPadFrame` 同时喂着中栏会话头（`AppUiMain.cpp` 的 `head`）、
+//   右栏检查器（`insp`）与 `AppHud.cpp` 的「头部按钮溢出」预算——为了让侧栏
+//   多 2px 而动那三处，等于把一次纯视觉调整偷渡成三栏联动，判据也分不清是谁动的。
+//   侧栏是**唯一**没有横向拉伸语义的窄列（定宽 + 竖向堆叠），它的呼吸量本就该单独调。
+// ★ 竖向预算（实测，1.25 DPI，开发者模式，260 宽侧栏）：底部那个 `spring`
+//   在**客户区 744 / 700** 下分别还剩 **70 / 30 DIP**（`.scratch/_z_after800.png`
+//   `_z_after700.png` 逐行扫出来的）。侧栏没有滚动语义（`VerticalLayout` 是硬
+//   inset，空间不足就直接溢出、底部身份行被裁）⇒ **700 客户区是这一版的底线**。
+//   所以 `kRowGapSide` 只松 1px、段距只放两处：再往上加一档，短窗口就要出事。
+inline constexpr int kSidebarPad  = 16;   // 侧栏容器内边距（原共用 14）
+
+// ── 字体工厂（2026-10-18；2026-11-03 加 weight 分档）────────────────
 // 全仓构造 `ECDI::Font` 都该走这里，理由：
 //   · **中文正文族名要能随主题变**（深色保持 SimSun 回归基线，浅色换雅黑）；
 //   · 漏写 `family` 的子控件会各自拿到"空 = SimSun"，**同一界面里两种中文字形**——
 //     这是 2026-10-18 之前实际存在的情况（只有 Consolas 被显式指定过）。
 // ★ 等宽（代码/工具体）**不受主题影响**，恒 Consolas。
-inline ECDI::Font SansFont(float size) {
+//
+// ★★ 2026-11-03（用户反馈「文字太细」）：`weight` 分档约定——
+//   · **UI 文字默认 700**（侧栏 / chips / 按钮 / 卡头 / 分区标签 / 标题 / HUD）；
+//   · **长文正文显式传 400**（气泡 / 思维链体 / ask 问句 / 表格数据 / 输入框）——
+//     Bold 大段落累眼，正文保持常规。
+//   ★ 雅黑只有 400/700 两个**真字面**：weight 500 → 映射回 400（C36-2 平手取轻），
+//     600/700 → Bold（最近字面）⇒ **没有"稍粗半档"可言**，要粗就是 Bold。
+//   ★ 旧约束「CJK 加粗两链无公共解」只堵**族名内嵌样式**（`"Microsoft YaHei Bold"`
+//     走 GDI 会回落宋体）；weight 字段走字体映射器正路，雅黑 Bold 有真字面
+//     （msyhbd.ttc）⇒ GDI/GL 两链都拿真 Bold，无合成分歧（C36-4 不触发）。
+inline ECDI::Font SansFont(float size, std::uint16_t weight = 700) {
     ECDI::Font f;
     f.size = size;
     f.family = g_theme.sansFamily;
+    f.weight = weight;
     return f;
 }
 

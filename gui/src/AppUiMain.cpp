@@ -80,6 +80,36 @@ using harness::internal::Pick;
 //   由 `AppHud.cpp` 现建现挂，配色要跨 TU 共用（这里只留短名）。
 using harness::internal::kTooltipInk;
 
+namespace {
+
+// ── 侧栏「段距」占位块（2026-11-03，用户反馈「左侧栏过于紧凑」）────────────
+// 为什么需要它：`ECDI::VerticalLayout` 只有**一个** spacing（本侧栏 = `kRowGapSide`），
+//   没有 per-child margin ⇒「段与段之间比条目之间更松」在这套契约下只有一条路：
+//   往子表里插一个固定高度的透明块，让两侧各自的 spacing 叠上去。
+//   底部那个 `spring` 就是同一手法的先例（也是本文件唯一的位置）。
+// 有效段距 = kRowGapSide(7) + kSidebarSectionSpacer(10) + kRowGapSide(7) = **24**；
+//   条目之间 7 ⇒ 段界/条目 = 3.4:1，眼睛这才分得出「哪几行是一伙的」。
+//   ★ 只用两处（「工作区」前、「历史」前）：会话列表按工作区分组，
+//     语义上属于「工作区」段内，不该再切一刀（见 BuildSidebar 里那段注释）。
+//   ★ 为什么不直接用已存在的 `harness::kGapSection`(18)：它是**净**段距的设计意图，
+//     而这里的 18 会被两侧 spacing 再各加 8 ⇒ 实际 34，比 `kGapSection` 的语境
+//     （三栏之间）宽出一倍。段距占用的是侧栏自己的竖向预算，取值就该由侧栏定。
+// ★ 必须固定高 + stretch 0：`fillCrossAxis` 只拉伸**宽**，高度由本块自己说。
+//   透明底 + 无边框——它只占位，不许出一块异色（同 `spring` 那条约法）。
+constexpr int kSidebarSectionSpacer = 10;
+
+std::unique_ptr<ECDI::Panel> SidebarSectionSpacer() {
+    auto spacer = std::make_unique<ECDI::Panel>();
+    spacer->SetSize(1, kSidebarSectionSpacer);   // 宽由 fillCrossAxis 拉伸，1 只是首帧值
+    spacer->SetStyle(ECDI::PanelStyleOverride{
+        .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f});
+    return spacer;
+}
+
+}  // namespace
+
 // 主区（hi-fi .main）：左栏（新建会话/会话/回放/工作区）+ 中栏（转录 + Composer）+ 右栏检查器
 
 // ★★ Stage 2（2026-10-25）：本函数只做**装配顺序**，各分区自成一个 builder。
@@ -108,6 +138,14 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     leftSplitter->SetOnResize([this, mainPtr = main.get()](int newW) {
         m_sidebarWidth = newW;
         if (mainPtr) mainPtr->Arrange();
+        // ★★ 2026-11-03（P0，用户反馈「左侧栏过于紧凑」的根因之一）：
+        //   列表里的行是**绝对定位**的子控件，`fillCrossAxis` 只拉 ScrollView 自身，
+        //   不碰行 ⇒ 宽度一变就必须重建那一层的行，否则行宽永远停在首次建行时的值。
+        //   原先只有 `OnDragEnd` 置脏 ⇒ 拖的过程中行不跟手、松手才"跳"一下。
+        //   这里只置标志、不重建：本回调在事件派发栈上，`RemoveChild` 拆树不安全
+        //   （同 `m_sidebarDirty` 的 UAF 理由）；真正的重建在 `OnReplayTick` 顶部。
+        m_sidebarDirty = true;
+        m_historyDirty = true;
         SyncHeadTitlesWidth();
         RequestRepaint();
     });
@@ -195,7 +233,8 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     side->SetStyle(ECDI::PanelStyleOverride{
         .background = kSidebarBg,
         .borderWidth = 1.0f, .borderColor = kLine});
-    side->SetLayout(std::make_unique<ECDI::VerticalLayout>(harness::kRowGapSide, true, harness::kPadFrame));
+    side->SetLayout(std::make_unique<ECDI::VerticalLayout>(harness::kRowGapSide, true,
+                                                           harness::kSidebarPad));
 
     auto newSess = std::make_unique<ECDI::Button>("＋ 新建会话");
     newSess->SetTextColor(kAccentInk);
@@ -217,6 +256,9 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     //   **11px + muted + 不加空格**（中文不进 10px：§3.3 实测会糊；`"会 话"`
     //   那种手撒空格是伪装 letter-spacing，等宽观感下反而散）。
     //   ★ 分区名 `工作区`/`项目` 直接沿用 C 的措辞（C 左侧第一段就叫「工作区」）。
+    // ★★ 2026-11-03：段前插占位块（见 `SidebarSectionSpacer` 的注释）——原来的
+    //   问题是「新建会话」、段标题、条目三者间距完全相同（6px），眼睛读不出分段。
+    side->AddChild(SidebarSectionSpacer());
     AddLine(*side, "工作区", kDarkMuted, true, 172, harness::kFontMicro);
     {
         auto path = std::make_unique<ECDI::Label>("等待 core 确认实际路径");
@@ -244,16 +286,6 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
         pick->SetSize(172, 26);
         pick->SetOnClick([this] { ChooseWorkspaceFolder(); });
         side->AddChild(std::move(pick));
-
-        // ★★ 2026-10-20（m09704）：目录列表收进「工作区」段（原「项目」段）。
-        //   路径只出现一次，目录内容紧跟其后，语义 = 「这个工作区在哪 + 里面有什么」。
-        auto list = std::make_unique<ECDI::ScrollView>();
-        m_hud.projectList = list.get();
-        list->SetSize(kSidebarListW, kSidebarRowH);
-        list->SetScrollStep(kSidebarRowH + kSidebarRowGap);
-        list->SetScrollBarVisible(true);
-        ApplyCompactScrollBars(*list);   // ★ 条宽全仓统一（kScrollBarThickness）
-        side->AddChild(std::move(list));
     }
 
     // ★★ Step 1（2026-10-19）：会话列表替换掉此前**单行硬编码**的会话条目。
@@ -264,6 +296,10 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     //   ★ 为什么用 `ScrollView` 而不是直接往 `side` 里塞行：会话数无上限，
     //     而侧栏是定宽定高的列。列表自身滚动比"整个侧栏滚动"正确得多
     //     （后者的「工作区/项目」分区会跟着一起滚走）。
+    // ★ 2026-11-03：这里**故意不加段距占位块**。会话是按工作区分组的
+    //   （列表内的标题就是工作区路径），所以它在语义上属于「工作区」段内，
+    //   与上面的目录列表不是两段。三处段距全加会多吃 18px 竖向预算
+    //   （见 `Theme.h` 的 `kSidebarPad` 那条预算注释），而收益只是"看起来更像两块"。
     {
         auto list = std::make_unique<ECDI::ScrollView>();
         m_hud.sessList = list.get();
@@ -273,14 +309,28 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
         ApplyCompactScrollBars(*list);   // ★ 条宽全仓统一（kScrollBarThickness）
         side->AddChild(std::move(list));
     }
+    // ★★ 2026-11-03（P2）：「会话计数」与「回放进度计数」合并成**一行元信息**。
+    //   改前是三个兄弟控件（计数 17 / 进度行 19 / 细轨 3 + 三处 7px 间距 = 53px），
+    //   只表达"一个列表里有几个 + 回放到第几条"这一条信息，竖向却占掉近两行。
+    //   合并后 = 一行 19 + 细轨 3 + 一处间距 = 29px，省 **24px**（正好补历史区多出的
+    //   那一行，见 `AppHistory.cpp` 的 `kHistoryMaxRows`）。
+    //   ★ 两个 Label 仍然是**两个句柄**：它们的文本由两条独立写者维护
+    //     （`RefreshHud` 写会话数、回放 tick 写 n/N），合成一个字符串会让两个写者互相覆盖。
+    //   ★ 宽度：会话数是定宽（数字最多三位），n/N 是**变长**文本
+    //     （`1213 / 1213 条` / `12345 条（live）` / `空会话 · 无 core`）；
+    //     所以只给计数一个定宽，n/N 用 `SetStretch(1)` 吃掉余量——行被侧栏
+    //     `fillCrossAxis` 拉到栏宽，余量随栏宽变，n/N 自然跟着变，不需要第二个常数。
     {
-        // 计数行：`2 个会话`。这一行是"侧栏到底画了几个"的**文字读数**——
-        // 它和列表同源于 m_sessions，任意一侧错位都会立刻显形（探针也读它）。
-        // ★ 直接挂在 side 下（不经 Row 包一层）：它是单标签，多一层容器只会
-        //   在 VerticalLayout 里多占一个槽位、多一点间距。
-        auto cnt = uikit::Label("1 个会话", kSidebarListW, 14, kDarkMuted, harness::kFontMicro);
+        auto row = uikit::Row(172, 19, 8);
+        m_hud.sessProgressRow = row.get();
+        auto cnt = uikit::Label("1 个会话", 68, 19, kDarkMuted, harness::kFontMicro);
         m_hud.sessCount = cnt.get();
-        side->AddChild(std::move(cnt));
+        row->AddChild(std::move(cnt));
+        auto prog = uikit::Label("0 / 0", 1, 19, kDarkMuted, harness::kFontSmall);
+        prog->SetStretch(1);
+        m_hud.sessProgress = prog.get();
+        row->AddChild(std::move(prog));
+        side->AddChild(std::move(row));
     }
 
     // ★★ 回放进度条（I4 评估钩子）**保留**，但改成 C 那种「细线段」形态：
@@ -288,15 +338,6 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     //   分区**，改成会话条目下方的一条 3px 细轨 + 右侧计数，视觉上从「一个区块」
     //   退化为「一行元信息」，既保住读数又不破坏 C 的节奏。
     {
-        auto row = uikit::Row(172, 16, 8);
-        m_hud.sessProgressRow = row.get();
-        auto prog = std::make_unique<ECDI::Label>("0 / 0");
-        m_hud.sessProgress = prog.get();
-        prog->SetTextColor(kDarkMuted);
-        prog->SetFont(harness::SansFont(harness::kFontSmall));
-        prog->SetSize(172, 16);
-        row->AddChild(std::move(prog));
-        side->AddChild(std::move(row));
         auto bar = std::make_unique<ECDI::ProgressBar>();
         m_replayBar = bar.get();
         bar->SetSize(172, 3);
@@ -312,6 +353,7 @@ void HarnessApp::BuildSidebar(ECDI::Panel& main) {
     //     这里是**还没打开的文件**。点一行会多出一个已打开会话。
     //   ★ 只列不删：`protocol/fixtures/` 下每个文件都有 sha256 基线，
     //     删除 UI 一旦能碰它们，所有回归基线就都开口子了。
+    side->AddChild(SidebarSectionSpacer());   // ★ 2026-11-03：段前占位（同「工作区」）
     m_hud.historyHeader = AddLine(*side, "历史", kDarkMuted, true, 172, harness::kFontMicro);
     {
         auto list = std::make_unique<ECDI::ScrollView>();

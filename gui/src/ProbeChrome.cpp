@@ -401,14 +401,16 @@ void HarnessApp::RunMenuProbe() {
 
 // ★★ 2026-10-27（版心重构后二改）：判据换代。
 //   旧判据的核心不变量是 `scrollW − rowWMax`（"通栏行与视口之差"）恒为一个常数
-//   —— 那成立的前提是「行宽 = 视口宽 − 固定留白」。**版心改成 max-width 模型
-//   （`min(可视带宽, kMaxTranscriptW)`）之后，这条不变量按设计就不成立了**：
+//   —— 那成立的前提是「行宽 = 视口宽 − 固定留白」。**版心改成分级 max-width 模型
+//   （`min(可视带宽, clamp(可视带宽 × 72%, kTranscriptWMin, kTranscriptWMax))`，
+//   2026-11-03 分级化）之后，这条不变量按设计就不成立了**：
 //   窗口宽到封顶后，差值必然随窗口变大。所以 grow/shrink/roundtrip 三相变红
 //   **不是回归，是判据过期**（旧判据守的是一个已经不存在的性质）。
 //   新版判据换成正面的几何命题，逐条都能变红：
 //     ① 居中    内容列左右留白相等（`rowX` vs `scrollW − rowX − rowWMax`）。
 //               这是版心模型唯一的视觉承诺，且**与窗口宽无关** ⇒ 四相断言同一句话。
-//     ② 封顶    行宽 ≤ `kMaxTranscriptW − 2×pad`：窗口再宽也不许变宽。
+//     ② 封顶    行宽 ≤ `kTranscriptWMax − 2×pad`：窗口再宽也不许变宽（硬顶锚
+//               `kTranscriptWMax`，不是 72% 斜率的中间值——判据钉的是产品硬顶）。
 //     ③ 跟随    还没封顶时，窗口变宽/变窄 ⇒ 行宽必须跟着变（否则版心是死的）。
 //     ④ 确定    同一窗口尺寸只对应一个布局（roundtrip 逐位相等）。
 //   ★ ②③ 必须同时存在：只有 ② 可以"行宽恒为 1px"，只有 ③ 可以"无限变宽"；
@@ -424,10 +426,17 @@ void HarnessApp::RunResizeProbe() {
     // 只在回放模式：live 的转录在持续增长，两次快照之间行数会变（同 `RunMenuProbe`）。
     if (!m_sess->replay) { m_probeState.resizeProbeDone = true; return; }
 
-    // 行宽上限（版心封顶 − 左右画布留白）。★ 这是**产品常数**，不是重算实现：
+    // 行宽上限（版心硬顶 − 左右画布留白）。★ 这是**产品常数**，不是重算实现：
     //   断言"行宽 ≤ 上限"是判据，不是把 `TranscriptLayoutWidth()` 抄一遍。
+    //   ★ 锚在硬顶 `kTranscriptWMax`（1080），不是 72% 斜率的中间值——判据钉的是
+    //     "窗口再宽也不许超过的那条线"。⚠️ 代价（2026-11-03 分级化后的新边界）：
+    //     「跟随」的分支判据 `rowWMax < kCapRowW ⇒ 必须变宽` 在**校准锚平台段**
+    //     （行宽钉在 `kTranscriptWMin − 2×pad`）内是**弱化的**：+280 后仍落在平台段
+    //     时行宽确实不变（产品语义如此），但判据会要求它变宽 ⇒ 仅当 base 客户区宽
+    //     落在 ≈1194–1211 时误红。regress 的基线是 1120（fill 段），不踩；
+    //     手动在那个窄带跑 `--resize-probe` 会误红——红了先对窗口宽，别当回归。
     constexpr int kCapRowW =
-        harness::internal::kMaxTranscriptW - 2 * harness::internal::kCanvasPadX;
+        harness::internal::kTranscriptWMax - 2 * harness::internal::kCanvasPadX;
 
     auto snap = [&](const char* phase) {
         ResizeProbeRec rec;

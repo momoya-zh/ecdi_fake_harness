@@ -11,6 +11,7 @@
 
 #include "App.h"
 #include "AppInternal.h"
+#include "ChildSource.h"
 #include "ThemeUsing.h"
 
 #ifndef NOMINMAX
@@ -23,6 +24,7 @@
 #undef DrawText
 #endif
 
+#include <algorithm>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -228,6 +230,120 @@ HarnessApp::Workspace* HarnessApp::AcquireWorkspace(const std::string& path) {
 
 void HarnessApp::AssignSessionWorkspace(Session& session, Workspace* workspace) {
     session.workspaceId = workspace ? workspace->id : std::string();
+}
+
+void HarnessApp::ToggleWorkspaceCollapsed(const std::string& workspaceId) {
+    Workspace* ws = WorkspaceById(workspaceId);
+    if (!ws) return;
+    ws->collapsed = !ws->collapsed;
+    m_sidebarDirty = true;
+    RequestRepaint();
+}
+
+bool HarnessApp::RemoveWorkspace(const std::string& workspaceId) {
+    Workspace* ws = WorkspaceById(workspaceId);
+    if (!ws) return false;
+    const std::string wsPath = ws->path;
+
+    // 1. 先同步并释放该工作区下全部会话的落盘句柄与子进程（保留磁盘 .ecdi 目录及其中文件）
+    for (auto& s : m_sessions) {
+        if (!s || s->workspaceId != workspaceId) continue;
+        if (s->journalPromoted) {
+            SyncSessionMeta(*s);
+        }
+        if (s->journal) {
+            s->journal->Close();
+        }
+        if (s->child) {
+            s->child->Stop();
+        }
+        s->temporary = false;
+    }
+
+    // 2. 从工作区注册表中移除（在可能新建兜底会话前摘除，避免继承已删工作区）
+    m_workspaces.erase(
+        std::remove_if(m_workspaces.begin(), m_workspaces.end(),
+                       [&workspaceId](const std::unique_ptr<Workspace>& w) {
+                           return w && w->id == workspaceId;
+                       }),
+        m_workspaces.end());
+
+    // 3. 若当前活动会话属于被移除的工作区，或移除后将无剩余会话，先切换到其他会话或新建兜底会话
+    size_t survivorIdx = static_cast<size_t>(-1);
+    for (size_t i = 0; i < m_sessions.size(); ++i) {
+        if (m_sessions[i] && m_sessions[i]->workspaceId != workspaceId && !m_sessions[i]->archived) {
+            survivorIdx = i;
+            break;
+        }
+    }
+    if (survivorIdx == static_cast<size_t>(-1)) {
+        for (size_t i = 0; i < m_sessions.size(); ++i) {
+            if (m_sessions[i] && m_sessions[i]->workspaceId != workspaceId) {
+                m_sessions[i]->archived = false;
+                survivorIdx = i;
+                break;
+            }
+        }
+    }
+
+    if (survivorIdx != static_cast<size_t>(-1)) {
+        if (!m_sess || m_sess->workspaceId == workspaceId) {
+            SwitchToSession(survivorIdx);
+        }
+    } else {
+        if (!m_options.corePath.empty() && !m_workspaces.empty()) {
+            NewTemporarySession(m_workspaces.back()->id);
+        } else if (!m_options.corePath.empty()) {
+            Session* fb = CreateSessionFromOptions();
+            if (fb) {
+                fb->label = "会话 1";
+                // 最后一个工作区被用户主动移除时，阻止自动把 GUI cwd 重新注册为工作区
+                fb->workspaceSyncStarted = true;
+                fb->workspaceStatus = "未选择工作区";
+                SwitchToSession(m_sessions.size() - 1);
+                if (fb->writer) fb->writer->Hello("0.0.1");
+                if (m_options.timed) fb->timedAnchor = std::chrono::steady_clock::now();
+            }
+        }
+        if (!m_sess || m_sess->workspaceId == workspaceId) {
+            auto emptySess = std::make_unique<Session>();
+            emptySess->label = "会话 1";
+            emptySess->originKind = "new";
+            m_sessions.push_back(std::move(emptySess));
+            SwitchToSession(m_sessions.size() - 1);
+        }
+    }
+
+    // 4. 从内存会话列表中移除属于该工作区的全部会话（不删磁盘 .ecdi）
+    m_sessions.erase(
+        std::remove_if(m_sessions.begin(), m_sessions.end(),
+                       [&workspaceId](const std::unique_ptr<Session>& s) {
+                           return s && s->workspaceId == workspaceId;
+                       }),
+        m_sessions.end());
+
+    for (size_t i = 0; i < m_sessions.size(); ++i) {
+        if (m_sessions[i].get() == m_sess) {
+            m_activeIndex = i;
+            break;
+        }
+    }
+
+    // 5. 从已知工作区配置中移除并保存（保留工作区目录下的 .ecdi）
+    if (!wsPath.empty()) {
+        m_appConfig.RemoveKnownWorkspace(wsPath);
+        if (!m_options.HasAnyProbe()) {
+            std::string cfgErr;
+            m_appConfig.Save(cfgErr);
+        }
+    }
+
+    m_sidebarDirty = true;
+    m_hudDirty = true;
+    RefreshHud();
+    RebuildMemoryList();
+    RequestRepaint();
+    return true;
 }
 
 std::string HarnessApp::InheritedWorkspacePath() const {

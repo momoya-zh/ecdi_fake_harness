@@ -46,7 +46,9 @@
 #include "ECDI/Window/Window.h"
 
 // 跨 TU 共享符号（定义见 AppInternal.h / PathUtil.cpp）
+using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarRowH;
+using harness::internal::kSidebarRowW;
 using harness::internal::kSidebarGroupH;
 
 
@@ -111,7 +113,10 @@ void HarnessApp::RunSidebarProbe() {
     // ★ 焦点守卫：合成点击会把焦点交给被点的 Button（`Application::OnMouseButtonDown`
     //   第一件事就是 `SetFocusedWidget`），焦点框与 caret 闪烁都会多画几帧 ⇒
     //   paints/frames 读数被这份探针污染。收尾必须还回去（同 `RunHitProbe`）。
-    ECDI::Widget* const focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+    //   ★★ 2026-11-03：**不能是 const** —— ⑯ 那相会拆一次整树（`RebuildUi`），
+    //     旧树里的指针当场变成悬垂引用；收尾再 `SetFocusedWidget` 就是一次 UAF
+    //     （实测：进程不再退出、摘要在收尾前写不出来）。拆完必须重取。
+    ECDI::Widget* focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
 
     // ★★ 点击臂：**走真实派发链**点列表行/`×`，而不是直接调 SwitchToSession/DeleteSessionAt。
     //   理由（这是 Step 1 之前完全空缺的那一类判据）：前面几相只证明"重建画得对"，
@@ -515,12 +520,10 @@ void HarnessApp::RunSidebarProbe() {
                                  rowAt(1)->GetHeight() == kSidebarRowH,
                              "title and session rows are not visually distinguishable"},
                             {selectedIndex() == 1, "grouping lost the active-session marker"},
-                            // ★★ m09443：标题行现在有「＋」按钮（不是「×」）。
-                            //   旧判据 `deleteButtonOf(0) == nullptr` 会因「＋」的存在而翻红。
-                            //   新判据：标题行的按钮（如果有）文字必须是「＋」，不能是「×」。
-                            {deleteButtonOf(0) == nullptr ||
-                                 deleteButtonOf(0)->GetText() == "＋",
-                             "a group title offered a delete button instead of ＋"}});
+                            // ★★ 工作区标题行现在同时有折叠切换钮、「＋」（新建会话）与「×」（移除工作区）。
+                            {deleteButtonOf(0) != nullptr &&
+                                 deleteButtonOf(0)->GetText() == "×",
+                             "a workspace group title did not offer a × remove button"}});
 
         // ⑭ ★★ 2026-10-20（截图抓到的那一类）：分组标题必须真的**放得下**。
         //   为何必须量宽而不是只比字符串：裁剪发生在**绘制层**（`Label` → 单行 DrawText），
@@ -652,7 +655,141 @@ void HarnessApp::RunSidebarProbe() {
             }
             m_sessions[0]->archived = false;  // restore
             RebuildSessionList();
+
+            // ⑮e 工作区分组折叠/展开：点击第 0 行（wsB 标题行）的折叠切换钮 ⇒ 隐藏旗下会话行，再点恢复。
+            const size_t rowsBeforeWsCollapse = m_hud.sessList->GetContentView().GetChildCount();
+            ECDI::Widget* toggleBtn0 = (rowAt(0) && rowAt(0)->GetChildCount() > 0)
+                                           ? rowAt(0)->GetChildAt(0)
+                                           : nullptr;
+            const bool clickedWsCollapse = toggleBtn0 && clickCentreOf(toggleBtn0);
+            expect("group-collapse",
+                   {{clickedWsCollapse, "workspace group toggle click did not dispatch"},
+                    {wsB && wsB->collapsed, "wsB.collapsed not set after click"},
+                    {m_hud.sessList->GetContentView().GetChildCount() == rowsBeforeWsCollapse - 1,
+                     "collapsing wsB did not hide its session row"}});
+
+            ECDI::Widget* toggleBtn0Again = (rowAt(0) && rowAt(0)->GetChildCount() > 0)
+                                                ? rowAt(0)->GetChildAt(0)
+                                                : nullptr;
+            const bool clickedWsExpand = toggleBtn0Again && clickCentreOf(toggleBtn0Again);
+            expect("group-expand",
+                   {{clickedWsExpand, "workspace group toggle click did not dispatch on expand"},
+                    {wsB && !wsB->collapsed, "wsB.collapsed not cleared after second click"},
+                    {m_hud.sessList->GetContentView().GetChildCount() == rowsBeforeWsCollapse,
+                     "expanding wsB did not restore its session row"}});
         }
+    }
+
+    // ⑯ ★★ 2026-11-03：**行宽判据**（此前 23 相全绿，而"会话行 160 / 历史行 291"
+    //   这条缺陷一直活着——探针只比模型、行数、选中态，从不读几何）。
+    //   为什么放在最后：它要拆一次整树（`RebuildUi`），前面那些相都是在一个稳定
+    //   的树上读数，不该被拆树打断。
+    //
+    //   判据**两段式**，缺一不可：
+    //     (a) 首帧路径：`RebuildUi()` 走的就是 `BuildUi`（与启动同一条路）
+    //         ⇒ 守的是"建列表放在 `root.Arrange()` 之前"那类缺陷。
+    //     (b) 剂量响应：把侧栏改宽 100px，行宽必须跟着变
+    //         ⇒ 证明 (a) 的读数不是"恰好算对一次的常数"。只测 (a) 会被
+    //            "行宽恰好等于期望"的巧合骗过（本仓"夹具没有区分力"那一类）。
+    //
+    //   ★ 期望值**从侧栏宽推**，不从列表自己的 `GetWidth()` 推：被修的缺陷正是
+    //     "列表宽变了、行宽还停在旧值"，拿列表当基准会让两边一起错、判据照样绿。
+    //     这条与 `RebuildSessionList` 的算式同形，但**自变量不同**（侧栏 vs 列表），
+    //     所以它能看见"列表宽度是陈旧的"这一态。
+    {
+        auto& g = m_probeState;
+        auto expectRowW = [](int sideW) {
+            // 行宽 = **控件实际宽**（`fillCrossAxis` 把它拉到栏内容宽）− 条厚 − 8，
+            // 下限是 `kSidebarRowW`（158）。★ 不能用 `kSidebarListW`(172) 参与取整：
+            // 那个 floor 只喂给 `SetContentExtent`（内容 extent 宽），不改变控件宽。
+            // 实测差 2px 就靠这条注释挡住——第一版把 172 塞进来，判据当场误红。
+            const int contentW = sideW - 2 * harness::kSidebarPad;
+            return std::max(kSidebarRowW, contentW - kScrollBarThickness - 8);
+        };
+        auto firstButtonRow = [](ECDI::ScrollView* view) -> ECDI::Widget* {
+            if (!view) return nullptr;
+            ECDI::Widget& content = view->GetContentView();
+            for (size_t i = 0; i < content.GetChildCount(); ++i) {
+                ECDI::Widget* row = content.GetChildAt(i);
+                // 分组标题行是 Panel（`ContainsPoint` 恒 false），会话/历史行是 Button
+                if (dynamic_cast<ECDI::Button*>(row) != nullptr) return row;
+            }
+            return nullptr;
+        };
+
+        std::string bad;
+
+        // ── (a) 首帧路径 ──
+        RebuildUi();
+        // ★ 拆树之后旧焦点指针立刻悬垂 ⇒ 重取（收尾要用它还给新树）。
+        focusBefore = m_window ? m_window->GetFocusedWidget() : nullptr;
+        g.sidebarGeomSideW = m_hud.sidebar ? m_hud.sidebar->GetWidth() : 0;
+        g.sidebarGeomListW = m_hud.sessList ? m_hud.sessList->GetWidth() : 0;
+        g.sidebarGeomExpectW = expectRowW(g.sidebarGeomSideW);
+        g.sidebarGeomMaxW = std::max(0, g.sidebarGeomListW - kScrollBarThickness);
+        ECDI::Widget* sessRow = firstButtonRow(m_hud.sessList);
+        ECDI::Widget* histRow = firstButtonRow(m_hud.historyList);
+        g.sidebarGeomRowW = sessRow ? sessRow->GetWidth() : 0;
+        g.sidebarGeomHistRowW = histRow ? histRow->GetWidth() : 0;
+        if (sessRow == nullptr) {
+            bad += "no session row after rebuild";
+        } else if (g.sidebarGeomRowW != g.sidebarGeomExpectW) {
+            if (!bad.empty()) bad += "; ";
+            bad += "session row w=" + std::to_string(g.sidebarGeomRowW) +
+                   " != f(sidebar w)=" + std::to_string(g.sidebarGeomExpectW);
+        }
+        if (histRow && g.sidebarGeomHistRowW != g.sidebarGeomRowW) {
+            if (!bad.empty()) bad += "; ";
+            bad += "history row w=" + std::to_string(g.sidebarGeomHistRowW) +
+                   " != session row w=" + std::to_string(g.sidebarGeomRowW);
+        }
+        if (!bad.empty() && g.sidebarGeomRowW > g.sidebarGeomMaxW) {
+            bad += "; row wider than viewport (would force a horizontal bar)";
+        }
+
+        // ── (b) 剂量响应：侧栏 200 → 300，行宽必须跟着公式走 ──
+        //   走的是**产品路径的落地结果**：改模型宽 → `SetSize` → 父级 `Arrange`
+        //   → 置脏 → 重建。中间那步"谁置脏"由 `OnResize`/`OnDragEnd` 负责，
+        //   探针这里代劳（它没法跑 tick，理由同全仓"探针不在派发栈上"那条）。
+        const int savedSideW = m_sidebarWidth;
+        const int wideSideW = 300;
+        g.sidebarGeomWideSideW = wideSideW;
+        g.sidebarGeomWideExpectW = expectRowW(wideSideW);
+        m_sidebarWidth = wideSideW;
+        if (m_hud.sidebar) {
+            m_hud.sidebar->SetSize(wideSideW, m_hud.sidebar->GetHeight());
+            if (ECDI::Widget* p = m_hud.sidebar->GetParent()) p->Arrange();
+        }
+        m_sidebarDirty = false;
+        RebuildSessionList();
+        RebuildHistoryList();
+        ECDI::Widget* wideRow = firstButtonRow(m_hud.sessList);
+        g.sidebarGeomWideRowW = wideRow ? wideRow->GetWidth() : 0;
+        if (wideRow == nullptr) {
+            if (!bad.empty()) bad += "; ";
+            bad += "no session row after widening";
+        } else if (g.sidebarGeomWideRowW != g.sidebarGeomWideExpectW) {
+            if (!bad.empty()) bad += "; ";
+            bad += "widened row w=" + std::to_string(g.sidebarGeomWideRowW) +
+                   " != f(sidebar w)=" + std::to_string(g.sidebarGeomWideExpectW);
+        } else if (g.sidebarGeomWideRowW <= g.sidebarGeomRowW) {
+            // 元断言：读数必须是**活的**。恒定读数会让上面两条等式失去意义。
+            if (!bad.empty()) bad += "; ";
+            bad += "row width did not respond to sidebar width (reading is dead)";
+        }
+
+        // 复原（应用随后就 Exit，但别留一棵宽度不对的树给收尾代码）
+        m_sidebarWidth = savedSideW;
+        if (m_hud.sidebar) {
+            m_hud.sidebar->SetSize(savedSideW, m_hud.sidebar->GetHeight());
+            if (ECDI::Widget* p = m_hud.sidebar->GetParent()) p->Arrange();
+        }
+        RebuildSessionList();
+        RebuildHistoryList();
+
+        g.sidebarGeomOk = bad.empty();
+        g.sidebarGeomDetail = bad;
+        g.sidebarGeomDone = true;
     }
 
     // ★ 焦点复原：合成点击把焦点交给了被点的 Button，留下的焦点框与 caret 闪烁
@@ -1377,6 +1514,27 @@ void HarnessApp::AppendSidebarProbeSummary(std::string& json) {
         json += b;
     }
     json += "],\n";
+
+    // ★★ 2026-11-03：行宽判据（独立键，**不塞进**上面那个数组——见 ProbeState.h 注释）。
+    //   判据在跑批脚本侧：`sidebarGeom.ok == true`（`tools/regress.py` 的
+    //   `check_sidebar_probe` 显式读它，否则新键会悬空、门不会红）。
+    {
+        const auto& g = m_probeState;
+        char b[1024];
+        std::snprintf(b, sizeof(b),
+                      "  \"sidebarGeom\": {\"sideWidth\": %d, \"listWidth\": %d, "
+                      "\"rowWidth\": %d, \"histRowWidth\": %d, \"expectWidth\": %d, "
+                      "\"maxWidth\": %d, \"wideSideWidth\": %d, \"wideRowWidth\": %d, "
+                      "\"wideExpectWidth\": %d, \"done\": %s, \"ok\": %s, "
+                      "\"detail\": \"%s\"},\n",
+                      g.sidebarGeomSideW, g.sidebarGeomListW, g.sidebarGeomRowW,
+                      g.sidebarGeomHistRowW, g.sidebarGeomExpectW, g.sidebarGeomMaxW,
+                      g.sidebarGeomWideSideW, g.sidebarGeomWideRowW, g.sidebarGeomWideExpectW,
+                      g.sidebarGeomDone ? "true" : "false",
+                      g.sidebarGeomOk ? "true" : "false",
+                      esc(g.sidebarGeomDetail).c_str());
+        json += b;
+    }
 }
 
 void HarnessApp::AppendThemeProbeSummary(std::string& json) {

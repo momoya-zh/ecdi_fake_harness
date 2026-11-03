@@ -146,12 +146,13 @@ public:
     //     左留白 16、右留白 24 ⇒ 最小尺寸下右侧明显比左侧宽（实测反馈）。
     [[nodiscard]] int TranscriptAvailWidth() const;
     // ★★ 2026-10-27：转录列**版心宽**的唯一计算口（`Relayout` / 「跳到最新」/ 空态卡共用）。
-    //   模型 = 参考载体的 max-width：`min(可用宽, kMaxTranscriptW)`。
+    //   模型 = 参考载体的**分级** max-width（2026-11-03）：
+    //     `min(可用宽, clamp(可用宽 × 72%, kTranscriptWMin, kTranscriptWMax))`。
     //     · 窗口窄 ⇒ 内容列**占满**（只留画布边）；
-    //     · 窗口宽 ⇒ 钉在最大阅读宽，余量由 `TranscriptCanvasX()` **左右平分**。
+    //     · 中段 ⇒ 72% 渐宽；宽屏 ⇒ 钉在硬顶，余量由 `TranscriptCanvasX()` **左右平分**。
     //   ★ 别再退回"扣掉检视栏宽"那版：那会让小窗口里也永远窄一条（实测：观感像布局坏了）。
-    //   ★ 代价必须知道：检视栏开合会改变可用宽 ⇒ 在"可用宽 < 最大宽"的窗口里版心会真的
-    //     变化 ⇒ 换行缓存失效 ⇒ 一次全文档重测。窗口宽到 ≈1225px 以上才免疫。
+    //   ★ 代价必须知道：检视栏开合会改变可用宽 ⇒ 在"版心未顶到硬顶"的窗口里版心会真的
+    //     变化 ⇒ 换行缓存失效 ⇒ 一次全文档重测。可用宽 ≥ 硬顶（1080）才免疫。
     [[nodiscard]] int TranscriptLayoutWidth() const;
     // ★★ 2026-10-27：版心在视口内的**左偏移**（唯一计算口）。
     //   为什么要有它：检视栏收起后视口比版心宽 230px，这段余量**必须左右平分**——
@@ -355,10 +356,6 @@ private:
         //   ★ 修的死胡同：首启（firstRun）关掉设置面板后屏幕全空（App.cpp 原注释
         //     记录过该场景）——现在引导卡给出「打开设置」出口。
         ECDI::Panel* emptyGuide = nullptr;    // 空状态引导卡（m_content 子节点）
-        // ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容。
-        //   数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
-        //   回放会话没有工作区 ⇒ 此段显示「无工作区」。
-        ECDI::ScrollView* projectList = nullptr;  // 左栏：工作区目录滚动容器（收进「工作区」段）
         // ★★ 2026-10-21：`sessSession` / `sessCore` **已删除**（原注释说"待办：下一步
         //   清理时连同注释一起删"——这就是那一步）。
         //   删的理由不是"它俩占两行"，而是：它们属于"**读了但永不写**"这一类，
@@ -589,6 +586,7 @@ private:
         std::string path;         // core 回显并确认过的实际路径（未确认时为空）
         std::string requestedPath;// 最近一次请求的路径（含未确认/失败的那次，诊断用）
         bool unavailable = false; // ★★ 2026-10-28：路径不存在或不可访问（侧栏标「不可用」，不删记录）
+        bool collapsed = false;   // 侧栏该工作区分组是否收起旗下会话列表
     };
 
     struct MemoryFileItem {
@@ -768,13 +766,6 @@ private:
     void ChooseWorkspaceFolder();
     void MaybeStartWorkspaceSync();
 
-    // ── ★★ 2026-10-20：「项目」段 = 当前工作区的真实目录内容 ─────────────
-    // 数据源 = 活动会话的 `workspacePath`（core 确认过的规范化路径）。
-    // 回放会话没有工作区 ⇒ 此段显示「无工作区」。
-    // ★ 只列一级（不递归）：侧栏宽度 172px，递归树会立刻溢出；且用户要的是
-    //   「这个工作区里有什么」，不是文件浏览器。
-    void RebuildProjectList();
-
     // ── ★★ 2026-10-20：临时会话（用户裁决 m09443）──────────────────────
     // 从工作区标题行的「＋」按钮拉起的会话是临时的：还没执行过任何任务。
     // 一旦切走就被删除；一旦发了 prompt 就转为正式。
@@ -804,6 +795,10 @@ private:
     Workspace* AcquireWorkspace(const std::string& path);
     // 把会话挂到指定工作区（外键赋值；不改路径、不发协议）。
     void AssignSessionWorkspace(Session& session, Workspace* workspace);
+    // 切换工作区分组在侧栏中的展开/收起状态。
+    void ToggleWorkspaceCollapsed(const std::string& workspaceId);
+    // 从侧栏与已知工作区配置中移除指定工作区及其内存会话（保留磁盘 .ecdi 目录）。
+    bool RemoveWorkspace(const std::string& workspaceId);
     // 新会话应当继承的路径（活动会话所属工作区的**已确认**路径；无可继承 ⇒ 空）。
     //   ★ 只读活动会话的 `workspaceId`，不读 `workspacePath`：后者可能属于
     //     一个尚未确认的请求（“等待 core 确认…”），继承一个未确认路径等于
@@ -1172,6 +1167,7 @@ private:
     bool OpenHistorySession(const std::filesystem::path& file);
     // ★★ 2026-10-28：L1 启动发现与持久化会话恢复
     void DiscoverAndRestoreJournalSessions();
+    void RestoreWorkspaceJournalSessions(const std::string& wsPath);
     bool RestoreSingleJournalSession(const std::string& wsPath, const SessionMeta& meta,
                                      const std::filesystem::path& journalPath);
     // sidecar：`<fixture>.jsonl.ui.json`，与夹具同目录。
@@ -1371,7 +1367,7 @@ private:
     //     把用户的收起状态丢掉——这正是 0c 踩过的坑（视图状态只存在控件里，
     //     重建即丢失）。模型侧留一份，重建后按它恢复。
     bool m_sidebarVisible = true;
-    int m_sidebarWidth = 200;                    // 侧栏模型宽度（默认 200，支持拖拽调整与记忆）
+    int m_sidebarWidth = 260;                    // 侧栏模型宽度（默认 260，支持拖拽调整与记忆；★ 2026-11-03 与 AppConfig 默认对齐——原 200/220 两个默认值互相打架）
     int m_inspectorWidth = 230;                  // 检查器模型宽度（默认 kInspW=230，支持拖拽调整与记忆）
     // ★★ P3.5（2026-10-24）：设置面板显隐是**模型侧状态**（与 m_sidebarVisible
     //   同一条纪律：只存在于控件上的显隐会被任何重建丢掉）。首启无配置 ⇒ true。

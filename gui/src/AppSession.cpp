@@ -44,7 +44,6 @@ using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarGroupH;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
-using harness::internal::kSidebarNameW;
 using harness::internal::kSidebarRowGap;
 using harness::internal::kSidebarRowH;
 using harness::internal::kSidebarRowW;
@@ -586,7 +585,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     const Session* session = m_sessions[index].get();
     // ★★ 2026-10-20：归档。非归档行有「↓」(归档) + 「×」(删除)；
     //   归档行有「↩」(恢复) + 「×」(删除，若 canDelete)。
-    const bool canDelete = m_sessions.size() > 1;
+    const bool canDelete = (m_sessions.size() > 1) || (!m_workspaces.empty() && !m_options.sidebarProbe);
     const bool isArchived = session->archived;
 
     // 选中态 = 三种视觉同时变（底色/圆点/文字色），但**只有文字色可读回**：
@@ -758,28 +757,49 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string
     //     `D:/Project/ECDI_fake_harn`（少了 3 个字），而两个工作区的差异几乎总在叶子段。
     //     尾部一丢，“按工作区区分”就退化成“按前缀区分”：两个都在 `D:/Project/` 下的
     //     工作区在屏幕上会是同一行。把省略放在中间，尾部至少保留叶子段。
-    // ★ 有「＋」按钮时标题宽度让出 22px（按钮 18 + 间隙 4）。
-    const int labelW = workspaceId.empty() ? (curRowW - 8) : (curRowW - 30);
+    if (!workspaceId.empty()) {
+        const Workspace* ws = WorkspaceById(workspaceId);
+        const bool collapsed = ws && ws->collapsed;
+        auto toggle = std::make_unique<ECDI::Button>(
+            collapsed ? "\xE2\x80\xBA" : "\xEF\xB9\x80");
+        toggle->SetSize(curRowW - 30, kSidebarGroupH);
+        toggle->SetPosition(0, 0);
+        toggle->SetFont(harness::SansFont(harness::kFontMicro));
+        toggle->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .borderWidth = 0.0f,
+            .cornerRadius = 4.0f,
+            .pressedBackground = kLine,
+            .hoverBackground = kLine,
+            .textAlignment = ECDI::TextAlignment::Left,
+            .foreground = kDarkMuted});
+        toggle->SetOnClick([this, workspaceId] {
+            ToggleWorkspaceCollapsed(workspaceId);
+        });
+        row->AddChild(std::move(toggle));
+    }
+
+    // ★ 有工作区按钮时标题宽度让出右侧「＋」「×」两钮（30px）与左侧折叠箭头（10px）。
+    const int labelW = workspaceId.empty() ? (curRowW - 8) : (curRowW - 40);
     // ★★ 省略预算 = 实测校准（修法 D，DPI 可移植）：预算天然跟着 labelW 走——
-    //   有按钮时可用宽少 22px，预算自动少 ~3-4 码点，不再需要手工 −1 补丁。
+    //   有按钮时可用宽自动收缩，不再需要手工 −1 补丁。
     const size_t elideCp = ElideBudgetCp(labelW);
     const std::string shown = ElideMiddleByCodepoints(title, elideCp);
     auto label = uikit::Label(shown, labelW, kSidebarGroupH - 4, kDarkMuted,
                               harness::kFontMicro, true);
-    label->SetPosition(8, 2);
-    // 禁用：标题不参与命中（`Panel::ContainsPoint` 已经恒 false，这里只是让
-    //   “文字不是交互对象”也成立；无绘制消费者 ⇒ 不变灰）。
+    label->SetPosition(workspaceId.empty() ? 8 : 10, 2);
+    // 禁用：标题不参与命中（点击文字区域直接穿透到底下的折叠切换 Button）。
     label->SetEnabled(false);
     row->AddChild(std::move(label));
 
-    // ★★ 「＋」按钮：拉起该工作区的临时会话（m09443）。
-    //   行根是 Panel（`ContainsPoint` 恒 false）⇒ 只有这个子 Button 能被点到。
+    // ★★ 「＋」按钮（拉起该工作区的临时会话，m09443）与「×」按钮（移除该工作区，保留 .ecdi）。
+    //   行根是 Panel（`ContainsPoint` 恒 false）⇒ 子 Button 各自独立命中。
     //   回调捕获 workspaceId（稳定字符串），不捕获下标。
     if (!workspaceId.empty()) {
         auto plus = std::make_unique<ECDI::Button>();
         plus->SetText("＋");
-        plus->SetSize(18, 18);
-        plus->SetPosition(curRowW - 24, (kSidebarGroupH - 18) / 2);
+        plus->SetSize(15, 16);
+        plus->SetPosition(curRowW - 30, (kSidebarGroupH - 16) / 2);
         plus->SetFont(harness::SansFont(harness::kFontSmall));
         plus->SetStyle(ECDI::ButtonStyleOverride{
             .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
@@ -793,6 +813,24 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string
             NewTemporarySession(workspaceId);
         });
         row->AddChild(std::move(plus));
+
+        auto delWs = std::make_unique<ECDI::Button>();
+        delWs->SetText("×");
+        delWs->SetSize(15, 16);
+        delWs->SetPosition(curRowW - 15, (kSidebarGroupH - 16) / 2);
+        delWs->SetFont(harness::SansFont(harness::kFontSmall));
+        delWs->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+            .borderWidth = 0.0f,
+            .cornerRadius = 4.0f,
+            .pressedBackground = kLine,
+            .hoverBackground = kLine,
+            .textAlignment = ECDI::TextAlignment::Center,
+            .foreground = kDarkMuted});
+        delWs->SetOnClick([this, workspaceId] {
+            RemoveWorkspace(workspaceId);
+        });
+        row->AddChild(std::move(delWs));
     }
     return row;
 }
@@ -863,9 +901,9 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
             place(BuildSessionGroupRow(title, ws.id), kSidebarGroupH);
             for (size_t i = 0; i < n; ++i) {
                 if (m_sessions[i]->workspaceId != ws.id) continue;
-                if (m_sessions[i]->archived) { shown[i] = true; continue; }  // ★★ 归档会话不进主列表
-                place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
                 shown[i] = true;
+                if (m_sessions[i]->archived || ws.collapsed) continue;  // ★★ 归档或分组收起时不显示会话行
+                place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
             }
         }
         bool anyOrphan = false;
@@ -901,9 +939,20 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
         }
     }
     const int totalH = y > 0 ? y - lastGap : 0;
-    // 高度上限仍按“4 个会话行”折算成像素：分组标题不算一行（它是分隔，不是条目），
+    // 高度上限按"会话行"折算成像素：分组标题不算一行（它是分隔，不是条目），
     //   否则两个工作区就会把可见区吃掉一半。
-    const int visibleH = std::min(totalH, kSidebarMaxRows * (kSidebarRowH + kSidebarRowGap)
+    // ★★ 2026-11-03（用户反馈「侧栏紧凑」）：可见行数从固定 4 改**按窗口高度分级**
+    //   （4 → 10）。下限仍是 `kSidebarMaxRows`（客户区 ≤700 时逐位不变）。
+    //   ★ 预算来源（Theme.h `kSidebarPad` 实测）：客户区 700 时底部 spring 只剩 30px，
+    //     且 slack 随高度增长率 ≈ 0.91 px/px ⇒ 每多显示一行（stride 36px）需要
+    //     ≈40px 额外客户区高，30px 底线才不会被吃掉 ⇒ 台阶取 40px。
+    //   ★ 只在**重建时**结算（本函数）：纯拖高窗口不立即加行（列表高由 SetSize 定），
+    //     下一次重建（切会话 / 新建删除 / 换主题 / 拖侧栏宽 / 切模式）即重算。
+    //   ★ 探针零扰动：`--sidebar-probe`/`--sidebarGeom` 断的是「建了哪些行 + 行高 +
+    //     行宽」，不钉视口高度；且探针跑在固定窗口高下，读数确定。
+    const int rootH = m_window ? static_cast<int>(m_window->GetRootWidget().GetHeight()) : 0;
+    const int maxRows = std::min(10, kSidebarMaxRows + std::max(0, (rootH - 700) / 40));
+    const int visibleH = std::min(totalH, maxRows * (kSidebarRowH + kSidebarRowGap)
                                               - kSidebarRowGap);
     // ★ 先 SetSize（决定 viewport）再 SetContentExtent（决定要不要出条）：
     //   反过来的话第一帧会按旧 viewport 判一次"不需要滚动条"，出条后行宽被挤。
@@ -1014,12 +1063,41 @@ bool HarnessApp::SwitchToSessionByPtr(const Session* target) {
 bool HarnessApp::DeleteSessionAt(size_t index) {
     if (index >= m_sessions.size()) return false;
     // ★ 禁止删到零会话：`m_sess` 变空指针会让全仓 200+ 处 `m_sess->` 解引用崩溃。
-    //   "支持零会话"是一个独立的架构决定（每个调用点加判空），不该被一个删除按钮带进来。
-    if (m_sessions.size() <= 1) return false;
+    //   无工作区或回放探针（single-session 判据）下仅 1 个会话时直接拒绝；
+    //   有工作区的实际使用下，若删的是最后 1 个会话，先拉起一个新会话顶替再删它。
+    if (m_sessions.size() <= 1) {
+        if (m_workspaces.empty() || m_options.sidebarProbe) return false;
+    }
 
     Session* target = m_sessions[index].get();
-    const bool deletingActive = (index == m_activeIndex);
-    if (deletingActive) {
+    const std::string targetWsId = target->workspaceId;
+    std::string targetWsPath = target->workspacePath;
+    if (targetWsPath.empty() && !targetWsId.empty()) {
+        if (const Workspace* ws = WorkspaceById(targetWsId)) {
+            targetWsPath = ws->path;
+        }
+    }
+    const std::string targetSessionId = target->sessionId;
+
+    if (m_sessions.size() == 1) {
+        target->temporary = false;
+        if (!m_options.corePath.empty() && !targetWsId.empty()) {
+            NewTemporarySession(targetWsId);
+        } else {
+            NewSession();
+        }
+        if (m_sessions.size() <= 1) {
+            auto fallback = std::make_unique<Session>();
+            fallback->label = "会话 1";
+            fallback->originKind = "new";
+            if (Workspace* ws = WorkspaceById(targetWsId)) {
+                AssignSessionWorkspace(*fallback, ws);
+                fallback->workspacePath = ws->path;
+            }
+            m_sessions.push_back(std::move(fallback));
+            SwitchToSession(m_sessions.size() - 1);
+        }
+    } else if (index == m_activeIndex) {
         // ★★ 顺序不能换：先把活动指针挪到邻居（SwitchToSession 内部会
         //    SyncRowViewState → 重建转录区 → 完成切换），**之后**才 erase。
         //    反过来的话，`SwitchToSession` 会在旧 Session 已被销毁的情况下
@@ -1038,12 +1116,14 @@ bool HarnessApp::DeleteSessionAt(size_t index) {
     const auto it = std::find_if(m_sessions.begin(), m_sessions.end(),
                                  [target](const std::unique_ptr<Session>& p) { return p.get() == target; });
     if (it != m_sessions.end()) {
-        // ★★ 2026-10-28：删除已落盘会话时同步清理磁盘四件套（事实 §2）
-        if (!target->workspacePath.empty() && !target->sessionId.empty() && target->journalPromoted) {
-            std::string delErr;
-            SessionStore::DeleteSession(target->workspacePath, target->sessionId, delErr);
-        }
+        // ★★ 先关闭日志写入流与子进程并析构 Session，释放 Windows 文件句柄后再删磁盘四件套
+        if ((*it)->journal) (*it)->journal->Close();
+        if ((*it)->child) (*it)->child->Stop();
         m_sessions.erase(it);
+    }
+    if (!targetWsPath.empty() && !targetSessionId.empty()) {
+        std::string delErr;
+        SessionStore::DeleteSession(targetWsPath, targetSessionId, delErr);
     }
 
     // 活动下标同样按身份重取：`m_sess` 一定还在这张表里（切换后指向邻居，或者本来就没切），

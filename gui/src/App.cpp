@@ -105,7 +105,6 @@ using harness::internal::kSidebarRowW;
 // ★ 2026-10-25：行高与标题行高移到 `AppInternal.h`（--sidebar-probe 要量这两条），此处留短名。
 using harness::internal::kSidebarRowH;
 using harness::internal::kSidebarRowGap;
-using harness::internal::kSidebarNameW;   // 22(dot 右缘) → 128，给右侧 18px 删除钮留 6px 间隙
 using harness::internal::kSidebarMaxRows;
 // ★★ 2026-10-20：工作区分组标题行的高度。
 //   比会话行（28）矮得多：它是**分隔**，不是条目。若与行同高，列表中“工作区”与
@@ -381,9 +380,10 @@ void HarnessApp::SetSidebarVisible(bool visible) {
 //     排版宽另由 `TranscriptLayoutWidth()` 单独算。两件事分开管，是因为
 //     「视口满宽」和「版心按 max-width 封顶」在视觉上必须同时成立。
 //   ★★ 2026-10-27 更正：上一版这里写的是"版心不变（永远扣掉 230）"——那条模型
-//     已经被 max-width 取代。现在的真实语义：**视口变宽 ⇒ 版心跟着变宽，直到
-//     `kMaxTranscriptW` 封顶**；只有窗口宽到"扣掉 230 之后仍 ≥ 封顶"才免疫。别
-//     再按"零重测"理解它（见 `TranscriptLayoutWidth` 的性能注记）。
+//     已经被 max-width 取代。现在的真实语义（2026-11-03 分级化）：**视口变宽 ⇒
+//     版心跟着变宽，直到 `kTranscriptWMax` 硬顶**（中间还有 72% 斜率与
+//     `kTranscriptWMin` 平台，见 `TranscriptLayoutWidth()`）；只有窗口宽到
+//     "可用宽仍 ≥ 硬顶"才免疫。别再按"零重测"理解它（见那里的性能注记）。
 void HarnessApp::ApplyInspectorVisibility() {
     if (m_hud.inspector) m_hud.inspector->SetVisible(m_inspectorVisible);
 }

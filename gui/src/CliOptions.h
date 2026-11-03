@@ -246,9 +246,10 @@ struct CliOptions {
     //     1120 时的宽度（右侧一片白），800x560 下行比视口还宽（出现横向滚动条）。
     //   ★ 判据逐条（每条都能变红）：
     //     · 居中（四相共用）：内容列左右留白相等 —— `rowX == scrollW − rowX − rowWMax`。
-    //       这是版心模型（`min(可视带宽, kMaxTranscriptW)` 居中）唯一的视觉承诺，
+    //       这是版心模型（分级 max-width：`min(可视带宽, clamp(可视带宽×72%,
+    //       kTranscriptWMin, kTranscriptWMax))` 居中，2026-11-03）唯一的视觉承诺，
     //       且与窗口宽无关 ⇒ grow/shrink/roundtrip 断的是同一句话。
-    //     · 封顶：行宽 ≤ `kMaxTranscriptW − 2×kCanvasPadX`（窗口再宽也不许变宽）
+    //     · 封顶：行宽 ≤ `kTranscriptWMax − 2×kCanvasPadX`（窗口再宽也不许变宽）
     //     · grow：未封顶时行宽**必须**跟着变宽；已封顶时**必须**一位不变
     //     · shrink：客户区变小 ⇒ 行宽变小，且**不出现横向滚动条**
     //       （横向滚动条是"行比视口宽"的机器可读证据，`GetMaxOffsetX() > 0`）

@@ -153,7 +153,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             box->SetText(block.text);
             box->SetReadOnly(true);
             box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-            box->SetFont(harness::SansFont(harness::kFontBody));
+            box->SetFont(harness::SansFont(harness::kFontBody, 400));
             box->SetStyle(ECDI::TextBoxStyleOverride{
                 .background = Pick(m_options.probeContrast, kUserBg, kProbeBg),
                 .caretWidth = 0.0f,
@@ -168,7 +168,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         // ★ 正文必须走主题字体工厂：此前不 SetFont ⇒ family 为空 ⇒ 落 SimSun，
         //   而侧栏/标题走雅黑 ⇒ **同一界面两种中文字形**（浅色下尤其割裂）。
-        label->SetFont(harness::SansFont(harness::kFontBody));
+        label->SetFont(harness::SansFont(harness::kFontBody, 400));
         panel->AddChild(std::move(label));
         return panel;
     }
@@ -210,7 +210,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             box->SetText(block.text);
             box->SetReadOnly(true);
             box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-            box->SetFont(harness::SansFont(harness::kFontBody));
+            box->SetFont(harness::SansFont(harness::kFontBody, 400));
             box->SetStyle(ECDI::TextBoxStyleOverride{
                 .background = plainBg,
                 .caretWidth = 0.0f,
@@ -224,7 +224,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             auto label = std::make_unique<ECDI::Label>(block.text);
             rec.label = label.get();
             label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-            label->SetFont(harness::SansFont(harness::kFontBody));   // 同 user 分支：统一中文 face
+            label->SetFont(harness::SansFont(harness::kFontBody, 400));   // 同 user 分支：统一中文 face
             if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
             if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
             panel->AddChild(std::move(label));
@@ -258,7 +258,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     //     换个方式复活**（思维链又一次伪装成"正在等的工具结果"）。加 kind 必须同时加分支。
     //   ★ 复用 `CollapsiblePanel`（与工具卡同机制，不新造控件）：
     //     折叠动画、内容可见性、展开基准全由框架既有能力承担。
-    //   ★★ 2026-10-27：思维链改为透明无边框、无悬停变暗、无点击按下变色的纯文本样式。
+    //   ★★ 2026-10-27：思维链改为透明无边框的纯文本样式（当时含「无悬停变暗、
+    //     无点击按下变色」）。**2026-11-03 C 批修订**：悬停/按下反馈恢复——用户
+    //     反馈「向下的尖括号难用」，根因就是整条 header 可点却零反馈、看不出能点。
+    //     无边框保持不变；反馈走 `kReasoningHover`/`kReasoningPressed` 梯级 + tooltip。
     if (block.kind == "reasoning") {
         rec.reasoning = true;
         rec.ended = block.ended;
@@ -273,7 +276,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         // 标题 = 单一真相源（箭头两态）
         // ★ 0c：箭头取自 `rec.expanded`（重建时先由条目回填）——否则重建出来的行
         //   一律显示收起态箭头，而控件实际是展开的（读数与屏幕当场打架）。
-        auto header = std::make_unique<ECDI::Button>(ReasoningTitle(block, rec.expanded));
+        // ★★ 2026-11-03 C 批：`Button` → `TipButton`（悬停 400ms 后出 tooltip，
+        //   leave/点击即收；回调模式照抄 AppUiChrome 的顶栏钮）。header 仍存进
+        //   `rec.headerBtn`（`ECDI::Button*`）——TipButton 是 Button 派生，零改动。
+        auto header = std::make_unique<uikit::TipButton>(
+            ReasoningTitle(block, rec.expanded), "点击展开 / 收起",
+            [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+            [this](uikit::TipButton*) { HideTooltip(); });
         rec.headerBtn = header.get();
         header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
         {
@@ -285,8 +294,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             .border = plainBg,
             .borderWidth = 0.0f,
             .cornerRadius = 0.0f,
-            .pressedBackground = plainBg,
-            .hoverBackground = plainBg,
+            .pressedBackground = Pick(m_options.probeContrast, kReasoningPressed, kProbeBg),
+            .hoverBackground = Pick(m_options.probeContrast, kReasoningHover, kProbeBg),
             .textAlignment = ECDI::TextAlignment::Left});
         panel->AddChild(std::move(header));
 
@@ -304,7 +313,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         label->SetWordWrap(true);   // 思维链很长，必须按宽断行
         {
-            ECDI::Font f = harness::SansFont(14.0f);
+            ECDI::Font f = harness::SansFont(14.0f, 400);   // ★ 正文体：UI 默认 700，这里显式 400
             label->SetFont(f);
         }
         rec.body->GetContent()->AddChild(std::move(label));
@@ -336,7 +345,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         auto label = std::make_unique<ECDI::Label>(shown);
         rec.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kWarn, kProbeInk));
-        label->SetFont(harness::SansFont(harness::kFontBody));   // 统一中文 face
+        label->SetFont(harness::SansFont(harness::kFontBody, 400));   // 统一中文 face
         panel->AddChild(std::move(label));
         return panel;
     }
@@ -370,7 +379,12 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     const Block* call = (block.kind == "tool_result")
                             ? m_sess->transcript.FindBlock(block.forId)
                             : nullptr;
-    auto header = std::make_unique<ECDI::Button>(ToolTitle(block, call));
+    // ★★ 2026-11-03 C 批（同思维链头）：Button → TipButton + 悬停/按下梯级。
+    //   根因同一条：整条 header 可点（BindCollapsible → ToggleRow）却零反馈。
+    auto header = std::make_unique<uikit::TipButton>(
+        ToolTitle(block, call), "点击展开 / 收起",
+        [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+        [this](uikit::TipButton*) { HideTooltip(); });
     rec.headerBtn = header.get();
     // 结束且失败 ⇒ 标题转错误色（增量路径在 `block_end` 做，重建在这里做，同一判据）
     header->SetTextColor((block.ended && !block.ok)
@@ -385,8 +399,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         .border = toolPlainBg,
         .borderWidth = 0.0f,
         .cornerRadius = 0.0f,
-        .pressedBackground = toolPlainBg,
-        .hoverBackground = toolPlainBg,
+        .pressedBackground = Pick(m_options.probeContrast, kToolHeaderPressed, kProbeBg),
+        .hoverBackground = Pick(m_options.probeContrast, kToolHeaderHover, kProbeBg),
         .textAlignment = ECDI::TextAlignment::Left});   // Phase 30 △3：卡头贴左（hi-fi .tool>.h）
     // ── P4 Phase I：标题旁「⤢」预览按钮（§11 入口经评审修订——标题按钮的点击
     //   已被折叠占用，BindCollapsible → ToggleRow）。仅当标题文本匹配路径形态时
@@ -730,7 +744,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
         auto label = std::make_unique<ECDI::Label>("权限 " + entry.text);
         rec.label = label.get();
         label->SetTextColor(kAskQInk);
-        label->SetFont(harness::SansFont(15.0f));
+        label->SetFont(harness::SansFont(15.0f, 400));   // ★ 问句是折叠长文（正文档 400），头仍是 UI 700
         label->SetWordWrap(true);   // ★ 换行是本轮改造的核心：原来这条路径上完全没有
         // 内容容器（裸 Widget，不画底），与工具卡/思维链同一挂法
         body->GetContent()->AddChild(std::move(label));
@@ -842,7 +856,7 @@ void HarnessApp::MaterializePendingPrompts() {
         auto label = std::make_unique<ECDI::Label>(display);
         row.label = label.get();
         label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-        label->SetFont(harness::SansFont(harness::kFontBody));
+        label->SetFont(harness::SansFont(harness::kFontBody, 400));
         panel->AddChild(std::move(label));
         row.panel = panel.get();
         if (m_options.rowModeList) row.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
@@ -1129,7 +1143,7 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
                 box->SetText(seg.text);
                 box->SetReadOnly(true);
                 box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-                box->SetFont(harness::SansFont(harness::kFontBody));
+                box->SetFont(harness::SansFont(harness::kFontBody, 400));
                 box->SetStyle(ECDI::TextBoxStyleOverride{
                     .background = plainBg,
                     .caretWidth = 0.0f,
@@ -1142,7 +1156,7 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
             } else {
                 auto label = std::make_unique<ECDI::Label>(seg.text);
                 label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-                label->SetFont(harness::SansFont(harness::kFontBody));
+                label->SetFont(harness::SansFont(harness::kFontBody, 400));
                 if (!rec.label) rec.label = label.get();
                 rec.segments.push_back(label.get());
                 panel.AddChild(std::move(label));
@@ -1217,7 +1231,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         return w;
     };
 
-    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody);
+    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody, 400);
     // 建表时 Label 尚未挂窗，AutoSize 拿不到测量器（preferred 回落当前尺寸=0）⇒ 显式实测设尺寸
     auto measureWidth = [&](const std::string& str) -> int {
         if (!m_window) return estimateWidth(str);
@@ -1446,7 +1460,7 @@ void HarnessApp::LayoutTableInterior(RowRec::TableRec& t, int availW) {
     std::vector<int> colX(numCols + 1, 0);
     for (size_t c = 0; c < numCols; ++c) colX[c + 1] = colX[c] + colW[c];
 
-    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody);
+    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody, 400);
     auto measureWidth = [&](const std::string& str) -> int {
         if (!m_window) return 0;
         const float w = m_window->GetTextMeasurer().MeasureText(bodyFont, str).width;

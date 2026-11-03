@@ -91,7 +91,7 @@ struct AppConfig {
     int windowWidth = 1180;
     int windowHeight = 800;
     bool isMaximized = false;
-    int sidebarWidth = 220;
+    int sidebarWidth = 260;   // ★ 2026-11-03：220 → 260（用户反馈「左侧栏紧凑」；Theme.h 的竖向预算本就按 260 宽实测）
     int inspectorWidth = 240;
 
     // 便捷访问：默认提供商（defaultProviderId 找不到 ⇒ providers[0]；空表 ⇒ nullptr）。

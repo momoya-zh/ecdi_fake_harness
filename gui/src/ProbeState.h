@@ -145,6 +145,28 @@ struct ProbeState {
     std::vector<MenuProbeRec> menuProbeLog;
     bool menuProbeDone = false;
 
+    // ★★ 2026-11-03：侧栏**行宽**判据（挂在 `--sidebar-probe` 末尾，独立摘要键
+    //   `sidebarGeom`，**不塞进** `sidebarProbe` 数组——那 23 相的形状是既有基线，
+    //   往每条记录里加字段会让历史读数失去可比性，同 `wsPlusProbe` 的理由）。
+    //   为什么必须补：行宽从 `ScrollView` 的实际宽度算出，而它只有 `Arrange()` 之后
+    //   才成立。旧实现把建列表放在 Arrange 之前 ⇒ 会话行永久 160、历史行却是栏宽，
+    //   同一栏里两块列表差 131px。**这条缺陷此前 23 相全绿**——探针只比模型、行数、
+    //   选中态，从不读几何。
+    //   ★ 判据是**两段式**（详见 `RunSidebarProbe` ⑬）：首帧路径（整树重建）+
+    //     换自变量（侧栏变宽）后的剂量响应。只测前者会被"恰好算对一次"骗过。
+    int sidebarGeomSideW = 0;        // 侧栏宽（首帧路径重建后）
+    int sidebarGeomListW = 0;        // 会话列表控件宽
+    int sidebarGeomRowW = 0;         // 会话行宽
+    int sidebarGeomHistRowW = 0;     // 历史行宽
+    int sidebarGeomExpectW = 0;      // 期望行宽（**从侧栏宽推**，不从列表推）
+    int sidebarGeomMaxW = 0;         // 上界：超过它就会恒出横向滚动条
+    int sidebarGeomWideSideW = 0;    // 换自变量后的侧栏宽
+    int sidebarGeomWideRowW = 0;     // 换自变量后的会话行宽
+    int sidebarGeomWideExpectW = 0;  // 换自变量后的期望值
+    bool sidebarGeomDone = false;
+    bool sidebarGeomOk = false;
+    std::string sidebarGeomDetail;   // 翻红时的定性原因（数值同时进摘要）
+
     std::filesystem::path menuProbeTempFile;
 
     std::vector<ResizeProbeRec> resizeProbeLog;

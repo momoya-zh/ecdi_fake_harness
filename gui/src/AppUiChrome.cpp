@@ -79,9 +79,15 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     BuildTopBar(root);
     BuildMainArea(root);
     BuildBottom(root);
-    RebuildSessionList();
-    RebuildHistoryList();
-    RebuildProjectList();
+    // ★★ 2026-11-03（P0）：`RebuildSessionList` / `RebuildHistoryList` /
+    //   `RebuildProjectList` **移到了 `root.Arrange()` 之后**，见下方调用点。
+    //   原先它们在这里（Arrange 之前）：那时 `sessList->GetWidth()` 还是
+    //   `SetSize(kSidebarListW)` 的 172，而行的宽度正是从它算出来的
+    //   （`AppSession.cpp` 的 `curRowW`）⇒ 会话行被永久建成 160 宽；
+    //   Arrange 之后 ScrollView 被 `fillCrossAxis` 拉到栏宽，**行不会跟着拉**
+    //   （行是绝对定位子控件），于是同一栏里"会话行 160 / 历史行 302−12"
+    //   （用户实测截图逐像素量到）。历史区之所以看起来是对的，是因为它启动后
+    //   还会被别的路径置脏重建一次——两个列表同形不同命，纯粹是时序巧合。
     // ★★ 2026-10-30（浮层迁移）：这里原本有 18 行「从 m_scroll 搬到 root 末尾 + 注册
     //   Exempt」的转移挂载——随 `HarnessRootLayout` 一起删除。遮罩与 sheet 现在由
     //   `BuildTranscriptViewport` 直接交给 harness 持有（`m_settings*Owned` /
@@ -93,6 +99,16 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     //   可见的，同值守卫下零额外 Arrange、零额外 Invalidate。
     ApplyDevModeVisibility();
     root.Arrange();
+
+    // ★★ 2026-11-03（P0）：列表在**布局跑完之后**才建。
+    //   行的宽度是从 ScrollView 的**实际**宽度算出来的（`curRowW = f(GetWidth())`），
+    //   而宽度只有 `root.Arrange()` 之后才成立（`fillCrossAxis` 把栏宽下放到三个栏）。
+    //   ⇒ 顺序错了不是"差几个像素"，是行宽被永久钉在 `SetSize` 的旧值上。
+    //   ★ `Rebuild*` 内部都会 `parent->Arrange()` 一次（列表高度是变的），
+    //     所以这里三条连着调不会互相留住旧几何。
+    //   ★ 三者的顺序无关：会话列表与历史列表互不读写，目录列表读的是 `m_sess`。
+    RebuildSessionList();
+    RebuildHistoryList();
 
     // ★★ 2026-10-26：输入框高度在这里**由测量**定下，不留手抄常数。
     //   ★ 为什么必须在这个位置（三条都不可换）：
