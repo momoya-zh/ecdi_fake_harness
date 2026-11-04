@@ -112,8 +112,18 @@ void HarnessApp::RunAgentProbe() {
     rec.cardRows = m_hud.agentList ? m_hud.agentList->GetChildCount() : 0;
     rec.cardVisible = m_hud.inspAgentCard && m_hud.inspAgentCard->IsVisible();
     const size_t agents = m_sess->transcript.Agents().size();
-    const bool cardOk = rec.cardRows == agents + (agents > 0 ? 1 : 0) &&
-                        rec.cardVisible == (agents > 0);
+    // ★★ 判据按**契约**写，不按"有没有 agents"写（2026-11-04 订正）：
+    //   协议 §3.1 说「支持子代理的 core 必须声明 `caps.agents`；未声明 ⇒ GUI 不得
+    //   显示代理卡」。所以正确行为有**两支**：
+    //     · 声明了 cap ∧ 有代理 ⇒ 卡显形，行数 = agents + 1（主代理那行）
+    //     · 没声明 cap         ⇒ 卡必须**没有**，哪怕转录里真有 agent 消息
+    //         （不合规的 core 可以发消息却不声明能力；内容照旧渲染，卡片不得出现）
+    //   ★ 为什么必须这么写：若只判"卡跟着 agents 走"，那么**门控整个不存在**的实现
+    //     在"有 cap"与"无 agent"两支上也都是绿的——负向用例恒成立等于没有负向用例
+    //     （`fixtures/subagent/agent-cap-missing.jsonl` 就是专为这一支造的）。
+    const bool cardOk = m_sess->hasAgentsCap && agents > 0
+                            ? (rec.cardRows == agents + 1 && rec.cardVisible)
+                            : (rec.cardRows == 0 && !rec.cardVisible);
 
     // 元断言（见文件头 ①②③④⑤）
     rec.matched = rec.indentRows == rec.attributedBlocks &&

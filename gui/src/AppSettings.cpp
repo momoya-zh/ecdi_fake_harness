@@ -88,6 +88,19 @@ std::string ClampDisplay(const std::string& s, size_t maxCp) {
 
 }   // namespace
 
+// ★★ 协议 v5（2026-11-04）：core 的子代理开关，**默认开**（用户裁定）。
+//
+//   为什么默认开：core 的 `--agents` 自身默认是 false（那是 A/B 对照臂的起点，
+//   「关闭时逐字节退回 v4」这条纪律要靠它成立）。但 GUI 的目的就是让 agent 真能
+//   干活，而"把只读探查分给一两个子代理并行做"是最常见的形态——默认关掉等于
+//   从应用里永远点不出这个能力，功能白写。
+//
+//   为什么不进设置面板（第一版）：开关会影响"每一次对话花多少 token"，但一个
+//   只有两档、默认值明确的旋钮，先让默认值跑一段、拿到真实收益再决定要不要
+//   露给用户。★ 它**不**进 `--allow-tools`：委派本身每次都过 ask 门（那一次确认
+//   就是子代理整个只读工具面的授权），这两件事不要混。
+constexpr const char* kCoreAgentArgs = " --agents";
+
 void HarnessApp::ToggleMoreMenu() { SetMoreMenuOpen(!m_moreMenuOpen); }
 
 void HarnessApp::SetMoreMenuOpen(bool open) {
@@ -305,6 +318,7 @@ bool HarnessApp::TryAutoConnectFromConfig() {
     if (def->ActiveMaxOutput() > 0) {
         m_options.coreArgs += " --max-output=" + std::to_string(def->ActiveMaxOutput());
     }
+    m_options.coreArgs += kCoreAgentArgs;   // ★ v5：子代理默认开（见 kCoreAgentArgs 注释）
     m_options.fixtureName = def->ActiveModelName() + " (live)";
     return true;
 }
@@ -657,6 +671,7 @@ void HarnessApp::OnSettingsSave() {
                              " --provider-id=" + providerId;
         if (context > 0) m_options.coreArgs += " --context=" + std::to_string(context);
         if (maxOutput > 0) m_options.coreArgs += " --max-output=" + std::to_string(maxOutput);
+        m_options.coreArgs += kCoreAgentArgs;   // ★ v5：同 `kCoreAgentArgs`（两处装配必须一致）
         Session* live = CreateSessionFromOptions();
         if (!live) {
             setHint("core 启动失败（见 core-stderr 日志）", kErrorDark);

@@ -1,0 +1,26 @@
+{"t":"hello","seq":0,"ts":"2026-11-04T12:00:00.000Z","protocol":5,"core":"0.5.0","session":"s-v5-cap-missing","caps":["tools","ask","workspace"]}
+{"t":"state","seq":1,"ts":"2026-11-04T12:00:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-11-04T12:00:00.020Z","id":"b1","kind":"user","client_id":"p1","text":"这个 core 没声明 agents 能力，但它照样发了子代理消息——GUI 该怎么办？"}
+{"t":"block_end","seq":3,"ts":"2026-11-04T12:00:00.030Z","id":"b1","ok":true}
+{"t":"block_start","seq":4,"ts":"2026-11-04T12:00:00.040Z","id":"b2","kind":"assistant"}
+{"t":"delta","seq":5,"ts":"2026-11-04T12:00:00.050Z","id":"b2","text":"派一个子代理去查。"}
+{"t":"block_end","seq":6,"ts":"2026-11-04T12:00:00.060Z","id":"b2","ok":true}
+{"t":"block_start","seq":7,"ts":"2026-11-04T12:00:00.070Z","id":"b3","kind":"tool_call","name":"task","args":{"agent":"explorer-a","task":"查一下 caps 声明与能力门控的关系","tools":["read_file","grep"],"max_turns":8}}
+{"t":"ask","seq":8,"ts":"2026-11-04T12:00:00.080Z","id":"q1","kind":"permission","question":"委派子代理 explorer-a 吗？任务：查一下 caps 声明与能力门控的关系；授权工具：read_file / grep（限工作区内，只读）；预算：8 轮 / 120 秒","options":[{"key":"allow","label":"允许"},{"key":"deny","label":"拒绝"}],"default":"deny"}
+{"t":"state","seq":9,"ts":"2026-11-04T12:00:00.090Z","value":"waiting"}
+{"t":"state","seq":10,"ts":"2026-11-04T12:00:00.100Z","value":"running"}
+{"t":"agent","seq":11,"ts":"2026-11-04T12:00:00.110Z","id":"a1","phase":"start","name":"explorer-a","parent_call":"b3","depth":1,"task":"查一下 caps 声明与能力门控的关系","model":"deepseek-chat"}
+{"t":"block_start","seq":12,"ts":"2026-11-04T12:00:00.120Z","id":"b4","kind":"reasoning","agent":"a1","parent":"b3"}
+{"t":"delta","seq":13,"ts":"2026-11-04T12:00:00.130Z","id":"b4","text":"先看 §3.1 的 caps 那一行"}
+{"t":"block_end","seq":14,"ts":"2026-11-04T12:00:00.140Z","id":"b4","ok":true}
+{"t":"block_start","seq":15,"ts":"2026-11-04T12:00:00.150Z","id":"b5","kind":"assistant","agent":"a1","parent":"b3"}
+{"t":"delta","seq":16,"ts":"2026-11-04T12:00:00.160Z","id":"b5","text":"§3.1 写的是「支持子代理的 core 必须声明 agents」——本流没有声明，所以它是违规流。"}
+{"t":"block_end","seq":17,"ts":"2026-11-04T12:00:00.170Z","id":"b5","ok":true}
+{"t":"agent","seq":18,"ts":"2026-11-04T12:00:00.180Z","id":"a1","phase":"end","ok":true,"summary":"没有 caps.agents 的流属于违反 §3.1 的 core","turns":2,"input":3120,"output":260,"elapsedMs":4180}
+{"t":"block_start","seq":19,"ts":"2026-11-04T12:00:00.190Z","id":"b6","kind":"tool_result","for":"b3"}
+{"t":"delta","seq":20,"ts":"2026-11-04T12:00:00.200Z","id":"b6","text":"子代理 explorer-a 已返回：没有 caps.agents 的流属于违反 §3.1 的 core"}
+{"t":"block_end","seq":21,"ts":"2026-11-04T12:00:00.210Z","id":"b6","ok":true}
+{"t":"block_end","seq":22,"ts":"2026-11-04T12:00:00.220Z","id":"b3","ok":true,"summary":"已委派 explorer-a"}
+{"t":"usage","seq":23,"ts":"2026-11-04T12:00:00.230Z","turn":1,"input":4100,"output":520}
+{"t":"state","seq":24,"ts":"2026-11-04T12:00:00.240Z","value":"idle"}
+{"t":"bye","seq":25,"ts":"2026-11-04T12:00:00.250Z","reason":"eof","code":0}

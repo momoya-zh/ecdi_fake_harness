@@ -662,14 +662,17 @@ void HarnessApp::RouteLastMessage() {
             }
         }
         bool hasModelCap = false;
+        bool hasAgentsCap = false;
         if (capsValid) {
             for (const auto& cap : caps->array) {
                 if (cap.text == "model") hasModelCap = true;
+                if (cap.text == "agents") hasAgentsCap = true;
             }
         }
         m_sess->capsStr = capsValid ? joined : std::string();
         m_sess->workspaceCap = capsValid && hasWorkspace;
         m_sess->hasModelCap = capsValid && hasModelCap;
+        m_sess->hasAgentsCap = capsValid && hasAgentsCap;   // ★ v5：§3.1 的代理卡门控
         // spawn 时 GUI 已知道初始提供商（--provider-id 与配置一致）
         if (m_sess->providerId.empty()) {
             if (const auto* def = m_appConfig.DefaultProvider()) {

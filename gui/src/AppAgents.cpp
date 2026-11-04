@@ -87,7 +87,12 @@ void HarnessApp::RebuildAgentList() {
     }
 
     Session* s = m_sess;
-    const bool hasAgents = s && !s->transcript.Agents().empty();
+    // ★★ 门控两件都要满足：① core 声明了 `caps.agents`（协议 §3.1 的**契约**要求）；
+    //   ② 转录里真的有子代理。只有 ② 是"巧合成立"——不合规 core 可以发 agent
+    //   消息却不声明能力，那时显示卡片就是 GUI 违约。
+    //   ★ 被门控掉的只是**卡片**：块本身照旧按归属缩进渲染（内容是 content，
+    //     I5 前向兼容那一条管的是"不认识的东西不要崩"，与能力门控是两回事）。
+    const bool hasAgents = s && s->hasAgentsCap && !s->transcript.Agents().empty();
     if (m_hud.inspAgentCard->IsVisible() != hasAgents) {
         m_hud.inspAgentCard->SetVisible(hasAgents);
         if (m_hud.inspector) m_hud.inspector->Arrange();

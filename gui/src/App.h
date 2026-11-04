@@ -722,6 +722,11 @@ private:
         //   ack 更新；回放会话为 "?"，chip 如实显示）。
         std::string modelName;
         bool hasModelCap = false;        // hello.caps 声明了 "model"
+        // ★★ v5（2026-11-04）：hello.caps 声明了 "agents"。
+        //   为什么要它：协议 §3.1 明写「未声明 ⇒ GUI **不得**显示代理卡」。
+        //   只靠"没声明就不会有 agent 消息"是**巧合**而不是契约——不合规的 core
+        //   完全可以发 agent 消息却不声明能力，那时把卡显示出来就是 GUI 违约。
+        bool hasAgentsCap = false;
         int ctxCapacity = 0;             // 当下分母：hello.context ⇒ usage.context ⇒ model ack 逐级覆盖
         std::string pendingModelId;      // 已发出未确认的切换请求 id（I11 在途）
         std::string queuedModelProvider; // running/waiting 时排队；state 回 idle 后发出

@@ -174,8 +174,8 @@ README.md                                    # [MODIFY] 增 --agents 运行方�
 |---|---|---|
 | B1 | 协议 v5：`PROTOCOL.md`（§3.1 caps / §3.3 可选 agent+parent / §3.12 / I12+I13 / §7 渲染 / §9 版本表）、`validate.py`、1 正向 + 3 hostile 夹具、`kProtocolMaxSupported` 4→5 | ✅ 已提交 `e64e7f4` |
 | B2 | core：`agent.go`、`task` 特判、semaphore、`out.go` 加锁、6 条 `agent_test.go` | ✅ 已提交 `2675585` |
-| B3 | gui：`Block` 归属字段、`agent` 消息吸收、缩进行 + 归属竖线、`AppAgents.cpp`（代理卡 + 点击定位）、胶囊活跃数、`--agent-probe` + 负对照 | ✅ 本批 |
-| B4 | `regress.py` 接线 + 全量回归 + README/规格回写 | ⏳ |
+| B3 | gui：`Block` 归属字段、`agent` 消息吸收、缩进行 + 归属竖线、`AppAgents.cpp`（代理卡 + 点击定位）、胶囊活跃数、`--agent-probe` + 负对照 | ✅ 已提交 `878ed30` |
+| B4 | `regress.py` 接线（负对照 + **cap-gate 第三支**）+ 全量回归 PASS + README（`a381a7d`）/规格回写 + **GUI 侧 `--agents` 默认注入**（`kCoreAgentArgs`，用户裁定默认开、设置面板开关暂不做）+ **`caps.agents` 门控**（§3.1 契约：未声明不得显卡，见「补的两处」） | ✅ 本批 |
 
 ### 实现与本文的四处偏离（都为了同一个理由：别把不可见的东西当已实现）
 
@@ -208,8 +208,25 @@ README.md                                    # [MODIFY] 增 --agents 运行方�
    **待办**：要连续轨道必须把竖线提到画布层（作为内容容器的子控件按绝对 y 摆放），
    那要改 `CreateBlockRow` 与 `Relayout` 的"不改树结构"纪律，另开一批做。
 
+### 补的两处（2026-11-04 收口时发现的缺口）
+
+1. **`caps.agents` 门控此前不存在**。`PROTOCOL.md §3.1` 写的是「未声明 ⇒ GUI **不得**显示代理卡」，
+   而代码里只有 `hasModelCap`，没有 `hasAgentsCap` ⇒ 契约写了、实现没守。
+   已补：`Session::hasAgentsCap`（hello 解析）→ `RebuildAgentList` 的门控条件。
+   ★ 门控的只是**卡片**：块照旧按归属缩进渲染（内容是 content；§3.1 管的是交互面）。
+2. **门控的判据原本是恒成立的**。原 `cardOk` 写的是「卡跟着 agents 走」——那么
+   **门控整个不存在**的实现在「有 cap 的正向」与「完全没 agent 的负向」两支上**都绿**。
+   已改：`cardOk` 按契约分两支（有 cap ⇒ 卡显形且行数 = agents+1；无 cap ⇒ 卡必须没有），
+   并新增夹具 `fixtures/subagent/agent-cap-missing.jsonl` + `regress.py::check_agent_probe_cap_gate`
+   作为第三支（发 agent 消息但 hello.caps 不含 agents）。
+   三支读数：正向 `cardRows=3 visible=true`、负向 `0/false`、门控支 `0/false` 且 `indentRows=2`。
+   ★ 这是本仓老纪律的又一次应用：**恒成立的负向用例约等于没有负向用例**。
+
 ### 当前未做
 
-- `--agents` 默认**关**（`main.go`）。GUI 尚未把该开关写进 `coreArgs`，故从应用里点不出子代理；
-  B4 收口时连同设置面板开关一起处理（见 `TODO`）。
+- ~~GUI 尚未把 `--agents` 写进 `coreArgs`~~ ⇒ **已接线（2026-11-04）**：`AppSettings.cpp`
+  `kCoreAgentArgs` 在两处 coreArgs 装配点（无参自动连接 + 保存并连接）注入。用户裁定
+  **GUI 侧默认开**（core 自己仍默认关——那是 A/B 对照臂与「关闭时逐字节退回 v4」判据的起点）；
+  设置面板开关**暂不做**——先让默认值跑一段、拿到真实收益再决定要不要把这两档旋钮露给用户
+  （理由见 `kCoreAgentArgs` 头注）。
 - 代理卡的「点击定位」只做**滚动到该代理首行**，不做高亮闪烁。

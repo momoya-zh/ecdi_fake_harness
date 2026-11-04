@@ -120,6 +120,9 @@ SCALE = "protocol/fixtures/scale/scale-transcript-2000.jsonl"
 COT = "protocol/fixtures/cot/cot-session.jsonl"
 # ★★ 协议 v5（2026-11-04）：子代理正向夹具（两个 task 并行、各自带 tool_call）。
 SUBAGENT = "protocol/fixtures/subagent/parallel-two-agents.jsonl"
+# ★★ 门控反面（2026-11-04）：发 agent 消息但 hello.caps **不含** agents
+#   ⇒ 内容照旧渲染，代理卡**不得**出现（协议 §3.1）。
+AGENT_CAP_MISSING = "protocol/fixtures/subagent/agent-cap-missing.jsonl"
 
 # ============================================================
 # ★ 2026-10-26（P0 收口）：有实现、有判据、却从未进门的 11 个探针。
@@ -548,6 +551,44 @@ def check_agent_probe_negative():
     return (0 if ok else 1), detail
 
 
+def check_agent_probe_cap_gate():
+    """`--agent-probe` 的**门控**反面：core 发了 agent 消息却没声明 `caps.agents`。
+
+    ★ 为什么必须有这一支（否则前两支都在骗自己）：正向夹具声明了 cap，
+      负向夹具连 agent 消息都没有——**门控整个不实现**的实现两支都绿。
+      只有"有 agent 消息、没 cap"这一支能把「有门控」与「没门控」分开：
+        · 有门控 ⇒ 卡片不出现（cardRows=0, cardVisible=false），块照旧缩进渲染
+        · 没门控 ⇒ 卡片出现 3 行，`matched` 必须变红
+    ★ 判据在探针里（`cardOk` 按 `hasAgentsCap` 分两支），这里只看 `matched`。
+    """
+    out = OUT / "_reg-agent-probe-capgate.json"
+    out.unlink(missing_ok=True)
+    try:
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / AGENT_CAP_MISSING), "--instant",
+                            "--theme", "light", "--agent-probe",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("--agent-probe (cap gate)", None, out)
+        return 1, "TIMEOUT"
+    record("--agent-probe (cap gate)", r.returncode, out)
+    if not out.exists():
+        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    rows = d.get("agentProbe") or []
+    if not rows:
+        return 1, "NO ROWS (key=agentProbe)"
+    rec = rows[0]
+    # 期望：块照旧缩进（indentRows == attributedBlocks == 2），但卡片不存在
+    ok = (rec.get("matched") is True and rec.get("cardRows") == 0
+          and rec.get("cardVisible") is False
+          and rec.get("indentRows") == rec.get("attributedBlocks"))
+    detail = (f"cardRows={rec.get('cardRows')} cardVisible={rec.get('cardVisible')} "
+              f"indentRows={rec.get('indentRows')} attributedBlocks={rec.get('attributedBlocks')} "
+              f"matched={rec.get('matched')}")
+    return (0 if ok else 1), detail
+
+
 def check_readout_probes():
     """B 类：探针只记录读数，**判据在这里写**。
 
@@ -760,6 +801,9 @@ def main():
     n, detail = check_agent_probe_negative()
     fail += n
     print(f"  {'--agent-probe':18s} {detail}  (negative/DEMO：无 agent 就一行都不缩)")
+    n, detail = check_agent_probe_cap_gate()
+    fail += n
+    print(f"  {'--agent-probe':18s} {detail}  (cap gate：没声明 agents ⇒ 卡片不得出现)")
 
     print("\n== 2c. REQ-03 异步投递 (live A/B) ==")
     core = ROOT / "core" / "bin" / "fake-core.exe"
