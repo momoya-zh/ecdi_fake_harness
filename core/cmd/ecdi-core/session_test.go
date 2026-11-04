@@ -421,7 +421,7 @@ func TestLoopE2E_FullChain(t *testing.T) {
 		t.Fatalf("第 2 轮请求缺 role:tool 的真结果消息: %s", recorded[1])
 	}
 
-	// 第 1 个请求必须带 tools 定义（三件）+ 正确 model
+	// 第 1 个请求必须带 tools 定义（六件）+ 正确 model
 	var req1 struct {
 		Tools []toolDef `json:"tools"`
 		Model string    `json:"model"`
@@ -429,8 +429,10 @@ func TestLoopE2E_FullChain(t *testing.T) {
 	if err := json.Unmarshal(recorded[0], &req1); err != nil {
 		t.Fatal(err)
 	}
-	if len(req1.Tools) != 3 {
-		t.Fatalf("tools 定义应 3 件，got %d", len(req1.Tools))
+	// ★ 2026-11-04：3 → 6（写入/执行三件上线）。这里断"件数"是为了抓
+	//   「tools 没进请求体」这类整块丢失；每件的 schema 由 toolDefs 的单测盖。
+	if len(req1.Tools) != 6 {
+		t.Fatalf("tools 定义应 6 件，got %d", len(req1.Tools))
 	}
 	if req1.Model != "test-model" {
 		t.Fatalf("model = %q", req1.Model)
@@ -482,6 +484,115 @@ func TestLoopE2E_Deny(t *testing.T) {
 	}
 	if !deniedToModel {
 		t.Fatalf("deny 后模型未收到拒绝说明")
+	}
+	msgs := parseAll(t, col)
+	assertSeqContinuous(t, msgs)
+	assertBlockPairs(t, msgs)
+}
+
+// ── E2E：写工具的 ask 全链（2026-11-04）────────────────────────
+//
+// 这两条判的是「能不能真干活」的最小闭环：模型发起 write_file → 人看见**写成什么**
+// → 允许则磁盘真的变、拒绝则**一个字节都不动**。只读三件的 E2E 证明不了这条，
+// 因为它们的失败模式是"没读到"，写工具的失败模式是"静默改错/静默没改"。
+
+func TestLoopE2E_WriteToolAskAllowLandsOnDisk(t *testing.T) {
+	ws := t.TempDir()
+	var recorded [][]byte
+	scripts := []sseScript{
+		{chunks: []string{
+			deltaChunk("", "", `[{"index":0,"id":"call-w1","function":{"name":"write_file","arguments":"{\"path\":\"out/hello.txt\",\"content\":\"written by agent\\n\"}"}}]`),
+		}},
+		{chunks: []string{deltaChunk("写好了。", "", "")}},
+	}
+	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "", ws)
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":3,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"写个文件"}`)
+
+	ask := waitFor(t, col, "ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	q := ask["question"].(string)
+	if !strings.Contains(q, "out/hello.txt") || !strings.Contains(q, "允许写入") {
+		t.Fatalf("ask 问句没把「写哪个文件」说出来：%q", q)
+	}
+	// 默认拒绝是重要性质：模型不能靠"人没看清"改成写
+	if ask["default"] != "deny" {
+		t.Fatalf("ask.default = %v，期望 deny", ask["default"])
+	}
+	sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"allow"}`, mustJSON(ask["id"].(string))))
+
+	waitFor(t, col, "write result", func(m map[string]any) bool {
+		return m["t"] == "delta" && strings.Contains(m["text"].(string), "已新建")
+	})
+	got, err := os.ReadFile(filepath.Join(ws, "out", "hello.txt"))
+	if err != nil {
+		t.Fatalf("允许之后文件没落盘：%v", err)
+	}
+	if string(got) != "written by agent\n" {
+		t.Fatalf("落盘内容不符：%q", string(got))
+	}
+
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":3}`)
+	<-done
+
+	// 模型拿到的 = GUI 看到的（同一份结果文本）
+	var req2 struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(recorded[1], &req2); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, m := range req2.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "已新建") {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("模型未收到写文件结果")
+	}
+	msgs := parseAll(t, col)
+	assertSeqContinuous(t, msgs)
+	assertBlockPairs(t, msgs)
+}
+
+func TestLoopE2E_WriteToolDeniedLeavesNoTrace(t *testing.T) {
+	ws := t.TempDir()
+	var recorded [][]byte
+	scripts := []sseScript{
+		{chunks: []string{
+			deltaChunk("", "", `[{"index":0,"id":"call-w2","function":{"name":"write_file","arguments":"{\"path\":\"forbidden.txt\",\"content\":\"nope\"}"}}]`),
+		}},
+		{chunks: []string{deltaChunk("好，不写了。", "", "")}},
+	}
+	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "", ws)
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":3,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"写个文件"}`)
+
+	ask := waitFor(t, col, "ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"deny"}`, mustJSON(ask["id"].(string))))
+
+	waitFor(t, col, "deny summary", func(m map[string]any) bool {
+		return m["t"] == "block_end" && m["summary"] == "用户拒绝"
+	})
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":3}`)
+	<-done
+
+	if _, err := os.Stat(filepath.Join(ws, "forbidden.txt")); err == nil {
+		t.Fatalf("拒绝后文件仍然被创建了 —— ask 门没在写之前生效")
 	}
 	msgs := parseAll(t, col)
 	assertSeqContinuous(t, msgs)

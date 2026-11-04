@@ -1,8 +1,9 @@
 ﻿// ecdi-core —— ECDI_fake_harness 的「真 core」（P3：真模型 + 真工具）。
 //
-// 定位：protocol/PROTOCOL.md v3 契约的**第一个非假 core 消费者**——
-// OpenAI 兼容端点（--base-url/--model/--key，不绑厂商）+ 只读三件真执行
-// （read_file / list_dir / grep）。协议与 GUI 两侧已就绪，本程序补齐 core 侧。
+// 定位：protocol/PROTOCOL.md 契约的**第一个非假 core 消费者**——
+// OpenAI 兼容端点（--base-url/--model/--key，不绑厂商）+ 六件真工具
+// （只读：read_file / list_dir / grep；写入执行：write_file / edit_file /
+// run_command，后三件默认逐次过 ask 门）。协议与 GUI 两侧已就绪，本程序补齐 core 侧。
 //
 // 用法（由 harness_gui 拉起；也可手工对管道调试）：
 //
@@ -42,8 +43,10 @@ func main() {
 	//   绝对路径越界、`..` 逃逸全部拒绝）⇒ 逐次确认不增加任何保护，只剩摩擦。
 	//   为什么是"默认值"而不是运行时启发式：core 不去看路径猜「该不该问」，
 	//   名单永远由运行者用这个 flag 整体改写（`--allow-tools=` 空值 = 恢复全 ask）。
-	//   ★ 将来加写工具（write_file / shell / 网络）**不要**塞进这个默认值——
-	//     它们必须过 ask，这才是 ask 门存在的理由。
+	//   ★ 2026-11-04：写入/执行三件（write_file / edit_file / run_command）**已经
+	//     有了**，且**刻意不在这里**——它们会改磁盘、跑任意命令，逐次过 ask 才是
+	//     ask 门存在的理由。要豁免请自己显式写 `--allow-tools=read_file,...,run_command`，
+	//     那是运行者的决定，不是我们的默认值。
 	allowTools := flag.String("allow-tools", "read_file,list_dir,grep",
 		"免 ask 工具名单（逗号分隔）；默认只读三件；`--allow-tools=` = 全部 ask")
 	workspace := flag.String("workspace", "", "初始工作区；缺省 = 进程 cwd")

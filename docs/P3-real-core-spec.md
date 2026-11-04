@@ -14,7 +14,7 @@
 | # | 决策 | 内容 |
 |---|---|---|
 | D1 | **模型接入** | **OpenAI 兼容端点**：`--base-url` / `--model` / `--key` 三参数可配，不绑定任何厂商（GLM / OpenAI / DeepSeek / 本地网关都能接）。规格不写死厂商；先用哪家跑通由启动参数决定 |
-| D2 | **工具集（第一版）** | **只读三件**：`read_file` / `list_dir` / `grep`。全部只读。写/执行类工具第二批再上（§7） |
+| D2 | **工具集** | **第一批（只读）**：`read_file` / `list_dir` / `grep`。**第二批（2026-11-04 已上线）**：`write_file` / `edit_file` / `run_command`，三件默认过 ask 门（见 §4.4.1） |
 | D3 | **形态** | **同仓 `core/` 扩展**：新目录 `core/cmd/ecdi-core/`（Go），与 fake-core 共用 go module；公共帧层下沉 `core/internal/wire/`（§3），fake-core 行为**逐位不变**（验收 A2 把门） |
 
 ---
@@ -29,6 +29,7 @@
 | 2 | **OpenAI 兼容客户端**（`llm.go`）：`POST {base-url}/chat/completions`，`stream:true` SSE；标准库 `net/http` + `encoding/json`，**不引入 SDK**。增量聚合 `tool_calls`（按 `index` 拼 `name` / `arguments` 分片）与 `reasoning_content` |
 | 3 | **agent loop**（`session.go`）：`prompt` → LLM 流式回复（文本/思维链 delta）→ `tool_calls` → 执行只读工具 → `tool` role 消息回模型 → 续推 → 轮结束发 `usage` → `idle` |
 | 4 | **只读三件真执行**（`tools.go`）：`read_file`（文本，上限见 §4.4）/ `list_dir`（单层）/ `grep`（正则，工作区内递归，上限命中数）。路径以 **workspace 为根**解析 |
+| 4b | **写入/执行三件**（2026-11-04，§4.4.1）：`write_file` / `edit_file` / `run_command`。有了这三件，agent 才算「能改代码、能跑验证」，而不是只能看。全部逐次过 ask 门（不进 `--allow-tools` 默认值） |
 | 5 | **ask 门首次在真实路径承重**：真实工具调用默认先过 `ask`（§4.3）；**2026-11-02 起只读三件默认免 ask**（`--allow-tools` 默认值 = `read_file,list_dir,grep`，运行者可整体改写，空值 = 恢复全 ask）；写工具不进名单 |
 | 6 | **workspace 真消费**：`hello.caps = ["tools","ask","workspace"]`；收到 `workspace` 请求 → 校验目录存在 → `os.Chdir` → 按协议 §3.9 规范化回显。GUI 侧工作区功能自此有真实对端 |
 | 7 | **真值纪律**：`usage` 的 `turn/input/output` 全部取 API 返回的真值；`hello.context` 默认**不发**（分母未知 ⇒ GUI 显示 `—`），可 `--context N` 显式声明；`block_end.tokens` **不发**（流式 per-block token 不可得，估算 = 编造读数，协议 §3.5 明令禁止） |
@@ -69,7 +70,7 @@
 | `core/cmd/ecdi-core/main.go` | 真 core 入口：flags（§4.1）、stdin 行读循环、`bye`/EOF 收尾 |
 | `core/cmd/ecdi-core/session.go` | agent loop + 状态机（idle/running/waiting/cancelled/error，与协议 §6 同形；I3 自守：`ask` 后、`answer` 前不发任何消息） |
 | `core/cmd/ecdi-core/llm.go` | OpenAI 兼容客户端：SSE 解析、delta 聚合（文本 / `reasoning_content` / `tool_calls` 按 index）、usage 提取、http 请求级 cancel（§4.6） |
-| `core/cmd/ecdi-core/tools.go` | 只读三件：参数校验（workspace 根解析 + 越界拒绝）、执行、结果截断（§4.4） |
+| `core/cmd/ecdi-core/tools.go` | 只读三件 + 写入/执行三件（2026-11-04）：参数校验（workspace 根解析 + 越界拒绝）、执行、结果截断（§4.4 / §4.4.1）；子进程创建标志在 `proc_windows.go` |
 | `core/go.mod` | 不变（module `ecdi-fake-core`；改名推后，避免一次实施两个动作） |
 | `core/bin/ecdi-core.exe` | 构建产物（`go build -o bin/ecdi-core.exe ./cmd/ecdi-core`；`/core/bin/` 已 gitignore） |
 | **gui/ 侧** | **预期零改动**（B2）。若有缺口 → 登记需求，不在本阶段顺手改 |
@@ -131,6 +132,28 @@ prompt(text, client_id)
 | `grep` | `pattern`, `path`（缺省 `.`） | Go 正则，workspace 内递归文本文件，输出 `相对路径:行号: 行内容` | 命中上限 200 行 + 截断标注；跳过二进制（NUL 探测）与超大文件（>1 MB） |
 
 ★ **GUI 渲染与模型输入用同一份结果文本**（同一截断）——两份文本会出现「GUI 看到的和模型拿到的不一样」，那是一个新的不可判定面。
+
+#### 4.4.1 写入 / 执行三件（2026-11-04 新增，D2 的第二批）
+
+**动机（定位调整）**：只读工具面 ⇒ agent 只能看不能改 ⇒ 这个 GUI 永远停在演示态。三件上线的直接目的是让「人能拿它干活」成立，**不是**为了给 ECDI 采数据。
+
+| 工具 | 参数 | 行为 | 限制 |
+|---|---|---|---|
+| `write_file` | `path`, `content` | 整文件写入（新建或覆盖）；父目录不存在则 `MkdirAll` | 上限 2 MB；`content` **缺参数 ≠ 空内容**（缺 ⇒ 报错，防"漏传即清空"）；越界拒绝 |
+| `edit_file` | `path`, `old_string`, `new_string`, `replace_all?` | 逐字节精确替换；回执带「替换几处 / 首次在第几行」 | `old_string` 为空 ⇒ 拒绝；匹配不唯一 ⇒ 拒绝（除非 `replace_all:true`）；文件上限 1 MB；越界拒绝 |
+| `run_command` | `command`, `timeout_seconds?` | 工作区根下执行（Windows `cmd /c`，其他 `/bin/sh -c`），合并 stdout+stderr | 超时默认 60 s / 上限 300 s；输出上限 24 KB（**保留头尾各半** + 显式省略标注）；子进程环境**剔除 `ECDI_*_KEY`** |
+
+- ★ **三件都**不在 `--allow-tools` 默认值里 ⇒ 逐次过 ask 门。要豁免由运行者显式写，不设默认。
+- ★ ask 问句按工具定制（`tools.go: askPrompt`）：写文件报「路径 + 字节/行数」，改文件报「旧→新摘要」，跑命令报**命令行原文**（截 160 字符）。问句保持**单行**——GUI 的 ask 行有折叠摘要（`UiCommon.cpp AskSummary`），多行会先被压扁。
+- ★ 子进程**不给控制台**：GUI 用 `CREATE_NO_WINDOW` 拉起 core，`cmd.exe` 再从无控制台父进程启动会**新建**一个黑框窗口 ⇒ `proc_windows.go` 显式 `CREATE_NO_WINDOW + HideWindow`。
+- ★ **已知局限（不掩盖）**：`exec.CommandContext` 到超时只杀直接子进程，孙进程可能留下；根治要作业对象（`CreateJobObject` + `KILL_ON_JOB_CLOSE`），未做。
+- 验收：`go test ./cmd/ecdi-core` 内 `TestWriteFile_*` / `TestEditFile_*` / `TestRunCommand_*` / `TestAskPrompt_*` / `TestToolDefs_SixToolsWithSchemas`（缺参、越界、不唯一、非 0 退出码、cwd、密钥剔除、问句单行、截断字符边界）。
+- ★★ **真链路人工验收（2026-11-04 20:17，DeepSeek 会话 `s-20261104-121617-284b`）**：用户让模型「往 Hello.txt 里写你好」，全程无人工干预地走完
+  `list_dir`（免 ask）→ `read_file Hello.txt`（免 ask，读到空文件）→ `write_file {"path":"Hello.txt","content":"你好"}` →
+  **ask 门问句 = 「允许写入 Hello.txt 吗？（整文件覆盖，6 字节 / 1 行）」**（正是 `askPrompt` 的定制形态，含路径与字节/行数）→ 用户允许 →
+  `tool_result` = **「已覆盖 Hello.txt（6 字节，1 行）」** → 模型再自己 `read_file` 复核 → 「已完成」。
+  落盘实测：`Hello.txt` = `e4 bd a0 e5 a5 bd`（6 字节，「你好」，无尾随换行，20:17:21）。
+  ⇒ 这条覆盖了三件里最难的一条（真模型 · 真 ask 交互 · 真写盘 · 结果回模型），比单测更硬。
 
 ### 4.5 workspace（协议 §3.9 真消费）
 

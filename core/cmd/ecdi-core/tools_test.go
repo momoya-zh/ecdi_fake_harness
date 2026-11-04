@@ -276,3 +276,229 @@ func tailOf(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// ── 写入 / 执行三件（2026-11-04）────────────────────────────────
+//
+// 判据都落在**磁盘上真的变没变**：这三件的失败模式不是"报错"，是"静默改错"或
+// "静默没改"。所以每条 RED 用例都要配一条 Green 用例证明判据有区分力。
+
+func TestToolDefs_SixToolsWithSchemas(t *testing.T) {
+	defs := toolDefs()
+	want := map[string]bool{"read_file": false, "list_dir": false, "grep": false,
+		"write_file": false, "edit_file": false, "run_command": false}
+	for _, d := range defs {
+		if _, ok := want[d.Name]; !ok {
+			t.Errorf("多出未预期的工具 %q", d.Name)
+		}
+		want[d.Name] = true
+		// ★ 元断言：`required` 必须是数组而不是 null（DeepSeek 严格 schema 会 400，
+		//   第一次就是这么撞的）。零实参工具也要是空数组。
+		if d.Parameters["required"] == nil {
+			t.Errorf("%s 的 required 是 nil（JSON 会出 null）", d.Name)
+		}
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("工具 %q 未下发（模型看不到它 ⇒ 永远不会被调用）", name)
+		}
+	}
+}
+
+func TestWriteFile_CreateThenOverwrite(t *testing.T) {
+	root := setupWS(t)
+	rootN, _ := wire.NormalizeWorkspace(root)
+
+	// ① 新建（父目录不存在 ⇒ 应自动建）
+	res := executeTool("write_file", map[string]any{
+		"path": "newdir/a.txt", "content": "第一行\n第二行\n"}, rootN)
+	if !res.OK {
+		t.Fatalf("新建失败：%s", res.Output)
+	}
+	if !strings.Contains(res.Output, "新建") || !strings.Contains(res.Output, "2 行") {
+		t.Errorf("新建回执形态不对：%s", res.Output)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "newdir", "a.txt"))
+	if err != nil {
+		t.Fatalf("文件没落盘：%v", err)
+	}
+	if string(got) != "第一行\n第二行\n" {
+		t.Errorf("内容不符：%q", string(got))
+	}
+
+	// ② 覆盖同名文件
+	res = executeTool("write_file", map[string]any{"path": "newdir/a.txt", "content": "x"}, rootN)
+	if !res.OK || !strings.Contains(res.Output, "覆盖") {
+		t.Fatalf("覆盖回执不对：%v %s", res.OK, res.Output)
+	}
+	got, _ = os.ReadFile(filepath.Join(root, "newdir", "a.txt"))
+	if string(got) != "x" {
+		t.Errorf("覆盖后内容不符：%q", string(got))
+	}
+
+	// ③ 缺 content ≠ 空内容（最坏的默认值是「漏参数⇒清空文件」）
+	res = executeTool("write_file", map[string]any{"path": "newdir/a.txt"}, rootN)
+	if res.OK {
+		t.Errorf("缺 content 竟然成功：%s", res.Output)
+	}
+	got, _ = os.ReadFile(filepath.Join(root, "newdir", "a.txt"))
+	if string(got) != "x" {
+		t.Errorf("被拒的写入改动了文件：%q", string(got))
+	}
+
+	// ④ 越界（工具层再判一次，不只靠 resolveInWorkspace 的单测）
+	res = executeTool("write_file", map[string]any{"path": "../escape.txt", "content": "no"}, rootN)
+	if res.OK {
+		t.Errorf("越界写入竟然成功：%s", res.Output)
+	}
+}
+
+func TestEditFile_UniqueAmbiguousReplaceAll(t *testing.T) {
+	root := setupWS(t)
+	rootN, _ := wire.NormalizeWorkspace(root)
+	target := filepath.Join(root, "dup.txt")
+	if err := os.WriteFile(target, []byte("a\nhit\nb\nhit\nc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// ① 不唯一 ⇒ 拒绝，且文件**一个字节都没动**
+	before, _ := os.ReadFile(target)
+	res := executeTool("edit_file", map[string]any{
+		"path": "dup.txt", "old_string": "hit", "new_string": "HIT"}, rootN)
+	if res.OK {
+		t.Fatalf("不唯一竟然放行：%s", res.Output)
+	}
+	if after, _ := os.ReadFile(target); string(after) != string(before) {
+		t.Fatalf("被拒的编辑动了文件：%q", string(after))
+	}
+
+	// ② 找不到 ⇒ 拒绝，并给出「逐字节匹配」的提示（CRLF/缩进是常见真因）
+	res = executeTool("edit_file", map[string]any{
+		"path": "dup.txt", "old_string": "nope", "new_string": "x"}, rootN)
+	if res.OK || !strings.Contains(res.Output, "逐字节") {
+		t.Errorf("未命中的回执应提示逐字节匹配：%v %s", res.OK, res.Output)
+	}
+
+	// ③ replace_all=true ⇒ 两处都换
+	res = executeTool("edit_file", map[string]any{
+		"path": "dup.txt", "old_string": "hit", "new_string": "HIT", "replace_all": true}, rootN)
+	if !res.OK {
+		t.Fatalf("replace_all 失败：%s", res.Output)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "a\nHIT\nb\nHIT\nc\n" {
+		t.Errorf("replace_all 结果不符：%q", string(got))
+	}
+
+	// ④ 唯一片段 ⇒ 只改那一处，回执带行号
+	if err := os.WriteFile(target, []byte("l1\nuniq\nl3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = executeTool("edit_file", map[string]any{
+		"path": "dup.txt", "old_string": "uniq", "new_string": "UNIQ"}, rootN)
+	if !res.OK || !strings.Contains(res.Output, "第 2 行") {
+		t.Errorf("唯一替换回执/行号不对：%v %s", res.OK, res.Output)
+	}
+
+	// ⑤ 空 old_string ⇒ 拒绝（会匹配一切）
+	res = executeTool("edit_file", map[string]any{
+		"path": "dup.txt", "old_string": "", "new_string": "x"}, rootN)
+	if res.OK {
+		t.Errorf("空 old_string 竟然放行：%s", res.Output)
+	}
+}
+
+func TestRunCommand_OutputExitCodeAndCwd(t *testing.T) {
+	root := setupWS(t)
+	rootN, _ := wire.NormalizeWorkspace(root)
+
+	res := executeTool("run_command", map[string]any{"command": "echo hello-from-test"}, rootN)
+	if !res.OK {
+		t.Fatalf("echo 失败：%s", res.Output)
+	}
+	if !strings.Contains(res.Output, "hello-from-test") {
+		t.Errorf("输出没回传：%q", res.Output)
+	}
+
+	// ① 非 0 退出码 ⇒ OK=false（否则模型会把失败当成功继续推）
+	res = executeTool("run_command", map[string]any{"command": "exit 3"}, rootN)
+	if res.OK {
+		t.Errorf("非 0 退出码竟然 OK：%s", res.Output)
+	}
+
+	// ② cwd = 工作区根：在这里建个文件，必须落在工作区里
+	res = executeTool("run_command", map[string]any{"command": "echo x > cwd-probe.txt"}, rootN)
+	if !res.OK {
+		t.Fatalf("重定向失败：%s", res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cwd-probe.txt")); err != nil {
+		t.Errorf("cwd 不是工作区根：%v", err)
+	}
+}
+
+func TestRunCommand_StripsApiKeys(t *testing.T) {
+	root := setupWS(t)
+	rootN, _ := wire.NormalizeWorkspace(root)
+	const secret = "sk-this-must-not-leak-into-child"
+	t.Setenv("ECDI_CORE_KEY", secret)
+	t.Setenv("ECDI_PROVIDER_DEEPSEEK_KEY", secret+"-2")
+
+	// `set NAME` 在变量不存在时返回非 0 —— 正好当存在性判据（不看本地化文案）。
+	for _, name := range []string{"ECDI_CORE_KEY", "ECDI_PROVIDER_DEEPSEEK_KEY"} {
+		res := executeTool("run_command", map[string]any{"command": "set " + name}, rootN)
+		if res.OK {
+			t.Errorf("%s 仍存在于子进程环境：%s", name, res.Output)
+		}
+		if strings.Contains(res.Output, secret) {
+			t.Errorf("%s 的值泄漏进输出：%s", name, res.Output)
+		}
+	}
+}
+
+func TestAskPrompt_SingleLineAndSpecific(t *testing.T) {
+	// GUI 的 ask 行有折叠摘要（UiCommon.cpp AskSummary）⇒ 问句必须是单行，
+	// 且三个会改变世界的工具都要把「改成什么」说出来，不能只剩一个工具名。
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"write_file", map[string]any{"path": "a.txt", "content": "hi"}, "a.txt"},
+		{"edit_file", map[string]any{"path": "b.txt", "old_string": "x", "new_string": "y"}, "b.txt"},
+		{"run_command", map[string]any{"command": "go test ./..."}, "go test"},
+	}
+	for _, c := range cases {
+		q := askPrompt(c.name, c.args, "")
+		if strings.Contains(q, "\n") {
+			t.Errorf("[%s] 问句含换行：%q", c.name, q)
+		}
+		if !strings.Contains(q, c.want) {
+			t.Errorf("[%s] 问句没把关键内容说出来：%q", c.name, q)
+		}
+	}
+}
+
+func TestTrimOutput_KeepsHeadAndTail(t *testing.T) {
+	big := strings.Repeat("头", 20000) + "TAIL-MARK"
+	got := trimOutput(big)
+	if len(got) > runCmdOutLimit+200 {
+		t.Errorf("截断后仍过大：%d 字节", len(got))
+	}
+	if !strings.Contains(got, "TAIL-MARK") {
+		t.Errorf("尾部被砍掉了（错误信息通常在这里）")
+	}
+	if !strings.Contains(got, "中间省略") {
+		t.Errorf("截断没有显式标注（静默截断比报错更糟）")
+	}
+	// 切点必须落在字符边界：混进 U+FFFD 说明切了半个汉字
+	if strings.ContainsRune(got, '\uFFFD') {
+		t.Errorf("截断切出了半个字符")
+	}
+}
+
+func TestCountLines(t *testing.T) {
+	cases := map[string]int{"": 0, "a": 1, "a\n": 1, "a\nb": 2, "a\nb\n": 2}
+	for in, want := range cases {
+		if got := countLines(in); got != want {
+			t.Errorf("countLines(%q) = %d，期望 %d", in, got, want)
+		}
+	}
+}

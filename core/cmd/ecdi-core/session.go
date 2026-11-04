@@ -570,7 +570,7 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	} else {
 		askID := fmt.Sprintf("q%d", s.out.Seq())
 		s.emit(map[string]any{"t": "ask", "id": askID, "kind": "permission",
-			"question": fmt.Sprintf("允许执行 %s 吗？参数：%s", c.Name, summarizeArgs(c.Arguments)),
+			"question": askPrompt(c.Name, argsMap, c.Arguments),
 			"options": []map[string]string{
 				{"key": "allow", "label": "允许"},
 				{"key": "deny", "label": "拒绝"},
@@ -807,8 +807,12 @@ func (b *streamBlocks) closeAll(ok bool) {
 
 // buildRequestMessages：系统消息（现建——工作区切换即时生效）+ 历史。
 func (s *session) buildRequestMessages() []chatMessage {
-	sys := fmt.Sprintf("你是一个运行在用户本机 GUI（harness）里的 agent。当前工作区：%s。\n"+
-		"可用工具均为只读，相对路径以工作区为根解析。用用户的语言回答。", s.cwd)
+	sys := fmt.Sprintf("你是一个运行在用户本机 GUI（harness）里的编码 agent。当前工作区：%s。\n"+
+		"相对路径以工作区为根解析；越界路径（含符号链接指向外面）会被直接拒绝。\n"+
+		"工具：read_file / list_dir / grep 可直接用；write_file / edit_file / run_command "+
+		"每次都要经过用户确认，被拒绝时不要重试同一操作，先解释你要做什么或换个做法。\n"+
+		"改动代码优先 edit_file（逐字节精确替换），只有新建或整体重写才用 write_file；"+
+		"一条命令只做一件事，别把多步 shell 塞进一次调用。用用户的语言回答。", s.cwd)
 	if s.memResult != nil && s.memResult.PromptText != "" {
 		sys += s.memResult.PromptText
 	}
