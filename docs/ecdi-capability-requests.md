@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.5**（2026-11-01；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.7**（2026-11-04；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -724,6 +724,26 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 
 ---
 
+### REQ-17 ✅ IME「无组合直插」在 ECDI 侧没有通路 —— 中文全角标点（，。）
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-04 用户反馈（「我输入框输入不了中文的逗号和句号」） |
+| 状态 | ✅ **已闭合**（2026-11-04 当日闭环：ECDI 侧 **#86** 三处修复 → 本仓换库重链 → 回归 PASS → **20:19 用户实测中文标点能打入**） |
+| 归属 | **ECDI 侧**（平台消息覆盖缺失）。已按纪律查过 `Widget.h` / `TextWidget.h` / `TextBox.h` **与 ECDI 源码仓全库**（`D:\Project\ECDI`，含其自带测试与设计文档） |
+| 现象 | 输入框里打中文逗号 / 句号不上屏；**汉字正常**（走组合上屏）；英文 `,` `.` 正常（走 `WM_CHAR`） |
+| ★ 已核实①（源码） | ECDI 全库**零** `WM_IME_CHAR` 引用（`git log -S "WM_IME_CHAR" -- ECDI/src` 全历史 = 空 ⇒ 从来没实现过，不是回归）。`WindowMessageHandler.cpp:276-289` 只把 `WM_CHAR` / `WM_SYSCHAR` 翻成 `CharInputEvent`；`WM_IME_CHAR` 未列 ⇒ 落到 `DefWindowProc`，而它对该消息**不做任何插入**。 |
+| ★ 已核实②（源码 + 设计文档） | `TextBox::CommitComposition` 首行 `if (!m_isComposing) return;`（`TextBox.cpp`，8.5.1 模型 B）；设计文档 `docs/dev/phase8.5.1-text-system2.0-detailed-design.md` §F8 把它写成**判据**：「未组合时 CommitComposition → m_text 不变」⇒ 「无组合的结果文本」是**按设计丢弃**的。 |
+| ★ 已核实③（源码） | 平台拿到 `GCS_RESULTSTR` 后置 `m_imeResultPendingChars = result.size()`（`Win32PlatformWindow.cpp:1081`），随后系统补发的 `WM_CHAR` 会被**故意吞掉**（8.5.1 双写修复，`HandleMessage` 前置拦截 `:1184`）⇒ ②吞掉之后，**连 `WM_CHAR` 兜底也没有**。 |
+| ⇒ 合计结论 | **任何「无组合的 IME 直插」在 ECDI 里都被静默丢失**：没有 `WM_IME_CHAR` 通路、吃不到 `WM_CHAR` 兜底、`CommitComposition` 又按 F8 主动 no-op。三条任缺其一都不会丢字——三条同时在，丢字就必然。 |
+| 影响面 | 阻断「真拿它打字」：中文写作离不开标点。属**可用性阻断项**，不是观感项 ⇒ 按 2026-11-04 的新优先级（能投入使用 > 采数据）当日即修，未排期 |
+| ⚠️ 原「未定项」→ 已收敛 | 微软拼音对全角标点究竟走 `WM_IME_CHAR` 还是「不带 COMPSTR 的 `RESULTSTR`」——**ECDI #86 把两条都堵了**，故它不再是修复前提；实际走哪条由人工打一次「，」顺带记录。 |
+| ✅ 修复措施（ECDI **#86**，三处） | ① `WindowMessageHandler.cpp` 新增 `case WM_IME_CHAR`（与 `WM_CHAR/WM_SYSCHAR` 共用 `ConsumeCodeUnit` → `CharInputEvent`），且**刻意 `return 0` 而非 `nullopt`**：非 Unicode 语义下 `DefWindowProc` 会把它拆成两条 `WM_CHAR`（二次插入），不能依赖「我们是 Unicode 窗口」这个前提。② `TextBox::CommitComposition` 把 F8 判据**收窄**为「**无组合 ∧ 结果为空** ⇒ no-op」；有结果的无组合提交走 `InsertText`（进 Undo / `RaiseTextChanged` / 光标跟随）。③ `Win32PlatformWindow::HandleMessage` 的吞字计数器改为对 `WM_CHAR` **与** `WM_IME_CHAR` 同时递减——只认前者的话，新增通路后重复序列会逃过吞字，「丢字」被换成「双写」更糟。 |
+| 验证结果 | ECDI 侧自带测试同批补齐（`EventTests` / `TextBoxTests` / `WidgetTests` +133 行）；本仓换库重链：`third_party/ecdi/lib/ECDI.lib` sha256 `3866a17d…`（11974558 B · 11-04 20:04 构建），harness `808f1903…`（2122752 B · 20:06 重链）；**头文件零漂移**（`diff -rq` 只报安装期生成的 `Core/version.h`）⇒ 纯 .cpp 修复，全量重编不必要（`ninja` 只跑 `[1/2] Linking`）。`tools/regress.py` **RESULT: PASS**（7m47s，39 条 `rc=0` 零失败，指纹 `808f1903`），日志 `.scratch/_regress86.log`。★★ **人工验收通过（2026-11-04 20:19，用户实测）**：「中文标点能打入了」——输入框里中文逗号 / 句号正常上屏。★ 注：**IME 无法自动注入**（注入输入进不了非前台窗口），故这一条只能人工判，机器判据到「库里含 #86 三处 + 回归不红」为止；本条**不再有机器可补的缺口**。 |
+| ★ 同批库里的另一个修复（非本条） | ECDI **#85**：最小化 → 还原/最大化后客户区被 DWM 当作帧延伸区做玻璃合成（浅色主题整窗发白、重画不自愈）；修法 = 离开最小化态且 `Borderless` 时 `SWP_FRAMECHANGED` 重算非客户区，且**不动** `{0,0,1,0}` 边距（Phase 32 材质/阴影结论保持原样）。与本条同批入库，这里只记出处，**不另立 REQ**。 |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -873,6 +893,21 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.7（2026-11-04）★ REQ-17 闭合：IME 无组合直插通路补齐（中文标点丢字）**
+  ① 用户 20:04 交付带修复的 `ECDI.lib`（11974558 B）；本仓换库备份旧库 `.scratch/ECDI.lib.prev-20261104`（11974328 B）。
+  ② ECDI **#86** 三处：翻译器新增 `WM_IME_CHAR`（`return 0` 而非 `nullopt`，堵非 Unicode 语义的二次拆包）· `CommitComposition` 的 F8 判据收窄为「无组合 ∧ 空结果」· 吞字计数器对 `WM_CHAR` 与 `WM_IME_CHAR` 同时递减（否则丢字变双写）。
+  ③ 安装面：头文件**零漂移**（`diff -rq` 只报安装期生成的 `Core/version.h`）⇒ 纯 .cpp 修复，不需要全量重编；`ninja` 只跑了 `[1/2] Linking`。
+  ④ 产物：harness `808f1903…`（2122752 B · 20:06，前值 `e0f4952e…` / 2122240 B）。
+  ⑤ 同批库还含 ECDI **#85**（最小化→还原后 DWM 帧延伸区发白），与本条无关，只记出处不另立 REQ。
+  ⑥ **人工验收通过（20:19）**：用户在输入框实测「中文标点能打入了」⇒ 本条从立案到闭合 **当日完成**，含换库、重链、39 门回归与上屏实测。
+  ⑦ 头部 v5.5 → **v5.7**（v5.6 = 本条立案，同一日内先立案后闭合）。
+- **v5.6（2026-11-04）★ REQ-17 立案：IME 无组合直插在 ECDI 侧没有通路（中文标点丢字）**
+  ① 用户反馈「输入框输入不了中文的逗号和句号」，汉字正常。
+  ② 三处源码核实：ECDI 全库无 `WM_IME_CHAR`（`git log -S` 全历史为空）；`CommitComposition` 无组合即 no-op 且被写成 F8 判据；`GCS_RESULTSTR` 之后 `WM_CHAR` 被故意吞。
+  ③ 归属判 **ECDI 侧**（平台消息覆盖缺失），首选补丁 = `WindowMessageHandler.cpp` 加 `case WM_IME_CHAR`，**不动 F8**。
+  ④ 未定为「标点走 `WM_IME_CHAR` 还是不带 COMPSTR 的 `RESULTSTR`」，判别实验已写入条目（改完打一次「，」即可二分）。
+  ⑤ 本条**不排期**：可用性阻断项，按 2026-11-04 定调（能投入使用优先于采数据）即修。
+  ⑥ 头部 v5.5 → **v5.6**。
 - **v5.5（2026-11-01）★ REQ-16 闭合：按钮快速进出时背景过渡动画未取消导致 hover 残留**
   ① **问题复现**：用户反馈「鼠标如果经过的特别快的话会出现鼠标已经远离该控件，但是依旧为鼠标悬停在上面的效果」。
   ② **根因定位**：`ECDI\src\Widget\Button.cpp` 的 `Button::AnimateBackgroundTo` 中，开头有 `if (target == m_displayedBackground) return;`。当鼠标高速划过时，进入时提交了指向 hover 的 200ms 过渡动画（此时 `m_displayedBackground` 仍为 normal 初值）；在首帧插值前移出时，目标还原 normal，导致 `target == m_displayedBackground` 触发提前 return，**漏调用了 `AnimationManager::Cancel(m_backgroundAnimToken)`**。旧动画在后续 Tick 中继续运行，在 200ms 后强行把按钮刷成 hover 高亮态且不再恢复。
