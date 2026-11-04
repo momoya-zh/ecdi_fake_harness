@@ -50,6 +50,13 @@
   ★ **I8**（v2 新增）：未知 `kind` 必须**中性渲染 + 显式提示**，不得伪装成有语义的形态。
   ★ **I9/I10**（v3 新增，只约束声明 `protocol >= 3` 的流）：`kind:"user"` 块必须带**唯一**
   `client_id`，`workspace` 响应必须带 `request_id` / 布尔 `ok` / `path`（失败还须 `message`）。
+  ★ **I12/I13**（v5 新增，只约束声明 `protocol >= 5` 的流）：`agent` 的 `id` 一份流内唯一、
+  `phase=start` 先于一切携带该 `agent` 的块、`phase=end` 后不得再有；带 `parent` 的块必须指向
+  一个已存在的、属于父代理的 `tool_call` 块；根代理的块不得带 `agent`。
+- ★ **子代理（v5，`--agents` 开关）**：`block_start` 增**可选** `agent` / `parent`，新增独立控制消息
+  `agent`（生命周期：`start`/`end`）——**只加字段与控制消息，不加 `kind`**（七个 kind 语义不动，
+  I8 的「未知」与「已知」两条路径不混）。主 `state` 仍只表示根代理（按钮使能门控零风险）；
+  `usage` 也只描述根代理，子代理用量只在 `agent.phase=end` 上（不污染上下文百分比）。
 - **`kind` 七个值**（v2 起）：`user` / `assistant` / **`reasoning`** / `tool_call` / `tool_result` / `system` / `error`。
 - **转录的唯一作者是 core**：GUI 不产生转录块，用户输入由 core 回显为 `kind:"user"`。
   ★ **v3 的边界**：GUI 可以先画一个**待确认**的本地气泡（`· 发送中`），但它不是转录块——
@@ -59,7 +66,7 @@
   未决期间 GUI **必须禁用发送**，core 也**必须拒绝**交错的 `prompt` / 第二个 `workspace`。
   成功后 GUI 只认 core 回的**实际路径**（规范化：绝对 / `/` 分隔 / 无尾随 `/` / 无 `.`·`..`）。
 - **回放两模式**：`instant`（一次性灌入，测稳态渲染）/ `timed`（按 `ts` 真实间隔，测流式刷新）。
-- **版本门的三个不对称**（`App.cpp:150` `kProtocolMaxSupported = 3`）：① core 声明的主版本**高于**上限才拒连，
+- **版本门的三个不对称**（`AppInternal.h:290` `kProtocolMaxSupported = 5`，随版本逐版上调）：① core 声明的主版本**高于**上限才拒连，
   且拒连 = **停止消费**（`--instant` 下不 break 就会「边抱怨边照做」）；② **低于**上限从不拒连；
   ③ 缺 `caps["workspace"]` **不是**拒连条件，只隐藏工作区交互（v3 §3.1）——早前版本把 ① 和 ③ 混成一个条件，
   导致两份 hostile 夹具的 `hello` 一行都没被解析，I1/I4/I5 的负对照全部空转。
@@ -146,6 +153,14 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 工作区内的符号链接/junction 指向外部——全部拒绝）⇒ 逐次确认没有增量保护，只剩摩擦。
 `--allow-tools=<a,b>` 整体改写名单，`--allow-tools=`（显式空）恢复全 ask；写工具必须留在 ask 门内侧。
 ★ **OS 级隔离是运行者的前置条件**（`docs/positioning.md` §4）——只读把风险降了，没有除。
+★ **子代理委派（协议 v5，`--agents`，2026-11-04）**：GUI 拉起 core 时**默认注入** `--agents`
+（`AppSettings.cpp` `kCoreAgentArgs`，两处 coreArgs 装配点同加；core 自己默认**关**——那是
+「关闭时逐字节退回 v4」判据的对照臂，手动 `--core-args` 跑法要自己带）。开启后根代理的工具表
+多出 `task`：**委派即授权**（一次 ask 覆盖子代理的全部只读工具 + 轮数/时间预算，确认文案显式
+列范围）；子代理并行受 `--max-agents`（默认 2，≤8）、`--agent-max-turns`（默认 8）、
+`--agent-timeout`（默认 120s）约束；深度固定 1（子代理工具表里没有 `task`）；上下文隔离
+（主历史只落一条结论摘要）；用量单独记账（见协议要点 v5 条）。决策与授权模型详见
+`docs/P3-real-core-spec.md` §4.4.2。
 
 **④c 无参数启动**（P3.5，2026-10-24）
 
@@ -174,7 +189,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 不钉 `paints/frames`（后者随字体与实现变化，钉死它会把一次合法收敛判成回归）。
 ★ 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
 
-### 探针（**25 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
+### 探针（**32 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
 
 | 探针 | 读什么 |
 |---|---|
@@ -204,6 +219,12 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--persist-probe` | 会话持久化与启动恢复（7 相覆盖：元数据发现、会话反序列化与转录复原、只读 UI 置灰、发送拦截守卫、新会话继承工作区/模型上下文、残损容错、测试隔离清理；★ **强制要求 `--config`**） |
 | `--reasoning-probe` | 思维链折叠行为取证 |
 | `--async-probe` | **REQ-03**：投递 vs 轮询的 A/B（**live**）——`blockedUs` / 唤醒承载占比 / 单回调预算 / 送达延迟分位 |
+| `--overlay-probe` | 浮层拓扑与 Light Dismiss（模态遮罩 / 下拉 / tooltip 全走注册式浮层口，11 相含 tooltip **配色**判据） |
+| `--table-probe` | Markdown 表格渲染（富内容二期）判据 |
+| `--copy-probe` | 按块复制与复制全部判据 |
+| `--valign-probe` | 单行输入框垂直居中（**REQ-14**：caret 几何公开判据 + Top→Center 翻转臂 / 恢复臂） |
+| `--preview-probe` | I 路径可点 + 只读预览（8 相） |
+| `--agent-probe` | 子代理缩进 / 归属 / 代理卡（**协议 v5**：缩进行数=归属块数、竖线行数=缩进行数、缩进吃宽、卡行数=代理数+1 且随有无代理显隐；★ **负对照另跑一支**——无 agent 夹具上缩进恒 0，见 `tools/regress.py`） |
 
 另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
 `--probe-contrast`（探针专用白底黑字）· `--row-mode autosize|listlayout`（布局 A/B）·
@@ -352,7 +373,7 @@ PY
 
 ## 当前状态
 
-> 时点：**2026-10-26**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
+> 时点：**2026-11-04**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
 
 ### 已收口
 
@@ -366,6 +387,7 @@ PY
 | 回归门 | `python tools/regress.py` = 6 夹具结构基线 + **24 个探针**（13 原有 + 11 补齐）+ 1 个仪器声明 + 3 段 live（REQ-03 A/B · workspace · 无 core 时显式 SKIP）+ `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
 | **P4 可用性（A–J）** | 跳到最新 / 全局快捷键 / 空状态引导 / ask 已答留痕 / 设置改模态浮层（**半透明遮罩 = ECDI 首个半透明绘制消费者**）/ tooltip / 顶栏模型 chip + 用量常驻 / 转录可选中（尖峰）/ **I 路径可点 + 只读预览**（`--preview-probe` 8/8）/ **J 开发者视图 ↔ 用户模式分流**（无参启动=用户模式，`--replay`/`--core`/任一探针=开发者模式，`Ctrl+Shift+D` 或 `···` 切换。方案 §12） |
 | **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
+| **协议 v5 子代理（2026-11-04）** | **只加字段与控制消息，不加 kind**：`block_start` 可选 `agent`/`parent` + `agent` 生命周期消息 + **I12/I13**（`validate.py` 已查）。夹具 **14 份**（v5 增 1 正向并行 + 1 cap 缺失 + 3 hostile）。core：`agent.go`（`task` 特判走 ask 门、semaphore 并行 `--max-agents=2`、独立 history、逐子代理 delta 合批；`wire.Out` 加锁保 I4）、深度 1、`--agent-max-turns=8` / `--agent-timeout=120s`、**委派即授权**（`docs/P3-real-core-spec.md` §4.4.2）。GUI：缩进行 + 2px 归属竖线、检视栏「代理」卡（点击定位）、状态胶囊活跃数、`--agent-probe` 正/负对照进门。全量回归 **PASS** + `validate.py` 绿。已声明未做：连续归属竖线（ECDI 逐控件 PushClip，另批）、代理卡定位无高亮、GUI 侧 `--agents` 默认注入 |
 
 ### 现在能做什么（都有探针与负对照）
 
@@ -373,7 +395,8 @@ PY
 （**整树重建**，不是换色）· 多会话（创建 / 切换 / 冻结时钟 / 删除）· 工作区**租约** + 真实目录列表 +
 临时会话 · 会话归档 · 转录导出 · `···` 内联菜单 · 窗口缩放 + **最小尺寸 880×460**（框架拦，不回弹）·
 Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶后内部滚动）·
-思维链默认折叠 · 上下文用量环 · I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
+思维链默认折叠 · 上下文用量环 · 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
+I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 
 ### **还**不能做什么（★ 这是下一步的输入）
 
