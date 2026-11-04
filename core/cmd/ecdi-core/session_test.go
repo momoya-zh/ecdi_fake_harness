@@ -631,6 +631,107 @@ func TestLoopE2E_WriteToolDeniedLeavesNoTrace(t *testing.T) {
 	assertBlockPairs(t, msgs)
 }
 
+// ── E2E：ask 的 detail 提案（2026-11-05，协议 v5 §3.6 可选字段）────
+//
+// ★ 问句文本被截断是这批要修的洞，所以测试盯的是 **detail 的内容**：
+//   write_file 的 diff 旧侧必须来自**批准前**的磁盘内容；run_command 必须
+//   给完整命令（不截断）与作用域。没有 detail 的回落路径由既有测试覆盖
+//   （全部旧 E2E 的 ask 都没有 detail 字段，它们绿 = 回落未破）。
+
+func TestLoopE2E_AskDetailProposal(t *testing.T) {
+	ws := t.TempDir()
+	// 预置旧文件：write_file 的 diff 若不是以批准前的磁盘内容为旧侧，
+	// 下面对 "-old line" 的断言当场红。
+	if err := os.WriteFile(filepath.Join(ws, "note.txt"), []byte("old line\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var recorded [][]byte
+	scripts := []sseScript{
+		{chunks: []string{
+			deltaChunk("", "", `[{"index":0,"id":"call-w1","function":{"name":"write_file","arguments":"{\"path\":\"note.txt\",\"content\":\"new line\\n\"}"}}]`),
+		}},
+		{chunks: []string{
+			deltaChunk("", "", `[{"index":0,"id":"call-e1","function":{"name":"edit_file","arguments":"{\"path\":\"note.txt\",\"old_string\":\"new line\",\"new_string\":\"newer line\"}"}}]`),
+		}},
+		{chunks: []string{
+			deltaChunk("", "", `[{"index":0,"id":"call-r1","function":{"name":"run_command","arguments":"{\"command\":\"echo proposal-ok\"}"}}]`),
+		}},
+		{chunks: []string{deltaChunk("done", "", "")}},
+	}
+	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "", ws)
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":5,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"改文件跑命令"}`)
+
+	// 三次 ask 依次来（同轮内串行）；waitFor 每次从头扫，必须按 id 去重
+	//（agent_test.go 的 nextAsk 同款）。
+	seen := map[string]bool{}
+	askDetailOf := func(name string) map[string]any {
+		ask := nextAsk(t, col, seen)
+		sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":99,"id":%s,"choice":"allow"}`, mustJSON(ask["id"].(string))))
+		d, ok := ask["detail"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s 的 ask 缺 detail（或非对象）：%v", name, ask)
+		}
+		return d
+	}
+
+	// ① write_file：diff 旧侧 = 批准前的磁盘内容（覆盖场景，不是新文件）
+	d := askDetailOf("write_file")
+	if d["tool"] != "write_file" || d["path"] != "note.txt" {
+		t.Fatalf("write_file detail 判别不符：%v", d)
+	}
+	diffW, _ := d["diff"].(string)
+	if !strings.Contains(diffW, "-old line") || !strings.Contains(diffW, "+new line") {
+		t.Fatalf("write_file diff 应含旧/新行（旧侧=批准前磁盘），got:\n%s", diffW)
+	}
+	if !strings.Contains(diffW, "--- a/note.txt") {
+		t.Fatalf("diff 应带路径头，got:\n%s", diffW)
+	}
+
+	// ② edit_file：替换片段的 diff
+	d = askDetailOf("edit_file")
+	if d["tool"] != "edit_file" {
+		t.Fatalf("edit_file detail 判别不符：%v", d)
+	}
+	diffE, _ := d["diff"].(string)
+	if !strings.Contains(diffE, "-new line") || !strings.Contains(diffE, "+newer line") {
+		t.Fatalf("edit_file diff 应为替换片段，got:\n%s", diffE)
+	}
+	if _, has := d["replaceAll"]; has {
+		t.Fatalf("未传 replace_all 时不应带该字段：%v", d)
+	}
+
+	// ③ run_command：完整命令（不截断）+ 作用域 + 环境剥离说明
+	d = askDetailOf("run_command")
+	if d["tool"] != "run_command" || d["command"] != "echo proposal-ok" {
+		t.Fatalf("run_command detail 判别/命令不符：%v", d)
+	}
+	if d["cwd"] != filepath.ToSlash(ws) {
+		t.Fatalf("cwd 应为工作区根（%v），got %v", filepath.ToSlash(ws), d["cwd"])
+	}
+	if tv, ok := d["timeoutSeconds"].(float64); !ok || int(tv) != 60 {
+		t.Fatalf("timeoutSeconds 缺省应为 60，got %v", d["timeoutSeconds"])
+	}
+	note, _ := d["note"].(string)
+	if !strings.Contains(note, "ECDI_CORE_KEY") {
+		t.Fatalf("note 应说明密钥剔除，got %q", note)
+	}
+
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":3}`)
+	<-done
+
+	msgs := parseAll(t, col)
+	assertSeqContinuous(t, msgs)
+	assertBlockPairs(t, msgs)
+}
+
 // ── E2E：allow-tools 豁免（运行者配置 ⇒ 不问直接执行）────────────
 
 func TestLoopE2E_AllowToolSkipsAsk(t *testing.T) {

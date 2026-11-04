@@ -124,7 +124,9 @@ func (s *session) prepareDelegation(turnCtx context.Context, c aggregatedCall,
 	// ★ task **永远过 ask 门**，即便运行者把它写进了 --allow-tools。
 	//   这一问就是授权本身（委派即授权）；豁免它等于让子代理在无人
 	//   知情的情况下获得一次读取整个工作区的机会。
-	if s.askQuestion(turnCtx, delegationAskPrompt(d.name, d.task, s.agents), answerCh) {
+	//   detail（2026-11-05）：任务全文/工具集/预算进结构化提案，问句保留摘要句式。
+	if s.askQuestion(turnCtx, delegationAskPrompt(d.name, d.task, s.agents),
+		delegationAskDetail(d.name, d.task, s.agents), answerCh) {
 		s.log("delegation %s denied by user", d.agentID)
 		d.summary = "用户拒绝了这次委派。"
 		d.ok = false

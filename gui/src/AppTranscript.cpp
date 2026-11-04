@@ -55,6 +55,7 @@ using harness::internal::kCanvasPadX;
 using harness::internal::kListRowHeight;
 using harness::internal::kProbeBg;
 using harness::internal::kProbeInk;
+using harness::internal::kProposalLineH;
 
 void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
                         const std::string& blockId, size_t timelineIdx) {
@@ -690,6 +691,132 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
     if (m_scroll) m_scroll->SetContentOffset(0, keepScroll);
 }
 
+// ── ask 的结构化提案（协议 v5 §3.6 可选 detail，2026-11-05）────────
+
+// ParseAskDetail：`ask.detail` → AskDetail。**渲染数据，不是不变量对象**：
+// 缺失 / 非对象 / `tool` 为空 ⇒ `has=false`（整行走 v4 问句路径——GUI 兼容
+// 义务，PROTOCOL §3.6）。已知 `tool` 之外的新值同样回落：渲染器不猜语义。
+// ★ 成员函数而非自由函数：AskDetail 是 private 嵌套类型，只有成员摸得到。
+HarnessApp::AskDetail HarnessApp::ParseAskDetail(const json::Value& msg) {
+    AskDetail d;
+    const json::Value* det = msg.Find("detail");
+    if (!det || !det->IsObject()) return d;
+    d.tool = det->GetString("tool");
+    if (d.tool.empty()) return d;
+    d.has = true;
+    d.path = det->GetString("path");
+    d.diff = det->GetString("diff");
+    d.replaceAll = det->GetBool("replaceAll", false);
+    d.command = det->GetString("command");
+    d.cwd = det->GetString("cwd");
+    d.note = det->GetString("note");
+    d.task = det->GetString("task");
+    d.name = det->GetString("name");
+    d.timeoutSeconds = static_cast<int>(det->GetNumber("timeoutSeconds", 0.0));
+    if (const json::Value* tools = det->Find("tools"); tools && tools->IsArray()) {
+        for (const auto& t : tools->array) d.tools.push_back(t.text);
+    }
+    return d;
+}
+
+// AppendProposalLines：提案行逐条建进折叠体内容容器（VerticalLayout 纵排）。
+//   ★ 行 = 定高 `kProposalLineH` 的 mono Label，**不折行**（裁剪保对齐——diff
+//     的缩进就是语义，PROTOCOL §7）。宽在 Relayout 期统一下发（lastWrapW 门闸）。
+//   ★ 配色（§7 规格）：`+` = ok 色 · `-` = error 色 · `@@`/`---`/`+++`/`…` = 弱化 ·
+//     上下文 = 正文。
+//   ★ `task` 全文在这里按 200 码点截断：完整任务在 tool_call 的 args 卡与问句里
+//     都有（delegationAskPrompt 带摘要），提案行的职责是"看得清授权了什么"。
+namespace {
+// 按 \n 切行（末尾换行不产生空尾元素）——提案 diff 与 core 侧 splitLines 同语义。
+std::vector<std::string> SplitLines(const std::string& s) {
+    std::vector<std::string> lines;
+    if (s.empty()) return lines;
+    size_t start = 0;
+    while (true) {
+        const size_t nl = s.find('\n', start);
+        if (nl == std::string::npos) {
+            lines.push_back(s.substr(start));
+            break;
+        }
+        lines.push_back(s.substr(start, nl - start));
+        start = nl + 1;
+    }
+    if (!lines.empty() && lines.back().empty()) lines.pop_back();
+    return lines;
+}
+}   // namespace
+void HarnessApp::AppendProposalLines(const AskDetail& d,
+                                     ECDI::Widget& content, RowRec::ProposalRec& out) {
+    auto addLine = [&content, &out](const std::string& text, const ECDI::Color& color) {
+        auto l = std::make_unique<ECDI::Label>(text);
+        l->SetTextColor(color);
+        l->SetFont(harness::MonoFont(13.0f));
+        l->SetWordWrap(false);
+        l->SetSize(100, kProposalLineH);   // 宽为占位——Relayout 期按行宽统一下发
+        out.lines.push_back(l.get());
+        content.AddChild(std::move(l));
+    };
+    auto clipRunes = [](const std::string& s, size_t n) {
+        std::string out;
+        size_t cp = 0;
+        for (size_t i = 0; i < s.size();) {
+            if (cp >= n) {
+                out += "…";
+                break;
+            }
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            size_t len = (c < 0x80) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
+            out += s.substr(i, len);
+            i += len;
+            cp++;
+        }
+        return out;
+    };
+
+    if (d.tool == "write_file" || d.tool == "edit_file") {
+        for (const auto& line : SplitLines(d.diff)) {
+            const ECDI::Color& color = !line.empty() && line[0] == '+' ? kOkDark
+                                     : !line.empty() && line[0] == '-' ? kErrorDark
+                                     : (!line.empty() && (line[0] == '@' || line[0] == '…')) ||
+                                           line.rfind("--- ", 0) == 0 || line.rfind("+++ ", 0) == 0
+                                         ? kDarkMuted
+                                         : kDarkInk;
+            addLine(line, color);
+            if (!line.empty()) {
+                ++out.diffLines;   // 空行不建（SplitLines 已去尾空；防御式再判）
+                if (line[0] == '+') out.plus++;
+                if (line[0] == '-') out.minus++;
+            }
+        }
+        return;
+    }
+    if (d.tool == "run_command") {
+        addLine("命令  " + d.command, kDarkInk);
+        addLine("目录  " + d.cwd, kDarkMuted);
+        addLine("超时  " + std::to_string(d.timeoutSeconds) + " 秒", kDarkMuted);
+        if (!d.note.empty()) addLine(d.note, kDarkMuted);
+        out.kvLines = 3 + (d.note.empty() ? 0 : 1);
+        return;
+    }
+    if (d.tool == "task") {
+        addLine("任务  " + clipRunes(d.task, 200), kDarkInk);
+        if (!d.name.empty()) addLine("代理  " + d.name, kDarkMuted);
+        std::string tools = "工具  ";
+        for (size_t i = 0; i < d.tools.size(); ++i) {
+            if (i) tools += " / ";
+            tools += d.tools[i];
+        }
+        if (d.tools.empty()) tools += "（无）";
+        addLine(tools, kDarkMuted);
+        addLine("预算  " + std::to_string(d.timeoutSeconds) + " 秒（轮数见问句）", kDarkMuted);
+        out.kvLines = 3 + (d.name.empty() ? 0 : 1);
+        return;
+    }
+    // 未知 tool：has=true 但不认识——发一行中性说明，不猜语义（§3.6 回落义务）。
+    addLine("（提案类型 " + d.tool + "）", kDarkMuted);
+    out.kvLines = 1;
+}
+
 // 权限门行：**纯构造**（重建可重放）。问句与 id 都来自模型条目，不是来自"刚到的消息"
 //   ——重建时那条消息早已不存在，若从消息取就等于"重建不出问句"。
 // ★★ 2026-10-27：长问句改折叠卡（实测反馈「权限门遇上长参数十分混乱」）。
@@ -726,7 +853,9 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
     //     高频重建，任何 `MeasureText` 都会进 `m_evalMeasureCalls`（评估仪器口径）。
     //   ★ 这也保证了"只有一套几何"：`bodyH` 为 0 时 `Relayout` 那条折叠分支自然退化，
     //     不需要"短问句走另一支"的第二套摆位。
-    const bool foldable = AskNeedsFold(entry.text);
+    //   ★★ v5（2026-11-05）：带 `detail` ⇒ **恒建折叠体**——提案卡的存在意义就是
+    //     让 diff/作用域可审阅；"短问句不需要折叠体"对它不成立（问句只是摘要行）。
+    const bool foldable = entry.askDetail.has || AskNeedsFold(entry.text);
     rec.expanded = entry.expanded;   // 展开态**只认模型**（默认值由 CreateAskRow 定）
 
     auto header = std::make_unique<ECDI::Button>(AskTitle(entry.text, rec.expanded, foldable));
@@ -769,6 +898,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
         label->SetWordWrap(true);   // ★ 换行是本轮改造的核心：原来这条路径上完全没有
         // 内容容器（裸 Widget，不画底），与工具卡/思维链同一挂法
         body->GetContent()->AddChild(std::move(label));
+        // ★★ v5（2026-11-05）：`detail` 在场 ⇒ 问句行下面接提案行（diff / 键值）。
+        //   内容容器挂 VerticalLayout 让 N 行自动纵排（Widget::SetLayout 在基类面）；
+        //   行高定死 `kProposalLineH`（mono 不折行，裁剪保对齐——diff 的缩进是语义）。
+        //   行数与 +/- 统计**建行期**定死进 `rec.proposal`（Relayout 只做乘法）。
+        if (entry.askDetail.has) {
+            ECDI::Widget* content = body->GetContent();
+            content->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, false, 0));
+            AppendProposalLines(entry.askDetail, *content, rec.proposal);
+        }
         body->SetExpanded(rec.expanded);   // 未挂树时瞬时生效（无动画）
         panel->AddChild(std::move(body));
     }
@@ -819,12 +957,15 @@ void HarnessApp::CreateAskRow(const json::Value& msg) {
     entry.kind = TimelineEntry::Kind::Ask;
     entry.id = msg.GetString("id");
     entry.text = msg.GetString("question");
+    // ★★ v5（2026-11-05）：结构化提案进模型（重建同构的前提，见 TimelineEntry 注释）。
+    entry.askDetail = ParseAskDetail(msg);
     // ★★ 2026-10-27：默认展开态**在这里**定（不放在 BuildAskRow 里推导）——
     //   重建路径走 `BuildAskRow(entry, rec)` 时只认 `entry.expanded`，若两处各自
     //   推一次"默认值"，模型与视图就会在建行那一瞬不一致：重建探针会读到
     //   `expanded` 从 1 变 0（= 收起了），而屏幕上其实先展开后收起。
     //   ★ 短问句 `AskNeedsFold == false` ⇒ 恒收起，且 BuildAskRow 干脆不建折叠体。
-    entry.expanded = AskNeedsFold(entry.text);
+    //   ★ v5：带 detail ⇒ 默认**展开**（审批时刻必须看得见 diff——PROTOCOL §7）。
+    entry.expanded = entry.askDetail.has || AskNeedsFold(entry.text);
     m_sess->timeline.push_back(entry);
 
     RowRec rec;

@@ -54,6 +54,7 @@ using harness::internal::kListRowHeight;
 using harness::internal::kPinThreshold;
 using harness::internal::kRowGap;
 using harness::internal::kRowPadX;
+using harness::internal::kProposalLineH;
 using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
@@ -212,6 +213,11 @@ void HarnessApp::Relayout() {
                 // 逐帧重建 = 4.8s 测量成本事故（2026-10-06 实测）
                 if (r.lastWrapW != wrapW) {
                     r.label->SetSize(wrapW, r.label->GetHeight());
+                    // ★★ 协议 v5（2026-11-05）：提案行宽随行宽统一下发。高度定死
+                    //   kProposalLineH（mono 不折行，宽=裁剪界），只有宽度随行变。
+                    for (ECDI::Label* l : r.proposal.lines) {
+                        if (l) l->SetSize(wrapW, kProposalLineH);
+                    }
                     r.lastWrapW = wrapW;
                 }
                 // ★★ A-2 已复核**否决**（2026-10-13 晚）：此处**保持**无条件 `AutoSize()`。
@@ -230,6 +236,10 @@ void HarnessApp::Relayout() {
                 //     **定义展开基准**（其头注释 76-78 行），`bodyH` 必须有值。
                 r.label->AutoSize();
                 bodyH = r.label->GetHeight() + 8;
+                // ★★ 协议 v5（2026-11-05）：提案行是**定高乘法**——行数在建行期
+                //   定死进 `rec.proposal.lines`（内容不随宽度变），这里零测量。
+                //   问句行 AutoSize 之后接 N 行 kProposalLineH，公式的其余部分不动。
+                bodyH += static_cast<int>(r.proposal.lines.size()) * kProposalLineH;
             }
             r.bodyH = bodyH;
             if (r.headerBtn) {

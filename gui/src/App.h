@@ -416,6 +416,25 @@ private:
     void DrainTimed();
     void HandleLine(const std::string& line);
     void RouteLastMessage();
+    // ★★ 协议 v5（2026-11-05）：ask 的**结构化提案**（§3.6 可选 `detail`）。
+    //   问句是一行摘要，审批要看的结构化数据在这里：write/edit 的 unified diff、
+    //   run/task 的作用域字段。**渲染数据，不是不变量对象**——字段缺失/`tool`
+    //   未知时 `has=false`，整行走 v4 的问句路径（GUI 兼容义务，PROTOCOL §3.6）。
+    struct AskDetail {
+        bool has = false;
+        std::string tool;                    // write_file / edit_file / run_command / task
+        std::string path;                    // write/edit：目标文件
+        std::string diff;                    // write/edit：unified diff 文本（\n 分行）
+        bool replaceAll = false;             // edit（core 只在 true 时发）
+        std::string command;                 // run：完整命令（不截断）
+        std::string cwd;                     // run：实际工作区根
+        int timeoutSeconds = 0;              // run/task：生效超时
+        std::string note;                    // run：环境剥离等说明
+        std::string task;                    // task：任务全文
+        std::string name;                    // task：子代理显示名
+        std::vector<std::string> tools;      // task：授权只读工具集
+    };
+
 
     // ★★ 0c（2026-10-19）：**转录时间线**——「该被看见的一行」的模型侧描述。
     //   为什么必须有它：在此之前「屏幕上有什么行」这件事**只存在于控件树里**
@@ -456,7 +475,12 @@ private:
         //   sidecar 经 answerTimes 键往返；旧 sidecar 无此键 ⇒ 空 ⇒ 重建不显
         //   时刻（如实呈现「来自旧状态文件」，不编造）。
         std::string answerAt;
+        // ★★ 协议 v5（2026-11-05）：ask 的结构化提案。进模型（timeline）是
+        //   重建同构的**前提**：MaterializeOne 用同一份 BuildAskRow(entry, rec)
+        //   重画——detail 若只活在控件里，换主题/切会话一次提案卡就退化成裸问句。
+        AskDetail askDetail;
     };
+
 
     // 行记录：m_rows 用 deque（push_back 不失效指针——回调捕获依赖这一点）
     // ★★ 2026-11-01（账本 `TODO-07` 第一步）：**非拥有控件指针的失效规则**
@@ -539,6 +563,18 @@ private:
         std::vector<TableRec> tables;
         std::string blockId;                      // 点开展开时回查块（标题重算用）
         std::string askId;                        // P1.5：协议 ask 的 id（answer 回执用）
+        // ★★ 协议 v5（2026-11-05）：提案卡展开体的**可重跑**元数据。
+        //   与 TableRec 同一手法：控件指针是同代非拥有句柄（重建随行重建），
+        //   行数/配色统计在**建行期**定死（行的内容不随宽度变），宽度相关
+        //   的 SetSize 在 Relayout 期按 lastWrapW 门闸统一下发。
+        struct ProposalRec {
+            std::vector<ECDI::Label*> lines;      // 折叠体内容行（问句行之后），非拥有
+            int diffLines = 0;                    // detail.diff 派生的行（含 @@/头/上下文）
+            int plus = 0;                         // '+' 行数（建行期统计）
+            int minus = 0;                        // '-' 行数
+            int kvLines = 0;                      // run/task 键值行（不进 diff 判据）
+        };
+        ProposalRec proposal;
         int bodyH = 0;                            // 展开体高度缓存（autosize 布局用）
         // ★ A-2 曾拟在此加 `bodyHDirty`（按需重测），**已复核否决**（2026-10-13 晚）：
         //   把 `chars` 分解为 `a(一次性) + b(每帧)·frames` 后实测 ⇒ b 与文本长度**无关**
@@ -929,6 +965,12 @@ private:
     // 行构造的**纯函数**部分：只建控件、不追加时间线、不发副作用（重建可重放）。
     std::unique_ptr<ECDI::Widget> BuildBlockRow(const Block& block, RowRec& rec);
     std::unique_ptr<ECDI::Widget> BuildAskRow(const TimelineEntry& entry, RowRec& rec);
+    // ★★ 协议 v5（2026-11-05）：提案卡展开体的行构造（BuildAskRow 的 detail 分支调；
+    //   重建走同一份 ⇒ 同构）。行数/+−统计写 `rec.proposal`，Relayout 只做乘法。
+    void AppendProposalLines(const AskDetail& d, ECDI::Widget& content, RowRec::ProposalRec& out);
+    // `ask.detail` → AskDetail（CreateAskRow 调）。缺失/非对象/tool 为空 ⇒ has=false。
+    // ★ static 成员而非自由函数：AskDetail 是 private 嵌套类型。
+    static AskDetail ParseAskDetail(const json::Value& msg);
     std::unique_ptr<ECDI::Widget> BuildNoticeRow(const std::string& text,
                                                  const ECDI::Color& color, RowRec& rec);
     void BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
@@ -1265,6 +1307,7 @@ private:
     void AppendSessionProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendSidebarProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendAgentProbeSummary(std::string& json);     // ProbeAgents.cpp（v5）
+    void AppendProposalProbeSummary(std::string& json);  // ProbeProposal.cpp（v5 提案卡）
     void AppendAnswerProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendMenuProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendJumpProbeSummary(std::string& json);   // ProbeFlow.cpp
@@ -1780,6 +1823,8 @@ private:
     void FocusAgent(const std::string& agentId);
     // ★★ 协议 v5（2026-11-04）：子代理缩进/生命周期。判据与负对照见 ProbeAgents.cpp 头注。
     void RunAgentProbe();
+    // ★★ 协议 v5（2026-11-05）：ask 提案卡。判据与负对照见 ProbeProposal.cpp 头注。
+    void RunProposalProbe();
     void AppendTableProbeSummary(std::string& json);
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：

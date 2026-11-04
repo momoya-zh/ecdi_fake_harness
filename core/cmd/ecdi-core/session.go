@@ -676,20 +676,28 @@ func hasTaskCall(calls []aggregatedCall) bool {
 // 问句由调用方给：普通工具走 askPrompt，委派走 delegationAskPrompt
 //（后者要带授权范围，两条问题不是同一个句式）。
 //
+// ★ detail（2026-11-05，协议 v5 §3.6 可选字段）：结构化提案——write/edit 的
+// unified diff、run/task 的作用域字段。nil = 不带该字段（消息与 v5.7 之前逐字节
+// 同构；GUI 拿不到时回落问句文本）。问句仍是单行摘要，两者叠加不替代。
+//
 // ★ 返回 denied 而不是 allowed：取消与拒绝是两件事（取消由调用方看
 // turnCtx.Err() 判定，优先级更高）。合并成 bool 会把「用户按了停止」
 // 误报成「用户拒绝了该操作」，历史里那段文本会一直是错的。
 func (s *session) askQuestion(turnCtx context.Context, question string,
-	answerCh chan wire.GuiMsg) bool {
+	detail map[string]any, answerCh chan wire.GuiMsg) bool {
 
 	askID := fmt.Sprintf("q%d", s.out.Seq())
-	s.emit(map[string]any{"t": "ask", "id": askID, "kind": "permission",
+	msg := map[string]any{"t": "ask", "id": askID, "kind": "permission",
 		"question": question,
 		"options": []map[string]string{
 			{"key": "allow", "label": "允许"},
 			{"key": "deny", "label": "拒绝"},
 		},
-		"default": "deny"})
+		"default": "deny"}
+	if detail != nil {
+		msg["detail"] = detail
+	}
+	s.emit(msg)
 	s.setState(wire.StateWaiting)
 	s.log("waiting for answer to %s (I3: no further messages)", askID)
 
@@ -730,7 +738,10 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	if s.allowTools[c.Name] {
 		s.log("tool %s allowed by --allow-tools (skipping ask)", c.Name)
 	} else {
-		denied = s.askQuestion(turnCtx, askPrompt(c.Name, argsMap, c.Arguments), answerCh)
+		// ★ detail 在问句之前组装（2026-11-05）：write_file 要读**批准前**的磁盘
+		//   内容算 diff（diff.go）——只读，安全；执行仍在门后。
+		denied = s.askQuestion(turnCtx, askPrompt(c.Name, argsMap, c.Arguments),
+			askDetail(c.Name, argsMap, s.cwd), answerCh)
 	}
 
 	var res toolResult

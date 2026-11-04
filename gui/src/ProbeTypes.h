@@ -447,3 +447,24 @@ struct AgentProbeRec {
     std::string note;
     std::vector<std::string> agentLines;   // "a1|名|end|ok|3轮|12行|18420ms"
 };
+
+// ★★ 协议 v5（2026-11-05）：ask 提案卡读数（--proposal-probe）。
+//   ★ 两侧读数与 agent-probe 同一手法：`detailRows`/`diffRows` 等来自**视图**
+//     （RowRec::proposal 建行期统计），`model*` 来自**模型**（timeline 条目的
+//     detail 重新切行计数）——两条独立计算路径相等才是判据，同源复读是自说自话。
+struct ProposalProbeRec {
+    std::string phase = "settle";      // 同步探针，一相
+    size_t askRows = 0;                // 视图：ask 行总数（回落路径的存量）
+    size_t detailRows = 0;             // 视图：建了提案体的 ask 行
+    size_t diffRows = 0;               // 视图：detail.diff 派生行（键值行不计）
+    size_t plusRows = 0;               // 视图：'+' 行（建行期统计）
+    size_t minusRows = 0;              // 视图：'-' 行
+    size_t kvRows = 0;                 // 视图：run/task 键值行（渲染面，不进 diff 判据）
+    size_t modelDetailRows = 0;        // 模型：askDetail.has 的 timeline 条目数
+    size_t modelDiffRows = 0;          // 模型：detail.diff 重切行数
+    size_t modelPlus = 0;              // 模型：'+' 行重数
+    size_t modelMinus = 0;             // 模型：'-' 行重数
+    size_t emptyDetailRows = 0;        // 有 detail 却没建出任何提案行（必须 0）
+    bool matched = true;               // 元断言（见 RunProposalProbe 头注）
+    std::string note;
+};

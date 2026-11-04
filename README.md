@@ -57,6 +57,8 @@
   `agent`（生命周期：`start`/`end`）——**只加字段与控制消息，不加 `kind`**（七个 kind 语义不动，
   I8 的「未知」与「已知」两条路径不混）。主 `state` 仍只表示根代理（按钮使能门控零风险）；
   `usage` 也只描述根代理，子代理用量只在 `agent.phase=end` 上（不污染上下文百分比）。
+  ★ **`ask.detail`（2026-11-05 增补，仍属 v5）**：可选结构化提案——write/edit 带 unified diff
+  （旧侧 = 批准前的磁盘内容）、run/task 带完整作用域；渲染数据非不变量对象，缺失 ⇒ 回落问句文本。
 - **`kind` 七个值**（v2 起）：`user` / `assistant` / **`reasoning`** / `tool_call` / `tool_result` / `system` / `error`。
 - **转录的唯一作者是 core**：GUI 不产生转录块，用户输入由 core 回显为 `kind:"user"`。
   ★ **v3 的边界**：GUI 可以先画一个**待确认**的本地气泡（`· 发送中`），但它不是转录块——
@@ -189,7 +191,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 不钉 `paints/frames`（后者随字体与实现变化，钉死它会把一次合法收敛判成回归）。
 ★ 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
 
-### 探针（**32 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
+### 探针（**33 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
 
 | 探针 | 读什么 |
 |---|---|
@@ -225,6 +227,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--valign-probe` | 单行输入框垂直居中（**REQ-14**：caret 几何公开判据 + Top→Center 翻转臂 / 恢复臂） |
 | `--preview-probe` | I 路径可点 + 只读预览（8 相） |
 | `--agent-probe` | 子代理缩进 / 归属 / 代理卡（**协议 v5**：缩进行数=归属块数、竖线行数=缩进行数、缩进吃宽、卡行数=代理数+1 且随有无代理显隐；★ **负对照另跑一支**——无 agent 夹具上缩进恒 0，见 `tools/regress.py`） |
+| `--proposal-probe` | ask 提案卡（**协议 v5** `detail`，2026-11-05）：diff 行数/±行数与模型侧重切行数两路对齐、无空提案体；★ **负对照另跑一支**——无 detail 夹具（demo）上提案行恒 0（回落路径完好） |
 
 另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
 `--probe-contrast`（探针专用白底黑字）· `--row-mode autosize|listlayout`（布局 A/B）·
@@ -396,6 +399,7 @@ PY
 临时会话 · 会话归档 · 转录导出 · `···` 内联菜单 · 窗口缩放 + **最小尺寸 880×460**（框架拦，不回弹）·
 Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶后内部滚动）·
 思维链默认折叠 · 上下文用量环 · 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
+ask **提案卡**（write/edit 审批前看 unified diff、run/task 看完整作用域）·
 I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 
 ### **还**不能做什么（★ 这是下一步的输入）

@@ -152,6 +152,10 @@ void HarnessApp::WriteSummary() {
     if (m_options.agentProbe && !m_probeState.agentProbeLog.empty()) {
         AppendAgentProbeSummary(json);
     }
+    // ★★ 协议 v5（2026-11-05）：ask 提案卡。判据与负对照见 ProbeProposal.cpp 头注。
+    if (m_options.proposalProbe && !m_probeState.proposalProbeLog.empty()) {
+        AppendProposalProbeSummary(json);
+    }
     // ★★ Step 3 机读证据（2026-10-19）：ask 的**答案内容**是否进模型、是否上屏。
     //   判据（跑批脚本执行）：
     //     · baseline.matched == true（未答：answer 空、两钮都可点 —— 负对照⑥）

@@ -92,6 +92,11 @@ inline constexpr int kAgentIndent = 24;
 //   归属竖线宽（`indent > 0` 的行才有）。3px 而不是 1px：1px 与 kLine 的
 //   卡片描边同宽同色，缩进行会被读成"多画了一条分隔线"而不是"这是子代理"。
 inline constexpr int kAgentGutterW = 3;
+//   ★★ 协议 v5（2026-11-05）：提案卡展开体里**一行 diff/键值**的固定行高。
+//     mono 13px 的自然行高约 17 ⇒ 取 18 给下伸部留 1px 余量；**定高不折行**
+//     （PROTOCOL §7：diff 的缩进就是语义，折行毁对齐；长行靠控件裁剪）。
+//     Relayout 的 bodyH 公式吃它（行数在建行期定死 ⇒ 高度是纯乘法，零测量）。
+inline constexpr int kProposalLineH = 18;
 
 // ── 转录版心宽度（2026-10-27 max-width 模型；2026-11-03 改**分级** max-width）──
 //   ★ 模型（照 WorkBuddy 客户端的实际表现归纳，5 张不同窗口宽度的截图）：

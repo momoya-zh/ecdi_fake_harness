@@ -219,6 +219,23 @@
 
 > `default` 只在 GUI 侧超时/关闭时使用；正常路径必须显式回答。
 
+★ **v5 可选 `detail` 字段**（2026-11-05 增；可缺；缺省 = GUI 只显示 `question` 问句文本，
+与 v4 行为逐位一致）。`question` 是一行摘要，审阅用的结构化数据放这里——
+**让用户看清一个「可信但会犯错」的 agent 打算干什么**，不能只靠截断的问句。
+
+| 字段 | 约束 |
+|---|---|
+| `detail.tool` | **必带且非空**：`write_file` / `edit_file` / `run_command` / `task` 之一（未来可增） |
+| `detail.path` | write_file / edit_file：目标文件（工作区相对） |
+| `detail.diff` | write_file / edit_file：**unified diff 文本**（core 以当前磁盘内容算，context 3 行；超长截断并标注）。新文件 = 全 `+` 行；内容无变化 = 空串。edit_file 的 diff 是**替换片段**的 diff（`old_string`→`new_string`），整文件上下文在 `tool_call` 块的 `args` 里 |
+| `detail.replaceAll` | edit_file：布尔，缺省 false |
+| `detail.command` / `detail.cwd` / `detail.timeoutSeconds` | run_command：完整命令（**不截断**）/ 实际工作区根 / 生效超时秒 |
+| `detail.task` / `detail.tools` / `detail.maxTurns` / `detail.timeoutSeconds` | task 委派：任务全文 / 授权只读工具集 / 轮数与墙钟预算 |
+
+- **`detail` 是渲染数据，不是不变量对象**：`validate.py` **不**校验它的内部结构（与 `block_start.args` 同一地位——最坏后果是 GUI 回落问句文本，不存在序完整性风险，故不造机器检查）。
+- **GUI 兼容义务**：`detail` 缺失、非对象、`tool` 未知或字段缺失 ⇒ **回落问句文本**，不得崩、不得显示空卡（I5 精神在字段层的应用）。
+- **core 义务**：`diff` 以**批准前**的磁盘内容计算（只读；执行仍在批准后）——审批时刻看到的就是将要发生的事。
+
 ★★ **`ask` 是「合作性契约」，不是安全边界**（2026-10-14 补，用户定调）：
 - **能检测**：I3 让「没阻塞就继续发消息」在**消息序**上看得出来（§5 的可机检形式）。
 - **拦不住**：一个想跑 `rm -rf` 的 core **不必先问我们**。
@@ -522,6 +539,20 @@ GUI 侧对 `prompt` / `cancel` / `workspace` 的按钮使能**只由 `state` 驱
 ★ **缩进遇到 ECDI 能力缺口时**（例如需要「只重排某个子树」而框架没有该入口）：**登记需求并给受控对照**，
 不在本阶段顺手改框架——本仓库的铁律。
 
+#### `ask` 提案卡（v5 新增，2026-11-05）
+
+**一句话**：`ask` 带 `detail` 时，问句下方的展开体**默认展开**渲染结构化提案——
+审批时刻必须看得见将要发生的事；无 `detail` 的 `ask` 渲染与 v4 逐位一致。
+
+| 元素 | 规格 |
+|---|---|
+| 展开体 | `detail.diff` 逐行渲染：**等宽字体、一行一控件、不折行**（裁剪保对齐——diff 的缩进就是语义） |
+| 配色 | `+` 行 = ok 色 · `-` 行 = error 色 · `@@` / `---` / `+++` 头行 = 弱化色 · 上下文行 = 正文色 |
+| `run_command` | 键值行：`command`（完整不截断）/ `cwd` / `timeoutSeconds`，末行 `note`（弱化色） |
+| `task` | 键值行：`task` 全文 / `tools` / `maxTurns` / `timeoutSeconds` |
+| 回答态 | 展开体**不随回答隐藏**（审计痕迹），只禁用按钮——同 `ApplyAnsweredLook` 单点 |
+| 回落 | `detail` 缺失/非对象/`tool` 未知 ⇒ 只渲染问句文本（= v4 行为），不得崩、不得空卡 |
+
 #### `reasoning` 的渲染形态（v2 新增，2026-10-14 用户定调）
 
 **交互**：默认**不渲染正文**，只显示一行标题；标题可点，点开后箭头**从朝下变朝上**。
@@ -647,6 +678,7 @@ face ⇒ 字重与基线与旁边文字对不上，**比原样更难看**。⇒ 
 | `fixtures/hostile/agent-undeclared.jsonl` | ★ **v5 / I12 负向**：块携带一个**从未 `start`** 的 `agent`——子行会挂在一个不存在的代理上 |
 | `fixtures/hostile/agent-after-end.jsonl` | ★ **v5 / I12 负向**：`phase=end` **之后**仍有该代理的块——代理已经收尾，界面却还在长行 |
 | `fixtures/hostile/parent-dangling.jsonl` | ★ **v5 / I13 负向**：`parent` 指向一个**不存在**的块——归属竖线无处可连 |
+| `fixtures/proposal/write-edit-run-asks.jsonl` | ★ **v5 提案卡正向基线**（`protocol:5`）：三个 `ask` 各带 `detail`——`write_file`（新文件 = 全 `+` 行 diff）/ `edit_file`（替换片段 diff）/ `run_command`（完整命令 + cwd + 超时）。每个 `ask` 严格配对 `state=waiting → state=running`。用途：提案卡展开体与 `--proposal-probe` 的读数基线；同批负对照 = 既有 demo 夹具（无 `detail` ⇒ 零 diff 行） |
 
 **否定型断言必须配正对照**：先用 `demo-session.jsonl` 证明路径通，再用 hostile 目录证明失败被**显式**暴露。
 
@@ -686,7 +718,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
-| **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
+| **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 · **2026-11-05 增补（仍属 v5，只增不改）**：§3.6 `ask` 增可选 `detail`（提案卡：write/edit 带 `diff`、run/task 带结构化字段；渲染数据**非不变量对象**，validate 不查），§7 增 `ask` 提案卡渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**；`detail` 同为未知字段被忽略 ⇒ 问句照显、无提案体。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
 | **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |
 | **2** | 2026-10-14 | §3.3 加 `reasoning` · §5 加 **I8** · §7 加 `reasoning` 渲染形态 · §3.1 加 `hello.context` · §3.5 加 `block_end.tokens` | **v1 GUI 不崩、不丢内容**——`reasoning` 落进「未知 `kind`」的中性渲染路径（可见气泡 + 显式提示），只是**不折叠**；`context`/`tokens` 是未知字段，按 I5 忽略（百分比显示 `—`）。这正是 I5/I8 的用途 |

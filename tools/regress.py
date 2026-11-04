@@ -120,6 +120,8 @@ SCALE = "protocol/fixtures/scale/scale-transcript-2000.jsonl"
 COT = "protocol/fixtures/cot/cot-session.jsonl"
 # ★★ 协议 v5（2026-11-04）：子代理正向夹具（两个 task 并行、各自带 tool_call）。
 SUBAGENT = "protocol/fixtures/subagent/parallel-two-agents.jsonl"
+# ★★ 协议 v5（2026-11-05）：ask 提案卡正向夹具（三个 ask 各带 detail）。
+PROPOSAL = "protocol/fixtures/proposal/write-edit-run-asks.jsonl"
 # ★★ 门控反面（2026-11-04）：发 agent 消息但 hello.caps **不含** agents
 #   ⇒ 内容照旧渲染，代理卡**不得**出现（协议 §3.1）。
 AGENT_CAP_MISSING = "protocol/fixtures/subagent/agent-cap-missing.jsonl"
@@ -197,6 +199,12 @@ EXTRA_PROBES = [
     #   ★ 负对照必须**另跑一支**（无 agent 的夹具 ⇒ 缩进恒 0），否则「每行都缩 24」
     #     这种实现在正向上也是绿的 —— 见 `check_agent_probe_negative`。
     ("--agent-probe", "agentProbe", SUBAGENT, [], []),
+    # ★★ 协议 v5（2026-11-05）：ask 提案卡（detail）。
+    #   正向夹具三个 ask 各带 detail（write 新文件全 + 行 / edit 替换片段 /
+    #   run_command 键值），探针的 `matched` = 模型侧重切行与建行期统计逐项相等。
+    #   ★ 负对照另跑一支（无 detail 的 demo ⇒ detailRows==0），否则"每个 ask
+    #     都画提案体"的实现正向上也绿 —— 见 `check_proposal_probe_negative`。
+    ("--proposal-probe", "proposalProbe", PROPOSAL, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
@@ -551,6 +559,43 @@ def check_agent_probe_negative():
     return (0 if ok else 1), detail
 
 
+def check_proposal_probe_negative():
+    """`--proposal-probe` 的负对照：无 `detail` 的夹具上提案体必须恒缺。
+
+    ★ 为什么必须单独跑一支：正对照只证明「有 detail 时会画提案体」，
+      「每个 ask 都画一个提案体」的实现同样能把它照亮。只有"没有 detail 时
+      一行提案都不画（回落问句）"才能把这两者分开——回落路径是 v4 行为
+      逐位保留的承诺（正反对照各自成立才算判据成立）。
+    ★ 判据读数与 agent-probe 负对照同形，但**不要求 matched**——探针的
+      `matched` 含 `detailRows>=1`（正向臂专用），负对照看的是具体读数。
+    """
+    out = OUT / "_reg-proposal-probe-negative.json"
+    out.unlink(missing_ok=True)
+    try:
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
+                            "--theme", "light", "--proposal-probe",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("--proposal-probe (negative)", None, out)
+        return 1, "TIMEOUT"
+    record("--proposal-probe (negative)", r.returncode, out)
+    if not out.exists():
+        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    rows = d.get("proposalProbe") or []
+    if not rows:
+        return 1, "NO ROWS (key=proposalProbe)"
+    rec = rows[0]
+    ok = (rec.get("askRows", 0) >= 1 and rec.get("detailRows") == 0
+          and rec.get("diffRows") == 0 and rec.get("plusRows") == 0
+          and rec.get("minusRows") == 0 and rec.get("kvRows") == 0
+          and rec.get("modelDetailRows") == 0)
+    detail = (f"askRows={rec.get('askRows')} detailRows={rec.get('detailRows')} "
+              f"diffRows={rec.get('diffRows')} kvRows={rec.get('kvRows')}")
+    return (0 if ok else 1), detail
+
+
 def check_agent_probe_cap_gate():
     """`--agent-probe` 的**门控**反面：core 发了 agent 消息却没声明 `caps.agents`。
 
@@ -804,6 +849,9 @@ def main():
     n, detail = check_agent_probe_cap_gate()
     fail += n
     print(f"  {'--agent-probe':18s} {detail}  (cap gate：没声明 agents ⇒ 卡片不得出现)")
+    n, detail = check_proposal_probe_negative()
+    fail += n
+    print(f"  {'--proposal-probe':18s} {detail}  (negative/DEMO：无 detail 就一行提案都不画)")
 
     print("\n== 2c. REQ-03 异步投递 (live A/B) ==")
     core = ROOT / "core" / "bin" / "fake-core.exe"

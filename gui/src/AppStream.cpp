@@ -360,6 +360,9 @@ void HarnessApp::OnReplayTick() {
                 // ★ 协议 v5（2026-11-04）：子代理缩进。同步组——判据全在跑完后的
                 //   行几何与生命周期表上，不需要等下一帧。
                 {&CliOptions::agentProbe, &ProbeState::agentProbeDone, &HarnessApp::RunAgentProbe},
+                // ★ 协议 v5（2026-11-05）：ask 提案卡。同步组——折叠体行在 settle 后
+                //   已建完，行数/配色统计是建行期数据，不需要等下一帧。
+                {&CliOptions::proposalProbe, &ProbeState::proposalProbeDone, &HarnessApp::RunProposalProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
