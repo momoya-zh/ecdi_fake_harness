@@ -1,8 +1,12 @@
-﻿# ECDI_fake_harness 协议 v3
+﻿# ECDI_fake_harness 协议 v5
 
 > **这个文件的定位**：`core`（Go）与 `gui`（C++ / ECDI）之间**唯一的契约**。
 > 它先于两侧任何一行实现存在——因为 GUI 可以只看它就能跑起来。
-> 状态：**v3**（2026-10-20；v2 于 2026-10-14；v1 起草于 2026-10-03）。改这份文件 = 改协议版本号。
+> 状态：**v5**（2026-11-04；v4 于 2026-10-25 / 10-27 增补；v3 于 2026-10-20；v2 于 2026-10-14；v1 起草于 2026-10-03）。改这份文件 = 改协议版本号。
+>
+> ★ **订正（2026-11-04）**：本行此前停在 v3，v4（多提供商 / `model` 热切换）只登记在 §4、§3.11、§5 与 §9 的版本表里，**头部没回写**——与账本头部曾落后于 §6 是同一类漂移，记此以免再犯。
+>
+> ★ **v4 → v5**：新增 `agent`（子代理生命周期，core→gui 控制面）与 `block_start` 的可选 `agent` / `parent`；新增不变量 **I12 / I13**；`hello.caps` 增 `"agents"`。★ 仍遵守「只增不改」：七个 `kind` 的语义、`state` 的含义、`ask` 的既有字段**一个都没动**，只是给块加了一层「它是谁做的、由谁派发的」归属信息。
 >
 > ★ **v2 → v3**：新增 `workspace` 切换/确认；GUI 提交 prompt 时立即显示带 `client_id` 的本地用户气泡，core 回显同 id 作为确认（不重复创建）；夹具仍是 core→gui 的规范转录流。
 >
@@ -98,7 +102,7 @@
 | `protocol` | 协议**主版本**。GUI 的版本较低时必须拒绝并显示错误（§9） |
 | `core` | 核心版本，仅用于显示 |
 | `session` | 会话 id；`--resume` 时回放同一 id |
-| `caps` | 能力声明，GUI 据此决定是否显示对应交互。★ **v3**：支持工作区切换的 core **必须**声明 `"workspace"`；未声明的 core，GUI **不得**显示工作区选择器 |
+| `caps` | 能力声明，GUI 据此决定是否显示对应交互。★ **v3**：支持工作区切换的 core **必须**声明 `"workspace"`；未声明的 core，GUI **不得**显示工作区选择器。★ **v5**：支持子代理的 core **必须**声明 `"agents"`；未声明 ⇒ GUI **不得**显示代理卡、`toolDefs` 也不该出现 `task`（§3.12） |
 | `context` | ★ **v2 新增（可选）**：上下文窗口容量（**token 数**）。= 「上下文占用百分比」的**分母** |
 
 ★ **`context` 为什么必须存在（2026-10-14）**：用户要求显示「上下文已占用的百分比」。
@@ -145,6 +149,19 @@
 | `error` | 错误 | `text` |
 
 可选 `text`：块的**初始文本**。最终文本 = `block_start.text` + 该块所有 `delta.text` 顺序拼接。
+
+★ **v5 可选归属字段**（两个都可缺；缺省 = 根代理的块、不由谁派发）：
+
+| 字段 | 含义 |
+|---|---|
+| `agent` | 产出该块的**子代理 id**（对应某条 `agent phase=start` 的 `id`）。★ 缺省 = 根代理 ⇒ **根代理的块不得带它**（根代理没有 id） |
+| `parent` | 发起这次委派的那次 `tool_call` 块 id（即 `task` 调用所在的块）。★ 只在**子代理的块**上有意义 ⇒ 带 `parent` 必须同时带 `agent`（I13） |
+
+```json
+{"t":"block_start","seq":18,"ts":"...","id":"b7","kind":"tool_call","name":"grep","args":{"pattern":"agent"},"agent":"a1","parent":"b3"}
+```
+
+★ **为什么加在 `block_start` 上而不是新开一种块**（2026-11-04 用户定调）：子代理吐出来的东西**仍然只是七种 kind 之一**——它的「思考」是 `reasoning`、它的工具调用是 `tool_call`。若为子代理新开 `kind`（如 `subagent_tool_call`），就把「内容是什么」与「谁做的」两件事揉进了一个判别位，而且会与 I8「未知 kind 中性渲染」的路径搅在一起。归属是**正交维度** ⇒ 用正交字段表达。
 
 ★ **`reasoning` 为什么是一等公民（v2 新增，2026-10-14 用户定调）**：用**开源推理模型**
 （DeepSeek-R1 / QwQ 一类）时，core 会在回答前**流式吐出思维链**。它不是「另一种 assistant
@@ -340,6 +357,32 @@ v4 起两个参数跟着**模型**走（同一提供商下 M1 标了 200K、M2 �
 `ProtocolWriter::Model` **总是写**这两个字段。ack 的 `context` 同理要能回 0，
 GUI 收到 0 必须落到 `ctxCapacity = 0`（显示 `—`），不得保留旧分母。
 
+### 3.12 `agent`（core → gui，v5 子代理生命周期）
+
+**控制面消息，不是转录块**——它不进转录、没有 `block_end`、不占一个 `id` 空间（`id` 是代理 id，与块 id 互不干涉）。
+
+```json
+{"t":"agent","seq":7,"ts":"...","id":"a1","phase":"start","name":"explorer","parent_call":"b3","depth":1,"task":"读 PROTOCOL.md 里 agent 消息的定义","model":"deepseek-chat"}
+{"t":"agent","seq":31,"ts":"...","id":"a1","phase":"end","ok":true,"summary":"协议 §3.12 已写清三字段","turns":3,"input":8123,"output":940,"elapsedMs":18420}
+```
+
+| 字段 | phase | 说明 |
+|---|---|---|
+| `id` | 两者 | 子代理 id，一份流内**唯一**（I12）。建议 `a1`/`a2`，与块 id 的 `b1` 分空间 |
+| `phase` | 两者 | `start` / `end`，各恰好一次 |
+| `name` | start | 显示名（GUI 代理卡的标题） |
+| `parent_call` | start | 发起委派的 `tool_call` 块 id（与该子代理所有块的 `parent` 同值，I13 管） |
+| `depth` | start | 深度，**固定为 1**（子代理不得再开子代理） |
+| `task` | start | 委派任务的**原文**（权限门里展示过的同一段文字，不得事后改写） |
+| `model` | start（可选） | 该子代理用的模型名，仅显示 |
+| `ok` | end | 布尔；失败/取消也必须发 end（`ok:false` + `summary` 说明原因） |
+| `summary` | end | 回给主代理的**同一段**结论文本（主代理的 `tool_result` 里就是它） |
+| `turns` / `input` / `output` / `elapsedMs` | end | 子代理自己的轮数与 token 用量。★ **不进 `usage`**（§3.7）：`usage` 只描述根代理，否则上下文百分比会把子代理的账算进去 |
+
+★ **为什么单独一条消息而不是复用 `state`**：`state` 是**全局**状态机，`PROTOCOL.md` 的「GUI 发送/停止只由 `state` 驱动」这条门控因此可以一个字都不改。子代理的状态是**展示用**信息，混进 `state` 会让「能不能发下一条 prompt」这种判断掺进一个与之无关的维度。
+
+★ **本消息是可选的**：core 不声明 `caps` 里的 `"agents"` 就**不发**；老 GUI 收到则按 I5 忽略并计入 `unknownTypes`（不崩、不丢）。
+
 ## 4. gui → core 消息
 
 | `t` | 载荷 | 何时发 |
@@ -392,9 +435,11 @@ GUI 收到 0 必须落到 `ctxCapacity = 0`（显示 `—`），不得保留旧�
 | **I10** | ★ **v3**：`workspace` 响应必须带 **`request_id`**、布尔 `ok`、`path`；`ok:false` 时必须带 **`message`**；一份流内 `request_id` 必须**互不相同**（一次一个未决，§3.9） | 失败切换被误当成成功 / 响应与请求错位 |
 
 | **I11** | ★ **v4**：`model` 请求（gui→core）与确认（core→gui）的 `id` 一份流内**互不相同**；请求**仅 `idle` 合法**（GUI 排队兑现「等上一个完整输出完」）；确认 `ok:false` 必带 `message`；成功确认的 `provider`/`model`/`context`/`maxOutput` 是 core **实际采用**的值（不是请求原文的回显） | 切换错位 / 悄悄换错模型 / 半途掐断正在输出的轮 |
+| **I12** | ★ **v5**：`agent` 的 `id` 一份流内**唯一**；`phase` ∈ {`start`,`end`}，两者各**恰好一次**；`phase=start` 必须**先于**任何携带该 `agent` 的 `block_start` / `ask`；`phase=end` **之后**不得再出现该 `agent` 的任何块或 `ask` | 子代理的行挂在一个不存在的代理上 / 代理结束后还在吐内容（界面上是幽灵缩进行，谁也说不清它属于谁） |
+| **I13** | ★ **v5**：带 `parent` 的块**必须同时带 `agent`**，且 `parent` 必须指向一个**已存在的 `tool_call` 块**、且该块**属于父代理**（深度固定 1 ⇒ 子代理的父一定是根代理 ⇒ 那个 `tool_call` 不得带 `agent`） | 子代理的行挂到错误的委派下面 / 归属竖线画到别人的调用上 |
 
-> ★ **I9 / I10 的适用范围**：只约束 `hello.protocol >= 3` 的流。v1/v2 夹具**早于** `client_id` / `workspace`
-> 存在，对它们施加这两条就是把历史记录判成违规。`validate.py` 按 `hello.protocol` 分流，不是按文件名。
+> ★ **I9 / I10 / I12 / I13 的适用范围**：按 `hello.protocol` 分流——I9/I10 只约束 `>= 3`，I12/I13 只约束 `>= 5`。v1/v2/v3/v4 夹具**早于**
+> `client_id` / `workspace` / `agent` 存在，对它们施加这些义务就是把历史记录判成违规。`validate.py` 按 `hello.protocol` 分流，不是按文件名或目录名。
 
 > **I4 是本项目的核心评估钩子**：`Application::PostToUi` 的乱序/丢失只有靠它才看得见。
 
@@ -454,6 +499,28 @@ GUI 侧对 `prompt` / `cancel` / `workspace` 的按钮使能**只由 `state` 驱
 ★ **两个 v3 渲染态为什么必须规定**：它们是「后端已存在但视图看不见」的反面——`client_id` 的价值
 全在「这一条到底是发出去了还是没发出去」这个可见差别上。不规定形态 ⇒ 各实现各自发明，
 而用户看到的将是「有个气泡，不知道发没发」。
+
+#### 子代理行（v5 新增，2026-11-04）
+
+**一句话**：子代理的块**与根代理同 kind 同渲染**，只是整行**左缩进**并在缩进区带上**归属竖线**。
+
+| 元素 | 规格 |
+|---|---|
+| 缩进 | 每层 `24px`（深度固定 1 ⇒ 实际 24px）；只减**行内可用宽**，行根 x 右移同值 |
+| 归属竖线 | 缩进区左缘 2px，弱化色（`kLine` 一档），**只画该代理的行区间**——不贯穿无关行 |
+| 折行与测量 | **不改变**任何测量/断行路径：缩进只改「这一行有多宽」，文本测量函数、wrap 缓存、表格列宽一概不动 |
+| `task` 卡标题 | `› task · 子代理 <name> · 运行中 / 完成 / 失败 · N 轮`（状态取自 `agent` 消息，不取自猜测） |
+| 折叠 | 与根代理一致：`reasoning` / 工具卡默认收起。**缩进不改变折叠语义** |
+| 检视栏「代理」卡 | 每个代理一行：`name · 状态 · N 轮 · N.N 秒`；点击 → 滚动到该代理首行 |
+| 状态胶囊 | 并行时追加 `· N 个代理`；`N = 1` 时也显示（用户要能看出「现在有子代理在干活」） |
+
+★ **为什么是「平铺 + 缩进」而不是「卡片内嵌套」**（2026-11-04）：`CollapsiblePanel` 的展开体当前只承载一个
+文本控件，把子行塞进父卡片等于重写折叠体容器；而布局本来就是**按行顺序累加 y**，给每行加个 `indent`
+只改宽度输入，复杂度不变。代价是「子行在视觉上属于那张卡」得靠竖线表达，而不是靠父子控件关系——
+这笔账是划算的：**不改容器结构 = 不碰断行与表格那两条已经被基线钉住的路径**。
+
+★ **缩进遇到 ECDI 能力缺口时**（例如需要「只重排某个子树」而框架没有该入口）：**登记需求并给受控对照**，
+不在本阶段顺手改框架——本仓库的铁律。
 
 #### `reasoning` 的渲染形态（v2 新增，2026-10-14 用户定调）
 
@@ -576,12 +643,17 @@ face ⇒ 字重与基线与旁边文字对不上，**比原样更难看**。⇒ 
 | `fixtures/scale/gen_scale.py` | **确定性生成器**：`--blocks N --seed S`，同参数必得**逐字节相同**输出 ⇒ 2000 / 5000 / 20000 是**旋钮**，不是砖 |
 | `fixtures/cot/cot-session.jsonl` | **思维链基线**（开源推理模型）：12 轮，每轮一段**长、流式、本应折叠**的思维链 + 短回答。44 块 / 934 deltas / 1044 消息。★ 用 `kind:"reasoning"`（v2 一等公民）；`hello` 带 `context:128000`（百分比分母）；每个思维链 `block_end` 带 `tokens`（标题副标） |
 | `fixtures/cot/gen_cot.py` | **确定性生成器**：`--turns N --thinking-chars C --kind reasoning\|unknown\|assistant --context N --tokens N`。用途：① `--thinking-chars` 做**长度剂量**（`measureChars/measureCalls` 随长度单调上升）② `--kind` 做**渲染形态对照**（收起 vs 可见）③ `--context 0` 做**分母缺失**降级路径（GUI 必须显示 `—`）④ `--tokens 0` 做**副标缺失**路径（不得用字符数冒充） |
+| `fixtures/subagent/parallel-two-agents.jsonl` | ★ **v5 正向基线**（`protocol:5`）：主代理在同一条助手消息里连发两个 `task`（两次 `ask` 串行过门），两个子代理**并行**跑——`delta` 在 `a1`/`a2` 之间交错，各自 `agent phase=end` 后由两条 `tool_result` 回到各自的 `task` 卡。用途：子代理缩进、归属竖线、代理卡的读数基线 |
+| `fixtures/hostile/agent-undeclared.jsonl` | ★ **v5 / I12 负向**：块携带一个**从未 `start`** 的 `agent`——子行会挂在一个不存在的代理上 |
+| `fixtures/hostile/agent-after-end.jsonl` | ★ **v5 / I12 负向**：`phase=end` **之后**仍有该代理的块——代理已经收尾，界面却还在长行 |
+| `fixtures/hostile/parent-dangling.jsonl` | ★ **v5 / I13 负向**：`parent` 指向一个**不存在**的块——归属竖线无处可连 |
 
 **否定型断言必须配正对照**：先用 `demo-session.jsonl` 证明路径通，再用 hostile 目录证明失败被**显式**暴露。
 
-★ **九份夹具全部声明 `protocol:3`**（四份正向 + 五份 hostile）。这不是凑数：I9 / I10 只约束
-`hello.protocol >= 3` 的流，若 hostile 停在 2，负向用例会被版本门整个豁免 —— 它会**永远通过**，
-而永远通过的负向用例与不存在无法区分（§8.5 末尾那条的同族错误）。
+★ **十三份夹具的版本声明**（2026-11-04 起）：**九份声明 `protocol:3`**（四份正向 + 五份 hostile），
+**四份声明 `protocol:5`**（`subagent` 正向 + 三份 hostile）。这不是凑数：I9 / I10 只约束
+`hello.protocol >= 3`、I12 / I13 只约束 `>= 5`，若 hostile 停在低版本，负向用例会被版本门整个豁免 ——
+它会**永远通过**，而永远通过的负向用例与不存在无法区分（§8.5 末尾那条的同族错误）。
 `validate.py` 按 `hello.protocol` 分流，不按文件名或目录名。
 
 ### 8.5 可执行规格
@@ -604,7 +676,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 ## 9. 版本与兼容
 
-**当前版本 = `4`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 4**。
+**当前版本 = `5`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 5**（`kProtocolMaxSupported`，`gui/src/AppInternal.h`——改这里必须与本节表格同步）。
 
 - `protocol` 是**主版本**。core 的 `protocol` > GUI 支持的上限 ⇒ **GUI 拒绝连接并显示原因**，不做降级猜测。
   ★ **`hello` 不携带 `protocol` 字段时按 v1 处理**（v1 时代该字段是必填，但宽容比拒连更安全——
@@ -614,6 +686,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
+| **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
 | **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |
 | **2** | 2026-10-14 | §3.3 加 `reasoning` · §5 加 **I8** · §7 加 `reasoning` 渲染形态 · §3.1 加 `hello.context` · §3.5 加 `block_end.tokens` | **v1 GUI 不崩、不丢内容**——`reasoning` 落进「未知 `kind`」的中性渲染路径（可见气泡 + 显式提示），只是**不折叠**；`context`/`tokens` 是未知字段，按 I5 忽略（百分比显示 `—`）。这正是 I5/I8 的用途 |

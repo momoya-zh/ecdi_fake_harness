@@ -1,0 +1,17 @@
+{"t":"hello","seq":0,"ts":"2026-11-04T11:10:00.000Z","protocol":5,"core":"0.5.0","session":"s-hostile-v5-after-end","caps":["tools","ask","workspace","agents"]}
+{"t":"state","seq":1,"ts":"2026-11-04T11:10:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-11-04T11:10:00.020Z","id":"b1","kind":"user","client_id":"p1","text":"派个子代理查一下"}
+{"t":"block_end","seq":3,"ts":"2026-11-04T11:10:00.030Z","id":"b1","ok":true}
+{"t":"block_start","seq":4,"ts":"2026-11-04T11:10:00.040Z","id":"b2","kind":"tool_call","name":"task","args":{"agent":"x","task":"查一下"}}
+{"t":"agent","seq":5,"ts":"2026-11-04T11:10:00.050Z","id":"a1","phase":"start","name":"x","parent_call":"b2","depth":1,"task":"查一下"}
+{"t":"block_start","seq":6,"ts":"2026-11-04T11:10:00.060Z","id":"b3","kind":"assistant","agent":"a1","parent":"b2"}
+{"t":"delta","seq":7,"ts":"2026-11-04T11:10:00.070Z","id":"b3","text":"子代理干活中"}
+{"t":"block_end","seq":8,"ts":"2026-11-04T11:10:00.080Z","id":"b3","ok":true}
+{"t":"agent","seq":9,"ts":"2026-11-04T11:10:00.090Z","id":"a1","phase":"end","ok":true,"summary":"查完了","turns":1}
+{"t":"block_start","seq":10,"ts":"2026-11-04T11:10:00.100Z","id":"b4","kind":"assistant","agent":"a1","parent":"b2"}
+{"t":"delta","seq":11,"ts":"2026-11-04T11:10:00.110Z","id":"b4","text":"代理已经 end 了，这里却又冒出一条它的行"}
+{"t":"block_end","seq":12,"ts":"2026-11-04T11:10:00.120Z","id":"b4","ok":true}
+{"t":"block_end","seq":13,"ts":"2026-11-04T11:10:00.130Z","id":"b2","ok":true}
+{"t":"usage","seq":14,"ts":"2026-11-04T11:10:00.140Z","turn":1,"input":900,"output":60}
+{"t":"state","seq":15,"ts":"2026-11-04T11:10:00.150Z","value":"idle"}
+{"t":"bye","seq":16,"ts":"2026-11-04T11:10:00.160Z","reason":"eof","code":0}

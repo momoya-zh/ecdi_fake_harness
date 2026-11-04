@@ -1,0 +1,10 @@
+{"t":"hello","seq":0,"ts":"2026-11-04T11:00:00.000Z","protocol":5,"core":"0.5.0","session":"s-hostile-v5-undeclared","caps":["tools","ask","workspace","agents"]}
+{"t":"state","seq":1,"ts":"2026-11-04T11:00:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-11-04T11:00:00.020Z","id":"b1","kind":"user","client_id":"p1","text":"查一下 agent 消息怎么定义"}
+{"t":"block_end","seq":3,"ts":"2026-11-04T11:00:00.030Z","id":"b1","ok":true}
+{"t":"block_start","seq":4,"ts":"2026-11-04T11:00:00.040Z","id":"b2","kind":"assistant","agent":"a9"}
+{"t":"delta","seq":5,"ts":"2026-11-04T11:00:00.050Z","id":"b2","text":"这条块声称自己属于代理 a9"}
+{"t":"block_end","seq":6,"ts":"2026-11-04T11:00:00.060Z","id":"b2","ok":true}
+{"t":"usage","seq":7,"ts":"2026-11-04T11:00:00.070Z","turn":1,"input":900,"output":40}
+{"t":"state","seq":8,"ts":"2026-11-04T11:00:00.080Z","value":"idle"}
+{"t":"bye","seq":9,"ts":"2026-11-04T11:00:00.090Z","reason":"eof","code":0}

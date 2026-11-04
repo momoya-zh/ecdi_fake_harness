@@ -34,9 +34,10 @@ KNOWN_TYPES = {
     "error", "bye",                       # core -> gui
     "prompt", "cancel", "answer", "workspace", # gui -> core; workspace also core -> gui ack
     "model",                              # v4: gui -> core request; also core -> gui ack
+    "agent",                              # v5: core -> gui subagent lifecycle (control plane)
 }
 CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
-              "usage", "error", "bye"}
+              "usage", "error", "bye", "agent"}
 
 # PROTOCOL 3.3 block kinds.  Kept here so the validator and the GUI agree on one
 # list: Transcript::IsKnownKind in gui/src/Transcript.cpp is the C++ twin, and a
@@ -52,10 +53,11 @@ KNOWN_KINDS = {"user", "assistant", "reasoning", "tool_call", "tool_result",
                "system", "error"}
 
 # PROTOCOL 9: the GUI supports up to this protocol major version and REFUSES a
-# higher one (no downgrade guessing).  v2 (2026-10-14) added `reasoning` + I8.
+# higher one (no downgrade guessing).  v2 (2026-10-14) added `reasoning` + I8;
+# v5 (2026-11-04) added the `agent` message + I12/I13.
 # Fixtures declaring <= this are fine; anything above is a hard failure here,
 # because such a stream is one the GUI would refuse to connect to at all.
-SUPPORTED_PROTOCOL_MAX = 4
+SUPPORTED_PROTOCOL_MAX = 5
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURES = os.path.join(HERE, "fixtures")
@@ -316,6 +318,101 @@ def check_stream(parsed, findings, is_resume=False, last_seq=None):
             if not m.get("path"):
                 findings.hit("I10", i,
                              "workspace response without 'path'")
+
+    # ---- PROTOCOL 5 (v5, 2026-11-04): I12 agent lifecycle, I13 delegation ----
+    # I12: an `agent` id is unique in one stream; start/end each exactly once;
+    #      any block or ask carrying `agent` must sit after its start and before
+    #      its end.  Without this the GUI can grow indented rows for an agent
+    #      that never existed, or keep growing them after it said it was done --
+    #      both give the user rows nobody can attribute.
+    # I13: a block carrying `parent` must also carry `agent` (root blocks are
+    #      never delegated), and `parent` must name an existing tool_call that
+    #      belongs to the PARENT agent.  Depth is fixed at 1, so the parent is
+    #      always the root -- i.e. that tool_call must carry no `agent` field.
+    # Both apply only to streams declaring protocol >= 5; v4 fixtures predate
+    # subagents and must not be judged against obligations that did not exist.
+    v5_stream = isinstance(declared_protocol, int) and declared_protocol >= 5
+    if v5_stream:
+        started_agents, ended_agents = {}, {}
+        for i, m in parsed:
+            if m is None or m["t"] != "agent":
+                continue
+            aid, phase = m.get("id"), m.get("phase")
+            if not isinstance(aid, str) or not aid:
+                findings.hit("I12", i, "agent message without a non-empty 'id'")
+                continue
+            if phase == "start":
+                if aid in started_agents:
+                    findings.hit("I12", i, "duplicate agent start for %r" % aid)
+                else:
+                    started_agents[aid] = i
+                if aid in ended_agents:
+                    findings.hit("I12", i, "agent %r restarts after its end" % aid)
+                if not m.get("name"):
+                    findings.hit("I12", i, "agent start for %r without 'name'" % aid)
+                # depth is fixed at 1: subagents may not spawn subagents
+                if m.get("depth") != 1 or isinstance(m.get("depth"), bool):
+                    findings.hit("I12", i, "agent %r depth must be 1 (got %r)"
+                                 % (aid, m.get("depth")))
+            elif phase == "end":
+                if aid not in started_agents:
+                    findings.hit("I12", i, "agent end for never-started %r" % aid)
+                elif aid in ended_agents:
+                    findings.hit("I12", i, "duplicate agent end for %r" % aid)
+                else:
+                    ended_agents[aid] = i
+                # a failure/cancel still ends the agent -- but it must say why
+                if not isinstance(m.get("ok"), bool):
+                    findings.hit("I12", i, "agent end for %r without boolean 'ok'" % aid)
+                if not m.get("summary"):
+                    findings.hit("I12", i, "agent end for %r without 'summary'" % aid)
+            else:
+                findings.hit("I12", i, "agent %r has phase %r (must be start/end)"
+                             % (aid, phase))
+        for aid, line in started_agents.items():
+            if aid not in ended_agents:
+                findings.hit("I12", line, "agent %r started but never ended" % aid)
+
+        for i, m in parsed:
+            if m is None or m["t"] not in ("block_start", "ask"):
+                continue
+            aid = m.get("agent")
+            if aid is None:
+                continue
+            if not isinstance(aid, str) or not aid:
+                findings.hit("I12", i, "empty 'agent' field on %r" % m["t"])
+                continue
+            if aid not in started_agents:
+                findings.hit("I12", i, "%r carries agent %r, which was never "
+                                       "started" % (m["t"], aid))
+            elif aid in ended_agents and i > ended_agents[aid]:
+                findings.hit("I12", i, "%r carries agent %r after its end"
+                             % (m["t"], aid))
+
+        # owner[block_id] = the agent field of that tool_call (None = root)
+        owner = {}
+        for _i, m in parsed:
+            if m is None or m["t"] != "block_start" or m.get("kind") != "tool_call":
+                continue
+            owner[m.get("id")] = m.get("agent")
+        for i, m in parsed:
+            if m is None or m["t"] != "block_start":
+                continue
+            parent = m.get("parent")
+            if parent is None:
+                continue
+            if m.get("agent") is None:
+                findings.hit("I13", i, "'parent' on a block without 'agent' -- "
+                                      "root blocks are never delegated")
+                continue
+            if parent not in owner:
+                findings.hit("I13", i, "'parent' names %r, which is not an "
+                                      "existing tool_call" % parent)
+                continue
+            if owner[parent] is not None:
+                findings.hit("I13", i, "'parent' %r belongs to agent %r; depth "
+                                      "is fixed at 1, so the parent must be a "
+                                      "root tool_call" % (parent, owner[parent]))
 
     # PROTOCOL 9: a declared version above the supported ceiling means the GUI
     # would refuse to connect -- so a fixture claiming it cannot be "valid".
