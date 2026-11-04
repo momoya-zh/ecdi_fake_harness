@@ -36,7 +36,7 @@ type session struct {
 	stc *atomic.Int32
 
 	turn    int
-	blockNo int
+	blockNo atomic.Int64 // 块 id 计数器（★ v5：子代理并行后必须原子；见 nextBlockID）
 
 	// ── v3：工作区租约（协议 §3.9；与假 core 同构）────────────────
 	cwd       string
@@ -68,6 +68,11 @@ type session struct {
 	// ── L3 记忆文件（docs/session-persistence-decisions.md §8）────────
 	globalMemoryDir string
 	memResult       *memory.MemoryResult
+
+	// ── P3.7（协议 v5）：子代理（docs/subagent-v5-plan.md）──────────
+	agents   agentOpts     // --agents 一族；on=false 时整条委派路径不存在
+	agentNo  atomic.Int64  // 子代理 id 计数器（a1 / a2 …），与块 id 分空间
+	agentSem chan struct{} // 并发上限信号量（容量 = agents.maxParallel）
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求（与假 core 同构）。
@@ -78,7 +83,7 @@ type pendingWorkspace struct {
 }
 
 func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmConfig,
-	resumeID, sessionID, workspace, globalMemory string, failSummarize bool,
+	resumeID, sessionID, workspace, globalMemory string, failSummarize bool, ag agentOpts,
 	in <-chan wire.StampedLine, stc *atomic.Int32, log func(string, ...any),
 	outW io.Writer) *session {
 
@@ -96,7 +101,9 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 		resumeID:        resumeID,
 		failSummarize:   failSummarize,
 		globalMemoryDir: globalMemory,
+		agents:          ag.normalized(),
 	}
+	s.agentSem = make(chan struct{}, s.agents.maxParallel)
 	if s.sessionID == "" {
 		s.sessionID = "s-real-1"
 	}
@@ -152,7 +159,7 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 			}
 			s.log("resumed session %s: starting seq=%d (lastSeq=%d, blockNo=%d)", s.sessionID, startSeq, lastSeq, jMaxBlockNo)
 		}
-		s.blockNo = jMaxBlockNo
+		s.blockNo.Store(int64(jMaxBlockNo))
 		s.turn = jMaxTurn
 		ctxPath := filepath.Join(s.cwd, ".ecdi", "sessions", s.sessionID+".context.jsonl")
 		if msgs, err := contextlog.Replay(ctxPath); err == nil {
@@ -184,9 +191,14 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 
 	// hello（协议 §3.1）：seq 0、caps 声明 tools/ask/workspace/model；
 	// context 按 D1 真值纪律——运行者没声明就**不发**（GUI 显示 —），不猜。
-	hello := map[string]any{"t": "hello", "protocol": 4, "core": "0.4.0",
-		"session": s.sessionID,
-		"caps":    []string{"tools", "ask", "workspace", "model"}}
+	// ★ v5（2026-11-04）：protocol 恒 5（能力集由 caps 表达，不由版本号表达——
+	//   同一份 core 两种版本声明会让契约面变浑）。"agents" 只在 --agents 开启时声明。
+	caps := []string{"tools", "ask", "workspace", "model"}
+	if s.agents.on {
+		caps = append(caps, "agents")
+	}
+	hello := map[string]any{"t": "hello", "protocol": 5, "core": "0.5.0",
+		"session": s.sessionID, "caps": caps}
 	if s.ctxCapacity > 0 {
 		hello["context"] = s.ctxCapacity
 	}
@@ -255,14 +267,30 @@ func (s *session) ensureCtxWriter() *contextlog.LogWriter {
 func (s *session) emit(payload map[string]any) { s.out.Emit(payload) }
 func (s *session) st() wire.State              { return wire.StateOf(s.stc.Load()) }
 
+// emitBlock：发一条 block_start，按需挂上 v5 的归属字段（协议 §3.3）。
+// agentID/parentID 皆空 = 根代理的块，payload 与今天逐字节一致。
+func (s *session) emitBlock(payload map[string]any, agentID, parentID string) {
+	if agentID != "" {
+		payload["agent"] = agentID
+	}
+	if parentID != "" {
+		payload["parent"] = parentID
+	}
+	s.emit(payload)
+}
+
 func (s *session) setState(v wire.State) {
 	s.stc.Store(wire.CodeOf(v))
 	s.emit(map[string]any{"t": "state", "value": string(v)})
 }
 
+// nextBlockID：块 id（b1 / b2 …）。★ v5 起**原子**——子代理并行后有两路
+// goroutine 同时分配块号，非原子的「读-加-写」会给出重复 id（I1 的直接违反）。
+// ★ 刻意只有**一个**计数器、不按代理前缀分空间：id 只要流内唯一即满足契约，
+//   归属由 `agent` 字段表达；分空间会让根代理的 id 也变（今天是 b1/b2…），
+//   而「--agents 关闭时逐字节不变」是回归基线的前提。
 func (s *session) nextBlockID() string {
-	s.blockNo++
-	return fmt.Sprintf("b%d", s.blockNo)
+	return fmt.Sprintf("b%d", s.blockNo.Add(1))
 }
 
 // ── 主循环 ──────────────────────────────────────────────────────
@@ -493,7 +521,7 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 			return true
 		}
 		textBlocks := &streamBlocks{sess: s}
-		calls, usage, err := s.llm.Stream(turnCtx, s.buildRequestMessages(), toolDefs(),
+		calls, usage, err := s.llm.Stream(turnCtx, s.buildRequestMessages(), toolDefsFor(s.agents.on, 0),
 			func(content, reasoning string) {
 				textBlocks.onDelta(content, reasoning, turnCtx)
 			})
@@ -537,23 +565,157 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 			})
 		}
 
-		// ② 串行执行（I3 只允许一个未决 ask ⇒ 不并行，规格 §7）
+		// ② 执行（I3 只允许一个未决 ask ⇒ 串行；唯一例外是 `task` 委派，
+		//    它的并发边界在 runToolCalls 里。规格 §7）
+		s.runToolCalls(turnCtx, calls, answerCh)
+	}
+}
+
+// runToolCalls：把一条 assistant 消息里的全部工具调用执行完。
+//
+// ★ 没有 `task` 调用、或子代理没开启时，就是今天那条**顺序循环**——
+//   逐字节不变（`--agents` 关闭是回归基线的对照臂）。
+//
+// ★ 有 `task` 时按**三相**走，而不是「边跑边并行」。理由是 I3：
+//
+//	I3 只允许一个未决 ask，且 ask 之后、answer 之前**不得有任何消息**。
+//	若让子代理在 ask 期间继续吐流，I3 就被破坏（GUI 会在等待回答的同时
+//	不断收到缩进行——那不是"看起来乱"，是硬违规）。两条出路：
+//	  (a) 给 Emit 加"静默门"写锁，ask 全程持锁 ⇒ 子代理全部阻塞在 Emit，
+//	      用户的思考时间 = 整条转录冻结（可读性更差，且死锁面更大）；
+//	  (b) **把 ask 全部搬到子代理启动之前**（本实现）⇒ 任何 ask 发生时
+//	      都没有子代理在跑，I3 由**顺序**保证，不靠锁纪律。
+//	这也是并行只发生在「同一条消息里的多个 task」上的原因——那正是
+//	真正需要并行的场景（一次派三路探查）。
+func (s *session) runToolCalls(turnCtx context.Context, calls []aggregatedCall, answerCh chan wire.GuiMsg) {
+	if !s.agents.on || !hasTaskCall(calls) {
 		for _, c := range calls {
 			if turnCtx.Err() != nil {
-				// cancel 打断：剩余调用补一条占位 tool 消息，保持历史完整
-				//（否则下一轮请求会带一个没有 tool 响应的 tool_calls）。
-				s.history = append(s.history, chatMessage{Role: "tool",
-					ToolCallID: c.ID, Content: "（用户取消，未执行）"})
-				if s.ctxWriter != nil {
-					_ = s.ctxWriter.AppendMsg(contextlog.Message{
-						Role: "tool", Content: "（用户取消，未执行）", ToolCallID: c.ID,
-					})
-				}
+				s.markToolCancelled(c)
 				continue
 			}
 			s.runToolCall(turnCtx, c, answerCh)
 		}
+		return
 	}
+
+	// 相 1：非 task 调用照原样串行（此刻还没有子代理在跑 ⇒ 它们的 ask 安全）。
+	for _, c := range calls {
+		if c.Name == "task" {
+			continue
+		}
+		if turnCtx.Err() != nil {
+			s.markToolCancelled(c)
+			continue
+		}
+		s.runToolCall(turnCtx, c, answerCh)
+	}
+
+	// 相 2a：逐个 task 过权限门（委派即授权）。仍无子代理在跑。
+	var delegations []*delegation
+	for _, c := range calls {
+		if c.Name != "task" {
+			continue
+		}
+		if turnCtx.Err() != nil {
+			s.markToolCancelled(c)
+			continue
+		}
+		delegations = append(delegations, s.prepareDelegation(turnCtx, c, answerCh))
+	}
+
+	// 相 2b：一起启动（受 --max-agents 信号量约束）。
+	var wg sync.WaitGroup
+	for _, d := range delegations {
+		if !d.allowed || turnCtx.Err() != nil {
+			continue
+		}
+		wg.Add(1)
+		go func(d *delegation) {
+			defer wg.Done()
+			s.runDelegation(turnCtx, d)
+		}(d)
+	}
+	wg.Wait()
+
+	// 相 3：按原顺序结算（tool_result + tool_call 收尾 + 回模型的历史）。
+	for _, d := range delegations {
+		s.finishDelegation(d)
+	}
+}
+
+// markToolCancelled：取消后未执行的调用补一条占位 tool 消息，保持历史完整
+//（否则下一轮请求会带一个没有 tool 响应的 tool_calls）。
+// ★ 不发块：那个 tool_call 块在取消路径下也没有 start（本循环在 emit 之前就
+//   退出了），凭空补一个 end 会违反 I1。
+func (s *session) markToolCancelled(c aggregatedCall) {
+	s.history = append(s.history, chatMessage{Role: "tool",
+		ToolCallID: c.ID, Content: "（用户取消，未执行）"})
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendMsg(contextlog.Message{
+			Role: "tool", Content: "（用户取消，未执行）", ToolCallID: c.ID,
+		})
+	}
+}
+
+func hasTaskCall(calls []aggregatedCall) bool {
+	for _, c := range calls {
+		if c.Name == "task" {
+			return true
+		}
+	}
+	return false
+}
+
+// askQuestion：ask 门（§4.3 / I3）。返回「用户是否拒绝」。
+//
+// 从 runToolCall 里抽出来是为了 `task` 委派能复用同一道门（委派即授权 =
+// 这一次确认覆盖整个子代理的只读工具面）。抽的是**整个 I3 自守块**，
+// 不是"发消息那一行"——自守与该 ask 是同一条不变量的两半，分开就没人管。
+//
+// 问句由调用方给：普通工具走 askPrompt，委派走 delegationAskPrompt
+//（后者要带授权范围，两条问题不是同一个句式）。
+//
+// ★ 返回 denied 而不是 allowed：取消与拒绝是两件事（取消由调用方看
+// turnCtx.Err() 判定，优先级更高）。合并成 bool 会把「用户按了停止」
+// 误报成「用户拒绝了该操作」，历史里那段文本会一直是错的。
+func (s *session) askQuestion(turnCtx context.Context, question string,
+	answerCh chan wire.GuiMsg) bool {
+
+	askID := fmt.Sprintf("q%d", s.out.Seq())
+	s.emit(map[string]any{"t": "ask", "id": askID, "kind": "permission",
+		"question": question,
+		"options": []map[string]string{
+			{"key": "allow", "label": "允许"},
+			{"key": "deny", "label": "拒绝"},
+		},
+		"default": "deny"})
+	s.setState(wire.StateWaiting)
+	s.log("waiting for answer to %s (I3: no further messages)", askID)
+
+	// I3 自守：阻塞等 answer / cancel / bye（唯一允许的例外 = usage，本实现不发）
+	denied := false
+waitLoop:
+	for {
+		select {
+		case m := <-answerCh:
+			if m.ID == askID {
+				s.log("ask %s resolved: %s", m.ID, m.Choice)
+				if m.Choice != "allow" {
+					denied = true
+				}
+				break waitLoop
+			}
+			s.log("WARNING: answer for unknown ask %q (pending=%q)", m.ID, askID)
+		case <-turnCtx.Done():
+			s.log("cancel during waiting → cancelled")
+			break waitLoop
+		}
+	}
+	if s.st() != wire.StateRunning {
+		s.setState(wire.StateRunning)
+	}
+	return denied
 }
 
 // runToolCall：一次真实工具调用的完整协议链：
@@ -568,38 +730,7 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	if s.allowTools[c.Name] {
 		s.log("tool %s allowed by --allow-tools (skipping ask)", c.Name)
 	} else {
-		askID := fmt.Sprintf("q%d", s.out.Seq())
-		s.emit(map[string]any{"t": "ask", "id": askID, "kind": "permission",
-			"question": askPrompt(c.Name, argsMap, c.Arguments),
-			"options": []map[string]string{
-				{"key": "allow", "label": "允许"},
-				{"key": "deny", "label": "拒绝"},
-			},
-			"default": "deny"})
-		s.setState(wire.StateWaiting)
-		s.log("waiting for answer to %s (I3: no further messages)", askID)
-
-		// I3 自守：阻塞等 answer / cancel / bye（唯一允许的例外 = usage，本实现不发）
-	waitLoop:
-		for {
-			select {
-			case m := <-answerCh:
-				if m.ID == askID {
-					s.log("ask %s resolved: %s", m.ID, m.Choice)
-					if m.Choice != "allow" {
-						denied = true
-					}
-					break waitLoop
-				}
-				s.log("WARNING: answer for unknown ask %q (pending=%q)", m.ID, askID)
-			case <-turnCtx.Done():
-				s.log("cancel during waiting → cancelled")
-				break waitLoop
-			}
-		}
-		if s.st() != wire.StateRunning {
-			s.setState(wire.StateRunning)
-		}
+		denied = s.askQuestion(turnCtx, askPrompt(c.Name, argsMap, c.Arguments), answerCh)
 	}
 
 	var res toolResult
@@ -757,10 +888,19 @@ func (s *session) generateSummary(prompt string) (string, error) {
 // streamBlocks：把 LLM 的 content/reasoning 增量映射成协议块。
 // reasoning 块在**第一个正文增量**到达时收尾（正文跟在思维链后面）；
 // 全部块在流结束时收尾。cancel/错误路径 closeAll(false)。
+//
+// ★ v5：agentID/parentID 非空时，每个 block_start 都带上归属（§3.3），
+//   且 delta 走**合批器**（见 agent.go deltaCoalescer）。根代理两者皆空 ⇒
+//   输出与 v4 逐字节相同（delta 粒度是既有探针的读数基线，不动它）。
 type streamBlocks struct {
-	sess          *session
+	sess     *session
+	agentID  string
+	parentID string
+
 	reasoningID   string
 	textID        string
+	reasoningCoal *deltaCoalescer // 仅子代理非 nil
+	textCoal      *deltaCoalescer
 	assistantText strings.Builder
 }
 
@@ -771,36 +911,72 @@ func (b *streamBlocks) onDelta(content, reasoning string, ctx context.Context) {
 	if reasoning != "" {
 		if b.reasoningID == "" {
 			b.reasoningID = b.sess.nextBlockID()
-			b.sess.emit(map[string]any{"t": "block_start", "id": b.reasoningID, "kind": "reasoning"})
+			b.sess.emitBlock(map[string]any{"t": "block_start", "id": b.reasoningID, "kind": "reasoning"},
+				b.agentID, b.parentID)
+			b.reasoningCoal = b.newCoalescer(b.reasoningID)
 		}
-		b.sess.emit(map[string]any{"t": "delta", "id": b.reasoningID, "text": reasoning})
+		b.writeDelta(b.reasoningID, b.reasoningCoal, reasoning)
 	}
 	if content != "" {
 		if b.reasoningID != "" && b.textID == "" {
 			// 正文开始 ⇒ 思维链结束（同一次增量也可能两者都有）。
 			// ★ 必须清 reasoningID：closeAll 只管「仍打开的块」——
 			//   不清会二次发 end，正是 I1 抓出来的那类缺陷。
-			b.sess.emit(map[string]any{"t": "block_end", "id": b.reasoningID, "ok": true})
-			b.reasoningID = ""
+			b.closeReasoning(true)
 		}
 		if b.textID == "" {
 			b.textID = b.sess.nextBlockID()
-			b.sess.emit(map[string]any{"t": "block_start", "id": b.textID, "kind": "assistant"})
+			b.sess.emitBlock(map[string]any{"t": "block_start", "id": b.textID, "kind": "assistant"},
+				b.agentID, b.parentID)
+			b.textCoal = b.newCoalescer(b.textID)
 		}
-		b.sess.emit(map[string]any{"t": "delta", "id": b.textID, "text": content})
+		b.writeDelta(b.textID, b.textCoal, content)
 		b.assistantText.WriteString(content)
 	}
 }
 
+func (b *streamBlocks) newCoalescer(id string) *deltaCoalescer {
+	if b.agentID == "" {
+		return nil // 根代理：直发，保持 v4 的 delta 粒度
+	}
+	return newDeltaCoalescer(b.sess, id)
+}
+
+func (b *streamBlocks) writeDelta(id string, coal *deltaCoalescer, text string) {
+	if coal != nil {
+		coal.add(text)
+		return
+	}
+	b.sess.emit(map[string]any{"t": "delta", "id": id, "text": text})
+}
+
+func (b *streamBlocks) closeReasoning(ok bool) {
+	if b.reasoningID == "" {
+		return
+	}
+	if b.reasoningCoal != nil {
+		b.reasoningCoal.close() // 先把积压的 delta 冲出去，再发 end
+		b.reasoningCoal = nil
+	}
+	b.sess.emit(map[string]any{"t": "block_end", "id": b.reasoningID, "ok": ok})
+	b.reasoningID = ""
+}
+
+func (b *streamBlocks) closeText(ok bool) {
+	if b.textID == "" {
+		return
+	}
+	if b.textCoal != nil {
+		b.textCoal.close()
+		b.textCoal = nil
+	}
+	b.sess.emit(map[string]any{"t": "block_end", "id": b.textID, "ok": ok})
+	b.textID = ""
+}
+
 func (b *streamBlocks) closeAll(ok bool) {
-	if b.reasoningID != "" {
-		b.sess.emit(map[string]any{"t": "block_end", "id": b.reasoningID, "ok": ok})
-		b.reasoningID = "" // closeAll 只该调一次；防重入
-	}
-	if b.textID != "" {
-		b.sess.emit(map[string]any{"t": "block_end", "id": b.textID, "ok": ok})
-		b.textID = ""
-	}
+	b.closeReasoning(ok)
+	b.closeText(ok)
 }
 
 // ── 请求消息组装 ────────────────────────────────────────────────
@@ -813,6 +989,13 @@ func (s *session) buildRequestMessages() []chatMessage {
 		"每次都要经过用户确认，被拒绝时不要重试同一操作，先解释你要做什么或换个做法。\n"+
 		"改动代码优先 edit_file（逐字节精确替换），只有新建或整体重写才用 write_file；"+
 		"一条命令只做一件事，别把多步 shell 塞进一次调用。用用户的语言回答。", s.cwd)
+	if s.agents.on {
+		sys += fmt.Sprintf("\n你还可以用 task 工具把**只读**探查任务派给子代理"+
+			"（同一条回复里给多个 task 会并行，最多 %d 路；每个子代理上限 %d 轮 / %s）。"+
+			"子代理看不到我们的对话，任务描述必须自足；它只回一段结论，过程不进你的上下文。"+
+			"适合互不依赖的调查（找入口、查定义、比对两处实现）；写文件/跑命令不要派——子代理只能读。",
+			s.agents.maxParallel, s.agents.maxTurns, s.agents.timeout)
+	}
 	if s.memResult != nil && s.memResult.PromptText != "" {
 		sys += s.memResult.PromptText
 	}

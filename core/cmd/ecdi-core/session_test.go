@@ -99,8 +99,33 @@ func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*sessio
 
 	sess := newSession(
 		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
-		strings.Split(allowTools, ","), nil, "", "s-test-1", "", "", false, lines, &stc,
+		strings.Split(allowTools, ","), nil, "", "s-test-1", "", "", false, agentOpts{},
+		lines, &stc,
 		func(string, ...any) {}, col)
+	return sess, col, lines, &stc
+}
+
+// newTestSessionAgents：开着子代理的同一套基建（--agents 的对照臂）。
+func newTestSessionAgents(t *testing.T, serverURL, wsRoot string, ag agentOpts) (*session, *outCollector, chan wire.StampedLine, *atomic.Int32) {
+	t.Helper()
+	if wsRoot == "" {
+		wsRoot = t.TempDir()
+	}
+	old, _ := os.Getwd()
+	if err := os.Chdir(wsRoot); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(old) })
+
+	col := &outCollector{}
+	lines := make(chan wire.StampedLine, 64)
+	var stc atomic.Int32
+	stc.Store(wire.CodeIdle)
+
+	sess := newSession(
+		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
+		[]string{"read_file", "list_dir", "grep"}, nil, "", "s-test-1", "", "", false, ag,
+		lines, &stc, func(string, ...any) {}, col)
 	return sess, col, lines, &stc
 }
 
@@ -300,8 +325,15 @@ func TestLoopE2E_FullChain(t *testing.T) {
 	// 握手
 	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":3,"gui":"test"}`)
 	hello := waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
-	if hello["protocol"].(float64) != 4 {
+	// ★ v5（2026-11-04）：hello.protocol 恒 5，能力集由 caps 表达。
+	//   本用例用 agentOpts{}（关闭）⇒ caps 里**不该**有 "agents"。
+	if hello["protocol"].(float64) != 5 {
 		t.Fatalf("hello.protocol = %v", hello["protocol"])
+	}
+	for _, c := range hello["caps"].([]any) {
+		if c == "agents" {
+			t.Fatalf("--agents 关闭时 caps 不得声明 agents：%v", hello["caps"])
+		}
 	}
 	if hello["context"] != nil {
 		t.Fatalf("未提供 --context 时 hello 不得发 context（真值纪律），收到 %v", hello["context"])
@@ -803,7 +835,7 @@ func TestMemory_LoadingAndPromptInjection(t *testing.T) {
 
 	sess := newSession(
 		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k", Context: 10000},
-		nil, nil, "", "s-test-mem-1", tmpDir, "", false, lines, &stc,
+		nil, nil, "", "s-test-mem-1", tmpDir, "", false, agentOpts{}, lines, &stc,
 		func(string, ...any) {}, col)
 	t.Cleanup(func() {
 		if sess.ctxWriter != nil {
@@ -853,7 +885,7 @@ func TestMemory_ResumeNotice(t *testing.T) {
 
 	sess := newSession(
 		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k"},
-		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, lines, &stc,
+		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, agentOpts{}, lines, &stc,
 		func(string, ...any) {}, col)
 	t.Cleanup(func() {
 		if sess.ctxWriter != nil {

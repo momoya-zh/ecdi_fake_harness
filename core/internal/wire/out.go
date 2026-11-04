@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,7 +17,15 @@ import (
 // burst=false：逐行即刷（默认；流式语义——GUI 的 delta 渲染按到达节奏走）。
 // burst=true：内容攒进缓冲、一次写出（fake-core 的 --burst 负载旋钮），
 // 但**控制面**消息仍立即刷（见 Emit 内的必刷表）。
+//
+// ★ 2026-11-04（协议 v5 子代理）：**本类型现在是并发安全的**。
+//   在此之前 Emit 无锁——单写者（根代理串行）时才成立。子代理并行后
+//   两路 goroutine 同时进 Emit，「读 seq → 自增 → 写行」三步交错直接破 I4
+//   （两条消息拿到同一个 seq 或写出半行）。锁只覆盖「分配 seq + 写一行」，
+//   临界区里没有 I/O 等待，不进入流式热路径的代价面。
+//   ★ 假 core 仍然单写者，加锁对它的逐位输出零影响（只多一次 uncontended lock）。
 type Out struct {
+	mu  sync.Mutex
 	w   io.Writer
 	buf *bufio.Writer // 非 nil = burst 缓冲写
 	seq int64         // 下一个待发 seq（core→gui 方向从 0 起）
@@ -34,18 +43,34 @@ func NewOut(w io.Writer, burst bool) *Out {
 
 // Seq：当前 seq（下一条消息将用的号）。fake-core 的 ask id 用它派生、
 // hello 校验用它判断握手时点；调用方**不得**用它自行跳号——跳号只经 Skip。
-func (o *Out) Seq() int64 { return o.seq }
+func (o *Out) Seq() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.seq
+}
 
 // SetSeq：设置当前 seq（仅在 resume 恢复会话时设置为 lastSeq+1）。
-func (o *Out) SetSeq(seq int64) { o.seq = seq }
+func (o *Out) SetSeq(seq int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.seq = seq
+}
 
 // Skip：故意空一个 seq 号（I4 负向注入的唯一合法入口）。
 // 真 core 永远不调它；假 core 的 --drop-seq 用它造「消息丢失」。
-func (o *Out) Skip() { o.seq++ }
+func (o *Out) Skip() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.seq++
+}
 
 // Emit：给消息分配 seq + ts 后写一行。字段序与夹具一致：t, seq, ts, ...
 // ★ 每条即刷（流式语义）——burst 模式下仅控制面消息立即刷。
+// ★ 全程持锁：seq 分配与实际写出必须是**同一个临界区**，否则两条并发消息
+// 会拿到不同 seq 却写出错序（I4 只查号不查内容，这种错序它抓不到）。
 func (o *Out) Emit(payload map[string]any) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	payload["seq"] = o.seq
 	payload["ts"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	o.seq++
@@ -93,6 +118,8 @@ func (o *Out) Emit(payload map[string]any) {
 //  ② **阻塞等 answer 之前**——否则 ask 留在缓冲里，GUI 不知道要回答什么；
 //  ③ 一轮结束 / 退出之前——否则最后几十行烂在缓冲里。
 func (o *Out) Flush() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	if o.buf != nil {
 		o.buf.Flush()
 	}

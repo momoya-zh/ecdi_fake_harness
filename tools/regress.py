@@ -323,8 +323,9 @@ def check_live_settings_probe():
 
     判据：必需相**全部出现且全绿**。缺相 = FAILED 而不是 SKIP——缺相说明跑法
     退化了（比如没走进首启分支），那正是最需要看见的失败。
-    另加一条身份判据 `protocolDeclared == 4`：否则说明连的不是真 core，
-    全绿也是假的。
+    另加一条身份判据 `protocolDeclared == 5`：否则说明连的不是真 core，
+    全绿也是假的。（v5 于 2026-11-04 落地：子代理；真 core 的 hello.protocol
+    恒 5，能力集由 caps 表达——`agents` 是否声明由 --agents 决定，与本判据无关。）
     """
     fail = 0
 
@@ -388,7 +389,7 @@ def check_live_settings_probe():
         detail += "  RED=" + "; ".join(f"{p}: {m}" for p, m in red)
     check("--settings-probe (live)", not missing and not red, detail)
 
-    check("core identity", d.get("protocolDeclared") == 4,
+    check("core identity", d.get("protocolDeclared") == 5,
           f"protocolDeclared={d.get('protocolDeclared')} "
           f"label={d.get('activeSessionLabel')!r}")
     return fail

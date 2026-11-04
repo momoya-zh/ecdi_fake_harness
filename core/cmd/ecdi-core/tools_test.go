@@ -283,7 +283,9 @@ func tailOf(s string, n int) string {
 // "静默没改"。所以每条 RED 用例都要配一条 Green 用例证明判据有区分力。
 
 func TestToolDefs_SixToolsWithSchemas(t *testing.T) {
-	defs := toolDefs()
+	// ★ v5：这张表是「子代理关闭」的那一臂——六件，没有 task。
+	//   有 task 的七件表由 TestToolDefsFor_AgentsAddTaskOnlyAtRoot 盖。
+	defs := toolDefsFor(false, 0)
 	want := map[string]bool{"read_file": false, "list_dir": false, "grep": false,
 		"write_file": false, "edit_file": false, "run_command": false}
 	for _, d := range defs {

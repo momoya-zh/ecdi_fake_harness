@@ -77,8 +77,15 @@ func executeTool(name string, args map[string]any, root string) toolResult {
 		"未知工具 %q（可用：read_file / list_dir / grep / write_file / edit_file / run_command）", name)}
 }
 
-// toolDefs：上交 API 的工具定义（JSON Schema）。
-func toolDefs() []toolDef {
+// toolDefsFor：上交 API 的工具定义（JSON Schema）。
+//
+// ★ 2026-11-04（协议 v5）：按**代理身份**裁表，两个维度各自独立：
+//   - agents=false（`--agents` 关闭）⇒ 根代理也没有 `task`，上交的数组
+//     与今天逐字节一致（本项目「既有路径逐位不变」的纪律，回归基线靠它）；
+//   - depth>=1（子代理）⇒ 永远没有 `task`。深度固定为 1 不是靠运行时
+//     拒绝，而是**它根本没拿到这个工具**：模型看不见就不可能调用，
+//     运行时那道 guard 只是给「未来谁改了这张表」准备的兜底。
+func toolDefsFor(agents bool, depth int) []toolDef {
 	str := func(desc string) map[string]any {
 		return map[string]any{"type": "string", "description": desc}
 	}
@@ -92,7 +99,7 @@ func toolDefs() []toolDef {
 		return map[string]any{"type": "object", "properties": props, "required": required}
 	}
 	pathProp := func() map[string]any { return str("工作区内相对路径（或工作区内绝对路径）") }
-	return []toolDef{
+	defs := []toolDef{
 		{Name: "read_file", Description: "读取工作区内的一个文本文件（UTF-8，上限 40KB，超出截断并标注）",
 			Parameters: obj(map[string]any{"path": pathProp()}, "path")},
 		{Name: "list_dir", Description: "列出工作区内某目录的单层内容（目录在前带 / 尾，文件在后，按名排序）",
@@ -124,6 +131,20 @@ func toolDefs() []toolDef {
 				"timeout_seconds": map[string]any{"type": "number", "description": "超时秒数，默认 60，上限 300"},
 			}, "command")},
 	}
+	// ── 子代理（协议 v5）：只给根代理，且只在 --agents 开启时 ──
+	if agents && depth == 0 {
+		defs = append(defs, toolDef{
+			Name: "task",
+			Description: "把一个**只读**探查任务派给子代理：它有自己的独立上下文，做完只回一段结论。" +
+				"同一条回复里给多个 task 会并行执行。适合互不依赖的调查（找入口、查定义、比对两处实现）；" +
+				"写文件/跑命令不要派——子代理只能读，你自己做。",
+			Parameters: obj(map[string]any{
+				"task": str("交给子代理的完整任务描述（它看不到我们的对话，必须自足：要查什么、在哪、判断标准）"),
+				"name": str("可选，显示名（代理卡片标题）；缺省取任务首句"),
+			}, "task"),
+		})
+	}
+	return defs
 }
 
 // ── 路径边界 ────────────────────────────────────────────────────
@@ -635,6 +656,11 @@ func askPrompt(name string, args map[string]any, raw string) string {
 	case "run_command":
 		c, _ := args["command"].(string)
 		return fmt.Sprintf("允许执行命令吗？%s", clip(strings.TrimSpace(c), 160))
+	case "task":
+		// 正常由 agent.go 的 delegationAskPrompt 出题（它要带预算）；
+		// 走到这里说明有人绕过了委派路径，仍要给出可读问句。
+		t, _ := args["task"].(string)
+		return fmt.Sprintf("允许派一个子代理吗？任务：%s", clip(strings.TrimSpace(t), 120))
 	}
 	return fmt.Sprintf("允许执行 %s 吗？参数：%s", name, summarizeArgs(raw))
 }

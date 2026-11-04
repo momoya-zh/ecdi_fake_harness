@@ -14,7 +14,7 @@
 | # | 决策 | 内容 |
 |---|---|---|
 | D1 | **模型接入** | **OpenAI 兼容端点**：`--base-url` / `--model` / `--key` 三参数可配，不绑定任何厂商（GLM / OpenAI / DeepSeek / 本地网关都能接）。规格不写死厂商；先用哪家跑通由启动参数决定 |
-| D2 | **工具集** | **第一批（只读）**：`read_file` / `list_dir` / `grep`。**第二批（2026-11-04 已上线）**：`write_file` / `edit_file` / `run_command`，三件默认过 ask 门（见 §4.4.1） |
+| D2 | **工具集** | **第一批（只读）**：`read_file` / `list_dir` / `grep`。**第二批（2026-11-04 已上线）**：`write_file` / `edit_file` / `run_command`，三件默认过 ask 门（见 §4.4.1）。**第三批（协议 v5，`--agents` 开关）**：`task` 委派子代理，只给根代理（见 §4.4.2） |
 | D3 | **形态** | **同仓 `core/` 扩展**：新目录 `core/cmd/ecdi-core/`（Go），与 fake-core 共用 go module；公共帧层下沉 `core/internal/wire/`（§3），fake-core 行为**逐位不变**（验收 A2 把门） |
 
 ---
@@ -30,6 +30,7 @@
 | 3 | **agent loop**（`session.go`）：`prompt` → LLM 流式回复（文本/思维链 delta）→ `tool_calls` → 执行只读工具 → `tool` role 消息回模型 → 续推 → 轮结束发 `usage` → `idle` |
 | 4 | **只读三件真执行**（`tools.go`）：`read_file`（文本，上限见 §4.4）/ `list_dir`（单层）/ `grep`（正则，工作区内递归，上限命中数）。路径以 **workspace 为根**解析 |
 | 4b | **写入/执行三件**（2026-11-04，§4.4.1）：`write_file` / `edit_file` / `run_command`。有了这三件，agent 才算「能改代码、能跑验证」，而不是只能看。全部逐次过 ask 门（不进 `--allow-tools` 默认值） |
+| 4c | **`task` 委派**（协议 v5，2026-11-04，§4.4.2）：根代理可把只读探查派给 1–N 个子代理并行做，各自独立上下文、只回一段结论。**委派即授权**：一次 ask 覆盖子代理的全部只读工具面。默认**关**（`--agents`） |
 | 5 | **ask 门首次在真实路径承重**：真实工具调用默认先过 `ask`（§4.3）；**2026-11-02 起只读三件默认免 ask**（`--allow-tools` 默认值 = `read_file,list_dir,grep`，运行者可整体改写，空值 = 恢复全 ask）；写工具不进名单 |
 | 6 | **workspace 真消费**：`hello.caps = ["tools","ask","workspace"]`；收到 `workspace` 请求 → 校验目录存在 → `os.Chdir` → 按协议 §3.9 规范化回显。GUI 侧工作区功能自此有真实对端 |
 | 7 | **真值纪律**：`usage` 的 `turn/input/output` 全部取 API 返回的真值；`hello.context` 默认**不发**（分母未知 ⇒ GUI 显示 `—`），可 `--context N` 显式声明；`block_end.tokens` **不发**（流式 per-block token 不可得，估算 = 编造读数，协议 §3.5 明令禁止） |
@@ -154,6 +155,28 @@ prompt(text, client_id)
   `tool_result` = **「已覆盖 Hello.txt（6 字节，1 行）」** → 模型再自己 `read_file` 复核 → 「已完成」。
   落盘实测：`Hello.txt` = `e4 bd a0 e5 a5 bd`（6 字节，「你好」，无尾随换行，20:17:21）。
   ⇒ 这条覆盖了三件里最难的一条（真模型 · 真 ask 交互 · 真写盘 · 结果回模型），比单测更硬。
+
+#### 4.4.2 `task` 子代理（协议 v5，2026-11-04；`--agents` 开关）
+
+**动机**：一次「找出这三处渲染入口」的调查会烧掉主上下文一半的窗口，而主代理其实只需要一句结论。
+
+| 项 | 内容 |
+|---|---|
+| 工具 | `task`，参数 `task`（必填，自足的任务描述）+ `name?`（显示名，缺省取任务首句） |
+| 出现在谁的桌上 | **只有根代理**，且只有 `--agents` 开启时。子代理拿到的工具表里没有 `task`（`toolDefsFor(false, 1)`）——深度 1 靠「看不见」实现，运行时的 `isReadOnlyTool` 兜底 |
+| 授权模型 | **委派即授权**：一次 ask 覆盖子代理的全部只读工具（`read_file`/`list_dir`/`grep`，工作区边界完全继承，不提升任何权限）。子代理内部**不再逐次询问** |
+| ask 问句 | `delegationAskPrompt`：必须列明**任务原文 + 授权工具集 + 轮数/时间预算**，单行。没写清「授权了什么」的确认框等于没确认 |
+| ★ `task` 永不豁免 | 即便运行者把 `task` 写进 `--allow-tools`，它仍过 ask 门——这一问**就是**授权本身 |
+| 并发 | 同一条 assistant 消息里的多个 `task` 并行，受 `--max-agents`（默认 2，上限 8）信号量约束 |
+| I3 的保法 | 全部 ask 在**任何子代理启动之前**完成（相序），不是靠给 `Emit` 加静默门。理由：写锁方案会让用户的思考时间 = 整条转录冻结，且死锁面更大 |
+| 预算 | `--agent-max-turns`（默认 8）、`--agent-timeout`（默认 120 s）；`turnCtx` 派生 ⇒ 用户按停止，子代理一起停（各自 `agent end ok:false` 收尾，不悬空） |
+| 上下文隔离 | 子代理自己的 `history`，不写主 `ctxWriter`、不参与主代理压缩；主历史只落一条 `tool` 消息 = 结论摘要 |
+| 用量 | 子代理的 input/output **只出现在 `agent.phase=end`**，不进 `usage`（否则上下文百分比会把子代理的账算进去） |
+| 节流 | 每路一个 `deltaCoalescer`（≥1 KB 或 60 ms 一次）；`block_end` 前强制 flush。**只对子代理合批**——根代理的 delta 粒度是既有探针的读数基线 |
+
+- ★ `wire.Out` 因此**必须**加锁（v5 前是单写者假设）：两路 goroutine 同时进 `Emit` 会「读 seq → 自增 → 写行」三步交错，I4 直接破。
+- ★ 块号改 `atomic.Int64`，但**仍只有一个计数器**（不按代理前缀分空间）：id 只要流内唯一即可，归属由 `agent` 字段表达；分空间会让根代理的 id 也变，而「`--agents` 关闭时逐字节不变」是回归基线的前提。
+- 验收：`go test ./cmd/ecdi-core` 内 `TestAgent_DelegateSuccess` / `TestAgent_ParallelTwoAgentsOverlap`（靠服务端 hold 卡住两路，断言"都在飞时没有任何 `agent end`"）/ `TestAgent_CancelPropagates` / `TestAgent_DepthLimit` / `TestAgent_ContextIsolation` / `TestDeltaCoalescer_Concatenation`；`go test -race` 全绿（并发判据不是靠读代码确信的）。
 
 ### 4.5 workspace（协议 §3.9 真消费）
 

@@ -26,6 +26,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"ecdi-fake-core/internal/wire"
 )
@@ -55,6 +56,16 @@ func main() {
 	sessionID := flag.String("session", "", "会话 ID（缺省为 s-real-1）")
 	failSummarize := flag.Bool("fail-summarize", false, "测试注入：模拟摘要压缩失败")
 	globalMemory := flag.String("global-memory", "", "全局记忆目录（缺省为 exe 同级 data/memory）")
+	// ── 协议 v5：子代理（docs/subagent-v5-plan.md）────────────────────
+	// ★ 默认**关**（方案原文，且「既有路径逐位不变」是本项目回归基线的前提）。
+	//   开启后：hello.caps 增 "agents"、根代理的工具表多一个 `task`。
+	//   关闭时 caps / 工具表 / 每个块都多一个字节都不变。
+	//   ★ 待用户裁定：是否改成默认开（改这一个 false 即可，B3 会在 GUI 侧
+	//     给一个「启用子代理」开关写进 coreArgs，两者取其一）。
+	agents := flag.Bool("agents", false, "启用子代理（task 委派）；关闭 = v4 行为，逐字节不变")
+	maxAgents := flag.Int("max-agents", 2, "同时运行的子代理上限（≤8）")
+	agentMaxTurns := flag.Int("agent-max-turns", 8, "单个子代理的轮数上限")
+	agentTimeout := flag.Duration("agent-timeout", 120*time.Second, "单个子代理的墙钟上限")
 	flag.Parse()
 
 	// 密钥：参数优先，环境变量兜底；都空 = 拒绝启动（stderr 说明）。
@@ -143,6 +154,7 @@ func main() {
 		llmConfig{BaseURL: *baseURL, Model: *model, Key: secret,
 			ProviderID: *providerID, Context: *contextTokens, MaxOutput: *maxOutput},
 		strings.Split(*allowTools, ","), providerEnv, *resumeID, *sessionID, *workspace, *globalMemory, *failSummarize,
+		agentOpts{on: *agents, maxParallel: *maxAgents, maxTurns: *agentMaxTurns, timeout: *agentTimeout},
 		lines, &curState, logf, os.Stdout)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)
