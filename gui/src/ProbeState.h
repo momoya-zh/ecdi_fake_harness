@@ -157,6 +157,7 @@ struct ProbeState {
     int sidebarGeomSideW = 0;        // 侧栏宽（首帧路径重建后）
     int sidebarGeomListW = 0;        // 会话列表控件宽
     int sidebarGeomRowW = 0;         // 会话行宽
+    int sidebarGeomHistListW = 0;    // 历史列表控件宽（行宽 = f(它)，与列表宽差一档即建行时序缺陷）
     int sidebarGeomHistRowW = 0;     // 历史行宽
     int sidebarGeomExpectW = 0;      // 期望行宽（**从侧栏宽推**，不从列表推）
     int sidebarGeomMaxW = 0;         // 上界：超过它就会恒出横向滚动条

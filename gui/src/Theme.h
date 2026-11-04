@@ -447,6 +447,8 @@ inline constexpr int kPadCard     = 10;   // 卡片内边距
 //   `_z_after700.png` 逐行扫出来的）。侧栏没有滚动语义（`VerticalLayout` 是硬
 //   inset，空间不足就直接溢出、底部身份行被裁）⇒ **700 客户区是这一版的底线**。
 //   所以 `kRowGapSide` 只松 1px、段距只放两处：再往上加一档，短窗口就要出事。
+//   （行高 2026-11-03 二次加到 34/24 后 stride 36→40，`maxRows` 台阶同步 40→44，
+//   见 `RebuildSessionList`；700 客户区 spring 约 −16~20px，仍正。）
 inline constexpr int kSidebarPad  = 16;   // 侧栏容器内边距（原共用 14）
 
 // ── 字体工厂（2026-10-18；2026-11-03 加 weight 分档）────────────────

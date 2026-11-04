@@ -47,8 +47,13 @@ inline constexpr int kPinThreshold = 60;   // 距底 ≤ 此值 = 贴底（跟�
 //     读的就是这里，所以改完仍自洽（判据是「与常量相等」，不是「等于 28」）。
 //     行高 30 的额外收益：14px 名称的行盒是 19（`uikit::LineBox`），(30−19)/2 = 5
 //     两侧都是 5 ⇒ 顺带修掉了 28 时的 4/5 不对称（文字整体高 1px）。
-inline constexpr int kSidebarRowH = 30;
-inline constexpr int kSidebarGroupH = 20;  // 分组标题行高（分隔的高度，不带"条目"语义）
+//   ★★ 同日二次（用户反馈「圆角矩形纵向加高，水平不动」）：30→34 / 20→24。
+//     垂直居中仍对称：LineBox(14)=20 ⇒ (34−20)/2 = 7/7；分组标签
+//     （高 `kSidebarGroupH`−4 = 20）⇒ (24−20)/2 = 2/2。
+//     竖向预算代价：会话行 stride 36→40，700 客户区底部 spring 约 −16~20px
+//     （30 → ~10-14，仍正）；`maxRows` 分级台阶同步 40→44（见 RebuildSessionList）。
+inline constexpr int kSidebarRowH = 34;
+inline constexpr int kSidebarGroupH = 24;  // 分组标题行高（分隔的高度，不带"条目"语义）
 //   ★ 2026-10-25（Stage 1c）：整块侧栏几何上提。原先只在 App.cpp 用，搬出
 //     AppHistory.cpp（历史会话列表建行）后成跨 TU 依赖；1e 拆 UI builder 时
 //     BuildMainArea 侧栏段也要用同一组数。**值一字未改**。
@@ -56,6 +61,13 @@ inline constexpr int kSidebarGroupH = 20;  // 分组标题行高（分隔的高�
 inline constexpr int kSidebarListW = 172;
 inline constexpr int kSidebarRowW = 158;
 inline constexpr int kSidebarRowGap = 6;
+//   ★ 2026-11-03（用户反馈「收起状态下工作区的间隔有些低」）：分组标题行前的
+//     **段界呼吸量**。会话行之间仍用 `kSidebarRowGap`（组内紧凑 = 同属一组），
+//     组与组之间压段距：标题连排（收起态）= 6 + 10 = 16，与侧栏分区间距
+//     （AppUiMain `kSidebarSectionSpacer` 10 + `kRowGapSide` 7 = 17）同一档。
+//     只加在**标题前**（列表首标题除外）——若加在会话行后，"组尾会话 ↔ 下一组
+//     标题"与"标题 ↔ 自己第一个会话"就分不开层级。
+inline constexpr int kSidebarGroupGap = 10;
 //   ★ 2026-11-03：`kSidebarNameW`（原 106）已删——它是死常量（全库只剩两处 using，
 //     真实名称宽在 `AppSession.cpp` 的 `BuildSessionRow` 按 `curRowW` 动态算）。
 //   ★ 同日：`kSidebarMaxRows` 语义从「固定可见行数」降为「**下限**」——
@@ -102,9 +114,24 @@ inline constexpr int kInspW = 230;
 //     所以改它连带改 `GetMaxOffsetY()` 与内容可视宽——是几何量，必须单点可查。
 //   ★ 全仓所有 `ScrollView` 统一走 `ApplyCompactScrollBars()`，不许各处散写：中栏与
 //     侧栏列表条宽不一致会比"条宽"本身更显眼。
+//   ★★ 2026-11-04：输入框（`TextBox` 内建垂直条，非 ScrollView 路径）也统一到此值
+//     ——经 `GetVerticalScrollBar()->SetStyle` 设置（PromptBar.cpp `ComposerBox`
+//     构造），值仍取这里，别在那边另写一个数。
 //   ★ 下限自觉：`thickness <= 0` 时 ECDI 侧无断言保护（条宽 0 但仍扣 inset=2 ⇒
 //     "看不见却占位"），别调成 0。
 inline constexpr int kScrollBarThickness = 4;
+
+// ★★ 2026-11-03：侧栏行宽公式**单点化**（此前 AppSession.cpp 三处 + AppHistory.cpp
+//   两处 + ProbeSidebar 镜像一处，共六处各写一遍「max(kSidebarRowW, listW − 条厚 − 8)」；
+//   首改就漏了历史列表两处——探针 histRowW != sessRowW 当场抓红，单点化的理由自证）。
+//   值**与旧式逐位相同**（用户澄清：加宽是纵向，水平不动）。保留约束记录：
+//   视口宽（竖条可见时）= 控件宽 − 条厚 − kBarInset(2，ECDI 内部常数) = listW − 6，
+//   行宽/extent 必须**严格小于**视口，横向条才不出（§109「目录列表恒出条」事故）。
+//   本式 −8 恒留 2px 气口。探针 `sidebarGeomMaxW`（listW − 条厚 = −4）是粗上界。
+inline constexpr int SidebarRowW(int listW) {
+    const int w = listW - kScrollBarThickness - 8;
+    return w > kSidebarRowW ? w : kSidebarRowW;
+}
 
 // ── 侧栏目录列表的**内容宽**（2026-10-27）──
 //   ★★ 病因（用户实测：文件夹列表"永远挂着横向滚动条，哪怕没超出"）：

@@ -13,8 +13,10 @@
 #include "ECDI/Theme/ButtonStyle.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Theme/TextBoxStyle.h"
+#include "ECDI/Widget/ScrollBar.h"   // ★ 2026-11-04：输入框内建条瘦身（SetStyle + ScrollBarStyleOverride）
 #include "ECDI/Window/Window.h"
 
+#include "AppInternal.h"   // harness::internal::kScrollBarThickness（全仓条宽唯一真相源）
 #include "Theme.h"
 
 #include <algorithm>
@@ -75,6 +77,21 @@ public:
         //   （深色≈白字，浅色仍是深墨）。SetTextColor 内部走 TextStyleOverride，
         //   与 ApplyBorder 的 TextBoxStyleOverride 是两个互不干扰的覆盖通路。
         SetTextColor(harness::kDarkInk);
+        // ★★ 2026-11-04：内建垂直滚动条瘦身（水平宽度 12 → 4，即默认的 1/3）。
+        //   全仓 `ScrollView` 2026-10-27 起统一 `kScrollBarThickness`（4）；
+        //   输入框的条是 `TextBox` 内建组合件（不走 ScrollView 那条路），是最后一个
+        //   仍是默认 12 的——同屏两种条宽比"4px"本身更显眼（当初瘦身的同一裁决）。
+        //   TextBox 只有垂直条（水平滚动跟手、无条）⇒ 只设这一条。
+        //   ★ 入口：`GetVerticalScrollBar()` 名义上是观察入口，但 ECDI D7 契约：
+        //     `SetStyle` 标记 overridden 后，后续 `ApplyTheme` 不回写 ⇒ 构造期设
+        //     一次永久生效（换主题重建走本构造，同样覆盖）。
+        //   ★ 时序：此刻 0×0 尚未布局，首次 `SetSize` → `LayoutScrollBar` 自然按
+        //     4px 摆条；范围/偏移由 `SyncScrollBar` 每帧带守卫下发——无需手动重排
+        //     （不同于 `ApplyCompactScrollBars` 末尾补 `SetSize`：那是运行期改
+        //     样式的自救，这里是建树期设置）。
+        if (ECDI::ScrollBar* vbar = GetVerticalScrollBar())
+            vbar->SetStyle(ECDI::ScrollBarStyleOverride{
+                .thickness = harness::internal::kScrollBarThickness});
         ApplyBorder(false);
     }
 

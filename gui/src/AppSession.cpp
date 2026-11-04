@@ -40,7 +40,9 @@
 
 // 跨 TU 共享符号（定义见 AppInternal.h / PathUtil.cpp）
 using harness::internal::PathToUtf8;
+using harness::internal::SidebarRowW;
 using harness::internal::kScrollBarThickness;
+using harness::internal::kSidebarGroupGap;
 using harness::internal::kSidebarGroupH;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
@@ -592,7 +594,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     //   ECDI 的 Button/Panel 都没有 style getter（`Button::SetStyle` 只写不读），
     //   所以探针要靠 `Label::GetTextColor()` 判"这一行是不是选中项"。
     //   ⇒ 文字色不是纯装饰，它同时承担**读数**职责，改配色时别把它改没了。
-    const int curRowW = m_hud.sessList ? std::max(kSidebarRowW, m_hud.sessList->GetWidth() - kScrollBarThickness - 8) : kSidebarRowW;
+    const int curRowW = m_hud.sessList ? SidebarRowW(m_hud.sessList->GetWidth()) : kSidebarRowW;
     row->SetSize(curRowW, kSidebarRowH);
     row->SetStyle(ECDI::ButtonStyleOverride{
         .background = active ? kUserBg : kPanel2,
@@ -741,7 +743,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
 //   `SnapshotSessionList` 靠“行根是不是 Button”区分两类行（第 5 段 `kind`）。
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionGroupRow(const std::string& title,
                                                                const std::string& workspaceId) {
-    const int curRowW = m_hud.sessList ? std::max(kSidebarRowW, m_hud.sessList->GetWidth() - kScrollBarThickness - 8) : kSidebarRowW;
+    const int curRowW = m_hud.sessList ? SidebarRowW(m_hud.sessList->GetWidth()) : kSidebarRowW;
     auto row = std::make_unique<ECDI::Panel>();
     row->SetSize(curRowW, kSidebarGroupH);
     // 透明底 + 无边框：标题是分隔，不是按钮。透明度用 alpha=0（与 `×` 子钮同一手法）。
@@ -869,6 +871,13 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
         y += h + kSidebarRowGap;
         lastGap = kSidebarRowGap;
     };
+    // ★ 2026-11-03：分组标题 = 段界 ⇒ 标题前压一段 `kSidebarGroupGap`（首行除外，
+    //   列表顶不留空）。收起态的"标题连排"与展开态的"组尾会话 → 下一组标题"
+    //   都吃这一段；"标题 → 自己第一个会话"仍是 6px——同组紧、分组松，层级才对。
+    auto placeGroup = [&](std::unique_ptr<ECDI::Widget> row) {
+        if (y > 0) y += kSidebarGroupGap;
+        place(std::move(row), kSidebarGroupH);
+    };
 
     if (m_workspaces.empty()) {
         // ★ 一个工作区都没有 ⇒ **平铺**，与分组功能出现之前逐字节同形。
@@ -898,7 +907,7 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
         for (size_t wi : GroupTitlesForDisplay()) {
             const Workspace& ws = *m_workspaces[wi];
             const std::string title = ws.unavailable ? (ws.path + " [不可用]") : ws.path;
-            place(BuildSessionGroupRow(title, ws.id), kSidebarGroupH);
+            placeGroup(BuildSessionGroupRow(title, ws.id));
             for (size_t i = 0; i < n; ++i) {
                 if (m_sessions[i]->workspaceId != ws.id) continue;
                 shown[i] = true;
@@ -914,7 +923,7 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
             // ★ 外键指向一个不存在的工作区也落在这里（`WorkspaceById` 返回 nullptr 时
             //   就是这么处理的，两处口径一致）：宁可显示“未归属”，也不能把它悄悄
             //   塞进第一个工作区——那会把归错桶伪装成正常。
-            place(BuildSessionGroupRow("未归属工作区", std::string()), kSidebarGroupH);
+            placeGroup(BuildSessionGroupRow("未归属工作区", std::string()));
             for (size_t i = 0; i < n; ++i) {
                 if (shown[i] || m_sessions[i]->archived) continue;
                 place(BuildSessionRow(i, i == m_activeIndex), kSidebarRowH);
@@ -931,7 +940,7 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
             if (m_sessions[i]->archived) { anyArchived = true; break; }
         }
         if (anyArchived) {
-            place(BuildSessionGroupRow("归档", std::string()), kSidebarGroupH);
+            placeGroup(BuildSessionGroupRow("归档", std::string()));
             for (size_t i = 0; i < n; ++i) {
                 if (!m_sessions[i]->archived) continue;
                 place(BuildSessionRow(i, false), kSidebarRowH);
@@ -944,20 +953,21 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
     // ★★ 2026-11-03（用户反馈「侧栏紧凑」）：可见行数从固定 4 改**按窗口高度分级**
     //   （4 → 10）。下限仍是 `kSidebarMaxRows`（客户区 ≤700 时逐位不变）。
     //   ★ 预算来源（Theme.h `kSidebarPad` 实测）：客户区 700 时底部 spring 只剩 30px，
-    //     且 slack 随高度增长率 ≈ 0.91 px/px ⇒ 每多显示一行（stride 36px）需要
-    //     ≈40px 额外客户区高，30px 底线才不会被吃掉 ⇒ 台阶取 40px。
+    //     且 slack 随高度增长率 ≈ 0.91 px/px ⇒ 每多显示一行需要 ≈stride/0.91 的
+    //     额外客户区高，30px 底线才不会被吃掉。台阶随 stride 走：36px 时取 40；
+    //     2026-11-03 行高加到 34（stride 40）⇒ 台阶 40/0.91 ≈ 44px。
     //   ★ 只在**重建时**结算（本函数）：纯拖高窗口不立即加行（列表高由 SetSize 定），
     //     下一次重建（切会话 / 新建删除 / 换主题 / 拖侧栏宽 / 切模式）即重算。
     //   ★ 探针零扰动：`--sidebar-probe`/`--sidebarGeom` 断的是「建了哪些行 + 行高 +
     //     行宽」，不钉视口高度；且探针跑在固定窗口高下，读数确定。
     const int rootH = m_window ? static_cast<int>(m_window->GetRootWidget().GetHeight()) : 0;
-    const int maxRows = std::min(10, kSidebarMaxRows + std::max(0, (rootH - 700) / 40));
+    const int maxRows = std::min(10, kSidebarMaxRows + std::max(0, (rootH - 700) / 44));
     const int visibleH = std::min(totalH, maxRows * (kSidebarRowH + kSidebarRowGap)
                                               - kSidebarRowGap);
     // ★ 先 SetSize（决定 viewport）再 SetContentExtent（决定要不要出条）：
     //   反过来的话第一帧会按旧 viewport 判一次"不需要滚动条"，出条后行宽被挤。
     const int listW = m_hud.sessList ? std::max(kSidebarListW, m_hud.sessList->GetWidth()) : kSidebarListW;
-    const int curRowW = std::max(kSidebarRowW, listW - kScrollBarThickness - 8);
+    const int curRowW = SidebarRowW(listW);
     m_hud.sessList->SetSize(listW, std::max(visibleH, kSidebarRowH));
     m_hud.sessList->SetContentExtent(curRowW, std::max(totalH, kSidebarRowH));
     m_hud.sessList->SetContentOffset(0, m_hud.sessList->GetScrollOffsetY());

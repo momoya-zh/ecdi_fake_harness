@@ -36,7 +36,7 @@
 #include <vector>
 
 // 跨 TU 共享符号（定义见 AppInternal.h）
-using harness::internal::kScrollBarThickness;
+using harness::internal::SidebarRowW;
 using harness::internal::kSidebarListW;
 
 using harness::internal::kSidebarRowGap;
@@ -103,7 +103,7 @@ std::vector<std::filesystem::path> HarnessApp::FindHistoryFiles() const {
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildHistoryRow(const std::filesystem::path& file) {
     // ★ 行根同样是 Button：`Panel::ContainsPoint` 恒 false（`Panel.cpp:34-40`），
     //   可点的行根只能是 Button（同 `BuildSessionRow` 的理由）。
-    const int curRowW = m_hud.historyList ? std::max(kSidebarRowW, m_hud.historyList->GetWidth() - kScrollBarThickness - 8) : kSidebarRowW;
+    const int curRowW = m_hud.historyList ? SidebarRowW(m_hud.historyList->GetWidth()) : kSidebarRowW;
     auto row = std::make_unique<ECDI::Button>();
     row->SetSize(curRowW, kSidebarRowH);
     row->SetStyle(ECDI::ButtonStyleOverride{
@@ -161,7 +161,7 @@ void HarnessApp::RebuildHistoryList() {
     const int visibleH = std::min(totalH, kHistoryMaxRows * static_cast<int>(rowStride)
                                               - kSidebarRowGap);
     const int listW = m_hud.historyList ? std::max(kSidebarListW, m_hud.historyList->GetWidth()) : kSidebarListW;
-    const int curRowW = std::max(kSidebarRowW, listW - kScrollBarThickness - 8);
+    const int curRowW = SidebarRowW(listW);
     m_hud.historyList->SetSize(listW, std::max(visibleH, kSidebarRowH));
     m_hud.historyList->SetContentExtent(curRowW, std::max(totalH, kSidebarRowH));
     m_hud.historyList->SetContentOffset(0, m_hud.historyList->GetScrollOffsetY());

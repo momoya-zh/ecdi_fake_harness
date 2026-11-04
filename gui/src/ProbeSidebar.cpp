@@ -699,12 +699,13 @@ void HarnessApp::RunSidebarProbe() {
     {
         auto& g = m_probeState;
         auto expectRowW = [](int sideW) {
-            // 行宽 = **控件实际宽**（`fillCrossAxis` 把它拉到栏内容宽）− 条厚 − 8，
-            // 下限是 `kSidebarRowW`（158）。★ 不能用 `kSidebarListW`(172) 参与取整：
-            // 那个 floor 只喂给 `SetContentExtent`（内容 extent 宽），不改变控件宽。
-            // 实测差 2px 就靠这条注释挡住——第一版把 172 塞进来，判据当场误红。
+            // 行宽公式**单点化**（2026-11-03）：直接调 `SidebarRowW`，产品侧五处
+            // 与本镜像共用同一份（AppInternal.h；值与旧式逐位相同，几何账见那边）。
+            // ★ 仍不能用 `kSidebarListW`(172) 参与取整：那个 floor 只喂给
+            //   `SetContentExtent`（内容 extent 宽），不改变控件宽。
+            //   实测差 2px 就靠这条注释挡住——第一版把 172 塞进来，判据当场误红。
             const int contentW = sideW - 2 * harness::kSidebarPad;
-            return std::max(kSidebarRowW, contentW - kScrollBarThickness - 8);
+            return harness::internal::SidebarRowW(contentW);
         };
         auto firstButtonRow = [](ECDI::ScrollView* view) -> ECDI::Widget* {
             if (!view) return nullptr;
@@ -730,6 +731,7 @@ void HarnessApp::RunSidebarProbe() {
         ECDI::Widget* sessRow = firstButtonRow(m_hud.sessList);
         ECDI::Widget* histRow = firstButtonRow(m_hud.historyList);
         g.sidebarGeomRowW = sessRow ? sessRow->GetWidth() : 0;
+        g.sidebarGeomHistListW = m_hud.historyList ? m_hud.historyList->GetWidth() : 0;
         g.sidebarGeomHistRowW = histRow ? histRow->GetWidth() : 0;
         if (sessRow == nullptr) {
             bad += "no session row after rebuild";
@@ -1523,12 +1525,12 @@ void HarnessApp::AppendSidebarProbeSummary(std::string& json) {
         char b[1024];
         std::snprintf(b, sizeof(b),
                       "  \"sidebarGeom\": {\"sideWidth\": %d, \"listWidth\": %d, "
-                      "\"rowWidth\": %d, \"histRowWidth\": %d, \"expectWidth\": %d, "
+                      "\"rowWidth\": %d, \"histRowWidth\": %d, \"histListWidth\": %d, \"expectWidth\": %d, "
                       "\"maxWidth\": %d, \"wideSideWidth\": %d, \"wideRowWidth\": %d, "
                       "\"wideExpectWidth\": %d, \"done\": %s, \"ok\": %s, "
                       "\"detail\": \"%s\"},\n",
                       g.sidebarGeomSideW, g.sidebarGeomListW, g.sidebarGeomRowW,
-                      g.sidebarGeomHistRowW, g.sidebarGeomExpectW, g.sidebarGeomMaxW,
+                      g.sidebarGeomHistRowW, g.sidebarGeomHistListW, g.sidebarGeomExpectW, g.sidebarGeomMaxW,
                       g.sidebarGeomWideSideW, g.sidebarGeomWideRowW, g.sidebarGeomWideExpectW,
                       g.sidebarGeomDone ? "true" : "false",
                       g.sidebarGeomOk ? "true" : "false",
