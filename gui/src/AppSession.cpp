@@ -399,6 +399,7 @@ void HarnessApp::ContinueCurrentSession() {
     m_hudDirty = true;
     RefreshHud();
     RebuildMemoryList();
+    RebuildAgentList();   // ★ v5：代理表随转录一起换（卡片按模型重投影，不retain旧会话的行）
     RequestRepaint();
 }
 
@@ -519,6 +520,7 @@ bool HarnessApp::ResumeSession(Session& s) {
     m_hudDirty = true;
     RefreshHud();
     RebuildMemoryList();
+    RebuildAgentList();   // ★ v5：代理表随转录一起换（卡片按模型重投影，不retain旧会话的行）
     RequestRepaint();
     return true;
 }
@@ -578,6 +580,7 @@ void HarnessApp::SwitchToSession(size_t index) {
     m_hudDirty = true;
     RefreshHud();
     RebuildMemoryList();
+    RebuildAgentList();   // ★ v5：代理表随转录一起换（卡片按模型重投影，不retain旧会话的行）
     RequestRepaint();
 }
 

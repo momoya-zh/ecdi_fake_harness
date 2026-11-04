@@ -48,6 +48,12 @@ class ScrollView;
 class TextBox;
 }  // namespace ECDI
 
+// ★ 2026-11-04：spinner 的**具体类型**只在建行（AppTranscript）与 tick
+//   （AppHud）两处用到，故沿用本头"控件类型一律前置声明"的规矩。
+namespace uikit {
+class SpinnerButton;
+}
+
 class SplitterBar;
 
 #include <chrono>
@@ -251,6 +257,12 @@ private:
         // ── L3 记忆文件卡片（docs/session-persistence-decisions.md §8）──
         ECDI::Panel* inspMemoryCard = nullptr;   // 右栏：「记忆」卡片
         ECDI::Panel* memoryList = nullptr;       // 记忆文件列表容器
+        // ★★ 协议 v5（2026-11-04）：右栏「代理」卡片（`ProbeAgents.cpp` 之外，
+        //   这是**产品面**的卡——探针读数和它读同一份模型，但用途不同）。
+        //   ★ 默认隐藏（同记忆卡）：没有委派时不占纵向空间，否则每次启动都白扔
+        //     130px 给一张空卡。
+        ECDI::Panel* inspAgentCard = nullptr;
+        ECDI::Panel* agentList = nullptr;
         // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip + 下拉浮窗。
         ECDI::Button* modelChip = nullptr;       // 顶栏：`提供商 › 模型 · N% ▾`
         ECDI::Panel* modelPopup = nullptr;       // 浮窗壳（挂 m_scroll，顶部下拉）
@@ -470,6 +482,11 @@ private:
         //   AutoSize/SetTextColor 全在共同基类面。
         ECDI::TextWidget* label = nullptr;        // 主文本；tool 行 = 展开体文本，非拥有
         ECDI::Button* headerBtn = nullptr;        // tool 卡片标题按钮，非拥有
+        // ★★ 2026-11-04：reasoning header 的 spinner 句柄（仅思维链行非空）。
+        //   ★ 与 `headerBtn` 是同一个控件的两个类型视图（SpinnerButton 派生自
+        //     TipButton → Button）：`headerBtn` 继续供既有的 SetText / 点击绑定使用，
+        //     本字段只给 tick 推进相位用——不去 dynamic_cast，也不让既有代码改类型。
+        uikit::SpinnerButton* spinner = nullptr;
         ECDI::CollapsiblePanel* body = nullptr;   // tool 卡片展开体，非拥有
         ECDI::Button* allowBtn = nullptr;         // ask 行按钮，非拥有
         ECDI::Button* denyBtn = nullptr;
@@ -535,6 +552,23 @@ private:
         //   （展开/已答）写回**模型侧**——否则重建会把用户的操作回退掉。
         //   ★ 只增不改序：条目一旦建好，下标永不变（时间线只追加）。
         size_t timelineIdx = 0;
+
+        // ★★ 协议 v5（2026-11-04）：子代理缩进。
+        //   `indent` = 本行左边界相对根行的横移（px）；`agentTag` = 归属的子代理 id。
+        //   ★ 只影响**宽度与横坐标**，不碰行高：`Relayout` 的 y 累加一字不动
+        //     ⇒ 复杂度仍是 O(行数)；换行缓存的指纹含宽度，故只在 indent 变化时
+        //     失效一次（indent 由 block 决定，建成后就是常量）。
+        int indent = 0;
+        std::string agentTag;
+        // ★ v5：本行在内容坐标系里的 y（`Relayout` 写入）。唯一消费者是
+        //   「代理」卡的点击定位——它要跳到"某个子代理的第一行"，而行的 y
+        //   只有布局过程知道。★ 存**结果**不存推算：拿行高累加去反推会在
+        //   AutoSize 之后和真实值分叉（这正是本轮之前 `Relayout` 注释里
+        //   「未变则不重发」那段防范的同一类错）。
+        int y = 0;
+        // 归属竖线（`indent > 0` 的行才有）。几何在 Relayout 里定——行高要到
+        // 测量之后才知道，建行期给不出高度。
+        ECDI::Panel* gutter = nullptr;
     };
 
     struct PendingPrompt {
@@ -1196,6 +1230,12 @@ private:
     void RequestRepaint();
     void CacheEvalMetrics();
     void RefreshHud();
+    // ★★ 2026-11-04（用户裁决 A+C）：思考中 spinner 的唯一推进点。
+    //   放在 `OnReplayTick` 里（33ms 节拍），**不**新开定时器、**不**走
+    //   `AnimationManager`——后者的 Invalidate 绕过 `RequestRepaint()`，会让
+    //   `invalidations` 与 `paints` 两个评估读数脱钩。
+    //   状态源 = 行自身（`reasoning && !ended`）⇒ 重建/切会话/block_end 自然收敛。
+    void AdvanceThinkingSpinners();
     // ★★ 2026-10-27：中栏会话头「标题区」宽度的**唯一**计算口。
     //   病因（实测复现：窗口 1000 宽 + 详情开）：`head` 是 HorizontalLayout，
     //   `titles` 固定 480、三钮各 44 + 间距 ⇒ 总需 ≈ 700，而中栏只剩 570
@@ -1219,6 +1259,7 @@ private:
     void AppendRebuildProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendSessionProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendSidebarProbeSummary(std::string& json);   // ProbeSidebar.cpp
+    void AppendAgentProbeSummary(std::string& json);     // ProbeAgents.cpp（v5）
     void AppendAnswerProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendMenuProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendJumpProbeSummary(std::string& json);   // ProbeFlow.cpp
@@ -1440,6 +1481,14 @@ private:
     bool m_historyScanned = false;                 // 文件清单缓存过一次（避免每 tick 扫盘）
     std::vector<std::filesystem::path> m_historyFiles;
     int m_relayoutPulse = 0;                       // 折叠动画期间的补重排 tick 数（~33ms each）
+    // ★★ 2026-11-04（用户裁决 A+C）：思考中 spinner 的相位节拍。
+    //   每 `kSpinStepTicks` 个 tick 走一格 ⇒ 12 步一圈 ≈ 3×33ms×12 ≈ 1.2s。
+    //   ★ 按 **tick 计数**而不是墙钟：本仓所有动画/流式节拍都以这个 33ms tick
+    //     为唯一时基；按墙钟会在掉帧时一次跳好几格（看起来像"卡了一下"）。
+    //   ★ 计数器是**全局**的而不是每股 spinner 一个：同屏多条思维链同时流式时
+    //     它们同步转 —— 那是期望行为（同一轮思考），也省掉每行一个阈值。
+    static constexpr int kSpinStepTicks = 3;
+    int m_spinTick = 0;
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
 
@@ -1715,6 +1764,17 @@ private:
     void RunSelectProbe();
     void RunTableProbe();
     void RunCopyProbe();
+    // ★★ 协议 v5（2026-11-04）：右栏「代理」卡（实现全在 `AppAgents.cpp`）。
+    //   `BuildAgentCard` 由 `BuildInspector` 末尾一行调用；`RebuildAgentList`
+    //   在每次 `agent` 生命周期消息到达时重建列表（代理数是动态的）。
+    void BuildAgentCard(ECDI::Panel& insp, int rowH);
+    void RebuildAgentList();
+    // 已 start 且未 end 的子代理数（顶栏胶囊的「N代理」与卡片的"进行中"同源）。
+    size_t ActiveAgentCount() const;
+    // 把转录滚到某个子代理的第一行（`agentId` 空 = 不做任何事）。
+    void FocusAgent(const std::string& agentId);
+    // ★★ 协议 v5（2026-11-04）：子代理缩进/生命周期。判据与负对照见 ProbeAgents.cpp 头注。
+    void RunAgentProbe();
     void AppendTableProbeSummary(std::string& json);
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：

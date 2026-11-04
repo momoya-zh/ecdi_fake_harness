@@ -25,6 +25,7 @@
 #include "ECDI/EventSystem/Input/Mouse/MouseButtonDownEvent.h"
 #include "ECDI/Render/PaintContext.h"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -219,6 +220,22 @@ inline void WarnZeroSized(const ECDI::Widget& w, const std::string& path = "root
     }
 }
 
+// ★★ 2026-11-04：可读回底色的面板（ECDI `Panel` 没有 `GetBackground`）。
+//   为什么需要它：`Panel::m_style` 是 **protected 且无公开 getter**（`Panel.h` 核实；
+//   `GetStyle()` 一类的读取口在 widget 层根本没开）。而 tooltip 的「深底浅字」
+//   必须能被**机读**——并且不能靠比对常量：2026-11-04 那个缺陷的病灶恰在
+//   **调用点**（`.background = kDarkInk`），常量本身完全正确 ⇒ 只比对
+//   `kTooltipBg` / `kTooltipInk` 的断言对它**恒真**。
+//   ⇒ 只有读控件**实际要画的那个值**才算数，而 `Panel::OnPaint` 取的正是
+//     `m_style.background.value`（`Panel.cpp` 核实：`const Color& background =
+//     m_style.background.value;`）⇒ 本类读的就是那个字段，不是副本。
+//   ★ 与 `CountingPanel` 同手法（派生读 protected 成员），不是新范式。
+//   ★ 只加读取、不改行为：不 override 任何虚函数 ⇒ 绘制路径逐字节不变。
+class TipPanel : public ECDI::Panel {
+public:
+    const ECDI::Color& Background() const noexcept { return m_style.background.value; }
+};
+
 // ★★ P4 Phase E（2026-10-25）：带 tooltip 的按钮。
 //   ECDI 无 Tooltip 原语（源码仓核实：只有 TrayIcon 的 szTip），OnMouseEnter/
 //   OnMouseLeave 是 protected virtual ⇒ 挂提示只能子类化。enter/leave/点击经
@@ -254,6 +271,94 @@ private:
     std::string m_tip;
     std::function<void(TipButton*)> m_onEnter;
     std::function<void(TipButton*)> m_onLeave;
+};
+
+// ── 思考中 spinner（2026-11-04 用户裁决：自绘单弧 + 既有 33ms tick 驱动）──────
+// 「A+C」两条决定的理由，都落在**能力边界**上，不是风格偏好：
+//   A 自绘单弧：ECDI Phase 33 的 `DrawArc` 是现成曲线原语（GDI 走 coverage
+//     抗锯齿、端点自动圆头），`IconButton` 的 Sun/Moon 已经在 14px 上用过它。
+//     自己拼小段 `DrawRoundedRect` 会把命令数按精度放大，且没有 AA。
+//   C 复用 tick：`OnReplayTick` 的 33ms 节拍已经是全应用的时间基准。走
+//     `AnimationManager` 反而更差——它的 `Invalidate` 直连平台窗口，绕过
+//     `HarnessApp::RequestRepaint()` ⇒ `invalidations` 不涨而 `paints` 涨，
+//     两个评估读数当场脱钩（`RingProgressBar` 那条注释已经踩过一次）。
+// ★★ 为什么是**离散步进**而不是每帧连续转：ECDI 只有整窗失效
+//    （`PlatformWindow::Invalidate()` → `InvalidateRect(hwnd, nullptr, FALSE)`），
+//    动画每帧 = 一次**全窗**重绘（本机 GDI 实测 ≈13ms/帧）⇒ 60fps 不可行，
+//    30Hz 约 0.4 核。12 步 × 3 tick（≈100ms）⇒ 一圈 ≈1.2s、约 0.13 核，
+//    视觉上正是经典圆点/圆环 spinner 的节奏。
+// ★ 位置：**紧贴标题文字右侧**（gap=8），不是行尾。reasoning 的标题只有
+//   「﹀ 思考中」几个字，而 header 是通栏的（≈900px）——放行尾会离文字太远，
+//   "这一行正在转"的关联就断了。宽度用**绘制侧同一个** `TextMeasurer`
+//   （`ctx.MeasureText`）量：`Button::CalculateTextPosition` 的 Left 分支
+//   offsetX = 0（无内边距，已核实），故文字右边界 = x + textWidth。
+//   量一次缓存住：流式期间标题不变（token 副标只在 block_end 出现，那时已停转）。
+class SpinnerButton : public TipButton {
+public:
+    using TipButton::TipButton;
+
+    static constexpr int kSteps = 12;    // 一圈步数（30°/步）
+
+    // 开 / 停。**不**在这里调 Invalidate：本类只由 tick 驱动，调用方在同一
+    // tick 统一 `RequestRepaint()`——每步各调一次会让"增长路径"与"重绘路径"分叉。
+    void SetSpinning(bool on) noexcept {
+        if (m_spinning == on) return;
+        m_spinning = on;
+        if (on) m_phase = 0;             // 从 12 点方向起转
+    }
+    bool IsSpinning() const noexcept { return m_spinning; }
+
+    void Advance() noexcept { m_phase = (m_phase + 1) % kSteps; }
+    int Phase() const noexcept { return m_phase; }
+
+    // 标题宽度只用于摆 spinner ⇒ 把 Button 实际用的字体交给本类（无 GetFont）。
+    // 调用点与 `SetFont` 同一处、同一个值（单一真相：建行处那个 `harness::SansFont`）。
+    void SetSpinFont(const ECDI::Font& font) {
+        m_font = font;
+        m_measuredText.clear();          // 强制下次绘制重测
+        m_textW = 0.0f;
+    }
+
+protected:
+    void OnPaint(ECDI::PaintContext& ctx, int x, int y) override {
+        TipButton::OnPaint(ctx, x, y);   // 底色 / hover / pressed / 文本归基类
+        if (!m_spinning) return;
+
+        // 标题右边界 + 8px 间隙 + 外半径(5.5 + 1.6/2)；再钳到行内（防长标题越界）
+        const float textW = MeasureTitleW(ctx);
+        const float cx = std::min(static_cast<float>(x) + textW + 14.0f,
+                                  static_cast<float>(x) + GetWidth() - 16.0f);
+        // ★ 行盒内居中 ≠ 墨迹居中：14px 字号墨迹中线比行盒中线低 2px
+        //   （同 `kTextInkDy`，2026-11-01 截图实测）。
+        const float cy = static_cast<float>(y) + GetHeight() * 0.5f + kTextInkDy;
+        const ECDI::Point c{cx, cy};
+
+        // 轨道：整圆（`|sweep| = 360` 由后端钳成完整环，接缝不重不漏）。
+        // 颜色 = 文字色降 alpha——主题/探针配色切换时自动跟随，不需要第二套令牌。
+        ECDI::Color track = GetTextColor();
+        track.a *= 0.25f;                // 0.18 在浅色主题下几乎看不见（实测 ~228/255）
+        ctx.DrawArc(c, 5.5f, 0.0f, 360.0f, 1.0f, track);
+
+        // 进度弧：90°，从 12 点方向（-90°）顺时针
+        const float start = -90.0f + static_cast<float>(m_phase) * (360.0f / kSteps);
+        ctx.DrawArc(c, 5.5f, start, 90.0f, 1.6f, GetTextColor());
+    }
+
+private:
+    float MeasureTitleW(ECDI::PaintContext& ctx) {
+        const std::string& text = GetText();
+        if (text != m_measuredText) {
+            m_measuredText = text;
+            m_textW = ctx.MeasureText(m_font, m_measuredText).width;
+        }
+        return m_textW;
+    }
+
+    bool m_spinning = false;
+    int m_phase = 0;
+    ECDI::Font m_font{};                 // 仅用于量标题宽（见 SetSpinFont）
+    std::string m_measuredText;
+    float m_textW = 0.0f;
 };
 
 // ── 矢量图标按钮（docs/vector-icons.md §4）────────────────────────────────────

@@ -48,6 +48,16 @@
 //        「面板还在不在」类判据全绿（`RebuildUi` 第 ④ 步的注释记的正是这条）。
 //   ⑥ tip           tooltip 的祖先链上有浮层根、且**不在** root 子树里；
 //      关掉后句柄立即为空（`HideOverlay` 帧末才析构 ⇒ 句柄必须自己置空）。
+//   ⑥b tip-palette  tooltip 的**配色**：两个主题下都必须「深底浅字」（WCAG ≥ 4.5），
+//      且两主题的 (底,字) 逐位相同（= 浮层固定视觉，不随主题走）。
+//      ★★ 2026-11-04 补（用户报告「深色模式下浮窗文本没改色」）。此前 ⑥ 只问结构，
+//        于是 `.background = kDarkInk`（主题令牌）配字面量字色 ⇒ 深色下近白压近白
+//        (1.08:1)、字已溶解，而「挂在哪 / 点得穿 / 单例」三条全绿。
+//      ★ 两个量具：`TipPanel::Background()` 读控件**实际要画**的底色（`Panel` 无
+//        公开 getter ⇒ 派生读 protected `m_style`，`CountingPanel` 同手法）；
+//        `GetTextColor()` 读字色。**不比常量**——常量从来没错，错在调用点。
+//      ★ 负对照：同一相里用「当年的错误组合」算一次对比度，要求它必须 < 4.5
+//        （元断言）。量具坏了会在这里红，而不是在下面假绿。
 //   ⑦ tip-through   把 tooltip **盖在主题钮上**再点它：点击必须**穿过**提示框落到钮上。
 //      ★ `HitTestWindow` 显式跳过 Tooltip 层。这条判据的判别力来自
 //        「`Button::ConsumesMouseInput()==true` 而 `Panel` 不覆盖（默认 false）」——
@@ -62,6 +72,7 @@
 #include "App.h"
 #include "AppInternal.h"
 #include "ThemeUsing.h"
+#include "UiKit.h"          // ★ 2026-11-04：uikit::TipPanel（读 tooltip 实际底色）
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -69,6 +80,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cmath>            // ★ 2026-11-04：std::pow（WCAG 相对亮度）
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -92,6 +104,45 @@ bool ReachesAncestor(const ECDI::Widget* w, const ECDI::Widget* target) {
         w = w->GetParent();
     }
     return false;
+}
+
+// ── ★★ 2026-11-04：配色读数的两个量具 ────────────────────────────────────
+//   ★ 为什么放在**探针**里而不是 `Theme.h`：这是**测量**，不是设计令牌。
+//     一旦把 `ContrastRatio` 挪进共享层，就会有人拿它去"自动挑颜色"——
+//     那会把视觉裁决交给公式，本仓不要那个（`Theme.h` 的配色全是人定的）。
+std::string RgbHex(const ECDI::Color& c) {
+    // 8-bit 直觉口径（与 `Color::FromRGBA8` 对称）。钳制在这里做：`Color` 契约是
+    //   「构造不 Clamp」，但 **hex 显示**必须先落到 [0,255]，否则 `%02x` 溢出。
+    auto to8 = [](float v) {
+        const int n = static_cast<int>(v * 255.0f + 0.5f);
+        return n < 0 ? 0 : (n > 255 ? 255 : n);
+    };
+    char b[8];
+    std::snprintf(b, sizeof(b), "#%02x%02x%02x", to8(c.r), to8(c.g), to8(c.b));
+    return b;
+}
+
+// WCAG 2.x 相对亮度 + 对比度。
+//   ★ 为什么用它而不是「分量差的平方和」一类：本仓的**表面分离度**判据确实是
+//     CIE L* 偏移（记忆条 3），但那是「两个**表面**要不要区分得开」的口径；
+//     这里是「**字压在这块面上读不读得出**」——那正是 WCAG 对比度定义的问题域，
+//     阈值 4.5 也有公开依据（AA 正文），不是随手拍的数。
+//   ★ 它不是 L*：`L*` 判「浮层浮不浮起来」（本缺陷的选值依据，见 `kTooltipBg`），
+//     两者**各管一件事**，不要合并成一条判据。
+double RelativeLuminance(const ECDI::Color& c) {
+    auto lin = [](float v) {
+        const double s = (v < 0.0f) ? 0.0 : (v > 1.0f ? 1.0 : static_cast<double>(v));
+        return (s <= 0.04045) ? (s / 12.92) : std::pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+}
+
+double ContrastRatio(const ECDI::Color& a, const ECDI::Color& b) {
+    const double la = RelativeLuminance(a);
+    const double lb = RelativeLuminance(b);
+    const double hi = (std::max)(la, lb);
+    const double lo = (std::min)(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
 }
 
 }  // namespace
@@ -142,6 +193,28 @@ void HarnessApp::RunOverlayProbe() {
         rec.popupOpen = m_modelPopupOpen;
         rec.tipAlive = (m_hud.tooltip != nullptr);
         rec.anyRegistered = m_window->HasActiveOverlay();
+        // ★★ 2026-11-04：tooltip 配色读数。两半都必须读**控件实际用于绘制的字段**：
+        //   · 底色走 `uikit::TipPanel::Background()`（= `Panel::m_style.background.value`，
+        //     `Panel::OnPaint` 取的就是它）；
+        //   · 字色走 `TextWidget::GetTextColor()`（公开；`SetTextColor` 内部转发到
+        //     同一个 `TextStyle::foreground`，所以这条读的就是绘制值，不是副本）。
+        //   ★ 不用 `dynamic_cast` 到 `TipPanel` 失败就静默跳过：那会让判据退化成
+        //     空真（控件类型换了、断言全绿）。读不到就是缺陷，照实记。
+        if (m_hud.tooltip) {
+            const ECDI::Color* bg = nullptr;
+            if (auto* tp = dynamic_cast<const uikit::TipPanel*>(m_hud.tooltip)) {
+                bg = &tp->Background();
+            }
+            if (m_hud.tooltipText) {
+                rec.tipInk = RgbHex(m_hud.tooltipText->GetTextColor());
+            }
+            if (bg) {
+                rec.tipBg = RgbHex(*bg);
+                if (m_hud.tooltipText) {
+                    rec.tipContrast = ContrastRatio(*bg, m_hud.tooltipText->GetTextColor());
+                }
+            }
+        }
         rec.sheetX = m_hud.settingsPanel ? static_cast<int>(m_hud.settingsPanel->GetX()) : 0;
         rec.sheetW = m_hud.settingsPanel ? static_cast<int>(m_hud.settingsPanel->GetWidth()) : 0;
         rec.clientW = clientW;
@@ -326,6 +399,94 @@ void HarnessApp::RunOverlayProbe() {
                         "tooltip is inside the root subtree (it would be clipped by the viewport)"},
                        {m_window->HasActiveOverlay(ECDI::OverlayLayer::Tooltip),
                         "tooltip layer does not report an active overlay"}});
+    }
+
+    // ── ⑥b tip-palette：**配色**在两个主题下都必须「深底浅字」 ────────────
+    //   ★★ 2026-11-04（用户报告「深色模式下浮窗文本没改色」之后补）。此前 ⑥ 只有
+    //     结构断言，于是这个缺陷躲了 10 天：深色下底色 `kDarkInk` = (230,233,239)
+    //     近白、字 `kTooltipInk` = (240,241,245) ⇒ 对比 **1.08:1**，字已溶解，
+    //     而「挂在哪 / 点得穿 / 单例」三条全绿。
+    //   ★ 为什么必须**两个主题各测一次**：病灶是「底借了主题令牌、字是字面量」，
+    //     单测一个主题会漏——浅色下同一份代码读出 13.40:1（完全正常）。
+    //     在浅色跑，这条判据对原缺陷**是绿的**，那就等于没写。
+    //   ★ 为什么不用「比对 kTooltipBg 常量」：常量本身从来没错，错在**调用点**
+    //     把 `.background` 写成了 `kDarkInk`。只比对常量 = 恒真断言。
+    //     故这里读的是控件实际要画的字段（`TipPanel::Background` / `GetTextColor`）。
+    {
+        const bool lightBefore = harness::g_themeLight;
+        // 只切令牌、**不重建**：tooltip 每次 `OnTooltipFire` 现建现挂 ⇒ 它天然
+        //   会用"当下"的令牌。这正是缺陷的复现路径——若底/字仍借主题令牌，
+        //   两个主题读出的值必然不同。
+        auto paletteIn = [&](bool light, ECDI::Color& bg, ECDI::Color& ink, double& cr) {
+            harness::SwitchTheme(light);
+            m_uiRebuildPending = false;   // 切令牌不排队重建（本相不需要，见上）
+            ShowTooltipFor(m_hud.themeToggle, "overlay-probe");
+            OnTooltipFire();
+            bg = ECDI::Color::Black();
+            ink = ECDI::Color::White();
+            cr = 0.0;
+            if (auto* tp = dynamic_cast<uikit::TipPanel*>(m_hud.tooltip)) {
+                bg = tp->Background();
+            }
+            if (m_hud.tooltipText) {
+                ink = m_hud.tooltipText->GetTextColor();
+                cr = ContrastRatio(bg, ink);
+            }
+        };
+
+        ECDI::Color darkBg, darkInk, lightBg, lightInk;
+        double darkCr = 0.0, lightCr = 0.0;
+        paletteIn(false, darkBg, darkInk, darkCr);
+        // ★ 负对照的原料：缺陷版底色 = 深色主题的 `darkInk` 令牌（原代码就写了它）。
+        //   ★ 必须在**深色**档下取，取完再切浅色——否则拿到的是浅色值，负对照失效。
+        const ECDI::Color buggyBg = harness::g_theme.darkInk;
+        const ECDI::Color buggyInk = darkInk;
+        const double buggyCr = ContrastRatio(buggyBg, buggyInk);
+        paletteIn(true, lightBg, lightInk, lightCr);
+
+        // 复原主题 + 重新竖一条提示框（⑦ 要用，且它必须是"原始主题"下的那条）
+        harness::SwitchTheme(lightBefore);
+        m_uiRebuildPending = false;
+        ShowTooltipFor(m_hud.themeToggle, "overlay-probe");
+        OnTooltipFire();
+
+        // ★ 元断言：量具本身有分辨力。这条把「读数坏了」与「配色坏了」分开——
+        //   若 `ContrastRatio` 被改成恒返回 10，本相会在这里红，而不是在下面假绿。
+        //   同时它也是这个缺陷的**回归见证**：当年的组合必须判为不可读。
+        const bool meterHasPower = buggyCr < 4.5;
+        // ★ 两个主题下 (底,字) 逐位相同 ⇒ 配色不随主题走（设计裁决）。
+        const bool invariant = (RgbHex(darkBg) == RgbHex(lightBg)) &&
+                               (RgbHex(darkInk) == RgbHex(lightInk));
+
+        expect("tip-palette",
+               {{meterHasPower,
+                 "the contrast meter has no discriminating power "
+                 "(the known-bad pair was not judged unreadable)"},
+                // 两个主题各判一次：4.5 = WCAG AA 正文下限
+                {darkCr >= 4.5, "tooltip is unreadable in the DARK theme (bg/ink too close)"},
+                {lightCr >= 4.5, "tooltip is unreadable in the LIGHT theme (bg/ink too close)"},
+                // ★ 设计裁决：tooltip 是浮层系统的**固定视觉**，不随主题走。
+                //   这条守的是「别再把底色接回主题令牌」——病灶的根。
+                {invariant,
+                 "tooltip palette follows the theme "
+                 "(the background was wired to a theme token again)"}});
+
+        // 回写读数（`expect` 已 push 本相记录，这里取到的才是它）。
+        //   ★ 记**深色**那一档：那是缺陷被报告的场景，也是本相的主场。
+        OverlayProbeRec& rec = m_probeState.overlayProbeLog.back();
+        rec.tipBg = RgbHex(darkBg);
+        rec.tipInk = RgbHex(darkInk);
+        rec.tipContrast = darkCr;
+        rec.tipInvariant = invariant;
+        // 失败时把读数写进差异串（对比度是连续量，红的时候要知道差多少）
+        if (!rec.matched) {
+            rec.firstDivergence += " [dark " + RgbHex(darkBg) + " on " + RgbHex(darkInk) +
+                                   " cr=" + std::to_string(static_cast<int>(darkCr * 100)) + "%" +
+                                   " light " + RgbHex(lightBg) + " on " + RgbHex(lightInk) +
+                                   " cr=" + std::to_string(static_cast<int>(lightCr * 100)) + "%" +
+                                   " buggy cr=" + std::to_string(static_cast<int>(buggyCr * 100)) +
+                                   "%]";
+        }
     }
 
     // ── ⑦ tip-through：把提示框盖在主题钮上，点击必须穿过它 ────────────────
@@ -526,6 +687,9 @@ void HarnessApp::AppendOverlayProbeSummary(std::string& json) {
                       "\"clientW\": %d, "
                       "\"popupX\": %d, \"popupY\": %d, \"popupW\": %d, \"popupH\": %d, "
                       "\"chipX\": %d, \"chipY\": %d, \"chipW\": %d, \"chipH\": %d, "
+                      // ★ 2026-11-04：tooltip 配色读数（空串 = 该相没有提示框）
+                      "\"tipBg\": \"%s\", \"tipInk\": \"%s\", \"tipContrast\": %.2f, "
+                      "\"tipInvariant\": %s, "
                       "\"matched\": %s, \"firstDivergence\": \"%s\"}",
                       r.phase.c_str(), r.overlayRootChildren, r.mountedManaged,
                       r.settingsOnOverlay ? "true" : "false",
@@ -539,6 +703,8 @@ void HarnessApp::AppendOverlayProbeSummary(std::string& json) {
                       r.sheetX, r.sheetW, r.clientW,
                       r.popupX, r.popupY, r.popupW, r.popupH,
                       r.chipX, r.chipY, r.chipW, r.chipH,
+                      escO(r.tipBg).c_str(), escO(r.tipInk).c_str(), r.tipContrast,
+                      r.tipInvariant ? "true" : "false",
                       r.matched ? "true" : "false", escO(r.firstDivergence).c_str());
         json += b;
     }

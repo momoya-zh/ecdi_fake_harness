@@ -327,6 +327,15 @@ struct CliOptions {
     //     保持既有树、布局与读数口径，所有回归探针零扰动）。
     //   · 运行期可通过 `Ctrl+Shift+D` 或 `···` 菜单随时切换。
     bool devMode = false;              // --dev：无参启动也强制进入开发者模式
+    // ★★ 协议 v5（2026-11-04）：子代理缩进与生命周期的机读证据。
+    //   ★ 为什么必须有：缩进错了**在既有读数里完全不可见**——`blocks`/`deltas`
+    //     与行长什么样毫无关系，而截图只能证明"某一刻看起来还行"。
+    //   判据（跑批脚本执行，见 `RunAgentProbe` 头注）：
+    //     · indentRows == attributedBlocks（模型里有多少归属块，屏上就该有多少缩进行）
+    //     · gutterRows == indentRows（缩进行都有自己的竖线，不是只挪了 x）
+    //     · widthDelta == kAgentIndent（缩进吃掉的是**宽**，不只是横移）
+    //     · 负对照：无 agent 的夹具上 indentRows == 0 且 agents == 0
+    bool agentProbe = false;           // --agent-probe：子代理缩进/代理卡判据
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
 
@@ -337,7 +346,8 @@ struct CliOptions {
                reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
-               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe;
+               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe ||
+               agentProbe;
     }
 };
 

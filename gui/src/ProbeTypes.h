@@ -132,7 +132,8 @@ struct ThemeProbeRec {
 //       ②`ShowOverlay` 的浮层重复注册（层里的孩子数对不上）。
 struct OverlayProbeRec {
     std::string phase;          // closed / mount / modal-blank / rebuild / theme /
-                                // tip / tip-through / popup / popup-dismiss
+                                // tip / tip-palette / tip-through / popup /
+                                // popup-rebuild / popup-dismiss（共 11 相）
     int overlayRootChildren = 0;   // 浮层根直接子节点数（期望 3 + mountedManaged）
     int mountedManaged = 0;        // 托管挂载的遮罩/sheet 数（按 GetParent 实测，不看指针非空）
     bool settingsOnOverlay = false;// 设置 sheet 的父节点 == 浮层根
@@ -153,6 +154,18 @@ struct OverlayProbeRec {
     //   口径：两方都是**绝对坐标**（客户区），-1 = 控件不存在（与真实的 0 区分开）。
     int popupX = -1, popupY = -1, popupW = -1, popupH = -1;
     int chipX = -1, chipY = -1, chipW = -1, chipH = -1;
+    // ★★ 2026-11-04（用户报告「深色模式下浮窗文本没改色」）：tooltip 的**配色**读数。
+    //   病灶：`OnTooltipFire` 的 `.background = kDarkInk` 是**主题令牌**，而字色
+    //   `kTooltipInk` 是字面量 ⇒ 深色下「近白底 + 近白字」，实测对比 **1.08:1**。
+    //   此前本探针对 tooltip **只有结构断言**（挂载/点穿/单例），颜色一条没有
+    //   ⇒ 屏幕上字已经溶解，10 相全绿。这是「结构绿了、视觉没绿」的第 N 次复现。
+    //   口径：`tipBg` / `tipInk` 读的是控件**实际用于绘制的字段**（见 `uikit::TipPanel`），
+    //        不是探针自己写进去的常量副本；`tipContrast` 是 WCAG 相对亮度比。
+    //   ★ 为什么记读数而不只记 matched：对比度是**连续量**，失败时要知道差多少。
+    double tipContrast = 0.0;      // bg↔ink 的 WCAG 对比度（<4.5 即不可读）
+    std::string tipBg;             // "#rrggbb"（空 = 没读到）
+    std::string tipInk;            // "#rrggbb"
+    bool tipInvariant = false;     // 两个主题下 (bg,ink) 逐位相同（= 配色不随主题走）
     bool matched = true;
     std::string firstDivergence;
 };
@@ -403,4 +416,34 @@ struct CopyProbeRec {
     std::string phase;
     bool matched = true;
     std::string note;
+};
+
+// ★★ 协议 v5（2026-11-04）：子代理缩进 / 生命周期读数（--agent-probe）。
+//   ★ 记录里有**两侧**的读数：`attributedBlocks` 来自模型（Transcript），
+//     `indentRows` 来自视图（RowRec）——两者相等才是判据，单独任一侧都只是自说自话。
+struct AgentProbeRec {
+    std::string phase = "settle";   // 同步探针只有一相（classify 用它给相起名）
+    size_t rows = 0;
+    size_t indentRows = 0;
+    size_t rootRows = 0;
+    size_t gutterRows = 0;        // 真的建了竖线控件的缩进行数
+    size_t attributedBlocks = 0;  // 模型侧：带 `agent` 归属的块数
+    int indentPx = 0;             // 缩进行相对画布左边界的横移（实测，不是常数复读）
+    size_t overflowRows = 0;      // 缩进行的右边界超出根列右边界的行数（必须 0）
+    int maxRight = 0;             // 缩进行右边界最大值（与 colRight 比）
+    size_t agents = 0;
+    size_t agentsEnded = 0;
+    size_t agentsOk = 0;
+    size_t agentViolations = 0;   // I12 的 GUI 侧记账
+    size_t unknownTypes = 0;      // `agent` 被吸收后应为 0
+    // ★★ 2026-11-04（同一轮补）：右栏「代理」卡的读数。
+    //   ★ 为什么必须有：卡是**全新 UI**，缩进探针照不到它——卡片错建（空卡、
+    //     永远隐藏、把主代理行漏掉）时 `indentRows` 依然全对，屏幕上也依然
+    //     有缩进行。判据：`cardRows == agents + 1`（含主代理那行）且
+    //     `cardVisible == (agents > 0)`。
+    size_t cardRows = 0;
+    bool cardVisible = false;
+    bool matched = true;          // 元断言（见 RunAgentProbe 头注）
+    std::string note;
+    std::vector<std::string> agentLines;   // "a1|名|end|ok|3轮|12行|18420ms"
 };

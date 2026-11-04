@@ -45,6 +45,7 @@
 // 跨 TU 共享符号（定义见 AppInternal.h / UiCommon.cpp）
 using harness::internal::ContentWidth;
 using harness::internal::ConversationTitle;
+using harness::internal::kAgentGutterW;
 using harness::internal::kCanvasPadX;
 using harness::internal::kHeaderH;
 using harness::internal::kJumpBtnH;
@@ -57,7 +58,8 @@ using harness::internal::kScrollBarThickness;
 using harness::internal::kSidebarListW;
 using harness::internal::kSidebarMaxRows;
 using harness::internal::kTooltipDelayMs;
-using harness::internal::kTooltipInk;   // ★ 2026-10-30：tooltip 现建现挂（见 OnTooltipFire）
+using harness::internal::kTooltipInk;  // ★ 2026-10-30：tooltip 现建现挂（见 OnTooltipFire）
+using harness::internal::kTooltipBg;   // ★ 2026-11-04：底色同样必须是固定字面量（别再借主题令牌）
 using harness::internal::kTranscriptWMax;
 using harness::internal::kTranscriptWMin;
 
@@ -159,7 +161,7 @@ void HarnessApp::Relayout() {
     // 免得「list 模式满宽、autosize 版本心宽」这种只在某个模式下露出来的不一致。
     const int layoutW = TranscriptLayoutWidth();
     // 行左边界：按**行宽**居中（`(scrollW − 行宽)/2`），两侧留白恒等。
-    const int canvasX = TranscriptCanvasX();
+    const int canvasX0 = TranscriptCanvasX();
 
     if (m_options.rowModeList) {
         // listlayout：行高固定、不测量；Arrange 由 ListLayout 完成
@@ -184,9 +186,20 @@ void HarnessApp::Relayout() {
     //     **不是**视口宽。视口宽会随检视栏开合变 ⇒ 行若跟着变，wrapW / maxTextW 就变
     //     ⇒ 换行缓存（C29-10，指纹含宽度）全失效 ⇒ 全文档文本重测（「点详情卡一下、
     //     会话越长越卡」的根因）。版心封顶后，宽窗口里 toggle 是零重测的。
-    const int innerW = std::max(120, layoutW - 2 * kCanvasPadX);
+    const int innerW0 = std::max(120, layoutW - 2 * kCanvasPadX);
     int y = 0;
-    for (RowRec& r : m_sess->rows) {
+    // ★ v5：改成**带下标**的遍历，唯一目的是让竖线能看一眼"下一行是不是同一个代理"
+    //   （见下方 gutter 高度）。行数 O(n)，多一次比较不改变复杂度。
+    for (size_t rowIdx = 0; rowIdx < m_sess->rows.size(); ++rowIdx) {
+        RowRec& r = m_sess->rows[rowIdx];
+        // ★★ 协议 v5（2026-11-04）：子代理行右移一档。**只改宽度与横坐标**——
+        //   `y` 的累加、行高的求解路径一个字不动（缩进是一次减法，不是一层新布局）。
+        //   ★ 这里刻意用**同名遮蔽**：`innerW0`/`canvasX0` 是整栏的，`innerW`/`canvasX`
+        //     是本行的。循环体内所有既有算式因此逐字不变地变成"按本行宽"，
+        //     不可能漏改某一处——漏一处就是「面板按版心宽、文字按缩进宽」的错位，
+        //     而那种错位只在有子代理的行上出现，既有探针一条都抓不到。
+        const int innerW = std::max(160, innerW0 - r.indent);
+        const int canvasX = canvasX0 + r.indent;
         int rowH = 0;
         // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
         if (r.tool || r.reasoning || r.ask) {
@@ -374,12 +387,31 @@ void HarnessApp::Relayout() {
                                               : canvasX,
                                  y);
         }
+        r.y = y;   // ★ v5：「代理」卡点击定位要用（见 `AppAgents.cpp::FocusAgent`）
+        // ★ v5：归属竖线跟着**本行行高**走（建行期给不出高度，测量后才定）。
+        //   x 恒 0：行已整体右移，竖线因此落在"根行左边界 + 24"处，读作子层级。
+        if (r.gutter) {
+            // ★★ 2026-11-04（实测记录，别再来一遍）：竖线**只能按行分段**。
+            //   试过「下一行同属该代理时把高度补上 kRowGap(10) 让两段在行距里
+            //   对接」，结果**一点效果都没有**——像素读数仍是「段长 36、间隔 10」。
+            //   根因：`Widget::Paint` 基类管线为**每个控件**发 `PushClip`
+            //   （`ECDI/src/Widget/Panel.cpp:45` 的注释明写），子控件超出父矩形
+            //   的部分一律不可见。故那 10px 是**死代码**，已撤。
+            //   ⇒ 想要一条连续的归属轨道，必须把竖线**提到画布层**（作为内容容器
+            //     的子控件按绝对 y 摆放），不能挂在行里。那会改动建行路径
+            //     （`CreateBlockRow`）与本函数"不改树结构"的既有纪律，
+            //     故列为待办而**不是**本轮顺手做。
+            r.gutter->SetSize(kAgentGutterW, rowH);
+            r.gutter->SetPosition(0, 0);
+        }
         y += rowH + kRowGap;
     }
     for (PendingPromptView& view : m_pendingPromptViews) {
         RowRec& r = view.row;
         if (!r.panel) continue;
-        const int maxBubbleW = std::max(120, innerW * 78 / 100);
+        // ★ v5：待确认气泡恒为根行（没有归属），用整栏量——循环内那两个
+        //   遮蔽名出不了 main loop，这里必须显式用 `innerW0`。
+        const int maxBubbleW = std::max(120, innerW0 * 78 / 100);
         const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
         if (r.label) {
             if (!r.wrapped) r.label->AutoSize();
@@ -403,7 +435,7 @@ void HarnessApp::Relayout() {
             ? (r.wrapped ? maxBubbleW : std::min(maxBubbleW, r.label->GetWidth() + 2 * kRowPadX + 2))
             : maxBubbleW;
         r.panel->SetSize(bubbleW, rowH);
-        r.panel->SetPosition(canvasX + innerW - bubbleW, y);
+        r.panel->SetPosition(canvasX0 + innerW0 - bubbleW, y);
         y += rowH + kRowGap;
     }
     // 横向 extent 至少覆盖到**内容列右边界**（= canvasX + 行宽）。★ 它已不再与
@@ -413,7 +445,7 @@ void HarnessApp::Relayout() {
     //   后者是"版心"（含两侧 pad），比行右边界多出 2×pad ⇒ 占满档实测 extent 704
     //   > 视口 684 ⇒ **恒出一条横向滚动条**（`--resize-probe` 的 maxOffsetX 判据会红）。
     //   extent 的职责只是"别裁内容"，多算的那 32px 既不是内容也不该被滚。
-    m_scroll->SetContentExtent(std::max(ContentWidth(m_scroll), canvasX + innerW),
+    m_scroll->SetContentExtent(std::max(ContentWidth(m_scroll), canvasX0 + innerW0),
                                std::max(0, y - kRowGap));
     // ★★ P4 Phase A：内容范围变了 ⇒ maxOffset/滚动条可见性都可能变——
     //   「跳到最新」的几何与显隐跟着刷新一次（Relayout 覆盖 resize/侧栏/菜单/
@@ -541,11 +573,15 @@ void HarnessApp::OnTooltipFire() {
     const int y = std::clamp(static_cast<int>(a.y) + m_tooltipAnchor->GetHeight() + 6,
                              0, std::max(0, ch - h));
 
-    auto tip = std::make_unique<ECDI::Panel>();
+    auto tip = std::make_unique<uikit::TipPanel>();
     tip->SetSize(w, h);
     tip->SetPosition(x, y);
+    // ★★ 2026-11-04 修：`.background` 曾是 `kDarkInk`——那是**文字色令牌**，
+    //   深色下是 (230,233,239) 近白 ⇒ 与写死的 `kTooltipInk` 组成「近白底 + 近白字」
+    //   （实测 1.08:1，dL* 2.9，字溶解）。底色与文字必须同为**固定字面量**，
+    //   理由见 `AppInternal.h` 的 `kTooltipBg` 注释（含取值依据与三条备选否决）。
     tip->SetStyle(ECDI::PanelStyleOverride{
-        .background = kDarkInk,
+        .background = kTooltipBg,
         .cornerRadius = kRadiusBtn,
         .borderWidth = 0.0f});
     auto txt = std::make_unique<ECDI::Label>();
@@ -573,6 +609,45 @@ void HarnessApp::OnTooltipFire() {
 void HarnessApp::RequestRepaint() {
     ++m_invalidations;
     if (m_counting) m_counting->Invalidate();
+}
+
+// ── 思考中 spinner（2026-11-04，用户裁决 A+C）──────────────────────────────
+// 只做三件事：① 按行状态开/停；② 每 `kSpinStepTicks` 个 tick 走一格；③ 需要时补一次重绘。
+// ★ 为什么状态由**行**决定而不是由事件决定：`reasoning` 行的 `ended` 在
+//   `block_end` 到达时翻 true（AppStream），重建时由模型回填（AppTranscript）
+//   ⇒ "块结束了没有"本来就只有一个真相源，这里读它即可。若在事件回调里
+//   再维护一个"正在思考"布尔值，等于给同一条命途加第二份状态，迟早分叉。
+// ★ 为什么探针模式下整段关闭：`paints`/`frameCount`/`invalidations` 是与
+//   p32/夹具基线**逐位对比**的评估读数；动画会让它们随"思考时长"漂移。
+//   本仓已有同款门控先例（`!m_options.HasAnyProbe()` 决定是否写配置/扫盘）。
+//   跑批（tools/regress.py）全部经由探针 ⇒ 基线零扰动；`--instant` 回放下
+//   reasoning 在同一个 tick 内就 `ended`，本来也不会转。
+void HarnessApp::AdvanceThinkingSpinners() {
+    if (!m_sess || m_options.HasAnyProbe()) return;
+
+    bool anySpinning = false;
+    bool needsPaint = false;
+    for (RowRec& r : m_sess->rows) {
+        if (!r.spinner) continue;
+        const bool want = r.reasoning && !r.ended;
+        if (r.spinner->IsSpinning() != want) {
+            r.spinner->SetSpinning(want);
+            needsPaint = true;   // 开/停各补一帧：停也要把弧擦掉
+        }
+        if (want) anySpinning = true;
+    }
+    // ★ 只在"真正走格"的 tick 补重绘：每 tick 都补等于把 33ms 变成整窗重绘，
+    //   与本类注释里那条"仪器污染"（条 57③）是同一类错。
+    if (anySpinning && m_spinTick == 0) {
+        for (RowRec& r : m_sess->rows) {
+            if (r.spinner && r.spinner->IsSpinning()) r.spinner->Advance();
+        }
+        needsPaint = true;
+    }
+    // ★ 取模而不是 `++`：计数器永不超过 kSpinStepTicks ⇒ 不会在 INT_MAX 处
+    //   溢出成负数（负数的 `%` 恒不为 0，动画会停摆数秒后才被下一次翻转救回）。
+    m_spinTick = (m_spinTick + 1) % kSpinStepTicks;
+    if (needsPaint) RequestRepaint();
 }
 
 void HarnessApp::CacheEvalMetrics() {
@@ -1060,14 +1135,24 @@ void HarnessApp::RefreshHud() {
         }
     }
     if (HudTouch("stateChip"), m_hud.stateChip) {
-        if (m_devMode) {
-            m_hud.stateChip->SetText(stateText);
-        } else {
+        std::string chipText = stateText;
+        if (!m_devMode) {
             const char* friendly = "就绪";
             if (stateText == "running") friendly = "思考中…";
             else if (stateText == "waiting") friendly = "等待授权";
-            m_hud.stateChip->SetText(friendly);
+            chipText = friendly;
         }
+        // ★★ 协议 v5（2026-11-04）：并行时带上**活跃代理数**。
+        //   ★ 为什么放顶栏而不是只放「代理」卡：卡可以收起（`m_inspectorVisible`
+        //     = false），收起后这是唯一能看出"还有几路在跑"的地方——而"现在
+        //     是谁在干活"正是产品目的本身，不该依赖某张卡是否展开。
+        //   ★ 只在 >0 时附加：0 是常态，常态不该多占字（胶囊宽 104，见
+        //     `AppUiChrome.cpp` 的 `stateChip->SetSize`——那一处与这里是一对，
+        //     改格式必须同批复核宽度）。
+        if (size_t activeAgents = ActiveAgentCount(); activeAgents > 0) {
+            chipText += " " + std::to_string(activeAgents) + "代理";
+        }
+        m_hud.stateChip->SetText(chipText);
         m_hud.stateChip->SetTextColor(kDarkMuted);
     }
     if (HudTouch("statusDot"), m_hud.statusDot) {

@@ -48,6 +48,10 @@ struct ProbeState {
 
     std::vector<ReasoningProbeRec> reasoningProbeLog;
 
+    // ★★ 协议 v5（2026-11-04）：子代理缩进/生命周期（--agent-probe）。同步探针，一相。
+    std::vector<AgentProbeRec> agentProbeLog;
+    bool agentProbeDone = false;
+
     int reasoningProbeStep = 0;
     std::chrono::steady_clock::time_point reasoningProbeNextAt;
     bool reasoningProbeDone = false;

@@ -212,6 +212,11 @@ void HarnessApp::OnReplayTick() {
         m_historyOpenPending.clear();
         OpenHistorySession(file);   // 内部会置 m_sidebarDirty + RequestRepaint
     }
+    // ★★ 2026-11-04（用户裁决 A+C）：思考中 spinner 的**唯一推进点**。
+    //   放在源守卫**之前**：它只读行状态（`reasoning && !ended`），与有没有
+    //   数据源无关；而放在重建块之后，是因为 `RebuildTranscriptView` 会换掉
+    //   整批 `RowRec`（旧 spinner 指针随之作废）⇒ 新行的首帧必须在重建之后判。
+    AdvanceThinkingSpinners();
     if (!m_sess->source) {
         if (m_options.workspaceProbe && !m_probeState.workspaceProbeDone) RunWorkspaceProbe();
         return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取
@@ -352,6 +357,9 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
                 {&CliOptions::tableProbe, &ProbeState::tableProbeDone, &HarnessApp::RunTableProbe},
                 {&CliOptions::copyProbe, &ProbeState::copyProbeDone, &HarnessApp::RunCopyProbe},
+                // ★ 协议 v5（2026-11-04）：子代理缩进。同步组——判据全在跑完后的
+                //   行几何与生命周期表上，不需要等下一帧。
+                {&CliOptions::agentProbe, &ProbeState::agentProbeDone, &HarnessApp::RunAgentProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
@@ -895,6 +903,16 @@ void HarnessApp::RouteLastMessage() {
         AddNoticeRow("会话结束 (" + msg.GetString("reason") + ", code " +
                          std::to_string(static_cast<int>(msg.GetNumber("code"))) + ")",
                      kDarkMuted);
+        return;
+    }
+    if (t == "agent") {
+        // ★★ 协议 v5 §3.12（2026-11-04）：子代理生命周期。
+        //   ★ 转录侧**已经**在 `Transcript::OnLine` 里吸收了这条（建/补 AgentInfo），
+        //     这里只管**视图**：代理数与状态变了 ⇒ 右栏「代理」卡要重投影。
+        //   ★ 为什么不在这里再校验一遍 I12：校验的唯一位点是 `Transcript`
+        //     （带 I12 记账），两处各判一遍迟早判得不一样，而那时"谁对"无从判定。
+        RebuildAgentList();
+        m_hudDirty = true;   // 顶栏胶囊的「N代理」也要跟着变
         return;
     }
     // state / usage：上移到 HUD，转录不渲染

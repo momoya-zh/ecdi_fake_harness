@@ -424,7 +424,11 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     {
         state->SetFont(harness::SansFont(14.0f));
     }
-    state->SetSize(60, 20);
+    // ★ 2026-11-04：60 → 104（协议 v5）。并行时文本形如「思考中… 2代理」，
+    //   60px 会把「代理」两个字裁掉（Label 单行裁剪）——而裁掉的恰好是
+    //   **唯一新信息**。加宽的 44px 由顶栏中段的 stretch 吸收，右侧只用
+    //   平移不改序（顶栏最窄窗口下仍有余量）。
+    state->SetSize(104, 20);
     bar->AddChild(std::move(state));
 
     // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip（`提供商 › 模型 · N% ▾`）。

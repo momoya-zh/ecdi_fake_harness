@@ -118,6 +118,8 @@ DEMO = "protocol/fixtures/demo-session.jsonl"
 REALISTIC = "protocol/fixtures/realistic/realistic-session.jsonl"
 SCALE = "protocol/fixtures/scale/scale-transcript-2000.jsonl"
 COT = "protocol/fixtures/cot/cot-session.jsonl"
+# ★★ 协议 v5（2026-11-04）：子代理正向夹具（两个 task 并行、各自带 tool_call）。
+SUBAGENT = "protocol/fixtures/subagent/parallel-two-agents.jsonl"
 
 # ============================================================
 # ★ 2026-10-26（P0 收口）：有实现、有判据、却从未进门的 11 个探针。
@@ -174,13 +176,24 @@ EXTRA_PROBES = [
     ("--persist-probe", "persistProbe", DEMO, ["--config", "@PERSIST@"], []),
     # ★★ 2026-10-30（浮层迁移）：浮层拓扑与 Light Dismiss。
     #   全部判据写在 RunOverlayProbe 内（closed / mount / modal-blank / rebuild /
-    #   theme / tip / tip-through / popup / popup-dismiss 九相），回放模式即可全绿。
+    #   theme / tip / tip-palette / tip-through / popup / popup-rebuild /
+    #   popup-dismiss 共 11 相），回放模式即可全绿。
+    #   ★ 2026-11-04 订正两处：此前这里写「九相」（漏了 popup-rebuild ⇒ 实际是 10 相，
+    #     注释早已与代码分叉），同批补进 `tip-palette`——它守的是 tooltip 的**配色**
+    #     （此前本探针对 tooltip 只有结构断言，于是「深底浅字」退化成近白压近白
+    #     (1.08:1)、字已溶解而 10 相全绿）。相位数**只写在这里**，别在别处再写一遍。
     #   无 designed-red：本探针守的是**本仓自己的挂载约定**（模态托管挂载、下拉与
     #   tooltip 走注册式浮层），全部可在回放跑法下观测——不依赖 live 写通道，
     #   也不依赖 protocol 4。
     #   ★ 它补的是一个真实存在的盲区：迁移前**没有任何探针读过 `GetOverlayRoot()`**，
     #     `--theme-probe` 的 toggle 相只问「面板还在不在」，而"两套同屏"时它全绿。
     ("--overlay-probe", "overlayProbe", DEMO, [], []),
+    # ★★ 协议 v5（2026-11-04）：子代理缩进与生命周期。
+    #   正向夹具里两个 `task` 各带一个 tool_call + assistant 块 ⇒ 4 个归属块，
+    #   屏上必须正好 4 个缩进行（探针的 `matched` 就是这条元断言）。
+    #   ★ 负对照必须**另跑一支**（无 agent 的夹具 ⇒ 缩进恒 0），否则「每行都缩 24」
+    #     这种实现在正向上也是绿的 —— 见 `check_agent_probe_negative`。
+    ("--agent-probe", "agentProbe", SUBAGENT, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
@@ -502,6 +515,39 @@ def check_async_delivery(core):
     return fail
 
 
+def check_agent_probe_negative():
+    """`--agent-probe` 的负对照：无 `agent` 的夹具上缩进必须恒 0。
+
+    ★ 为什么必须单独跑一支：正对照只证明「有 agent 时会缩进」，
+      「每行都缩 24」这种实现同样能把它照亮。只有"没有 agent 时一行都不缩"
+      才能把这两者分开（本仓的老纪律：正反对照各自成立才算判据成立）。
+    """
+    out = OUT / "_reg-agent-probe-negative.json"
+    out.unlink(missing_ok=True)
+    try:
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
+                            "--theme", "light", "--agent-probe",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("--agent-probe (negative)", None, out)
+        return 1, "TIMEOUT"
+    record("--agent-probe (negative)", r.returncode, out)
+    if not out.exists():
+        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    rows = d.get("agentProbe") or []
+    if not rows:
+        return 1, "NO ROWS (key=agentProbe)"
+    rec = rows[0]
+    ok = (rec.get("indentRows") == 0 and rec.get("agents") == 0
+          and rec.get("attributedBlocks") == 0 and rec.get("gutterRows") == 0
+          and rec.get("matched") is True)
+    detail = (f"indentRows={rec.get('indentRows')} agents={rec.get('agents')} "
+              f"attributedBlocks={rec.get('attributedBlocks')} matched={rec.get('matched')}")
+    return (0 if ok else 1), detail
+
+
 def check_readout_probes():
     """B 类：探针只记录读数，**判据在这里写**。
 
@@ -711,6 +757,9 @@ def main():
     print("\n== 2b. 读数探针判据 (2) ==")
     print("  （探针只记读数、不写 matched ⇒ 判据在本文件里，不在探针里）")
     fail += check_readout_probes()
+    n, detail = check_agent_probe_negative()
+    fail += n
+    print(f"  {'--agent-probe':18s} {detail}  (negative/DEMO：无 agent 就一行都不缩)")
 
     print("\n== 2c. REQ-03 异步投递 (live A/B) ==")
     core = ROOT / "core" / "bin" / "fake-core.exe"

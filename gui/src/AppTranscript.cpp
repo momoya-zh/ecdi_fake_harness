@@ -139,6 +139,23 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     rec.blockId = block.id;
     rec.ended = block.ended;
 
+    // ★★ 协议 v5（2026-11-04）：子代理的行右移一档，最左侧挂一条归属竖线。
+    //   ★ 缩进是**一个常数**而不是 `24 * depth`：协议 §3.12 把深度钉死为 1
+    //     （子代理不得再开子代理），算出来的 depth 只可能是 0 或 1 ⇒ 不存在
+    //     「深度算错」这类判据，也就不该写一个会算错的式子。
+    //   ★ 竖线进 `panel` 的子表（x=0，宽 3）：行内文字从 `kRowPadX`(10) 起排，
+    //     两者不重叠；宽度/高度在 `Relayout` 里下发（行高测量后才知道）。
+    if (!block.agentId.empty()) {
+        rec.indent = harness::internal::kAgentIndent;
+        rec.agentTag = block.agentId;
+        auto gutter = std::make_unique<ECDI::Panel>();
+        rec.gutter = gutter.get();
+        gutter->SetStyle(ECDI::PanelStyleOverride{
+            .background = Pick(m_options.probeContrast, kLine, kProbeInk),
+            .cornerRadius = 1.0f});
+        panel->AddChild(std::move(gutter));
+    }
+
     if (block.kind == "user") {
         rec.alignRight = true;
         panel->SetStyle(ECDI::PanelStyleOverride{
@@ -273,21 +290,25 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             .borderWidth = 0.0f,
             .borderColor = plainBg});
 
-        // 标题 = 单一真相源（箭头两态）
-        // ★ 0c：箭头取自 `rec.expanded`（重建时先由条目回填）——否则重建出来的行
-        //   一律显示收起态箭头，而控件实际是展开的（读数与屏幕当场打架）。
-        // ★★ 2026-11-03 C 批：`Button` → `TipButton`（悬停 400ms 后出 tooltip，
-        //   leave/点击即收；回调模式照抄 AppUiChrome 的顶栏钮）。header 仍存进
-        //   `rec.headerBtn`（`ECDI::Button*`）——TipButton 是 Button 派生，零改动。
-        auto header = std::make_unique<uikit::TipButton>(
+        // ★★ 2026-11-04（用户裁决 A+C）：`TipButton` → `SpinnerButton`。
+        //   它只在**标题右侧空白处**多画一个 90° 弧（自绘，`DrawArc`），
+        //   其余（tooltip / hover / 点击展开）全部继承自 TipButton，零行为变化。
+        //   ★ 为什么这里只给 `rec.spinner` 一个弱指针、不在这里启动动画：
+        //     开停由 **tick** 按 `r.reasoning && !r.ended` 统一收敛（AppHud）。
+        //     在回调/建行期启动就得额外维护"块结束了没有"的第二份真相。
+        auto header = std::make_unique<uikit::SpinnerButton>(
             ReasoningTitle(block, rec.expanded), "点击展开 / 收起",
             [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
             [this](uikit::TipButton*) { HideTooltip(); });
         rec.headerBtn = header.get();
+        rec.spinner = header.get();
         header->SetTextColor(Pick(m_options.probeContrast, kReasoningInk, kProbeInk));
         {
-            ECDI::Font f = harness::SansFont(14.0f);
+            const ECDI::Font f = harness::SansFont(14.0f);
             header->SetFont(f);
+            // ★ 同一个字体交给 spinner：它要按**绘制侧同一度量**把环摆在标题右缘
+            //   （ECDI 没有 GetFont，故这里显式下发；两处同一个值，不可能漂移）。
+            header->SetSpinFont(f);
         }
         header->SetStyle(ECDI::ButtonStyleOverride{
             .background = plainBg,

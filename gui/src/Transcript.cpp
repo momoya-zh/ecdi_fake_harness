@@ -43,6 +43,14 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         block.name = m_last.GetString("name");
         block.forId = m_last.GetString("for");
         block.text = m_last.GetString("text");
+        // ★★ v5 §3.3：子代理归属（可选字段，缺省即根代理）。
+        block.agentId = m_last.GetString("agent");
+        block.parentId = m_last.GetString("parent");
+        if (!block.agentId.empty()) {
+            ++m_agentBlocks;
+            // I12 的 GUI 侧记账：归属一个没 start 过的代理 ⇒ 计数（渲染照旧）。
+            if (m_agents.find(block.agentId) == m_agents.end()) ++m_agentViolations;
+        }
         // ★★ 未知 `kind`（2026-10-13）：协议 §3.3 只列了六个值，而 I5 只管信封层的 `t`
         //   ⇒ 未知 `kind` **不被任何不变量覆盖**。此前它静默掉进 App 的工具卡分支、
         //   标题写死「等待结果」⇒ 与「正在等的 tool_result」视觉上无法区分（**误导**）。
@@ -111,9 +119,44 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         return true;
     }
 
+    // ★★ v5 §3.12：子代理生命周期（控制面，不是转录块）。
+    //   start 建条目、end 补结果；两次 start 或 end 无 start 都记 I12 一次，
+    //   但**消息照常吸收**（前向兼容 > 当场判死）。
+    if (t == "agent") {
+        const std::string id = m_last.GetString("id");
+        const std::string phase = m_last.GetString("phase");
+        if (id.empty() || (phase != "start" && phase != "end")) {
+            ++m_agentViolations;
+            error = "[I12] malformed agent message (id/phase)";
+            return true;   // 已消费，不进 unknownTypes
+        }
+        AgentInfo& a = m_agents[id];
+        a.id = id;
+        if (phase == "start") {
+            if (a.started) ++m_agentViolations;
+            a.started = true;
+            a.name = m_last.GetString("name");
+            a.parentCall = m_last.GetString("parent_call");
+            a.task = m_last.GetString("task");
+            a.model = m_last.GetString("model");
+            a.depth = static_cast<int>(m_last.GetNumber("depth", 1.0));
+        } else {
+            if (!a.started) ++m_agentViolations;
+            if (a.ended) ++m_agentViolations;
+            a.ended = true;
+            a.ok = m_last.GetBool("ok", false);
+            a.summary = m_last.GetString("summary");
+            a.turns = static_cast<int>(m_last.GetNumber("turns", 0.0));
+            a.inTokens = static_cast<long long>(m_last.GetNumber("input", 0.0));
+            a.outTokens = static_cast<long long>(m_last.GetNumber("output", 0.0));
+            a.elapsedMs = static_cast<long long>(m_last.GetNumber("elapsedMs", 0.0));
+        }
+        return true;
+    }
+
     // I5：未知 t 忽略并记录（不得崩溃）
     static const char* kKnown[] = {"hello", "state", "block_start", "delta", "block_end",
-                                   "ask", "usage", "error", "workspace", "bye", "model"};
+                                   "ask", "usage", "error", "workspace", "bye", "model", "agent"};
     bool known = false;
     for (const char* k : kKnown) known = known || (t == k);
     if (!known) {

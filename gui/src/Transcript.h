@@ -25,12 +25,43 @@ struct Block {
     //   ★ 放在 `block_end` 而非 `block_start` 是协议的决定：token 数只有内容产完才知道。
     long long tokens = 0;
     bool ended = false;
+    // ★★ 协议 v5 §3.3（2026-11-04）：子代理归属（**可选字段**）。
+    //   `agentId` 空 = 根代理的块（v3/v4 的每一块都是这样）。
+    //   `parentId` = 发起这次委派的 `tool_call` 块 id（I13）；只在带 agent 时有意义。
+    //   ★ 为什么归属不做成第八个 `kind`：`kind` 答「这段文字是干什么的」，
+    //     `agent` 答「谁说的」，两者正交。合并会逼每个渲染分支去枚举 kind×agent 的组合，
+    //     而 I8（未知 kind 必须中性渲染）也就不再保护任何东西。
+    std::string agentId;
+    std::string parentId;
     // ★★ 待澄清的 kind（2026-10-13）：`kind` 不在 §3.3 的六个已知值里。
     //   动机：harness 面向的 agent 用**开源模型**时会传**思维链**
     //   （`reasoning` / `thinking` / …），而协议 §3.3 的枚举里没有它的位置
     //   ⇒ 此前这类块**静默**掉进工具卡分支、标题写死「等待结果」
     //   （实测截图见 `.scratch/kind-probe.png`）。本字段记录该事实供记账与中性渲染。
     bool unknownKind = false;
+};
+
+// ★★ 协议 v5 §3.12（2026-11-04）：子代理的生命周期（`t:"agent"` 控制面消息）。
+//   ★ 它**不是转录块**：不进 `m_blocks` / `m_order`、没有 `block_end`、不占块 id 空间。
+//     子代理产出的内容仍然走普通的 `block_*` 消息，只是带 `agent` 归属字段。
+//   ★ 为什么不复用 `state`：`state` 是**全局**状态机，GUI 的发送/停止门控由它驱动
+//     （「只由 state 驱动」这条一个字都不能改）。子代理状态是展示信息，混进去会让
+//     「能不能发下一条 prompt」这种判断掺进一个与之无关的维度。
+struct AgentInfo {
+    std::string id;
+    std::string name;
+    std::string parentCall;   // start：发起委派的 tool_call 块 id（与块的 parent 同值）
+    std::string task;         // start：委派任务原文（权限门里展示过的同一段）
+    std::string model;        // start（可选）：仅显示
+    int depth = 0;            // start：恒 1
+    bool started = false;
+    bool ended = false;
+    bool ok = false;          // end
+    std::string summary;      // end：回给主代理的同一段结论
+    int turns = 0;            // end
+    long long inTokens = 0;   // end
+    long long outTokens = 0;  // end
+    long long elapsedMs = 0;  // end
 };
 
 class Transcript {
@@ -69,6 +100,14 @@ public:
     //   合并会让「协议空白」被误读成「I5 已覆盖」。
     size_t UnknownKinds() const { return m_unknownKinds; }
     long long LastSeq() const { return m_lastSeq; }
+    // ★★ v5：带 `agent` 归属的块数（与 `--agent-probe` 的缩进行数应逐条相等——
+    //   一个归属块 ⇔ 一行缩进。两边不等就是「模型里有、视图里没有」或反之）。
+    size_t AgentBlocks() const { return m_agentBlocks; }
+    // ★★ v5：`agent` 生命周期自身的记账（I12 的 GUI 侧读数）。
+    //   ★ **只记账不拒绝**：协议的判定权在 `validate.py` / core，GUI 收到一条
+    //     错序消息的正确反应是照常渲染（前向兼容），而不是把整条流判死。
+    const std::map<std::string, AgentInfo>& Agents() const { return m_agents; }
+    size_t AgentViolations() const { return m_agentViolations; }
     void FinalizeIncompleteBlocks();
     size_t MaxClientIdIndex() const;
     // 已知 kind 集合的判据（供 App 与 validate 口径一致）
@@ -85,6 +124,9 @@ private:
     size_t m_violations = 0;
     size_t m_unknownTypes = 0;
     size_t m_unknownKinds = 0;   // ★ 未知 block_start.kind 计数（2026-10-13）
+    std::map<std::string, AgentInfo> m_agents;   // ★ v5 子代理生命周期（id → 状态）
+    size_t m_agentBlocks = 0;                    // ★ v5 带 agent 归属的块数
+    size_t m_agentViolations = 0;                // ★ v5 I12 的 GUI 侧记账
     long long m_lastSeq = -1;
     bool m_seenSeq = false;
 };

@@ -84,6 +84,14 @@ inline constexpr int kRowPadX = 10;
 //     气泡/工具卡**贴着中栏边线**——这是"看起来挤"最直接的来源。
 inline constexpr int kCanvasPadX = 16;
 inline constexpr int kHeaderH = 32;         // tool 卡片标题高，接近原型 C 的 39px
+//   ★★ 协议 v5（2026-11-04）：子代理行的缩进档。**只有一个档**——协议 §3.12
+//     把深度钉死为 1（子代理不得再开子代理），所以这里是常数而不是 `24*depth`。
+//     ★ 取值理由：`kRowPadX` 是 10、画布留白 `kCanvasPadX` 是 16；24 = 一档肉眼
+//     可辨、又不至于在 760 版心里吃掉一行正文（子行可用宽 = 版心 − 24）。
+inline constexpr int kAgentIndent = 24;
+//   归属竖线宽（`indent > 0` 的行才有）。3px 而不是 1px：1px 与 kLine 的
+//   卡片描边同宽同色，缩进行会被读成"多画了一条分隔线"而不是"这是子代理"。
+inline constexpr int kAgentGutterW = 3;
 
 // ── 转录版心宽度（2026-10-27 max-width 模型；2026-11-03 改**分级** max-width）──
 //   ★ 模型（照 WorkBuddy 客户端的实际表现归纳，5 张不同窗口宽度的截图）：
@@ -193,6 +201,25 @@ inline const ECDI::Color kProbeInk = ECDI::Color::FromRGBA8(0, 0, 0, 255);
 //     改由 `AppHud.cpp` 的 `OnTooltipFire` 现建现挂 ⇒ 配色要跨 TU 共用（原来是
 //     `AppUiMain.cpp` 的匿名 namespace 常量，只有建树期用）。
 inline const ECDI::Color kTooltipInk = ECDI::Color::FromRGBA8(240, 241, 245);
+// ★★ 2026-11-04 修（用户报告「深色模式下浮窗文本没改色」）：**底色缺位**。
+//   缺陷形状：`OnTooltipFire` 的 `.background = kDarkInk`，而 `kDarkInk` 是
+//   **主题令牌**（深色 = 浅字色 230,233,239 / 浅色 = 深字色 35,38,46），
+//   文字 `kTooltipInk` 却是写死的字面量 ⇒ 深色下「近白底 + 近白字」，
+//   实测对比 **1.08:1**（dL\* 仅 2.9），字基本溶解。
+//   ★ 上面这条注释 2026-10-25 首版就写着「深底浅字、两主题通用」，**字面没错，
+//     但只落了字那一半**——底那一半借了 `kDarkInk`，于是「固定视觉」实际是
+//     「随主题翻转」。这就是"注释描述的设计"与"代码实现的事实"分叉，
+//     单看任一侧都自洽，所以 10 天里没人发现（连 `--overlay-probe` 也只读结构）。
+//   ⇒ 底色必须和文字一样**是字面量**。取值依据（不用 `kLine`/`kPanel2`）：
+//     ① 与 `kTooltipInk` 对比 **9.93:1**（正文要压到 ≥4.5，这里留足余量）；
+//     ② ECDI **无阴影原语**（`docs` 已定论：9 种绘制原语里没有 shadow）⇒
+//        浮层只能靠「填充色与周围表面的 L\* 差」浮起来。深色画布 L\*≈8.6 /
+//        顶栏 L\*≈12.7 ⇒ 取 L\*≈24.8，与两者分别差 **16.6 / 12.1**；
+//        `kPanel2`(L\*15.2) 贴顶栏只差 2.5，提示框会陷进顶栏、看不出是浮层。
+//     ③ 不取 `kLine`(46,51,62)：那一条是**描边色**，压顶栏只差 8.5，且
+//        与「浮层 = 比表面更亮一档」的既定层级不符（WAI 参考载体的 tooltip
+//        也走"比表面亮"而非"比描边亮"）。
+inline const ECDI::Color kTooltipBg = ECDI::Color::FromRGBA8(54, 59, 71);
 
 // 探针态取高对比色，否则取常规令牌（调用点写法统一）。
 //   ★ 这里破例写成 inline：一行谓词，AppTranscript 里 22 处调用点都在建行热路径上，
