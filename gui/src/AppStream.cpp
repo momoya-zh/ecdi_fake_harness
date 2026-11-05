@@ -208,6 +208,15 @@ void HarnessApp::OnReplayTick() {
         RebuildModelList();
         RebuildSettingsProviderList();
     }
+    // ★★ 2026-11-05：设置面板编辑目标切换后的两表重建（tick 里拆树才安全）。
+    //   OnClick 只置脏、不在派发栈上 RemoveChild；详见 AppSettings.cpp 的调用点注释。
+    //   kReplayTimer 在窗口初始化时无条件启动（App.cpp:688，33ms）⇒ 空会话也会消费，
+    //   且本块位于 `if (!m_sess->source) return;` 之前。
+    if (m_settingsListDirty) {
+        m_settingsListDirty = false;
+        RebuildSettingsProviderList();
+        RebuildSettingsModelList();
+    }
     // ★★ Step 5：打开历史会话（延迟到此：派发栈已退，拆树/抽干都安全）。
     if (!m_historyOpenPending.empty()) {
         const std::filesystem::path file = m_historyOpenPending;

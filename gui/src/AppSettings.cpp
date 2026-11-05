@@ -1144,8 +1144,15 @@ void HarnessApp::RebuildSettingsProviderList() {
                     }
                 }
             }
-            RebuildSettingsProviderList();
-            RebuildSettingsModelList();   // 编辑目标变了 ⇒ 模型子列表跟着换
+            // ★★ 2026-11-05：不再在 OnClick 回调里拆树。
+            //   RebuildSettingsProviderList() 首步就是 RemoveChild(GetChildAt(0))，
+            //   会把**正被点击的 Button 自己**在 Down 与 Up 之间摘掉 ⇒ ForgetSubtree
+            //   连清焦点 / 捕获 / hover 三条登记。实测后遗症：光标卡 IDC_SIZEWE、
+            //   分割条拖拽不跟手、蓝线常亮，且只在「点过服务商行」之后出现。
+            //   改为只置脏，由 OnReplayTick 在派发栈退出后重建（同 m_modelListDirty 族）；
+            //   字段区上面的 SetText 仍即时生效，列表标记最多迟一帧（33ms）。
+            //   ★ 编辑目标变了 ⇒ 模型子列表也跟着换，两个重建都在 tick 里做。
+            m_settingsListDirty = true;
         });
         m_hud.settingsProviderList->AddChild(std::move(row));
     }

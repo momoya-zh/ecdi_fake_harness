@@ -1516,6 +1516,10 @@ private:
     // 提供商 id → key（凭据库的本次进程缓存；spawn 注入 env 用。绝不进日志/摘要）。
     std::map<std::string, std::string> m_providerKeys;
     bool m_modelListDirty = false;   // 检查器模型列表重建（tick 执行，同 m_sidebarDirty 族）
+    // ★★ 2026-11-05：设置面板「切换编辑目标」后的两张列表重建（provider + model）。
+    //   必须在 tick 里做：OnClick 回调里 RemoveChild 会在 Down/Up 之间摘掉被点击的
+    //   Button 自己，ForgetSubtree 连清焦点/捕获/hover ⇒ 光标卡 SIZEWE、拖拽不跟手。
+    bool m_settingsListDirty = false;
     // ★★ P4 H：模型浮窗开合（模型侧状态——重建后按它恢复，同 m_moreMenuOpen）。
     bool m_modelPopupOpen = false;
     std::string m_editingProviderId; // 设置面板当前编辑的提供商（空 = 新增）
