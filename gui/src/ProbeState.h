@@ -56,6 +56,10 @@ struct ProbeState {
     std::vector<ProposalProbeRec> proposalProbeLog;
     bool proposalProbeDone = false;
 
+    // ★★ 协议 v6（2026-11-05）：后台作业卡片（--job-probe）。同步探针，一相。
+    std::vector<JobProbeRec> jobProbeLog;
+    bool jobProbeDone = false;
+
     int reasoningProbeStep = 0;
     std::chrono::steady_clock::time_point reasoningProbeNextAt;
     bool reasoningProbeDone = false;

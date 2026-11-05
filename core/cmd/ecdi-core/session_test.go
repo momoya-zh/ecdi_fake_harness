@@ -325,15 +325,22 @@ func TestLoopE2E_FullChain(t *testing.T) {
 	// 握手
 	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":3,"gui":"test"}`)
 	hello := waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
-	// ★ v5（2026-11-04）：hello.protocol 恒 5，能力集由 caps 表达。
-	//   本用例用 agentOpts{}（关闭）⇒ caps 里**不该**有 "agents"。
-	if hello["protocol"].(float64) != 5 {
+	// ★ v6（2026-11-05）：hello.protocol = 6（新增控制面消息 t:"job"）。
+	//   本用例用 agentOpts{}（关闭）⇒ caps 里**不该**有 "agents"；"jobs" 恒在。
+	if hello["protocol"].(float64) != 6 {
 		t.Fatalf("hello.protocol = %v", hello["protocol"])
 	}
+	hasJobs := false
 	for _, c := range hello["caps"].([]any) {
 		if c == "agents" {
 			t.Fatalf("--agents 关闭时 caps 不得声明 agents：%v", hello["caps"])
 		}
+		if c == "jobs" {
+			hasJobs = true
+		}
+	}
+	if !hasJobs {
+		t.Fatalf("caps 必须声明 jobs（协议 §3.1）：%v", hello["caps"])
 	}
 	if hello["context"] != nil {
 		t.Fatalf("未提供 --context 时 hello 不得发 context（真值纪律），收到 %v", hello["context"])
@@ -461,10 +468,10 @@ func TestLoopE2E_FullChain(t *testing.T) {
 	if err := json.Unmarshal(recorded[0], &req1); err != nil {
 		t.Fatal(err)
 	}
-	// ★ 2026-11-04：3 → 6（写入/执行三件上线）。这里断"件数"是为了抓
+	// ★ 2026-11-05：6 → 9（v6 后台作业三件上线）。这里断"件数"是为了抓
 	//   「tools 没进请求体」这类整块丢失；每件的 schema 由 toolDefs 的单测盖。
-	if len(req1.Tools) != 6 {
-		t.Fatalf("tools 定义应 6 件，got %d", len(req1.Tools))
+	if len(req1.Tools) != 9 {
+		t.Fatalf("tools 定义应 9 件，got %d", len(req1.Tools))
 	}
 	if req1.Model != "test-model" {
 		t.Fatalf("model = %q", req1.Model)
@@ -472,6 +479,130 @@ func TestLoopE2E_FullChain(t *testing.T) {
 }
 
 // ── E2E：deny 路径（拒绝 ⇒ 不执行、模型收到拒绝说明）────────────
+
+// ── E2E：后台作业（协议 v6）─────────────────────────────────────
+//
+// 走真进程（echo）：证明「ask → job start → tool_result → job_output 不过门 →
+// job end」整条链在会话里真的接通，而不只是 jobHub 单测。
+func TestLoopE2E_BackgroundJob(t *testing.T) {
+	var recorded [][]byte
+	scripts := []sseScript{
+		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-bg","function":{"name":"run_command","arguments":"{\"command\":\"echo hello-bg\",\"background\":true}"}}]`)}},
+		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-o1","function":{"name":"job_output","arguments":"{\"job_id\":\"j1\",\"wait_seconds\":5}"}}]`)}},
+		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-k1","function":{"name":"job_kill","arguments":"{\"job_id\":\"j1\"}"}}]`)}},
+		{chunks: []string{deltaChunk("后台任务已经结束。", "", "")}},
+	}
+	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "", "")
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":6,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"后台跑一下 echo"}`)
+
+	ask := waitFor(t, col, "ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	if q := ask["question"].(string); !strings.Contains(q, "后台") {
+		t.Fatalf("后台命令的 ask 应明说“后台”：%q", q)
+	}
+	detail, _ := ask["detail"].(map[string]any)
+	if detail["background"] != true {
+		t.Fatalf("detail 应带 background=true：%v", detail)
+	}
+	sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"allow"}`, mustJSON(ask["id"].(string))))
+
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":3}`)
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("会话未在 20s 内结束")
+	}
+	waitFor(t, col, "bye", func(m map[string]any) bool { return m["t"] == "bye" })
+	msgs := parseAll(t, col)
+
+	// 1) job_output / job_kill 不过门 ⇒ 全程只有 1 次 ask
+	asks := 0
+	for _, m := range msgs {
+		if m["t"] == "ask" {
+			asks++
+		}
+	}
+	if asks != 1 {
+		t.Fatalf("job 控制工具不该再问，ask 应 1 次，got %d", asks)
+	}
+
+	// 2) 生命周期：start 一次、end 一次，start 挂到 run_command 的 tool_call
+	var start, end map[string]any
+	for _, m := range msgs {
+		if m["t"] != "job" {
+			continue
+		}
+		switch m["phase"] {
+		case "start":
+			if start != nil {
+				t.Fatalf("重复 start：%v", m)
+			}
+			start = m
+		case "end":
+			if end != nil {
+				t.Fatalf("重复 end：%v", m)
+			}
+			end = m
+		}
+	}
+	if start == nil || end == nil {
+		t.Fatalf("缺 start/end：start=%v end=%v", start, end)
+	}
+	callID := ""
+	for _, m := range msgs {
+		if m["t"] == "block_start" && m["kind"] == "tool_call" && m["name"] == "run_command" {
+			callID, _ = m["id"].(string)
+		}
+	}
+	if callID == "" || start["call"] != callID {
+		t.Fatalf("start.call=%v 应等于 run_command 的块 id %q", start["call"], callID)
+	}
+	if end["status"] != "exited" || end["exitCode"].(float64) != 0 {
+		t.Fatalf("echo 应正常退出：%v", end)
+	}
+
+	// 3) 输出真的到过：某条消息里有 hello-bg
+	found := false
+	for _, m := range msgs {
+		if m["t"] == "delta" && strings.Contains(m["text"].(string), "hello-bg") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("没有任何消息携带 echo 的输出 hello-bg")
+	}
+
+	// 4) I3：ask 之后到 state=running 之前不得出现 job 消息
+	askIdx := -1
+	for i, m := range msgs {
+		if m["t"] == "ask" {
+			askIdx = i
+			break
+		}
+	}
+	runningIdx := -1
+	for i := askIdx + 1; i < len(msgs); i++ {
+		if msgs[i]["t"] == "state" && msgs[i]["value"] == "running" {
+			runningIdx = i
+			break
+		}
+	}
+	if runningIdx < 0 {
+		t.Fatal("ask 之后没有 state=running")
+	}
+	for i := askIdx + 1; i < runningIdx; i++ {
+		if msgs[i]["t"] == "job" {
+			t.Fatalf("I3 违规：ask 与 running 之间出现 job 消息：%v", msgs[i])
+		}
+	}
+}
 
 func TestLoopE2E_Deny(t *testing.T) {
 	var recorded [][]byte

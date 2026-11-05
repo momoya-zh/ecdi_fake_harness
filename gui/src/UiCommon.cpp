@@ -206,5 +206,28 @@ ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
     return raw;
 }
 
+// ── 后台作业（协议 v6）展示口径：单一真相源（见 AppInternal.h 声明）──
+std::string JobStatusLabel(const std::string& status) {
+    if (status == "running") return "运行中";
+    if (status == "exited") return "已完成";
+    if (status == "failed") return "失败";
+    if (status == "killed") return "已终止";
+    if (status == "timeout") return "超时";
+    return status;
+}
+
+std::string JobHumanBytes(long long n) {
+    if (n < 0) n = 0;
+    char b[32];
+    if (n < 1024) {
+        std::snprintf(b, sizeof(b), "%lldB", n);
+    } else if (n < 1024 * 1024) {
+        std::snprintf(b, sizeof(b), "%.1fKB", static_cast<double>(n) / 1024.0);
+    } else {
+        std::snprintf(b, sizeof(b), "%.1fMB", static_cast<double>(n) / (1024.0 * 1024.0));
+    }
+    return b;
+}
+
 }  // namespace internal
 }  // namespace harness

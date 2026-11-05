@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -96,4 +97,29 @@ func runCommandUnsandboxed(ctx context.Context, command string, root string, tim
 		return toolResult{OK: true, Output: "（无输出，退出码 0）"}
 	}
 	return toolResult{OK: true, Output: text}
+}
+
+// startBackgroundProcess：后台作业的启动原语（进程组退守，无内存/进程硬上限）。
+// 与前台路径同源：Setpgid 让整组可被 SIGKILL 清退；输出写 sink，wait 交给 jobHub。
+func startBackgroundProcess(command, root string, cfg SandboxConfig, sink io.Writer) (*bgProcess, error) {
+	_ = cfg // 非 Windows 没有可开关的沙盒原语；进程组总是启用
+	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd.Dir = root
+	cmd.Env = childEnv()
+	cmd.Stdout, cmd.Stderr = sink, sink
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = sandboxWaitDelay
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("启动后台命令失败：%w", err)
+	}
+	pid := cmd.Process.Pid
+	return &bgProcess{
+		wait:  cmd.Wait,
+		kill:  func() { _ = syscall.Kill(-pid, syscall.SIGKILL) },
+		close: func() {},
+		exitCode: func() int {
+			if cmd.ProcessState != nil { return cmd.ProcessState.ExitCode() }
+			return -1
+		},
+	}, nil
 }

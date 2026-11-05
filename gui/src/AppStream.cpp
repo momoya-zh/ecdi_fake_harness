@@ -37,6 +37,8 @@
 using harness::internal::kProtocolMaxSupported;   // RouteLastMessage 判 hello.protocol 上限
 using harness::internal::ReasoningTitle;
 using harness::internal::UnknownKindText;
+using harness::internal::JobStatusLabel;   // v6 后台作业（- UNUSED? 用于 HandleJobMessage 的提示与探针）
+using harness::internal::JobHumanBytes;
 
 // 冻结活动会话的 timed 锚点：记下暂停时刻（幂等——已暂停则不动）。
 void HarnessApp::PauseActiveTimedClock() {
@@ -363,6 +365,9 @@ void HarnessApp::OnReplayTick() {
                 // ★ 协议 v5（2026-11-05）：ask 提案卡。同步组——折叠体行在 settle 后
                 //   已建完，行数/配色统计是建行期数据，不需要等下一帧。
                 {&CliOptions::proposalProbe, &ProbeState::proposalProbeDone, &HarnessApp::RunProposalProbe},
+                // ★ 协议 v6（2026-11-05）：后台作业卡片。同步组——卡片挂在工具行上，
+                //   标题/正文在 settle 后已是终态，不需要等下一帧。
+                {&CliOptions::jobProbe, &ProbeState::jobProbeDone, &HarnessApp::RunJobProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
@@ -612,6 +617,11 @@ void HarnessApp::RouteLastMessage() {
             row->headerBtn->SetText(title);
             if (!block->ok) row->headerBtn->SetTextColor(kErrorDark);
         }
+        // ★★ 协议 v6（2026-11-05）：工具卡标题刚被 block_end 重算过，后台状态
+        //   会被这一刀抹掉 ⇒ 立刻按 jobsByCall 重新贴回去（同一函数，重建亦同）。
+        //   ★ 不用 isCall/isResult 分支判断：ApplyJobToRow 只认 call 块 id，
+        //     结果行天然 no-op，少一个位置判断就少一处漂移点。
+        if (block) ApplyJobToRow(*row, block->id);
         return;
     }
     if (t == "ask") {
@@ -921,7 +931,82 @@ void HarnessApp::RouteLastMessage() {
         m_hudDirty = true;   // 顶栏胶囊的「N代理」也要跟着变
         return;
     }
+    if (t == "job") {
+        // ★★ 协议 v6 §3.13（2026-11-05）：后台作业控制面。视图侧只有「那一张
+        //   工具卡」——不新建行、不进 timeline（重建从 jobsByCall 重放，见
+        //   MaterializeOne / ApplyJobToRow）。
+        HandleJobMessage(msg);
+        return;
+    }
     // state / usage：上移到 HUD，转录不渲染
+}
+
+// ★★ 协议 v6 §3.13（2026-11-05）：后台作业的控制面消息。
+//
+// 只做三件事：入模型（jobsByCall / jobCalls）→ 找 call 对应的工具行 → 重画那一行。
+//   ★ 不建新行：作业卡挂在发起它的 `run_command` tool_call 行上（同一 call 只会
+//     有一个作业；core 的 I14 保证 start 先于 output/end、end 只一次）。
+//   ★ 行找不到（回放早期/坏行）就只入模型、不建卡——**不编造**一个孤儿卡片。
+//   ★ 负向对照靠的正是「没有 job 消息 ⇒ 没有任何行被贴『后台』」：这里不给
+//     工具行做任何默认标记，探针 `staleRows==0` 才有区分力。
+void HarnessApp::HandleJobMessage(const json::Value& msg) {
+    if (!m_sess) return;
+    const std::string id = msg.GetString("id");
+    const std::string phase = msg.GetString("phase");
+    if (id.empty()) {
+        AddNoticeRow("[job 消息缺 id]", kErrorDark);
+        return;
+    }
+    if (phase == "start") {
+        const std::string call = msg.GetString("call");
+        if (call.empty()) {
+            AddNoticeRow("[job " + id + " 的 start 缺 call，未挂卡]", kErrorDark);
+            return;
+        }
+        JobView v;
+        v.id = id;
+        v.call = call;
+        v.command = msg.GetString("command");
+        // 同一 call 重复 start（I14 违规）：以后到者为准但如实提示，不静默覆盖。
+        if (m_sess->jobsByCall.count(call)) {
+            AddNoticeRow("[job " + id + " 重复 start（call=" + call + "）]", kErrorDark);
+        }
+        m_sess->jobsByCall[call] = v;
+        m_sess->jobCalls[id] = call;
+    } else {
+        auto cit = m_sess->jobCalls.find(id);
+        if (cit == m_sess->jobCalls.end()) {
+            AddNoticeRow("[job " + id + " 的 " + phase + " 没有 start，已忽略]", kErrorDark);
+            return;
+        }
+        auto it = m_sess->jobsByCall.find(cit->second);
+        if (it == m_sess->jobsByCall.end()) return;
+        JobView& v = it->second;
+        if (phase == "output") {
+            v.bytes = static_cast<long long>(msg.GetNumber("bytes"));
+            v.dropped = static_cast<long long>(msg.GetNumber("dropped"));
+            v.tail += msg.GetString("text");
+            // GUI 侧尾窗：协议只保证 ring 窗口，屏幕画最后 64KB 就够；
+            // 多了不画，也不假装画了（协议字段 bytes/dropped 仍是真值）。
+            if (v.tail.size() > 64 * 1024) v.tail.erase(0, v.tail.size() - 64 * 1024);
+        } else if (phase == "end") {
+            v.status = msg.GetString("status", "exited");
+            v.exitCode = static_cast<long long>(msg.GetNumber("exitCode"));
+        } else {
+            AddNoticeRow("[job " + id + " 未知 phase " + phase + "，已忽略]", kErrorDark);
+            return;
+        }
+    }
+
+    auto cit = m_sess->jobCalls.find(id);
+    if (cit != m_sess->jobCalls.end()) {
+        if (RowRec* row = FindBlockRow(cit->second)) {
+            ApplyJobToRow(*row, cit->second);
+            Relayout();
+            RequestRepaint();
+        }
+    }
+    m_hudDirty = true;
 }
 
 void HarnessApp::HandleLiveJournalLine(Session& session, const std::string& line) {

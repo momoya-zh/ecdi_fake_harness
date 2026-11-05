@@ -73,6 +73,9 @@ type session struct {
 	agents   agentOpts     // --agents 一族；on=false 时整条委派路径不存在
 	agentNo  atomic.Int64  // 子代理 id 计数器（a1 / a2 …），与块 id 分空间
 	agentSem chan struct{} // 并发上限信号量（容量 = agents.maxParallel）
+
+	// ── 协议 v6：后台长任务（docs/background-job-plan.md）──────────────
+	jobs *jobHub
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求（与假 core 同构）。
@@ -104,6 +107,7 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 		agents:          ag.normalized(),
 	}
 	s.agentSem = make(chan struct{}, s.agents.maxParallel)
+	s.jobs = newJobHub(s.emit)
 	if s.sessionID == "" {
 		s.sessionID = "s-real-1"
 	}
@@ -191,13 +195,14 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 
 	// hello（协议 §3.1）：seq 0、caps 声明 tools/ask/workspace/model；
 	// context 按 D1 真值纪律——运行者没声明就**不发**（GUI 显示 —），不猜。
-	// ★ v5（2026-11-04）：protocol 恒 5（能力集由 caps 表达，不由版本号表达——
-	//   同一份 core 两种版本声明会让契约面变浑）。"agents" 只在 --agents 开启时声明。
-	caps := []string{"tools", "ask", "workspace", "model"}
+	// ★ v6（2026-11-05）：protocol 6（新增控制面消息 t:"job"）。版本号回答
+	//   「有哪些消息类型」，caps 回答「这一份 core 实际提供哪几组能力」——
+	//   两者并存，不互相替代。"jobs" 随后台任务实现恒声明。
+	caps := []string{"tools", "ask", "workspace", "model", "jobs"}
 	if s.agents.on {
 		caps = append(caps, "agents")
 	}
-	hello := map[string]any{"t": "hello", "protocol": 5, "core": "0.5.0",
+	hello := map[string]any{"t": "hello", "protocol": 6, "core": "0.6.0",
 		"session": s.sessionID, "caps": caps}
 	if s.ctxCapacity > 0 {
 		hello["context"] = s.ctxCapacity
@@ -296,6 +301,7 @@ func (s *session) nextBlockID() string {
 // ── 主循环 ──────────────────────────────────────────────────────
 
 func (s *session) run() error {
+	defer s.jobs.shutdown()
 	defer func() {
 		if s.ctxWriter != nil {
 			_ = s.ctxWriter.Close()
@@ -344,6 +350,9 @@ func (s *session) processLine(sl wire.StampedLine) bool {
 		s.log("WARNING: answer for unknown/expired ask %q", msg.ID)
 	case "bye":
 		s.log("bye received — exiting")
+		// ★ I14：bye 之前必须把在跑作业的 end 发完（否则 journal 里留下
+		//   "有 start 无 end" 的作业，历史回放时它永远停在运行中）。
+		s.jobs.shutdown()
 		s.emit(map[string]any{"t": "bye", "reason": "eof", "code": 0})
 		return true
 	default:
@@ -408,6 +417,7 @@ func (s *session) handlePrompt(text, clientID string) {
 
 	if l.exitBye {
 		s.log("bye during turn — exiting")
+		s.jobs.shutdown()
 		s.emit(map[string]any{"t": "bye", "reason": "eof", "code": 0})
 		os.Exit(0)
 	}
@@ -697,6 +707,9 @@ func (s *session) askQuestion(turnCtx context.Context, question string,
 	if detail != nil {
 		msg["detail"] = detail
 	}
+	// ★ I3：ask 未答期间不得发任何消息 ⇒ 先把 job 事件门闩关上（emit 与 setPaused
+	//   在 jobHub 的同一把锁上互斥，在途 flush 要么先发完、要么被挡住等 resume）。
+	s.jobs.setPaused(true)
 	s.emit(msg)
 	s.setState(wire.StateWaiting)
 	s.log("waiting for answer to %s (I3: no further messages)", askID)
@@ -723,6 +736,7 @@ waitLoop:
 	if s.st() != wire.StateRunning {
 		s.setState(wire.StateRunning)
 	}
+	s.jobs.resume()
 	return denied
 }
 
@@ -735,8 +749,13 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 		"kind": "tool_call", "name": c.Name, "args": argsMap})
 
 	denied := false
+	control := s.jobs != nil && s.jobs.isControlTool(c.Name)
 	if s.allowTools[c.Name] {
 		s.log("tool %s allowed by --allow-tools (skipping ask)", c.Name)
+	} else if control {
+		// 作业控制工具不再过门：它们只作用于用户**已经批准过**的那条命令，
+		// 读取输出 / 终止进程不扩大授权面（job_kill 也只认本会话自己的 job id）。
+		s.log("tool %s is a job control tool (skipping ask)", c.Name)
 	} else {
 		// ★ detail 在问句之前组装（2026-11-05）：write_file 要读**批准前**的磁盘
 		//   内容算 diff（diff.go）——只读，安全；执行仍在门后。
@@ -751,7 +770,7 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	case denied:
 		res = toolResult{OK: false, Output: "用户拒绝了该操作。"}
 	default:
-		res = executeTool(c.Name, argsMap, s.cwd)
+		res = executeToolWithJobs(c.Name, argsMap, s.cwd, s.jobs, callID)
 		s.log("tool %s executed: ok=%v len=%d", c.Name, res.OK, len(res.Output))
 	}
 

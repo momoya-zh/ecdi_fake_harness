@@ -282,12 +282,13 @@ func tailOf(s string, n int) string {
 // 判据都落在**磁盘上真的变没变**：这三件的失败模式不是"报错"，是"静默改错"或
 // "静默没改"。所以每条 RED 用例都要配一条 Green 用例证明判据有区分力。
 
-func TestToolDefs_SixToolsWithSchemas(t *testing.T) {
-	// ★ v5：这张表是「子代理关闭」的那一臂——六件，没有 task。
-	//   有 task 的七件表由 TestToolDefsFor_AgentsAddTaskOnlyAtRoot 盖。
+func TestToolDefs_NineToolsWithSchemas(t *testing.T) {
+	// ★ v6：这张表是「子代理关闭」的那一臂——九件（六件基础 + 三件后台作业），
+	//   没有 task。有 task 的十件表由 TestToolDefsFor_AgentsAddTaskOnlyAtRoot 盖。
 	defs := toolDefsFor(false, 0)
 	want := map[string]bool{"read_file": false, "list_dir": false, "grep": false,
-		"write_file": false, "edit_file": false, "run_command": false}
+		"write_file": false, "edit_file": false, "run_command": false,
+		"job_output": false, "job_kill": false, "job_list": false}
 	for _, d := range defs {
 		if _, ok := want[d.Name]; !ok {
 			t.Errorf("多出未预期的工具 %q", d.Name)

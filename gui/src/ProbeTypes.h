@@ -468,3 +468,20 @@ struct ProposalProbeRec {
     bool matched = true;               // 元断言（见 RunProposalProbe 头注）
     std::string note;
 };
+
+// ★★ 协议 v6（2026-11-05）：后台作业卡片（--job-probe）。
+//   判据分两臂（跑批各跑一支）：
+//   正向（jobs/background-task.jsonl）：模型 jobsByCall=1 且视图工具行标题/正文
+//     与模型字段逐项一致（标题含 j1+终态，正文含尾部输出 sample）。
+//   负向（demo.jsonl）：没有 job 消息 ⇒ 任何工具行标题都不得出现「后台」。
+struct JobProbeRec {
+    std::string phase = "settle";      // 同步探针，一相
+    size_t modelJobs = 0;              // 模型：jobsByCall 条数
+    size_t viewRows = 0;               // 视图：能对上 jobsByCall 的 run_command 行
+    size_t titleMatched = 0;           // 标题含 job id + 状态文案
+    size_t bodyMatched = 0;            // 正文含协议 start.command（卡片确实挂在正确 call 上）
+    size_t tailMatched = 0;            // 正文含模型 tail 的最后一行（输出真的画出来了）
+    size_t staleRows = 0;              // 无 job 却带「后台」字样的行（负向判据）
+    bool matched = true;
+    std::string note;
+};

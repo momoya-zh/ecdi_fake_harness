@@ -34,7 +34,7 @@
 
 | 目录 | 职责 |
 |---|---|
-| `protocol/` | **唯一契约**。`PROTOCOL.md`（**v3**）+ `fixtures/`（**9 份夹具**）+ `validate.py`（**可执行规格**） |
+| `protocol/` | **唯一契约**。`PROTOCOL.md`（**v6**）+ `fixtures/`（**17 份夹具**）+ `validate.py`（**可执行规格**） |
 | `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。**25 个源文件 / 14,178 行**（`App.cpp` 一直是大头，~0.5 MB） |
 | `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
 | `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
@@ -53,6 +53,9 @@
   ★ **I12/I13**（v5 新增，只约束声明 `protocol >= 5` 的流）：`agent` 的 `id` 一份流内唯一、
   `phase=start` 先于一切携带该 `agent` 的块、`phase=end` 后不得再有；带 `parent` 的块必须指向
   一个已存在的、属于父代理的 `tool_call` 块；根代理的块不得带 `agent`。
+  ★ **I14**（v6 新增，只约束声明 `protocol >= 6` 的流）：`job` 的 `id` 一份流内唯一；首条必须是
+  `phase=start`（`call` 指向已存在的 tool_call 块），`output`/`end` 只能跟随自己的 start；
+  `end` 恰好一次且之后不得再有该 id 的任何消息。忽略这些 ⇒ 卡片会挂在错的调用上、或永远不结束。
 - ★ **子代理（v5，`--agents` 开关）**：`block_start` 增**可选** `agent` / `parent`，新增独立控制消息
   `agent`（生命周期：`start`/`end`）——**只加字段与控制消息，不加 `kind`**（七个 kind 语义不动，
   I8 的「未知」与「已知」两条路径不混）。主 `state` 仍只表示根代理（按钮使能门控零风险）；
@@ -68,7 +71,7 @@
   未决期间 GUI **必须禁用发送**，core 也**必须拒绝**交错的 `prompt` / 第二个 `workspace`。
   成功后 GUI 只认 core 回的**实际路径**（规范化：绝对 / `/` 分隔 / 无尾随 `/` / 无 `.`·`..`）。
 - **回放两模式**：`instant`（一次性灌入，测稳态渲染）/ `timed`（按 `ts` 真实间隔，测流式刷新）。
-- **版本门的三个不对称**（`AppInternal.h:290` `kProtocolMaxSupported = 5`，随版本逐版上调）：① core 声明的主版本**高于**上限才拒连，
+- **版本门的三个不对称**（`AppInternal.h:290` `kProtocolMaxSupported = 6`，随版本逐版上调）：① core 声明的主版本**高于**上限才拒连，
   且拒连 = **停止消费**（`--instant` 下不 break 就会「边抱怨边照做」）；② **低于**上限从不拒连；
   ③ 缺 `caps["workspace"]` **不是**拒连条件，只隐藏工作区交互（v3 §3.1）——早前版本把 ① 和 ③ 混成一个条件，
   导致两份 hostile 夹具的 `hello` 一行都没被解析，I1/I4/I5 的负对照全部空转。
@@ -227,6 +230,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--valign-probe` | 单行输入框垂直居中（**REQ-14**：caret 几何公开判据 + Top→Center 翻转臂 / 恢复臂） |
 | `--preview-probe` | I 路径可点 + 只读预览（8 相） |
 | `--agent-probe` | 子代理缩进 / 归属 / 代理卡（**协议 v5**：缩进行数=归属块数、竖线行数=缩进行数、缩进吃宽、卡行数=代理数+1 且随有无代理显隐；★ **负对照另跑一支**——无 agent 夹具上缩进恒 0，见 `tools/regress.py`） |
+| `--job-probe` | 后台作业卡（**协议 v6** `job` 消息）：卡片挂在发起它的 `run_command` 工具行，标题含 job id+状态、正文含 start.command 与尾部输出，模型/视图两路对齐；★ **负对照另跑一支**——无 `job` 的 demo 夹具上不得出现任何「后台」字样 |
 | `--proposal-probe` | ask 提案卡（**协议 v5** `detail`，2026-11-05）：diff 行数/±行数与模型侧重切行数两路对齐、无空提案体；★ **负对照另跑一支**——无 detail 夹具（demo）上提案行恒 0（回落路径完好） |
 
 另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
@@ -249,7 +253,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | ★ **定位与信任模型** | `docs/positioning.md`（**两个目的** · 协议不是安全边界 · MCP 决策） |
 | **ECDI 能力需求 / 缺陷登记** | `docs/ecdi-capability-requests.md`（**唯一账本**） |
 | **评估读数**（机器可读 JSON） | `evals/`（口径见 §当前状态）· 工作读数在 `.scratch/`（gitignored） |
-| **协议契约** | `protocol/PROTOCOL.md`（v3） |
+| **协议契约** | `protocol/PROTOCOL.md`（v6） |
 | 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` |
 | **会话持久化方案与实施** | `docs/session-persistence-decisions.md`（**已定稿并完成落地**：L1 会话持久 + L2 延续模型/工作区 + `--persist-probe` 7相验收）· `docs/session-persistence-plan.md`（架构分析与事实账本） |
 | GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
@@ -304,9 +308,14 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `fixtures/realistic/realistic-session.jsonl` | 真实编码会话形态（Markdown / 长日志 / 1213 条消息） |
 | `fixtures/scale/scale-transcript-2000.jsonl` | 规模基线（2000 块 / 8906 条消息 / **921 KB**） |
 | `fixtures/cot/cot-session.jsonl` | **思维链**：长 + 流式 + **默认折叠**（1044 条消息 / 44 块）。★ `hello` 带 `context`、思维链 `block_end` 带 `tokens` |
+| `fixtures/subagent/parallel-two-agents.jsonl` | **v5 子代理正向**：两个 `task` 并行，`delta` 在 a1/a2 间交错 |
+| `fixtures/proposal/write-edit-run-asks.jsonl` | **v5 提案卡正向**：三个 `ask` 各带 `detail`（write/edit diff + run 键值） |
+| `fixtures/jobs/background-task.jsonl` | **v6 后台作业正向**：`job start/output/end` + `job_output`/`job_kill` 控制链 |
+| `fixtures/hostile/job-output-before-start.jsonl` | **v6 / I14 负向**：`output` 出现在 `start` 之前 |
 
-★ **九份夹具全部声明 `protocol:3`**：四份正向（demo / realistic / cot / scale，`client_id` 由生成器或手写保证）
-与五份 hostile。hostile 也必须声明 3——I9/I10 只约束 v3 流，若 hostile 停在 2，「负向用例」会被版本门豁免成空转。
+★ **十七份夹具的版本声明**：低版本夹具声明 `protocol:3`（I9/I10 只约束 v3 流）；v5 夹具声明 `5`
+（子代理 + 提案卡 + 三份 hostile）；v6 夹具声明 `6`（后台作业正向 + 一份 I14 hostile）。
+**hostile 必须与其针对的不变量同版本**——若停在低版本，负向用例会被版本门豁免成空转。
 
 三个生成器都是**确定性**的（同参 ⇒ 逐字节相同），所以 2000 / 5000 / 20000 是**旋钮**，不是砖：
 `gen_scale.py` · `gen_realistic.py` · `gen_cot.py`（`--turns --thinking-chars --kind --context --tokens`）。
@@ -334,7 +343,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（九份夹具）· 全部 `evals/*.json`（82 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十七份夹具）· 全部 `evals/*.json`（82 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -391,6 +400,8 @@ PY
 | **P4 可用性（A–J）** | 跳到最新 / 全局快捷键 / 空状态引导 / ask 已答留痕 / 设置改模态浮层（**半透明遮罩 = ECDI 首个半透明绘制消费者**）/ tooltip / 顶栏模型 chip + 用量常驻 / 转录可选中（尖峰）/ **I 路径可点 + 只读预览**（`--preview-probe` 8/8）/ **J 开发者视图 ↔ 用户模式分流**（无参启动=用户模式，`--replay`/`--core`/任一探针=开发者模式，`Ctrl+Shift+D` 或 `···` 切换。方案 §12） |
 | **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
 | **协议 v5 子代理（2026-11-04）** | **只加字段与控制消息，不加 kind**：`block_start` 可选 `agent`/`parent` + `agent` 生命周期消息 + **I12/I13**（`validate.py` 已查）。夹具 **14 份**（v5 增 1 正向并行 + 1 cap 缺失 + 3 hostile）。core：`agent.go`（`task` 特判走 ask 门、semaphore 并行 `--max-agents=2`、独立 history、逐子代理 delta 合批；`wire.Out` 加锁保 I4）、深度 1、`--agent-max-turns=8` / `--agent-timeout=120s`、**委派即授权**（`docs/P3-real-core-spec.md` §4.4.2）。GUI：缩进行 + 2px 归属竖线、检视栏「代理」卡（点击定位）、状态胶囊活跃数、`--agent-probe` 正/负对照进门。全量回归 **PASS** + `validate.py` 绿。已声明未做：连续归属竖线（ECDI 逐控件 PushClip，另批）、代理卡定位无高亮、GUI 侧 `--agents` 默认注入 |
+| **协议 v6 后台长任务（2026-11-05）** | **只加控制面消息，不加 kind**：`job start/output/end` + **I14**（`validate.py` 已查，只约束 `protocol>=6`）。core：`jobs.go`（jobHub / 256KB 环窗 / 200ms 合批 / 30min 上限 / 并发 4 / ask 期缓冲即 I3）；`run_command background=true` + `job_output` / `job_kill` / `job_list`（控制工具不过 ask 门）；会话退出全杀。GUI：作业状态贴在发起它的 `run_command` 工具卡（标题 `j1 状态`、折叠体尾部输出），重建从 `jobsByCall` 重放；`kProtocolMaxSupported=6`。夹具 **17 份**（v6 增 1 正向 + 1 hostile）；`--job-probe` 正/负对照进门。 |
+
 
 ### 现在能做什么（都有探针与负对照）
 

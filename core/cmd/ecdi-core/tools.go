@@ -56,7 +56,14 @@ type toolResult struct {
 }
 
 // executeTool：分发 + 执行。root = 当前工作区（绝对、`/` 分隔，§3.9 规范形）。
+// 无作业表的调用方（测试 / 子代理）走这里：run_command 的 background=true 会被拒绝。
 func executeTool(name string, args map[string]any, root string) toolResult {
+	return executeToolWithJobs(name, args, root, nil, "")
+}
+
+// executeToolWithJobs：带后台作业表的分发（协议 v6）。
+// callID = 发起这次调用的 tool_call 块 id，job 的 start 事件要挂到它下面（I14）。
+func executeToolWithJobs(name string, args map[string]any, root string, jobs *jobHub, callID string) toolResult {
 	switch name {
 	case "read_file":
 		return toolReadFile(args, root)
@@ -69,10 +76,31 @@ func executeTool(name string, args map[string]any, root string) toolResult {
 	case "edit_file":
 		return toolEditFile(args, root)
 	case "run_command":
+		if bg, _ := args["background"].(bool); bg {
+			if jobs == nil {
+				return toolResult{OK: false, Output: "后台任务只在主代理可用（子代理没有作业表）"}
+			}
+			return jobs.toolStart(args, root, callID, getSandboxConfig())
+		}
 		return toolRunCommand(args, root)
+	case "job_output":
+		if jobs == nil {
+			return toolResult{OK: false, Output: "后台任务只在主代理可用"}
+		}
+		return jobs.toolOutput(args)
+	case "job_kill":
+		if jobs == nil {
+			return toolResult{OK: false, Output: "后台任务只在主代理可用"}
+		}
+		return jobs.toolKill(args)
+	case "job_list":
+		if jobs == nil {
+			return toolResult{OK: false, Output: "后台任务只在主代理可用"}
+		}
+		return jobs.toolList()
 	}
 	return toolResult{OK: false, Output: fmt.Sprintf(
-		"未知工具 %q（可用：read_file / list_dir / grep / write_file / edit_file / run_command）", name)}
+		"未知工具 %q（可用：read_file / list_dir / grep / write_file / edit_file / run_command / job_output / job_kill / job_list）", name)}
 }
 
 // toolDefsFor：上交 API 的工具定义（JSON Schema）。
@@ -127,7 +155,25 @@ func toolDefsFor(agents bool, depth int) []toolDef {
 			Parameters: obj(map[string]any{
 				"command":         str("要执行的命令行（Windows: CMD 语法；一次只跑一条，多步请分次调用）"),
 				"timeout_seconds": map[string]any{"type": "number", "description": "超时秒数，默认 60，上限 300"},
+				"background":      map[string]any{"type": "boolean", "description": "为 true 时后台运行、立即返回 job_id（长构建/测试/dev server 用）；用 job_output 取输出、job_kill 终止"},
 			}, "command")},
+		// ── 后台任务（协议 v6）：只给根代理 ──
+	}
+	if depth == 0 {
+		defs = append(defs,
+			toolDef{Name: "job_output",
+				Description: "取后台任务的增量输出（每个作业一个读游标）。作业没结束时可以等 wait_seconds 秒再看",
+				Parameters: obj(map[string]any{
+					"job_id":       str("run_command(background=true) 返回的 job_id，如 j1"),
+					"wait_seconds": map[string]any{"type": "number", "description": "可选，等新输出的秒数（0–30，默认 0）"},
+				}, "job_id")},
+			toolDef{Name: "job_kill",
+				Description: "终止一个后台任务（整树清退），返回尾部输出与退出码",
+				Parameters: obj(map[string]any{"job_id": str("要终止的 job_id")}, "job_id")},
+			toolDef{Name: "job_list",
+				Description: "列出本会话的后台任务（id / 状态 / 时长 / 输出量 / 命令首行）",
+				Parameters: obj(map[string]any{})},
+		)
 	}
 	// ── 子代理（协议 v5）：只给根代理，且只在 --agents 开启时 ──
 	if agents && depth == 0 {
@@ -634,6 +680,9 @@ func askPrompt(name string, args map[string]any, raw string) string {
 			p, clip(strings.TrimSpace(o), 60), clip(strings.TrimSpace(nw), 60))
 	case "run_command":
 		c, _ := args["command"].(string)
+		if bg, _ := args["background"].(bool); bg {
+			return fmt.Sprintf("允许在后台执行命令吗？%s（不阻塞本轮）", clip(strings.TrimSpace(c), 140))
+		}
 		return fmt.Sprintf("允许执行命令吗？%s", clip(strings.TrimSpace(c), 160))
 	case "task":
 		// 正常由 agent.go 的 delegationAskPrompt 出题（它要带预算）；

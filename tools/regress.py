@@ -122,6 +122,9 @@ COT = "protocol/fixtures/cot/cot-session.jsonl"
 SUBAGENT = "protocol/fixtures/subagent/parallel-two-agents.jsonl"
 # ★★ 协议 v5（2026-11-05）：ask 提案卡正向夹具（三个 ask 各带 detail）。
 PROPOSAL = "protocol/fixtures/proposal/write-edit-run-asks.jsonl"
+# ★★ 协议 v6（2026-11-05）：后台作业正向夹具（run_command background → job start/
+#   output/end → job_output/job_kill 两条控制工具链）。
+JOB = "protocol/fixtures/jobs/background-task.jsonl"
 # ★★ 门控反面（2026-11-04）：发 agent 消息但 hello.caps **不含** agents
 #   ⇒ 内容照旧渲染，代理卡**不得**出现（协议 §3.1）。
 AGENT_CAP_MISSING = "protocol/fixtures/subagent/agent-cap-missing.jsonl"
@@ -205,6 +208,10 @@ EXTRA_PROBES = [
     #   ★ 负对照另跑一支（无 detail 的 demo ⇒ detailRows==0），否则"每个 ask
     #     都画提案体"的实现正向上也绿 —— 见 `check_proposal_probe_negative`。
     ("--proposal-probe", "proposalProbe", PROPOSAL, [], []),
+    # ★★ 协议 v6（2026-11-05）：后台作业卡片。
+    #   正向：job start 把状态贴到发起它的 run_command 工具行（标题含 j1+状态、
+    #   正文含命令与尾部输出）。负向对照另跑一支（demo 无 job ⇒ 不得出现「后台」）。
+    ("--job-probe", "jobProbe", JOB, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
@@ -347,9 +354,9 @@ def check_live_settings_probe():
 
     判据：必需相**全部出现且全绿**。缺相 = FAILED 而不是 SKIP——缺相说明跑法
     退化了（比如没走进首启分支），那正是最需要看见的失败。
-    另加一条身份判据 `protocolDeclared == 5`：否则说明连的不是真 core，
-    全绿也是假的。（v5 于 2026-11-04 落地：子代理；真 core 的 hello.protocol
-    恒 5，能力集由 caps 表达——`agents` 是否声明由 --agents 决定，与本判据无关。）
+    另加一条身份判据 `protocolDeclared == 6`：否则说明连的不是真 core，
+    全绿也是假的。（v6 于 2026-11-05 落地：后台作业；真 core 的 hello.protocol
+    恒 6，能力集由 caps 表达——`jobs` 恒声明、`agents` 是否声明由 --agents 决定。）
     """
     fail = 0
 
@@ -413,7 +420,7 @@ def check_live_settings_probe():
         detail += "  RED=" + "; ".join(f"{p}: {m}" for p, m in red)
     check("--settings-probe (live)", not missing and not red, detail)
 
-    check("core identity", d.get("protocolDeclared") == 5,
+    check("core identity", d.get("protocolDeclared") == 6,
           f"protocolDeclared={d.get('protocolDeclared')} "
           f"label={d.get('activeSessionLabel')!r}")
     return fail
@@ -593,6 +600,38 @@ def check_proposal_probe_negative():
           and rec.get("modelDetailRows") == 0)
     detail = (f"askRows={rec.get('askRows')} detailRows={rec.get('detailRows')} "
               f"diffRows={rec.get('diffRows')} kvRows={rec.get('kvRows')}")
+    return (0 if ok else 1), detail
+
+
+def check_job_probe_negative():
+    """`--job-probe` 的负对照：没有 job 消息的夹具上，工具行不得出现「后台」。
+
+    ★ 为什么必须单独跑一支：正向只证明「有 job 时会贴卡片」，
+      「每张 run_command 卡都预先贴后台/预先建卡」的实现同样能绿。
+      只有"没有 job 消息时一行都不贴"才能把两者分开（回落路径 = v5 行为）。
+    """
+    out = OUT / "_reg-job-probe-negative.json"
+    out.unlink(missing_ok=True)
+    try:
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
+                            "--theme", "light", "--job-probe",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("--job-probe (negative)", None, out)
+        return 1, "TIMEOUT"
+    record("--job-probe (negative)", r.returncode, out)
+    if not out.exists():
+        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    rows = d.get("jobProbe") or []
+    if not rows:
+        return 1, "NO ROWS (key=jobProbe)"
+    rec = rows[0]
+    ok = (rec.get("matched") is True and rec.get("modelJobs") == 0
+          and rec.get("viewRows") == 0 and rec.get("staleRows") == 0)
+    detail = (f"modelJobs={rec.get('modelJobs')} viewRows={rec.get('viewRows')} "
+              f"staleRows={rec.get('staleRows')} matched={rec.get('matched')}")
     return (0 if ok else 1), detail
 
 
@@ -852,6 +891,9 @@ def main():
     n, detail = check_proposal_probe_negative()
     fail += n
     print(f"  {'--proposal-probe':18s} {detail}  (negative/DEMO：无 detail 就一行提案都不画)")
+    n, detail = check_job_probe_negative()
+    fail += n
+    print(f"  {'--job-probe':18s} {detail}  (negative/DEMO：无 job 就不得出现后台字样)")
 
     print("\n== 2c. REQ-03 异步投递 (live A/B) ==")
     core = ROOT / "core" / "bin" / "fake-core.exe"

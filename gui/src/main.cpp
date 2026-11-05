@@ -108,6 +108,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.agentProbe = true;   // ★ 协议 v5：子代理缩进/生命周期判据
         } else if (arg == L"--proposal-probe") {
             options.proposalProbe = true;   // ★ 协议 v5：ask 提案卡（detail）判据
+        } else if (arg == L"--job-probe") {
+            options.jobProbe = true;        // ★ 协议 v6：后台作业卡片判据
         } else if (arg == L"--overlay-probe") {
             options.overlayProbe = true;    // ★ 2026-10-30：浮层拓扑 / Light Dismiss 判据
         } else if (arg == L"--resize-probe") {
@@ -221,6 +223,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
                     L"  --menu-probe                     中栏头 `↗` 导出 / `···` 菜单判据\n"
                     L"  --agent-probe                    子代理缩进/生命周期（v5）判据\n"
                     L"  --proposal-probe                 ask 提案卡/diff 预览（v5）判据\n"
+                    L"  --job-probe                      后台作业卡片（v6）判据\n"
                     L"  --overlay-probe                  浮层拓扑（浮层根/重建不叠套/Light Dismiss）判据\n"
                     L"  --resize-probe                   窗口拉伸：行宽/标题栏/无横滚条判据\n"
                     L"  --enter-probe                    Enter 发送 / Shift+Enter 换行判据\n"

@@ -155,8 +155,11 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
     }
 
     // I5：未知 t 忽略并记录（不得崩溃）
+    // ★ v6（2026-11-05）：job 是**已知**控制面类型——它不进 blocks，但绝不能
+    //   被计成 unknownTypes（那会在 I5 通知里把正常 v6 流报成"未知类型"）。
     static const char* kKnown[] = {"hello", "state", "block_start", "delta", "block_end",
-                                   "ask", "usage", "error", "workspace", "bye", "model", "agent"};
+                                   "ask", "usage", "error", "workspace", "bye", "model", "agent",
+                                   "job"};
     bool known = false;
     for (const char* k : kKnown) known = known || (t == k);
     if (!known) {

@@ -1,0 +1,7 @@
+{"t":"hello","seq":0,"ts":"2026-11-05T11:10:00.000Z","protocol":6,"core":"0.6.0","session":"s-v6-jobs-hostile","caps":["tools","jobs"]}
+{"t":"state","seq":1,"ts":"2026-11-05T11:10:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-11-05T11:10:00.020Z","id":"b1","kind":"tool_call","name":"run_command","args":{"command":"sleep 99"}}
+{"t":"job","seq":3,"ts":"2026-11-05T11:10:00.030Z","id":"j1","phase":"output","text":"ghost\n","bytes":6,"dropped":0}
+{"t":"block_end","seq":4,"ts":"2026-11-05T11:10:00.040Z","id":"b1","ok":true}
+{"t":"state","seq":5,"ts":"2026-11-05T11:10:00.050Z","value":"idle"}
+{"t":"bye","seq":6,"ts":"2026-11-05T11:10:00.060Z","reason":"eof","code":0}

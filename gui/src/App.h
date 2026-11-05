@@ -435,6 +435,20 @@ private:
         std::vector<std::string> tools;      // task：授权只读工具集
     };
 
+    // ★★ 协议 v6（2026-11-05）：后台作业的**渲染模型**（§3.13 `t:"job"`）。
+    //   ★ 只收渲染要用的字段；协议字段（command/cwd/call）按原样留，不推导。
+    //   ★ `tail` 是 GUI 侧尾窗（≤64KB）：协议给的是绝对偏移与累计量，屏幕只画
+    //     最后一段；需要全文看会话日志/journal，不在卡片里假装"全都有"。
+    struct JobView {
+        std::string id;                  // j1 …
+        std::string command;             // start.command
+        std::string call;                // start.call（tool_call 块 id）
+        std::string status = "running";  // running / exited / failed / killed / timeout
+        long long bytes = 0;             // 累计产出（协议 bytes，真值）
+        long long dropped = 0;           // 尾部窗口丢弃量（协议 dropped，真值）
+        long long exitCode = 0;
+        std::string tail;                // 渲染尾窗（本 GUI 自截，不是协议字段）
+    };
 
     // ★★ 0c（2026-10-19）：**转录时间线**——「该被看见的一行」的模型侧描述。
     //   为什么必须有它：在此之前「屏幕上有什么行」这件事**只存在于控件树里**
@@ -684,6 +698,14 @@ private:
         std::vector<TimelineEntry> timeline;
         std::deque<RowRec> rows;
         std::map<std::string, size_t> blockRows;  // block id → rows 下标（delta 流式追加用）
+
+        // ★★ 协议 v6（2026-11-05）：后台作业。三张表各司其职：
+        //   jobsByCall：run_command 的 tool_call 块 id → 作业视图（卡片挂在这张工具卡上）；
+        //   jobCalls  ：job id → call 块 id（output/end 只有 job id，反查才找得到行）；
+        //   ★ 为什么放 Session 而不是 RowRec：重建走 MaterializeRows，视图状态必须
+        //     能从模型重放——只活在控件里，换主题/切会话一次就丢（0c 的老教训）。
+        std::map<std::string, JobView> jobsByCall;
+        std::map<std::string, std::string> jobCalls;
 
         // ── hello / 协议协商 ──
         std::string coreState;
@@ -1308,6 +1330,7 @@ private:
     void AppendSidebarProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendAgentProbeSummary(std::string& json);     // ProbeAgents.cpp（v5）
     void AppendProposalProbeSummary(std::string& json);  // ProbeProposal.cpp（v5 提案卡）
+    void AppendJobProbeSummary(std::string& json);       // ProbeJob.cpp（v6 后台作业）
     void AppendAnswerProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendMenuProbeSummary(std::string& json);   // ProbeChrome.cpp
     void AppendJumpProbeSummary(std::string& json);   // ProbeFlow.cpp
@@ -1825,6 +1848,18 @@ private:
     void RunAgentProbe();
     // ★★ 协议 v5（2026-11-05）：ask 提案卡。判据与负对照见 ProbeProposal.cpp 头注。
     void RunProposalProbe();
+    // ★★ 协议 v6（2026-11-05）：后台作业卡片。判据与负对照见 ProbeJob.cpp 头注。
+    void RunJobProbe();
+    // job 消息的唯一入口（RouteLastMessage 调）：更新 jobsByCall / jobCalls，
+    // 再把状态写到对应工具行。**不发协议消息、不建行、不动 timeline**。
+    void HandleJobMessage(const json::Value& msg);
+    // 把 jobsByCall[callId] 渲染到该 call 的工具行（标题 + 折叠体尾部）。
+    // 行/块不存在时静默返回（回放早期消息、坏行都走这条，不编造卡片）。
+    void ApplyJobToRow(RowRec& row, const std::string& callId);
+    // 工具行标题的唯一出口：ToolTitle + 可选的后台状态后缀。
+    // 增量（block_end / 折叠切换）与重建（MaterializeOne）都必须走它，否则
+    // 重建后标题少一段——探针 A/B 会当场抓住。
+    std::string ToolTitleWithJob(const Block& block) const;
     void AppendTableProbeSummary(std::string& json);
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：

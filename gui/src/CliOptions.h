@@ -340,6 +340,10 @@ struct CliOptions {
     //   判据：提案卡行数/±行数与模型侧 detail 重切行数逐项相等、无空提案体；
     //   负对照（无 detail 夹具）：detailRows==0 且 diffRows==0 —— 见 ProbeProposal.cpp。
     bool proposalProbe = false;        // --proposal-probe：提案卡判据
+    // ★★ 协议 v6（2026-11-05）：后台作业卡片（job 消息）。正向夹具断「卡片挂对
+    //   工具行 + 标题/正文与模型一致」，负对照（demo）断「无 job 就不得出现后台
+    //   字样」——见 ProbeJob.cpp。
+    bool jobProbe = false;             // --job-probe：后台作业卡片判据
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
 
@@ -351,7 +355,7 @@ struct CliOptions {
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
                growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe ||
-               agentProbe || proposalProbe;
+               agentProbe || proposalProbe || jobProbe;
     }
 };
 

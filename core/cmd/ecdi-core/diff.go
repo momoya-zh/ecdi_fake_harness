@@ -306,13 +306,19 @@ func runCommandDetail(args map[string]any, root string) map[string]any {
 	if timeout < 1 {
 		timeout = 1
 	}
-	return map[string]any{
+	d := map[string]any{
 		"tool":           "run_command",
 		"command":        command,
 		"cwd":            filepath.ToSlash(root),
 		"timeoutSeconds": timeout,
 		"note":           getSandboxConfig().sandboxNote(timeout),
 	}
+	// v6：后台作业的 note 第二行换成作业预算（60 秒的 tool 超时对它不适用）。
+	if bg, _ := args["background"].(bool); bg {
+		d["background"] = true
+		d["note"] = getSandboxConfig().sandboxBackgroundNote()
+	}
+	return d
 }
 
 // delegationAskDetail：task 委派的 detail（agent.go prepareDelegation 调用）。

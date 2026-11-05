@@ -230,6 +230,7 @@
 | `detail.diff` | write_file / edit_file：**unified diff 文本**（core 以当前磁盘内容算，context 3 行；超长截断并标注）。新文件 = 全 `+` 行；内容无变化 = 空串。edit_file 的 diff 是**替换片段**的 diff（`old_string`→`new_string`），整文件上下文在 `tool_call` 块的 `args` 里 |
 | `detail.replaceAll` | edit_file：布尔，缺省 false |
 | `detail.command` / `detail.cwd` / `detail.timeoutSeconds` | run_command：完整命令（**不截断**）/ 实际工作区根 / 生效超时秒 |
+| `detail.background` | run_command：布尔，缺省 false；true = 后台作业（v6），提案卡标注「后台」 |
 | `detail.task` / `detail.tools` / `detail.maxTurns` / `detail.timeoutSeconds` | task 委派：任务全文 / 授权只读工具集 / 轮数与墙钟预算 |
 
 - **`detail` 是渲染数据，不是不变量对象**：`validate.py` **不**校验它的内部结构（与 `block_start.args` 同一地位——最坏后果是 GUI 回落问句文本，不存在序完整性风险，故不造机器检查）。
@@ -243,7 +244,8 @@
 ⇒ 想把它当安全机制用是**用错工具**。但它在**另一个用途上必要且有效**：
 **让用户看清一个「可信但会犯错」的 agent 打算干什么**（人在环控制）。
 
-★ **本协议是渲染契约，不提供任何隔离**：真 core 的隔离是**运行者**的责任（容器 / VM / 受限账户）。
+★ **本协议是渲染契约，不提供任何隔离**：L1 沙盒由 core 内置（`run_command` 的 Job Object / 受限令牌，
+见 `docs/l1-sandbox-plan.md`）；更高层级的 L2 隔离仍是**运行者**的责任（容器 / VM / 受限账户）。
 详见 [`docs/positioning.md`](../docs/positioning.md) §4。
 
 ### 3.7 `usage`
@@ -400,6 +402,41 @@ GUI 收到 0 必须落到 `ctxCapacity = 0`（显示 `—`），不得保留旧�
 
 ★ **本消息是可选的**：core 不声明 `caps` 里的 `"agents"` 就**不发**；老 GUI 收到则按 I5 忽略并计入 `unknownTypes`（不崩、不丢）。
 
+### 3.13 `job`（core → gui，v6 后台任务生命周期）
+
+**控制面消息**，与 `agent` 同族：不进转录块、没有 `block_end`；`id` 是作业 id（`j1` 起），
+与块 id / 代理 id 分空间。v6 新增；core 在 `caps` 里声明 `"jobs"` 才会发。
+
+```json
+{"t":"job","seq":12,"ts":"...","id":"j1","phase":"start","command":"npm run dev","cwd":"D:/ws","call":"b7"}
+{"t":"job","seq":31,"ts":"...","id":"j1","phase":"output","text":"ready in 312ms
+","bytes":312,"dropped":0}
+{"t":"job","seq":45,"ts":"...","id":"j1","phase":"end","status":"exited","exitCode":0,"durationMs":8123}
+```
+
+| 字段 | phase | 说明 |
+|---|---|---|
+| `id` | 全部 | 作业 id，一份流内**唯一**（I14）；建议 `j1`/`j2`，与 `b*`/`a*` 分空间 |
+| `phase` | 全部 | `start` / `output` / `end`；首条必须是 `start`，`end` 恰好一次（I14） |
+| `command` | start | 完整命令，**不截断**（与 `ask.detail.command` 是同一份文本） |
+| `cwd` | start | 实际工作区根 |
+| `call` | start | 发起它的 `tool_call` 块 id（必须已 `block_start`，I14 管） |
+| `text` | output | **新增**文本（非累计） |
+| `bytes` | output | 该作业从 start 起累计产出的字节数 |
+| `dropped` | output | 因 256KB 环形窗口溢出而丢弃的累计字节；0 = 没丢 |
+| `status` | end | `exited` / `failed` / `killed` / `timeout` |
+| `exitCode` | end | 进程退出码；`killed` / `timeout` 为 -1 |
+| `durationMs` | end | 从 start 到进程结束的墙钟毫秒 |
+
+★ **为什么是独立消息而不是 `block`**：作业跨轮存活，而块是「一条助手消息内的流式单元」
+（I2/I6）。把作业塞进块会让块在 `block_end` 之后继续变（直接违反 I6），也会把
+「一轮结束」与「作业结束」两个时刻混为一谈。
+
+★ **I3 不豁免**：ask 未答期间 core 不得发任何消息（`usage` 除外）⇒ 后台输出在 ask
+期间必须**缓冲**，答完后按序补发；GUI 不会在权限门后面收到作业消息。
+
+★ **不静默丢**：窗口溢出必须带 `dropped` 计数，GUI 标题显示「丢弃 N 字节」。
+
 ## 4. gui → core 消息
 
 | `t` | 载荷 | 何时发 |
@@ -454,8 +491,9 @@ GUI 收到 0 必须落到 `ctxCapacity = 0`（显示 `—`），不得保留旧�
 | **I11** | ★ **v4**：`model` 请求（gui→core）与确认（core→gui）的 `id` 一份流内**互不相同**；请求**仅 `idle` 合法**（GUI 排队兑现「等上一个完整输出完」）；确认 `ok:false` 必带 `message`；成功确认的 `provider`/`model`/`context`/`maxOutput` 是 core **实际采用**的值（不是请求原文的回显） | 切换错位 / 悄悄换错模型 / 半途掐断正在输出的轮 |
 | **I12** | ★ **v5**：`agent` 的 `id` 一份流内**唯一**；`phase` ∈ {`start`,`end`}，两者各**恰好一次**；`phase=start` 必须**先于**任何携带该 `agent` 的 `block_start` / `ask`；`phase=end` **之后**不得再出现该 `agent` 的任何块或 `ask` | 子代理的行挂在一个不存在的代理上 / 代理结束后还在吐内容（界面上是幽灵缩进行，谁也说不清它属于谁） |
 | **I13** | ★ **v5**：带 `parent` 的块**必须同时带 `agent`**，且 `parent` 必须指向一个**已存在的 `tool_call` 块**、且该块**属于父代理**（深度固定 1 ⇒ 子代理的父一定是根代理 ⇒ 那个 `tool_call` 不得带 `agent`） | 子代理的行挂到错误的委派下面 / 归属竖线画到别人的调用上 |
+| **I14** | ★ **v6**：`job` 的 `id` 一份流内**唯一**；首条必须是 `phase:"start"`；`output`/`end` 只能在 start 之后；`end` **恰好一次**，之后不得再有该 id 的任何消息；`phase` ∈ {`start`,`output`,`end`}；`start` 必须带 `command`/`cwd`，且 `call` 指向一个**已 `block_start` 的 `tool_call`** | 作业输出挂到不存在的作业上 / 作业结束后还在吐内容（界面上是永不结束的后台卡） |
 
-> ★ **I9 / I10 / I12 / I13 的适用范围**：按 `hello.protocol` 分流——I9/I10 只约束 `>= 3`，I12/I13 只约束 `>= 5`。v1/v2/v3/v4 夹具**早于**
+> ★ **I9 / I10 / I12 / I13 / I14 的适用范围**：按 `hello.protocol` 分流——I9/I10 只约束 `>= 3`，I12/I13 只约束 `>= 5`，I14 只约束 `>= 6`。v1/v2/v3/v4 夹具**早于**
 > `client_id` / `workspace` / `agent` 存在，对它们施加这些义务就是把历史记录判成违规。`validate.py` 按 `hello.protocol` 分流，不是按文件名或目录名。
 
 > **I4 是本项目的核心评估钩子**：`Application::PostToUi` 的乱序/丢失只有靠它才看得见。
@@ -552,6 +590,22 @@ GUI 侧对 `prompt` / `cancel` / `workspace` 的按钮使能**只由 `state` 驱
 | `task` | 键值行：`task` 全文 / `tools` / `maxTurns` / `timeoutSeconds` |
 | 回答态 | 展开体**不随回答隐藏**（审计痕迹），只禁用按钮——同 `ApplyAnsweredLook` 单点 |
 | 回落 | `detail` 缺失/非对象/`tool` 未知 ⇒ 只渲染问句文本（= v4 行为），不得崩、不得空卡 |
+
+#### 后台作业卡（v6 新增，2026-11-05）
+
+**一句话**：`job` 状态**贴在发起它的 `run_command` tool_call 行**上（同一张工具卡，不新建行、
+不占块 id），随作业更新到 `end`。★ 这是落地形态；初稿写的"独立作业行 + `⏵` 标题"没有实现
+（GUI 重建按 timeline 重放，新行类型要连带改 parity/session 探针，收益不抵风险）。
+
+| 元素 | 规格 |
+|---|---|
+| 挂点 | 作业卡 = 那次 `run_command` 的工具卡。`start.call` 指向的 tool_call 块**已存在**（I14 管） |
+| 标题 | `› run_command · 后台 j1 · 运行中 / 已完成 / 失败 / 已终止 / 超时`（后缀；状态只取自 `end.status`，不猜） |
+| 正文 | 工具参数 + `── 后台 j1 · <状态> · 输出 <N> ──` + 尾部输出（GUI 侧尾窗 64KB；空则「（暂无输出）」） |
+| `dropped>0` | 正文 header 追加 `· 已丢弃 N`（不静默） |
+| 重建 | journal 的 `job` 消息填 `jobsByCall`；`MaterializeOne` 与实时路径走**同一个**标题/正文函数 |
+| `output`/`end` 无 `start` | 记一条通知行并忽略（不建孤儿卡） |
+| 未知 `phase` | 记一条通知行并忽略；不崩溃 |
 
 #### `reasoning` 的渲染形态（v2 新增，2026-10-14 用户定调）
 
@@ -678,12 +732,14 @@ face ⇒ 字重与基线与旁边文字对不上，**比原样更难看**。⇒ 
 | `fixtures/hostile/agent-undeclared.jsonl` | ★ **v5 / I12 负向**：块携带一个**从未 `start`** 的 `agent`——子行会挂在一个不存在的代理上 |
 | `fixtures/hostile/agent-after-end.jsonl` | ★ **v5 / I12 负向**：`phase=end` **之后**仍有该代理的块——代理已经收尾，界面却还在长行 |
 | `fixtures/hostile/parent-dangling.jsonl` | ★ **v5 / I13 负向**：`parent` 指向一个**不存在**的块——归属竖线无处可连 |
+| `fixtures/jobs/background-task.jsonl` | ★ **v6 后台作业正向基线**（`protocol:6`）：`run_command background=true` 过 ask 门 → `job phase=start`（`call` 指向 tool_call 块）→ 输出增量 → `job_output` 取到增量 → `job_kill` → `job phase=end status=killed`。用途：作业卡（标题挂 j1+终态、正文尾部输出）与 `--job-probe` 的读数基线；同批负对照 = demo 夹具（无 `job` 消息 ⇒ 零后台字样） |
+| `fixtures/hostile/job-output-before-start.jsonl` | ★ **v6 / I14 负向**：`phase=output` 出现在任何 `start` 之前——GUI 会给一个不存在的作业建卡，模型侧也无从对账 |
 | `fixtures/proposal/write-edit-run-asks.jsonl` | ★ **v5 提案卡正向基线**（`protocol:5`）：三个 `ask` 各带 `detail`——`write_file`（新文件 = 全 `+` 行 diff）/ `edit_file`（替换片段 diff）/ `run_command`（完整命令 + cwd + 超时）。每个 `ask` 严格配对 `state=waiting → state=running`。用途：提案卡展开体与 `--proposal-probe` 的读数基线；同批负对照 = 既有 demo 夹具（无 `detail` ⇒ 零 diff 行） |
 
 **否定型断言必须配正对照**：先用 `demo-session.jsonl` 证明路径通，再用 hostile 目录证明失败被**显式**暴露。
 
-★ **十三份夹具的版本声明**（2026-11-04 起）：**九份声明 `protocol:3`**（四份正向 + 五份 hostile），
-**四份声明 `protocol:5`**（`subagent` 正向 + 三份 hostile）。这不是凑数：I9 / I10 只约束
+★ **十七份夹具的版本声明**（2026-11-05 起）：其余夹具声明 `protocol:3`，v5 夹具声明 `5`
+（`subagent` 正向 + 三份 hostile + `proposal`），v6 夹具声明 `6`（`jobs` 正向 + 一份 hostile）。这不是凑数：I9 / I10 只约束
 `hello.protocol >= 3`、I12 / I13 只约束 `>= 5`，若 hostile 停在低版本，负向用例会被版本门整个豁免 ——
 它会**永远通过**，而永远通过的负向用例与不存在无法区分（§8.5 末尾那条的同族错误）。
 `validate.py` 按 `hello.protocol` 分流，不按文件名或目录名。
@@ -708,7 +764,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 ## 9. 版本与兼容
 
-**当前版本 = `5`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 5**（`kProtocolMaxSupported`，`gui/src/AppInternal.h`——改这里必须与本节表格同步）。
+**当前版本 = `6`**。`hello.protocol` 是 core 声明的版本；本仓库 GUI 支持**上限 = 6**（`kProtocolMaxSupported`，`gui/src/AppInternal.h`——改这里必须与本节表格同步）。
 
 - `protocol` 是**主版本**。core 的 `protocol` > GUI 支持的上限 ⇒ **GUI 拒绝连接并显示原因**，不做降级猜测。
   ★ **`hello` 不携带 `protocol` 字段时按 v1 处理**（v1 时代该字段是必填，但宽容比拒连更安全——
@@ -718,6 +774,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
+| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
 | **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 · **2026-11-05 增补（仍属 v5，只增不改）**：§3.6 `ask` 增可选 `detail`（提案卡：write/edit 带 `diff`、run/task 带结构化字段；渲染数据**非不变量对象**，validate 不查），§7 增 `ask` 提案卡渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**；`detail` 同为未知字段被忽略 ⇒ 问句照显、无提案体。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
 | **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |

@@ -73,3 +73,14 @@ func (cfg SandboxConfig) sandboxNote(timeoutSeconds int) string {
 func envTimeoutNote(timeoutSeconds int) string {
 	return fmt.Sprintf("密钥环境变量（ECDI_CORE_KEY / ECDI_PROVIDER_*_KEY）已剔除；超时 %d 秒强制终止", timeoutSeconds)
 }
+
+// sandboxBackgroundNote：后台作业的 note（同样两行；第二行换作业预算）。
+// ★ 两行是 GUI 侧定高 Label 的硬约束（不折行，单行 ~1000px 会被裁）。
+func (cfg SandboxConfig) sandboxBackgroundNote() string {
+	tail := fmt.Sprintf("密钥环境变量（ECDI_CORE_KEY / ECDI_PROVIDER_*_KEY）已剔除；后台作业不阻塞本轮，最长 %d 分钟",
+		int(jobMaxAge.Minutes()))
+	if !cfg.Enabled {
+		return "【警告】L1 沙盒已禁用：命令以宿主完整权限直接执行\n" + tail
+	}
+	return cfg.platformSandboxNote() + "\n" + tail
+}

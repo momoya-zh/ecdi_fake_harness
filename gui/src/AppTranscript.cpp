@@ -44,6 +44,10 @@
 #include <utility>
 #include <vector>
 
+// 跨 TU 共享符号（定义见 UiCommon.cpp；v6 后台作业展示口径）
+using harness::internal::JobStatusLabel;
+using harness::internal::JobHumanBytes;
+
 // 跨 TU 共享符号（定义见 AppInternal.h / UiCommon.cpp）
 using harness::internal::AskNeedsFold;
 using harness::internal::AskTitle;
@@ -126,6 +130,56 @@ std::string ToolTitle(const Block& block, const Block* call) {
     }
     // ★ 2026-10-18：`▸`(U+25B8) 两主题 face 都无字形 ⇒ `›`(U+203A)（同右向尖括号语义）
     return "› " + base;
+}
+
+// ★★ 协议 v6（2026-11-05）：工具行标题的**唯一出口**（ToolTitle + 后台状态后缀）。
+//   增量（block_end / 折叠切换）与重建（MaterializeOne）都走这里；两处各拼一次
+//   必然漂移，而漂移的表现就是"重建后标题少一段"——探针 A/B 的判据正是它。
+std::string HarnessApp::ToolTitleWithJob(const Block& block) const {
+    const Block* call = (block.kind == "tool_result")
+                            ? m_sess->transcript.FindBlock(block.forId)
+                            : nullptr;
+    std::string title = ToolTitle(block, call);
+    if (!m_sess) return title;
+    auto it = m_sess->jobsByCall.find(block.id);
+    if (it != m_sess->jobsByCall.end()) {
+        title += " · " + it->second.id + " " + JobStatusLabel(it->second.status);
+    }
+    return title;
+}
+
+// ★★ 协议 v6：把一个作业的当前状态画到它的 tool_call 行上。
+//   ★ 标题走 ToolTitleWithJob（单一出口）；正文 = 工具参数 + 作业头 + 尾部输出。
+//   ★ 没有 tail 时说「（暂无输出）」而不是空白——空白会被读成"卡片坏了"。
+void HarnessApp::ApplyJobToRow(RowRec& row, const std::string& callId) {
+    if (!m_sess) return;
+    auto it = m_sess->jobsByCall.find(callId);
+    if (it == m_sess->jobsByCall.end()) return;
+    const JobView& v = it->second;
+
+    if (row.headerBtn) {
+        if (const Block* b = m_sess->transcript.FindBlock(callId)) {
+            row.headerBtn->SetText(ToolTitleWithJob(*b));
+        } else {
+            row.headerBtn->SetText("› " + v.command + " · " + v.id + " " +
+                                   JobStatusLabel(v.status));
+        }
+    }
+    if (!row.label) return;
+
+    std::string body;
+    if (const Block* b = m_sess->transcript.FindBlock(callId)) {
+        body = b->argsPretty.empty() ? "{}" : b->argsPretty;
+    } else {
+        body = "{}";
+    }
+    body += "\n\n── 后台 " + v.id + " · " + JobStatusLabel(v.status) + " · 输出 " +
+            JobHumanBytes(v.bytes);
+    if (v.dropped > 0) body += " · 已丢弃 " + JobHumanBytes(v.dropped);
+    body += " ──\n";
+    body += v.tail.empty() ? "（暂无输出）" : v.tail;
+    if (v.status != "running") body += "\n[退出码 " + std::to_string(v.exitCode) + "]";
+    row.label->SetText(body);
 }
 
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowRec& rec) {
@@ -530,9 +584,9 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
                 // ★ 修 2026-10-19：此前工具卡这一支传的是 `std::string()`
                 //   ⇒ **点一下工具卡，标题就被清空**（卡片从此没有名字）。
                 //   与"箭头两态"同一个道理：标题必须由单一真相源重算，不能置空。
-                const Block* call =
-                    (b->kind == "tool_result") ? m_sess->transcript.FindBlock(b->forId) : nullptr;
-                stored.headerBtn->SetText(ToolTitle(*b, call));
+                //   ★ v6：单一真相源升级为 ToolTitleWithJob——后台作业的终态/状态
+                //     也在这里重贴，否则点一下折叠就把后台状态抹掉了。
+                stored.headerBtn->SetText(ToolTitleWithJob(*b));
             }
         }
     }
@@ -595,6 +649,9 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             RowRec rec;
             rec.expanded = entry.expanded;   // ★ 先回填状态再建行：标题箭头据此定态
             auto panel = BuildBlockRow(*block, rec);
+            // ★★ 协议 v6：重建时把后台作业状态贴回这张工具卡（模型 jobsByCall
+            //   是唯一来源；磁盘 journal 重放路径同样经过 RouteLastMessage）。
+            ApplyJobToRow(rec, block->id);
             AddRow(std::move(panel), rec, block->id, idx);
             if (m_sess->rows.empty()) return;
             RowRec& stored = m_sess->rows.back();

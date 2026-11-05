@@ -1,0 +1,40 @@
+{"t":"hello","seq":0,"ts":"2026-11-05T11:00:00.000Z","protocol":6,"core":"0.6.0","session":"s-v6-jobs-1","caps":["tools","ask","workspace","jobs"]}
+{"t":"state","seq":1,"ts":"2026-11-05T11:00:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-11-05T11:00:00.020Z","id":"b1","kind":"user","client_id":"p1","text":"把 dev server 起在后台，确认端口能响应后再停掉"}
+{"t":"block_end","seq":3,"ts":"2026-11-05T11:00:00.030Z","id":"b1","ok":true}
+{"t":"block_start","seq":4,"ts":"2026-11-05T11:00:00.040Z","id":"b2","kind":"assistant"}
+{"t":"delta","seq":5,"ts":"2026-11-05T11:00:00.050Z","id":"b2","text":"好，我先在后台启动，再读一次输出确认端口，最后停掉。"}
+{"t":"block_end","seq":6,"ts":"2026-11-05T11:00:00.060Z","id":"b2","ok":true}
+{"t":"block_start","seq":7,"ts":"2026-11-05T11:00:00.070Z","id":"b3","kind":"tool_call","name":"run_command","args":{"command":"python -m http.server 8000","background":true,"timeout_seconds":60}}
+{"t":"ask","seq":8,"ts":"2026-11-05T11:00:00.080Z","id":"q1","kind":"permission","question":"允许在后台执行命令吗？python -m http.server 8000","options":[{"key":"allow","label":"允许"},{"key":"deny","label":"拒绝"}],"default":"deny","detail":{"tool":"run_command","command":"python -m http.server 8000","cwd":"D:/Project/ECDI_fake_harness","timeoutSeconds":60,"background":true,"note":"L1 沙盒（Windows Job Object） · 内存≤1024MB · 进程≤32 · 整树强杀 · 特权已剥离\n密钥环境变量（ECDI_CORE_KEY / ECDI_PROVIDER_*_KEY）已剔除；超时 60 秒强制终止"}}
+{"t":"state","seq":9,"ts":"2026-11-05T11:00:00.090Z","value":"waiting"}
+{"t":"state","seq":10,"ts":"2026-11-05T11:00:00.500Z","value":"running"}
+{"t":"job","seq":11,"ts":"2026-11-05T11:00:00.510Z","id":"j1","phase":"start","command":"python -m http.server 8000","cwd":"D:/Project/ECDI_fake_harness","call":"b3"}
+{"t":"block_start","seq":12,"ts":"2026-11-05T11:00:00.520Z","id":"b4","kind":"tool_result","for":"b3"}
+{"t":"delta","seq":13,"ts":"2026-11-05T11:00:00.530Z","id":"b4","text":"后台任务 j1 已启动（运行中）。\n命令：python -m http.server 8000\n用 job_output {\"job_id\":\"j1\"} 取增量输出；job_kill 终止。"}
+{"t":"block_end","seq":14,"ts":"2026-11-05T11:00:00.540Z","id":"b4","ok":true,"summary":"已在后台启动 j1"}
+{"t":"block_end","seq":15,"ts":"2026-11-05T11:00:00.550Z","id":"b3","ok":true,"summary":"后台 j1"}
+{"t":"block_start","seq":16,"ts":"2026-11-05T11:00:00.560Z","id":"b5","kind":"assistant"}
+{"t":"delta","seq":17,"ts":"2026-11-05T11:00:00.570Z","id":"b5","text":"服务已在后台。我读一下启动日志确认监听端口。"}
+{"t":"block_end","seq":18,"ts":"2026-11-05T11:00:00.580Z","id":"b5","ok":true}
+{"t":"job","seq":19,"ts":"2026-11-05T11:00:02.000Z","id":"j1","phase":"output","text":"Serving HTTP on 0.0.0.0 port 8000 (http://0.0.0.0:8000/) ...\n","bytes":72,"dropped":0}
+{"t":"block_start","seq":20,"ts":"2026-11-05T11:00:02.010Z","id":"b6","kind":"tool_call","name":"job_output","args":{"job_id":"j1"}}
+{"t":"block_start","seq":21,"ts":"2026-11-05T11:00:02.020Z","id":"b7","kind":"tool_result","for":"b6"}
+{"t":"delta","seq":22,"ts":"2026-11-05T11:00:02.030Z","id":"b7","text":"[运行中] j1 · 已运行 2s · 输出 72B（本轮新增 72B）\nServing HTTP on 0.0.0.0 port 8000 (http://0.0.0.0:8000/) ..."}
+{"t":"block_end","seq":23,"ts":"2026-11-05T11:00:02.040Z","id":"b7","ok":true}
+{"t":"block_end","seq":24,"ts":"2026-11-05T11:00:02.050Z","id":"b6","ok":true,"summary":"72B"}
+{"t":"block_start","seq":25,"ts":"2026-11-05T11:00:02.060Z","id":"b8","kind":"assistant"}
+{"t":"delta","seq":26,"ts":"2026-11-05T11:00:02.070Z","id":"b8","text":"端口 8000 已监听。现在停掉它。"}
+{"t":"block_end","seq":27,"ts":"2026-11-05T11:00:02.080Z","id":"b8","ok":true}
+{"t":"block_start","seq":28,"ts":"2026-11-05T11:00:02.090Z","id":"b9","kind":"tool_call","name":"job_kill","args":{"job_id":"j1"}}
+{"t":"block_start","seq":29,"ts":"2026-11-05T11:00:02.100Z","id":"b10","kind":"tool_result","for":"b9"}
+{"t":"delta","seq":30,"ts":"2026-11-05T11:00:02.110Z","id":"b10","text":"[已终止] j1 · 运行 4s · 退出码 -1\nServing HTTP on 0.0.0.0 port 8000 (http://0.0.0.0:8000/) ..."}
+{"t":"block_end","seq":31,"ts":"2026-11-05T11:00:02.120Z","id":"b10","ok":true,"summary":"已终止"}
+{"t":"block_end","seq":32,"ts":"2026-11-05T11:00:02.130Z","id":"b9","ok":true,"summary":"已终止 j1"}
+{"t":"job","seq":33,"ts":"2026-11-05T11:00:02.140Z","id":"j1","phase":"end","status":"killed","exitCode":-1,"durationMs":4000}
+{"t":"block_start","seq":34,"ts":"2026-11-05T11:00:02.150Z","id":"b11","kind":"assistant"}
+{"t":"delta","seq":35,"ts":"2026-11-05T11:00:02.160Z","id":"b11","text":"已停掉。端口确认过，后台作业结束（killed）。"}
+{"t":"block_end","seq":36,"ts":"2026-11-05T11:00:02.170Z","id":"b11","ok":true}
+{"t":"usage","seq":37,"ts":"2026-11-05T11:00:02.180Z","turn":1,"input":6120,"output":430}
+{"t":"state","seq":38,"ts":"2026-11-05T11:00:02.190Z","value":"idle"}
+{"t":"bye","seq":39,"ts":"2026-11-05T11:00:02.200Z","reason":"eof","code":0}

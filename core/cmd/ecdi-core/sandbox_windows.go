@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -271,6 +272,89 @@ func startSandboxed(cmd *exec.Cmd, hJob syscall.Handle) error {
 		return err
 	}
 	return nil
+}
+
+// startBackgroundProcess：后台作业（协议 v6）的启动原语。
+//
+// 与 runCommandInSandbox 同源（同一套令牌 / 作业 / 挂起→挂接→恢复），区别只在
+// 生命周期：这里把 Wait 与作业句柄交给 jobHub，作业跨轮存活；输出直接写 sink。
+// 失败语义同为 fail-closed：调用方拿到 error 时命令没有在裸权限下跑。
+func startBackgroundProcess(command, root string, cfg SandboxConfig, sink io.Writer) (*bgProcess, error) {
+	if !cfg.Enabled {
+		cmd := exec.Command("cmd", "/c", command)
+		cmd.Dir = root
+		cmd.Env = childEnv()
+		cmd.Stdout, cmd.Stderr = sink, sink
+		hideChildWindow(cmd)
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("启动后台命令失败：%w", err)
+		}
+		return &bgProcess{
+			wait:  cmd.Wait,
+			kill:  func() { if cmd.Process != nil { _ = cmd.Process.Kill() } },
+			close: func() {},
+			exitCode: func() int {
+				if cmd.ProcessState != nil { return cmd.ProcessState.ExitCode() }
+				return -1
+			},
+		}, nil
+	}
+
+	var hToken syscall.Handle
+	if cfg.DropPrivileges {
+		tok, err := createSandboxedToken()
+		if err != nil {
+			return nil, fmt.Errorf("L1 沙盒初始化失败（受限令牌）：%w", err)
+		}
+		hToken = tok
+	}
+	hJob, err := createAndConfigureJob(cfg)
+	if err != nil {
+		if hToken != 0 {
+			syscall.CloseHandle(hToken)
+		}
+		return nil, fmt.Errorf("L1 沙盒初始化失败（Job Object）：%w", err)
+	}
+
+	cmd := exec.Command("cmd", "/c", command)
+	cmd.Dir = root
+	cmd.Env = childEnv()
+	cmd.Stdout, cmd.Stderr = sink, sink
+	cmd.WaitDelay = sandboxWaitDelay
+	sysAttr := &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow | createSuspended,
+	}
+	if hToken != 0 {
+		sysAttr.Token = syscall.Token(hToken)
+	}
+	cmd.SysProcAttr = sysAttr
+
+	if err := startSandboxed(cmd, hJob); err != nil {
+		syscall.CloseHandle(hJob)
+		if hToken != 0 {
+			syscall.CloseHandle(hToken)
+		}
+		return nil, err
+	}
+	if hToken != 0 {
+		// 进程已创建，主令牌句柄不再需要（进程持有自己的副本）。
+		syscall.CloseHandle(hToken)
+	}
+	return &bgProcess{
+		wait: cmd.Wait,
+		kill: func() {
+			procTerminateJobObject.Call(uintptr(hJob), jobTerminateExitCode)
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		},
+		close: func() { syscall.CloseHandle(hJob) },
+		exitCode: func() int {
+			if cmd.ProcessState != nil { return cmd.ProcessState.ExitCode() }
+			return -1
+		},
+	}, nil
 }
 
 // runCommandInSandbox 在沙盒约束下执行命令。

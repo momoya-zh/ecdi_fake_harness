@@ -292,7 +292,16 @@ ECDI::Label* AddLine(ECDI::Panel& parent, const std::string& text,
 //   ★ 两个 TU 读它：App.cpp（RouteLastMessage 判版本）+ AppSummary.cpp（摘要里记上限）。
 //   ★ 2026-11-04：4 → 5（子代理：`agent` 消息 + I12/I13）。★ 注意这是**上限**不是下限——
 //     protocol 3/4 的夹具照旧能放（它们只是没有 agent 维度）。
-inline constexpr int kProtocolMaxSupported = 5;   // v5：子代理 agent 消息 + I12/I13
+//   ★ 2026-11-05：5 → 6（后台长任务：控制面 `job` 消息 + I14）。同上，仍是上限：
+//     protocol ≤5 的夹具照旧能放；只有声明 6 的流才会被按 job 语义消费。
+inline constexpr int kProtocolMaxSupported = 6;   // v6：后台作业 job 消息 + I14
+
+// ── 后台作业（协议 v6）的展示口径 ─────────────────────────────
+// ★ 状态文案与 humanize 收在这里：AppStream（增量）与 AppTranscript（重建）
+//   必须给出**同一个字符串**，否则重建后标题会变——那是探针 A/B 判据的来源。
+// ★ 实现在 UiCommon.cpp（本头只放声明，遵守「不把实现 inline 塞头」的纪律）。
+std::string JobStatusLabel(const std::string& status);
+std::string JobHumanBytes(long long n);
 
 }  // namespace internal
 }  // namespace harness

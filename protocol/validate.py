@@ -35,9 +35,10 @@ KNOWN_TYPES = {
     "prompt", "cancel", "answer", "workspace", # gui -> core; workspace also core -> gui ack
     "model",                              # v4: gui -> core request; also core -> gui ack
     "agent",                              # v5: core -> gui subagent lifecycle (control plane)
+    "job",                                # v6: core -> gui background job lifecycle (control plane)
 }
 CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
-              "usage", "error", "bye", "agent"}
+              "usage", "error", "bye", "agent", "job"}
 
 # PROTOCOL 3.3 block kinds.  Kept here so the validator and the GUI agree on one
 # list: Transcript::IsKnownKind in gui/src/Transcript.cpp is the C++ twin, and a
@@ -57,7 +58,7 @@ KNOWN_KINDS = {"user", "assistant", "reasoning", "tool_call", "tool_result",
 # v5 (2026-11-04) added the `agent` message + I12/I13.
 # Fixtures declaring <= this are fine; anything above is a hard failure here,
 # because such a stream is one the GUI would refuse to connect to at all.
-SUPPORTED_PROTOCOL_MAX = 5
+SUPPORTED_PROTOCOL_MAX = 6
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_FIXTURES = os.path.join(HERE, "fixtures")
@@ -413,6 +414,54 @@ def check_stream(parsed, findings, is_resume=False, last_seq=None):
                 findings.hit("I13", i, "'parent' %r belongs to agent %r; depth "
                                       "is fixed at 1, so the parent must be a "
                                       "root tool_call" % (parent, owner[parent]))
+
+
+    # ---- PROTOCOL 5 (v6, 2026-11-05): I14 job lifecycle -------------------
+    # A job id must be unique; its first message must be phase=start; output
+    # and end only follow a start; end appears exactly once and nothing follows
+    # it.  The start's `call` must name a tool_call block that already started
+    # (the job card hangs under that call in the GUI).
+    if isinstance(declared_protocol, int) and declared_protocol >= 6:
+        job_started, job_ended = {}, {}
+        for i, m in parsed:
+            if m is None or m["t"] != "job":
+                continue
+            jid = m.get("id")
+            phase = m.get("phase")
+            if not isinstance(jid, str) or not jid:
+                findings.hit("I14", i, "job without a non-empty 'id'")
+                continue
+            if phase == "start":
+                if jid in job_started:
+                    findings.hit("I14", i, "duplicate job start for %r" % jid)
+                if not m.get("command") or not m.get("cwd"):
+                    findings.hit("I14", i, "job start %r lacks command/cwd" % jid)
+                if m.get("call") not in calls:
+                    findings.hit("I14", i, "job start %r 'call' does not name "
+                                           "a tool_call block: %r"
+                                 % (jid, m.get("call")))
+                job_started[jid] = i
+            elif phase in ("output", "end"):
+                if jid not in job_started:
+                    findings.hit("I14", i, "job %s for never-started %r"
+                                 % (phase, jid))
+                elif jid in job_ended:
+                    findings.hit("I14", i, "job %s after its end for %r"
+                                 % (phase, jid))
+                if phase == "end":
+                    if m.get("status") not in ("exited", "failed", "killed",
+                                                "timeout"):
+                        findings.hit("I14", i, "job end %r has bad status %r"
+                                     % (jid, m.get("status")))
+                    job_ended[jid] = i
+                elif not isinstance(m.get("text"), str) or not m.get("text"):
+                    findings.hit("I14", i, "job output %r without text" % jid)
+            else:
+                findings.hit("I14", i, "job %r has phase %r (must be "
+                                       "start/output/end)" % (jid, phase))
+        for jid, line in job_started.items():
+            if jid not in job_ended:
+                findings.hit("I14", line, "job %r started but never ended" % jid)
 
     # PROTOCOL 9: a declared version above the supported ceiling means the GUI
     # would refuse to connect -- so a fixture claiming it cannot be "valid".
