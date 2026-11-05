@@ -794,8 +794,13 @@ void HarnessApp::AppendProposalLines(const AskDetail& d,
         addLine("命令  " + d.command, kDarkInk);
         addLine("目录  " + d.cwd, kDarkMuted);
         addLine("超时  " + std::to_string(d.timeoutSeconds) + " 秒", kDarkMuted);
-        if (!d.note.empty()) addLine(d.note, kDarkMuted);
-        out.kvLines = 3 + (d.note.empty() ? 0 : 1);
+        // ★ note 由 core 按换行符分好行（core/cmd/ecdi-core/sandbox.go）：
+        //   提案行不折行，单行 1000px 的说明会被 wrapW≈688px 裁掉右 1/3。
+        out.kvLines = 3;
+        for (const auto& line : SplitLines(d.note)) {
+            addLine(line, kDarkMuted);
+            ++out.kvLines;
+        }
         return;
     }
     if (d.tool == "task") {

@@ -642,8 +642,12 @@ void HarnessApp::RunValignProbe() {
             } else {
                 rec.lineH = static_cast<int>(std::lround(
                     box->GetCaretClientGeometry().rect.height));
-                rec.expectedCenter = static_cast<int>(
-                    std::lround((rec.boxH - rec.lineH) / 2.0f));
+                // ★ 2026-11-05：整数下取整，不用 lround。
+                //   框架公式是 `p + (H-2p-lineH)/2`（C++ 整数除法），padding 代数
+                //   消去后 = floor((H-lineH)/2)。当 H-lineH 为奇数（如 composer
+                //   在 150% DPI 下 H=31、lineH=18）时 lround 得 7、交付值 6，
+                //   会红成"差 1px"的假阴性；floor 才是同一算式。
+                rec.expectedCenter = (rec.boxH - rec.lineH) / 2;
                 if (rec.relYCenter != rec.expectedCenter) {
                     bad = "delivered reading != (H-lineH)/2";
                 }

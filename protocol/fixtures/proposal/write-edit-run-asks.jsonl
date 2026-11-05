@@ -16,7 +16,7 @@
 {"t":"state","seq":15,"ts":"2026-11-05T10:00:00.900Z","value":"running"}
 {"t":"block_end","seq":16,"ts":"2026-11-05T10:00:00.910Z","id":"b4","ok":true,"summary":"1 处已替换"}
 {"t":"block_start","seq":17,"ts":"2026-11-05T10:00:00.920Z","id":"b5","kind":"tool_call","name":"run_command","args":{"command":"python tools/gen_config.py && python protocol/validate.py","timeout_seconds":60}}
-{"t":"ask","seq":18,"ts":"2026-11-05T10:00:00.930Z","id":"q3","kind":"permission","question":"允许执行命令吗？python tools/gen_config.py && python protocol/validate.py","options":[{"key":"allow","label":"允许"},{"key":"deny","label":"拒绝"}],"default":"deny","detail":{"tool":"run_command","command":"python tools/gen_config.py && python protocol/validate.py","cwd":"D:/Project/ECDI_fake_harness","timeoutSeconds":60,"note":"密钥环境变量（ECDI_CORE_KEY / ECDI_PROVIDER_*_KEY）已从子进程环境剔除；超时 60 秒强制终止"}}
+{"t":"ask","seq":18,"ts":"2026-11-05T10:00:00.930Z","id":"q3","kind":"permission","question":"允许执行命令吗？python tools/gen_config.py && python protocol/validate.py","options":[{"key":"allow","label":"允许"},{"key":"deny","label":"拒绝"}],"default":"deny","detail":{"tool":"run_command","command":"python tools/gen_config.py && python protocol/validate.py","cwd":"D:/Project/ECDI_fake_harness","timeoutSeconds":60,"note":"L1 沙盒（Windows Job Object） · 内存≤1024MB · 进程≤32 · 整树强杀 · 特权已剥离\n密钥环境变量（ECDI_CORE_KEY / ECDI_PROVIDER_*_KEY）已剔除；超时 60 秒强制终止"}}
 {"t":"state","seq":19,"ts":"2026-11-05T10:00:00.940Z","value":"waiting"}
 {"t":"state","seq":20,"ts":"2026-11-05T10:00:02.100Z","value":"running"}
 {"t":"block_start","seq":21,"ts":"2026-11-05T10:00:02.110Z","id":"b6","kind":"tool_result","for":"b5"}

@@ -66,7 +66,19 @@ func main() {
 	maxAgents := flag.Int("max-agents", 2, "同时运行的子代理上限（≤8）")
 	agentMaxTurns := flag.Int("agent-max-turns", 8, "单个子代理的轮数上限")
 	agentTimeout := flag.Duration("agent-timeout", 120*time.Second, "单个子代理的墙钟上限")
+	// ── L1 沙盒隔离（run_command 保护）──────────────────────────────
+	sandboxEnabled := flag.Bool("sandbox", true, "启用 L1 沙盒隔离（Windows Job Object + 特权剥离）；默认开启")
+	sandboxMemMB := flag.Int("sandbox-memory-mb", 1024, "L1 沙盒作业内存上限（MB）")
+	sandboxMaxProcs := flag.Int("sandbox-max-procs", 32, "L1 沙盒作业最大活跃进程数（防 fork 炸弹）")
+	sandboxDropPrivs := flag.Bool("sandbox-drop-privs", true, "是否通过受限令牌剥离管理员/调试高危特权")
 	flag.Parse()
+
+	setSandboxConfig(SandboxConfig{
+		Enabled:        *sandboxEnabled,
+		MemoryLimitMB:  *sandboxMemMB,
+		MaxProcesses:   *sandboxMaxProcs,
+		DropPrivileges: *sandboxDropPrivs,
+	})
 
 	// 密钥：参数优先，环境变量兜底；都空 = 拒绝启动（stderr 说明）。
 	secret := *key

@@ -720,6 +720,10 @@ func TestLoopE2E_AskDetailProposal(t *testing.T) {
 	if !strings.Contains(note, "ECDI_CORE_KEY") {
 		t.Fatalf("note 应说明密钥剔除，got %q", note)
 	}
+	// 提案卡行不折行 ⇒ 单行 note 会被裁切；core 必须发两行（GUI 逐行建行）。
+	if strings.Count(note, "\n") != 1 {
+		t.Fatalf("note 必须是两行（提案卡不折行），got %q", note)
+	}
 
 	waitFor(t, col, "state idle", func(m map[string]any) bool {
 		return m["t"] == "state" && m["value"] == "idle"

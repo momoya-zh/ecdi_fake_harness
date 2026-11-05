@@ -26,10 +26,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -505,11 +503,13 @@ func toolEditFile(args map[string]any, root string) toolResult {
 
 // toolRunCommand：在工作区根目录跑一条 shell 命令。
 //
-// ★ 已知局限（不掩盖）：`exec.CommandContext` 到超时只杀**直接子进程**
-//
-//	（cmd.exe / sh），孙进程可能留下来。要根治得用作业对象
-//	（Windows: CreateJobObject + KILL_ON_JOB_CLOSE）——那是下一步，
-//	不在这里假装已经解决。
+// ★ L1 沙盒隔离（2026-11-05）：
+//   - Windows: CreateJobObject + KILL_ON_JOB_CLOSE + JOB_MEMORY + ACTIVE_PROCESS 限制；
+//     进程以 CREATE_SUSPENDED 启动，挂进作业后才恢复（挂接前派生不出逃逸子孙）；
+//   - Restricted Token: 剥离管理员/调试等高危特权，以受限令牌运行；
+//   - 超时或取消时强杀整个作业对象（含挂接后派生的全部子孙），并补杀根进程；
+//   - 令牌/作业任一步失败 ⇒ 命令不执行（fail-closed），不静默降级；
+//   - 只有运行者显式传 --sandbox=false 才退回宿主直接执行。
 func toolRunCommand(args map[string]any, root string) toolResult {
 	command, _ := args["command"].(string)
 	if strings.TrimSpace(command) == "" {
@@ -528,28 +528,7 @@ func toolRunCommand(args map[string]any, root string) toolResult {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "cmd", "/c", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	}
-	cmd.Dir = root
-	cmd.Env = childEnv()
-	hideChildWindow(cmd) // 见 proc_windows.go：否则每跑一条命令闪一个黑色控制台
-	out, err := cmd.CombinedOutput()
-	text := trimOutput(string(out))
-
-	switch {
-	case ctx.Err() == context.DeadlineExceeded:
-		return toolResult{OK: false, Output: fmt.Sprintf("命令超时（%d 秒）已请求终止：\n%s", timeout, text)}
-	case err != nil:
-		return toolResult{OK: false, Output: fmt.Sprintf("退出码非 0（%v）：\n%s", err, text)}
-	}
-	if strings.TrimSpace(text) == "" {
-		return toolResult{OK: true, Output: "（无输出，退出码 0）"}
-	}
-	return toolResult{OK: true, Output: text}
+	return runCommandInSandbox(ctx, command, root, timeout, getSandboxConfig())
 }
 
 // childEnv：继承环境但**剔除密钥**（见文件头 ③）。

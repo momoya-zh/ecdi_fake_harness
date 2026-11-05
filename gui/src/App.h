@@ -429,7 +429,7 @@ private:
         std::string command;                 // run：完整命令（不截断）
         std::string cwd;                     // run：实际工作区根
         int timeoutSeconds = 0;              // run/task：生效超时
-        std::string note;                    // run：环境剥离等说明
+        std::string note;                    // run：沙盒/环境说明（core 已分好行）
         std::string task;                    // task：任务全文
         std::string name;                    // task：子代理显示名
         std::vector<std::string> tools;      // task：授权只读工具集

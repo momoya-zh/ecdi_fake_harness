@@ -311,8 +311,7 @@ func runCommandDetail(args map[string]any, root string) map[string]any {
 		"command":        command,
 		"cwd":            filepath.ToSlash(root),
 		"timeoutSeconds": timeout,
-		"note": fmt.Sprintf("密钥环境变量（ECDI_CORE_KEY / ECDI_PROVIDER_*_KEY）已从子进程环境剔除；"+
-			"超时 %d 秒强制终止", timeout),
+		"note":           getSandboxConfig().sandboxNote(timeout),
 	}
 }
 

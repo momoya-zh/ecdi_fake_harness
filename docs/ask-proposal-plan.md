@@ -49,8 +49,8 @@
 
 ## 已声明未做 / 另批
 
-- **L1 沙盒**（Job Object + Safer 受限 token）：定位变更（positioning §4.3「本仓库不实现隔离」需改写
-  为「应用内置 L1、残余风险明示」），等用户拍板。
+- **L1 沙盒**：✅ 已落地（2026-11-05，`docs/l1-sandbox-plan.md`）。复核补了 fail-closed、
+  挂起→挂接→恢复、提案卡两行 note、非 Windows 诚实边界。
 - diff 长行**不折行**（裁剪保对齐）：若目视验收不可接受，另批改横向滚动。
 - `task` 提案行的任务全文按 200 码点截断（完整任务在 args 卡与问句里）。
 - fake-core **不动**（基线恒 protocol 3）；detail 只出现在真 core 与新夹具。
