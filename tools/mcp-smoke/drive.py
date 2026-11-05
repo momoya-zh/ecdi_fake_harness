@@ -20,8 +20,11 @@
 #
 # 用法：
 #   go build -o bin/ecdi-core.exe ./cmd/ecdi-core   （在 core/ 下）
-#   python tools/mcp-smoke/drive.py [--core <path>]
+#   python tools/mcp-smoke/drive.py [--core <path>] [--deadline 90]
 #
+# ★ 总看门狗：到 deadline（默认 90s，实测全程约 3s）先杀掉自己拉起的
+#   core / server 再退出 1。接进 regress 后，门不能因为一次挂死而永远等下去，
+#   也不能在超时后留下孤儿进程。
 # 产物（gitignored）：.scratch/mcp-smoke/{mcp.json,mixed.json,fake-llm.log,result.json}
 # ============================================================
 import argparse
@@ -47,6 +50,18 @@ if hasattr(sys.stdout, "reconfigure"):
 
 FAILS = []
 CHECKS = []
+PROCS = []  # 活着的 core 进程；看门狗与 finally 都靠它清场
+
+
+def on_deadline(deadline):
+    """总看门狗：超时先清子进程再退出 1（不写 result.json ⇒ 门看到 rc≠0 且无产物）。"""
+    print(f"DEADLINE: smoke exceeded {deadline:.0f}s -- killing children and failing", flush=True)
+    for p in list(PROCS):
+        try:
+            p.kill_tree()
+        except Exception:  # noqa: BLE001
+            pass
+    os._exit(1)
 
 
 def check(name, ok, detail=""):
@@ -132,6 +147,7 @@ class CoreProc:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(SMOKE))
         threading.Thread(target=self._read_out, daemon=True).start()
         threading.Thread(target=self._read_err, daemon=True).start()
+        PROCS.append(self)
 
     def _read_out(self):
         for raw in iter(self.p.stdout.readline, b""):
@@ -296,6 +312,7 @@ def arm_b(core, port):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", default=str(ROOT / "core" / "bin" / "ecdi-core.exe"))
+    ap.add_argument("--deadline", type=float, default=90.0, help="总墙钟上限（秒）")
     args = ap.parse_args()
     core = Path(args.core)
     if not core.exists():
@@ -304,6 +321,10 @@ def main():
     write_configs()
     if LOG.exists():
         LOG.unlink()
+    RESULT.unlink(missing_ok=True)
+    timer = threading.Timer(args.deadline, on_deadline, args=(args.deadline,))
+    timer.daemon = True
+    timer.start()
 
     llm = FakeLLM()
     srv = ThreadingHTTPServer(("127.0.0.1", 0), llm.handler())
@@ -315,6 +336,7 @@ def main():
         arm_b(core, port)
     finally:
         srv.shutdown()
+        timer.cancel()
     summary = {"passed": sum(1 for c in CHECKS if c["ok"]), "failed": len(FAILS), "fails": FAILS,
                "core": str(core), "checks": CHECKS}
     RESULT.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # ============================================================
 # 全量回归验证套件：6 夹具基线 + 24 个探针 + 1 个仪器声明 + REQ-03 live A/B
-# + live 设置探针（真 core，2e）+ 协议校验
+# + live 设置探针（真 core，2e）+ MCP 真链路冒烟（2f）+ 协议校验
 # ------------------------------------------------------------
 # 判据说明（本仓纪律）：
 #   * 夹具基线只看 blocks/deltas/messages —— paints/frames 会随字体与实现变化，
@@ -36,6 +36,11 @@ _EXE_CANDIDATES = [
 EXE = next(p for p in _EXE_CANDIDATES if p.exists()) if any(
     p.exists() for p in _EXE_CANDIDATES) else _EXE_CANDIDATES[0]
 OUT = ROOT / ".scratch"
+# ★ 2026-11-05：MCP 真链路冒烟（2f）。门里只消费它的退出码 + result.json，
+#   冒烟逻辑本身在 tools/mcp-smoke/ 里，不复制一份到门内。
+MCP_SMOKE = ROOT / "tools" / "mcp-smoke" / "drive.py"
+MCP_RESULT = OUT / "mcp-smoke" / "result.json"
+MCP_SMOKE_CHECKS = 28  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿
 
 # ============================================================
 # ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹
@@ -424,6 +429,70 @@ def check_live_settings_probe():
           f"protocolDeclared={d.get('protocolDeclared')} "
           f"label={d.get('activeSessionLabel')!r}")
     return fail
+
+
+def check_mcp_smoke():
+    """2f：MCP 真链路冒烟（真 core + 真 stdio server + 脚本化 SSE）。
+
+    为什么进回归门：MCP 的 Go 单测用的是 mock client，证明不了「真子进程握手 +
+    真分页 tools/list + 真 ask 门 + 真 tools/call 往返 + 退出整树清空」这一段；
+    而这一段才是用户在真终端里唯一会走到的路径。
+
+    前置分工（与 §2e）：§2e 已经调过 `rebuild_core()`，走到这里二进制应当刚重建。
+    于是：二进制不存在 = §2e 构建失败（已计一次），本节 **SKIP** 不重复计数；
+    二进制比 `core/**/*.go` 旧 = **FAILED**（拿旧代码跑绿比不跑更糟）；
+    超时 = FAILED（drive.py 自带 90s 看门狗，正常应在它之前退出并清场）。
+
+    判据：rc==0 且 result.json 的 `failed==0` 且 `passed==MCP_SMOKE_CHECKS`。
+    数量钉死而不是 `>0`——少一条就是断言被删或漏跑，绿必须变红。
+    """
+    if not CORE_REAL.exists():
+        print("  SKIP: core/bin/ecdi-core.exe 不存在（2e 的 rebuild 未产出，不重复计数）")
+        return 0
+    newest = max(p.stat().st_mtime for p in (ROOT / "core").rglob("*.go"))
+    if CORE_REAL.stat().st_mtime < newest:
+        print("  FAILED: core/bin/ecdi-core.exe 比 core/*.go 旧 —— 测旧代码比不测更糟")
+        return 1
+    MCP_RESULT.unlink(missing_ok=True)
+    try:
+        # ★ drive.py 自己把 stdout 设成 UTF-8；父进程必须按 UTF-8 解，
+        #   否则 Windows 的 GBK 默认会把中文断言名读成 UnicodeDecodeError
+        #   （实测：负对照第一次跑就炸在 reader 线程里，红是红了，但红得不干净）。
+        r = subprocess.run([sys.executable, str(MCP_SMOKE), "--deadline", "90"],
+                           cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=150)
+    except subprocess.TimeoutExpired:
+        print("  FAILED: TIMEOUT（drive.py 的 90s 看门狗本该先退出）")
+        return 1
+    summary = {}
+    if MCP_RESULT.exists():
+        try:
+            summary = json.loads(MCP_RESULT.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"  FAILED: result.json 不可解析: {e}")
+            return 1
+    if r.returncode == 2:
+        print("  SKIP: drive.py 自述前置缺失")
+        return 0
+    passed, failed = summary.get("passed"), summary.get("failed")
+    if r.returncode == 0 and failed == 0 and passed == MCP_SMOKE_CHECKS:
+        print(f"  {'tools/mcp-smoke/drive.py':26s} {passed}/{MCP_SMOKE_CHECKS} green  "
+              f"(A: ask→call→result→idle; B: 坏服务降级)")
+        return 0
+    fails = summary.get("fails") or []
+    detail = f"{passed}/{MCP_SMOKE_CHECKS} green, failed={failed}"
+    if fails:
+        detail += "  fails=" + ",".join(fails[:3])
+    if r.returncode:
+        detail += f"  rc={rc_str(r.returncode)}"
+    print(f"  {'tools/mcp-smoke/drive.py':26s} RED  {detail}")
+    if MCP_RESULT.exists():
+        print(f"    see {MCP_RESULT}")
+    else:
+        tail = (r.stderr or "").strip().splitlines()
+        if tail:
+            print("    stderr: " + tail[-1][:160])
+    return 1
 
 
 def run_live(core, core_args, auto_close_ms, extra, out_name):
@@ -910,7 +979,10 @@ def main():
     # 不放进上面的 else：它用的是 ecdi-core.exe，与 fake-core.exe 在不在无关。
     fail += check_live_settings_probe()
 
-    print("\n== 2f. 不入断言门的仪器 (1) ==")
+    print("\n== 2f. MCP 真链路冒烟 (真 core + stdio server) ==")
+    fail += check_mcp_smoke()
+
+    print("\n== 2g. 不入断言门的仪器 (1) ==")
     for flag, why in INSTRUMENTS:
         print(f"  {flag:18s} INSTRUMENT (not a gate): {why}")
 
