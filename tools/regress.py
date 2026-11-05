@@ -40,7 +40,7 @@ OUT = ROOT / ".scratch"
 #   冒烟逻辑本身在 tools/mcp-smoke/ 里，不复制一份到门内。
 MCP_SMOKE = ROOT / "tools" / "mcp-smoke" / "drive.py"
 MCP_RESULT = OUT / "mcp-smoke" / "result.json"
-MCP_SMOKE_CHECKS = 28  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿
+MCP_SMOKE_CHECKS = 32  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail 4 断言，2026-11-06）
 
 # ============================================================
 # ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹

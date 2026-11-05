@@ -859,8 +859,16 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	} else {
 		// ★ detail 在问句之前组装（2026-11-05）：write_file 要读**批准前**的磁盘
 		//   内容算 diff（diff.go）——只读，安全；执行仍在门后。
-		denied = s.askQuestion(turnCtx, askPrompt(c.Name, argsMap, c.Arguments),
-			askDetail(c.Name, argsMap, s.cwd), answerCh)
+		// MCP 工具：先查 hub 把压缩名还原成（服务名, 真实工具名），问句与提案卡
+		// 共用这一次查询（mcp.go Lookup）——给人看的必须是配置里的真名。
+		var mcpRef *mcpToolRef
+		if strings.HasPrefix(c.Name, "mcp__") {
+			if server, orig, ok := s.mcp.Lookup(c.Name); ok {
+				mcpRef = &mcpToolRef{serverName: server, origName: orig}
+			}
+		}
+		denied = s.askQuestion(turnCtx, askPrompt(c.Name, argsMap, c.Arguments, mcpRef),
+			askDetail(c.Name, argsMap, s.cwd, mcpRef), answerCh)
 	}
 
 	var res toolResult

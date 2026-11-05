@@ -422,7 +422,7 @@ private:
     //   未知时 `has=false`，整行走 v4 的问句路径（GUI 兼容义务，PROTOCOL §3.6）。
     struct AskDetail {
         bool has = false;
-        std::string tool;                    // write_file / edit_file / run_command / task
+        std::string tool;                    // write_file / edit_file / run_command / task / mcp
         std::string path;                    // write/edit：目标文件
         std::string diff;                    // write/edit：unified diff 文本（\n 分行）
         bool replaceAll = false;             // edit（core 只在 true 时发）
@@ -433,6 +433,12 @@ private:
         std::string task;                    // task：任务全文
         std::string name;                    // task：子代理显示名
         std::vector<std::string> tools;      // task：授权只读工具集
+        // ★ mcp（2026-11-06 增补，判别值 "mcp"）：服务名与**真实工具名**（core 经
+        //   hub.Lookup 还原，压缩名 `git_status` 是给模型的）；argsKv 是参数的显示
+        //   友好形态——键排序、值已 JSON 文本化（core 备好行，GUI 不猜语义）。
+        std::string server;                  // mcp：配置里的服务名
+        std::string toolName;                // mcp：配置里的真实工具名
+        std::vector<std::pair<std::string, std::string>> argsKv;  // mcp：参数键值行
     };
 
     // ★★ 协议 v6（2026-11-05）：后台作业的**渲染模型**（§3.13 `t:"job"`）。

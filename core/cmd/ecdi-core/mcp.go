@@ -1097,6 +1097,19 @@ func (h *mcpHub) HasTool(name string) bool {
 	return ok
 }
 
+// Lookup：压缩名 → （配置里的服务名, 原始工具名）。ask 门在组装问句与提案卡
+// （diff.go mcpAskDetail）时用它把 `mcp__smoke__git_status` 还原成
+// `git.status`——压缩名是给模型的，给人看的必须是配置里的真名。
+func (h *mcpHub) Lookup(name string) (serverName, origName string, ok bool) {
+	if h == nil {
+		return "", "", false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ref, ok := h.toolMap[name]
+	return ref.serverName, ref.origName, ok
+}
+
 func (h *mcpHub) CallTool(ctx context.Context, name string, args map[string]any) (toolResult, bool) {
 	if h == nil {
 		return toolResult{}, false

@@ -110,3 +110,44 @@ func TestUnifiedDiff_ContextMergesCloseHunks(t *testing.T) {
 		t.Fatalf("相距 9 行（>2×context）应拆为两个 hunk（got %d）", n)
 	}
 }
+
+// TestAskDetail_MCP —— mcpAskDetail 的四个合同面（2026-11-06，MCP 提案卡）：
+// 判别值固定 "mcp"（复合名不进判别式，一版事故）、键排序（wire 上对象无序，
+// 夹具与断言都要稳定）、值紧凑 JSON 文本化、2048 码点截断带标注。
+func TestAskDetail_MCP(t *testing.T) {
+	d := mcpAskDetail("smoke", "git.status", map[string]any{
+		"zeta":   3,
+		"alpha":  "src/main.go",
+		"nested": map[string]any{"deep": []any{true, nil}},
+	})
+	if d["tool"] != "mcp" || d["server"] != "smoke" || d["toolName"] != "git.status" {
+		t.Fatalf("判别值/服务/真实工具名不符：%v", d)
+	}
+	kv, ok := d["argsKv"].([]map[string]string)
+	if !ok || len(kv) != 3 {
+		t.Fatalf("argsKv 应为 3 项键值数组：%v", d["argsKv"])
+	}
+	if kv[0]["k"] != "alpha" || kv[1]["k"] != "nested" || kv[2]["k"] != "zeta" {
+		t.Fatalf("键应按字典序（wire 上对象无序）：%v", kv)
+	}
+	if kv[0]["v"] != `"src/main.go"` {
+		t.Fatalf("字符串值应为紧凑 JSON 文本：%v", kv[0])
+	}
+	if kv[1]["v"] != `{"deep":[true,null]}` {
+		t.Fatalf("嵌套值应整值 JSON 化不丢结构：%v", kv[1])
+	}
+
+	// 空参数 = 空数组（GUI 显「参数（无）」），不是 nil（nil 会整字段缺席）
+	empty := mcpAskDetail("s", "t", map[string]any{})
+	if kvE, ok := empty["argsKv"].([]map[string]string); !ok || len(kvE) != 0 {
+		t.Fatalf("空参数应为空数组而非缺席：%v", empty)
+	}
+
+	// 超长值截断（复用 agent.go 的 clipRunes，尾 …）——不编造"看全了"的假象
+	big := mcpAskDetail("s", "t", map[string]any{"blob": strings.Repeat("字", 3000)})
+	kvB := big["argsKv"].([]map[string]string)
+	got := kvB[0]["v"]
+	if len([]rune(got)) > mcpArgClipRunes+4 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("超 2048 码点应截断带 …（got %d 码点）", len([]rune(got)))
+	}
+}

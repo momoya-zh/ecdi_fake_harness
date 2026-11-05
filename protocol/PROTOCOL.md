@@ -242,16 +242,17 @@ core 执行 `run_command` / 后台作业时，**负责把子进程输出转成 U
 
 | 字段 | 约束 |
 |---|---|
-| `detail.tool` | **必带且非空**：`write_file` / `edit_file` / `run_command` / `task` 之一（未来可增） |
+| `detail.tool` | **必带且非空**：`write_file` / `edit_file` / `run_command` / `task` / `mcp` 之一（未来可增） |
 | `detail.path` | write_file / edit_file：目标文件（工作区相对） |
 | `detail.diff` | write_file / edit_file：**unified diff 文本**（core 以当前磁盘内容算，context 3 行；超长截断并标注）。新文件 = 全 `+` 行；内容无变化 = 空串。edit_file 的 diff 是**替换片段**的 diff（`old_string`→`new_string`），整文件上下文在 `tool_call` 块的 `args` 里 |
 | `detail.replaceAll` | edit_file：布尔，缺省 false |
 | `detail.command` / `detail.cwd` / `detail.timeoutSeconds` | run_command：完整命令（**不截断**）/ 实际工作区根 / 生效超时秒 |
 | `detail.background` | run_command：布尔，缺省 false；true = 后台作业（v6），提案卡标注「后台」 |
 | `detail.task` / `detail.tools` / `detail.maxTurns` / `detail.timeoutSeconds` | task 委派：任务全文 / 授权只读工具集 / 轮数与墙钟预算 |
+| `detail.server` / `detail.toolName` / `detail.argsKv` | mcp（**2026-11-06 增补，与 GUI 渲染分支同批**）：配置里的服务名 / **真实工具名** / 参数键值行 `[{k, v}]`。`toolName` 必须是经 hub 查回的真名——压缩名 `mcp__<srv>__<t>` 是给模型的，给人看的是 `git.status` 不是 `git_status`。`argsKv` 的键字典序排序（wire 上 JSON 对象无序）、值已 JSON 文本化（core 备好行，GUI 不猜对象语义）；单值超 2048 码点截断（尾 `…`），原始参数全文仍在 `tool_call` 块的 `args` 里；空参数 = 空数组 |
 
 - **`detail` 是渲染数据，不是不变量对象**：`validate.py` **不**校验它的内部结构（与 `block_start.args` 同一地位——最坏后果是 GUI 回落问句文本，不存在序完整性风险，故不造机器检查）。
-- **`detail.tool` 是判别式，不是描述字段**：它决定 GUI 走哪一支渲染，所以 core **不得**在这里放复合名。★ 已知案例（2026-11-05）：MCP 工具（`mcp__<srv>__<tool>`）**不带** `detail`——判别值不是上面枚举里的一支，发出去只会在卡片里落一行「（提案类型 X）」。等新增 `"mcp"` 判别值与渲染分支时再一起放开。
+- **`detail.tool` 是判别式，不是描述字段**：它决定 GUI 走哪一支渲染，所以 core **不得**在这里放复合名。★ 已知案例（2026-11-05）：MCP 工具（`mcp__<srv>__<tool>`）曾被塞进 `detail.tool`——判别值不是枚举里的一支，卡片建出来、默认展开、里面一行垃圾；当日撤销，MCP 改为**不带** `detail`（问句回落）。★ 2026-11-06 与 GUI 渲染分支同批放开：判别值固定 `"mcp"`，服务名与真实工具名拆进 `server` / `toolName`（见上表）——教训保留：**给判别式喂它不认识的值，等于假装有提案**。
 - **GUI 兼容义务**：`detail` 缺失、非对象、`tool` 未知或字段缺失 ⇒ **回落问句文本**，不得崩、不得显示空卡（I5 精神在字段层的应用）。
 - **core 义务**：`diff` 以**批准前**的磁盘内容计算（只读；执行仍在批准后）——审批时刻看到的就是将要发生的事。
 
@@ -609,6 +610,7 @@ GUI 侧对 `prompt` / `cancel` / `workspace` 的按钮使能**只由 `state` 驱
 | 配色 | `+` 行 = ok 色 · `-` 行 = error 色 · `@@` / `---` / `+++` 头行 = 弱化色 · 上下文行 = 正文色 |
 | `run_command` | 键值行：`command`（完整不截断）/ `cwd` / `timeoutSeconds`，末行 `note`（弱化色） |
 | `task` | 键值行：`task` 全文 / `tools` / `maxTurns` / `timeoutSeconds` |
+| `mcp`（2026-11-06 增补） | 键值行：`服务  <server>`（弱化色）/ `工具  <toolName>`（正文色）/ 逐键一行 `参数  <k> = <v>`（正文色；空参数 = 一行「参数（无）」弱化色）。同一行键值形态，等宽不折行 |
 | 回答态 | 展开体**不随回答隐藏**（审计痕迹），只禁用按钮——同 `ApplyAnsweredLook` 单点 |
 | 回落 | `detail` 缺失/非对象/`tool` 未知 ⇒ 只渲染问句文本（= v4 行为），不得崩、不得空卡 |
 
@@ -795,7 +797,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
-| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡）· §1.3 子进程输出统一转 UTF-8（GBK 控制台） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
+| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡）· §1.3 子进程输出统一转 UTF-8（GBK 控制台）· **2026-11-06 增补（仍属 v6，只增不改）**：§3.6 `detail.tool` 枚举增 `"mcp"` 判别值（`server`/`toolName`/`argsKv` 三字段），§7 增 mcp 提案卡键值行规格——MCP 工具的 ask 自此带 detail（此前刻意不带，一版复合名事故后回落问句） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；对 `tool:"mcp"` 落一行「（提案类型 mcp）」中性说明（回落义务），不崩不空卡。★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
 | **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 · **2026-11-05 增补（仍属 v5，只增不改）**：§3.6 `ask` 增可选 `detail`（提案卡：write/edit 带 `diff`、run/task 带结构化字段；渲染数据**非不变量对象**，validate 不查），§7 增 `ask` 提案卡渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**；`detail` 同为未知字段被忽略 ⇒ 问句照显、无提案体。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
 | **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |

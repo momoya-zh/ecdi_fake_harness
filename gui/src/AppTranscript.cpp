@@ -773,6 +773,16 @@ HarnessApp::AskDetail HarnessApp::ParseAskDetail(const json::Value& msg) {
     if (const json::Value* tools = det->Find("tools"); tools && tools->IsArray()) {
         for (const auto& t : tools->array) d.tools.push_back(t.text);
     }
+    // mcp（2026-11-06）：server/toolName + argsKv（[{k,v}]，值是 core 文本化好的
+    // 紧凑 JSON）。字段缺失 ⇒ 空串/空数组——渲染分支按「（无）」兜底，不回落。
+    d.server = det->GetString("server");
+    d.toolName = det->GetString("toolName");
+    if (const json::Value* kv = det->Find("argsKv"); kv && kv->IsArray()) {
+        for (const auto& e : kv->array) {
+            if (!e.IsObject()) continue;
+            d.argsKv.emplace_back(e.GetString("k"), e.GetString("v"));
+        }
+    }
     return d;
 }
 
@@ -872,6 +882,23 @@ void HarnessApp::AppendProposalLines(const AskDetail& d,
         addLine(tools, kDarkMuted);
         addLine("预算  " + std::to_string(d.timeoutSeconds) + " 秒（轮数见问句）", kDarkMuted);
         out.kvLines = 3 + (d.name.empty() ? 0 : 1);
+        return;
+    }
+    if (d.tool == "mcp") {
+        // MCP 工具调用（2026-11-06）：真实工具名 + 参数键值行——授权的对象是
+        // 「某服务的某个工具」，参数才是决策依据，逐键一行（core 已排好序）。
+        addLine("服务  " + d.server, kDarkMuted);
+        addLine("工具  " + d.toolName, kDarkInk);
+        out.kvLines = 2;
+        if (d.argsKv.empty()) {
+            addLine("参数  （无）", kDarkMuted);
+            ++out.kvLines;
+            return;
+        }
+        for (const auto& [k, v] : d.argsKv) {
+            addLine("参数  " + k + " = " + v, kDarkInk);
+            ++out.kvLines;
+        }
         return;
     }
     // 未知 tool：has=true 但不认识——发一行中性说明，不猜语义（§3.6 回落义务）。

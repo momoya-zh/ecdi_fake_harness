@@ -873,15 +873,24 @@ func TestLoopE2E_MCPTool(t *testing.T) {
 		t.Fatalf("ask.question 应包含 MCP 工具及服务名，got %q", q)
 	}
 
-	// ★ MCP 的 ask **刻意不带 detail**（2026-11-05 评审）：
-	//   `detail.tool` 是 GUI 的**判别式**（协议 §3.6 枚举 write_file/edit_file/
-	//   run_command/task），GUI 按它 switch（AppTranscript.cpp:833/850/863），
-	//   未知值只落一行「（提案类型 X）」。MCP 的判别值只能是 `mcp__<srv>__<tool>`
-	//   复合名 ⇒ 会建出一张「展开了但什么都没有」的卡，比不发更糟。
-	//   所以这里的判据是**没有** detail —— 这条断言原先断言的是 core 自己发的
-	//   `tool/server/mcpTool` 三个字段，等于把错误的契约认证成了绿的。
-	if det, has := ask["detail"]; has && det != nil {
-		t.Fatalf("MCP ask 不应带 detail（GUI 判别式不接受 mcp__* 复合名）：%v", det)
+	// ★ MCP 的 ask 自 2026-11-06 起带 detail（与 GUI 渲染分支同批放开）：
+	//   判别值固定 "mcp"，服务名与真实工具名拆进 server/toolName（一版把复合名
+	//   塞进 detail.tool，建出「展开了但什么都没有」的空卡——已撤销的教训）。
+	//   echo 无压缩，问句断言（echo/mock）不受影响。
+	det, ok := ask["detail"].(map[string]any)
+	if !ok {
+		t.Fatalf("MCP ask 应带 detail 对象：%v", ask)
+	}
+	if det["tool"] != "mcp" || det["server"] != "mock" || det["toolName"] != "echo" {
+		t.Fatalf("detail 判别值/服务/真实工具名不符：%v", det)
+	}
+	kv, ok := det["argsKv"].([]any)
+	if !ok || len(kv) != 1 {
+		t.Fatalf("argsKv 应为 1 项键值数组：%v", det["argsKv"])
+	}
+	entry, ok := kv[0].(map[string]any)
+	if !ok || entry["k"] != "msg" || entry["v"] != `"mcp-ok"` {
+		t.Fatalf("argsKv[0] 应为 msg=`\"mcp-ok\"`（值是 JSON 文本）：%v", kv[0])
 	}
 
 	// 4. 用户允许

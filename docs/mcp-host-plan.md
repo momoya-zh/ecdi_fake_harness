@@ -79,13 +79,15 @@
      本会话不会自动重启它」）。一版只有模型看得到错误字符串，界面上什么都看不到。
    - **不做 respawn**：崩掉就是崩掉，本会话不自动重启（避免「重启—再崩」循环刷屏）。
 
-8. **ask 的提案卡：MCP 工具暂不带 `detail`（★ 二版撤销）**
-   `ask.detail.tool` 在协议 §3.6 里是**判别式**（枚举 `write_file`/`edit_file`/`run_command`/`task`），
-   GUI 按它 switch（`AppTranscript.cpp:833/850/863`），未知值只落一行「（提案类型 X）」。
-   MCP 的判别值只能是 `mcp__<srv>__<tool>` 复合名 ⇒ 一版发出去的结果是：卡片建出来、
-   默认展开、里面只有一行垃圾，`note` 里的服务/工具/参数一个字都不显示。
-   **发一个消费者不认识的 detail 比不发更糟**（它假装有提案）。现在回到问句路径，
-   `askPrompt` 的 MCP 分支带 200 字符参数摘要；等 GUI 那批加 `tool:"mcp"` 分支后两边一起改。
+8. **ask 的提案卡：MCP 工具自 2026-11-06 起带 `detail`（★ 四版：与 GUI 同批放开；二版撤销记录保留）**
+   `ask.detail.tool` 在协议 §3.6 里是**判别式**，GUI 按它 switch，未知值只落一行「（提案类型 X）」。
+   一版把 `mcp__<srv>__<tool>` 复合名整个塞进 `detail.tool` ⇒ 卡片建出来、默认展开、
+   里面只有一行垃圾。**发一个消费者不认识的 detail 比不发更糟**（它假装有提案）——
+   二版撤销，回到问句路径。四版（2026-11-06）按预告与 GUI 渲染分支**同批**放开：
+   判别值固定 `"mcp"`，服务名与真实工具名拆进 `server` / `toolName`，参数以 `argsKv`
+   （`[{k, v}]`，键排序、值 JSON 文本化、单值 2048 码点截断）逐键成行；
+   问句同批改用真实工具名（`hub.Lookup` 还原，`git.status` 而非 `git_status`）。
+   GUI 走既有折叠卡机制零新机制；冒烟断言随批翻转（28→32 条）。
 9. **入参 schema 规约（2026-11-05 三版补）**：`inputSchema` 不再原样上交——
    递归删 `$schema`，把本地 `$ref`（`#/$defs/...`、`#/definitions/...`）就地展开，
    再删 `$defs` / `definitions`。部分 OpenAI 兼容端点对元关键字不宽容，而失败是
@@ -102,11 +104,11 @@
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、E2E | ✅ 12 案全绿 |
-| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **32 条断言**（含 ask 门与**提案卡 detail**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
-| `tools.go` | `askPrompt` MCP 问句；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
+| `tools.go` | `askPrompt` MCP 问句（四版起用**真实工具名**）；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
 | `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理 | ✅ |
-| `diff.go` | **不再**给 MCP 发 `detail`（理由见 §二.8） | ✅ 二版回退 |
+| `diff.go` | MCP 提案卡 `mcpAskDetail`（判别值 `"mcp"` + server/toolName/argsKv；理由与教训见 §二.8） | ✅ 四版同批放开 |
 | `docs/` + `README` | 决策、偏差、已知缺口 | ✅ 二版重写 |
 
 ## 四、 验收读数（2026-11-05 二版 + 同日三版补丁，实测）
@@ -136,36 +138,39 @@
    **不是产品缺陷，是测试自己前后矛盾**：断言要「正常退出」，脚本却在杀它。
    修法：第 3 轮改 `job_list`（同样是「控制工具不过 ask 门」的证据，`job_kill` 的语义由
    `jobs_test.go:297` 的 `toolKill` 单测覆盖）+ bye 之前先等 `job end`。
-5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`）**：不是只握手——
+5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版 2026-11-06 增补提案卡断言）**：不是只握手——
    一次真实工具调用从模型请求穿到 server 再穿回来。真 `ecdi-core.exe` + 真 stdio server
-   （python）+ 脚本化 SSE 端点，**两臂 28 条断言全绿**：
+   （python）+ 脚本化 SSE 端点，**两臂 32 条断言全绿**：
    - **A 正常**：`hello protocol=6` 且 `caps` 增 `"mcp"`；服务端协商到 `2025-06-18`（只告警，
      见 §二.4）；`tools/list` 两页全追（2 个工具）；上交模型的压缩名是
      `mcp__smoke__git_status` 与 `mcp__smoke______`（中文名逐 rune 折 `_`，全部 ≤64 且落在
-     `[A-Za-z0-9_-]`）；**ask 默认拦下**且消息里**没有 `detail`**；allow 后 `tools/call`
-     真执行（server 回执 `ok: {"short": true}`，证明参数穿过 JSON-RPC）；结果回模型、第二轮
-     收尾回 `idle`；bye 退出码 0 且 server **无残留**（整树清退的第三个独立判据）。
+     `[A-Za-z0-9_-]`）；**ask 默认拦下**且**带提案卡 detail**（判别值 `mcp`、server/toolName
+     为真名 `smoke`/`git.status`、argsKv 与调用参数一致——问句亦用真实名）；allow 后
+     `tools/call` 真执行（server 回执 `ok: {"short": true}`，证明参数穿过 JSON-RPC）；结果
+     回模型、第二轮收尾回 `idle`；bye 退出码 0 且 server **无残留**（整树清退的第三个独立判据）。
    - **B 降级**：不存在的命令 + 正常服务 ⇒ 坏服务被点名（`启动服务 broken 失败`）、好服务
      照常注册 2 个工具、`caps` 仍带 `mcp`、退出码 0。
    - **边界（如实）**：模型端点是脚本化 SSE，不是真厂商端点；MCP server 是仓库自带 mock；
-     不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**。读数落 `.scratch/mcp-smoke/`
+     不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**（提案卡的 GUI 面由 `--proposal-probe`
+     夹具与 `validate.py` 覆盖）。读数落 `.scratch/mcp-smoke/`
      （`result.json` + `fake-llm.log`，gitignored），复跑只差一条 `go build`。
-   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==28`（钉死，少一条即红）、
+   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==32`（钉死，少一条即红）、
      `failed==0`、`rc==0`。缺二进制显式 **SKIP**（§2e 的 rebuild 已计过失败，不重复计数）；
      二进制比 `core/**/*.go` 旧按 **FAILED**（测旧代码比不测更糟）；超时按 FAILED（drive.py
-     自带 90s 看门狗，先清子进程再退出）。负对照实测：拿掉 `server.py` ⇒ **14/28 green、门变红**；
-     恢复后 sha256 一致、28/28 回绿。
+     自带 90s 看门狗，先清子进程再退出）。负对照实测（四版后复测）：拿掉 `server.py` ⇒
+   **13/32 green、15 failed、门变红**（含 `A/ask 带提案卡 detail`）；恢复后 32/32 回绿。
 ## 五、 明确的已知缺口（下一步的输入）
 
 | 缺什么 | 说明 |
 |---|---|
 | HTTP / Streamable HTTP 传输 | 只有 stdio 进程。远程或持久连接留作扩展（传输层现在写死在 `startAndInit` 里） |
-| 提案卡（GUI 侧） | `ask.detail` 缺 `tool:"mcp"` 判别值与对应渲染分支；补的时候 core 与 GUI 同批改 |
 | 产品面可见性 | `positioning` §5.1 的图把「配置管理」画在 `harness_gui` 上，实现是 core 全包、GUI 零入口 ⇒ 用户写了 `mcp.json` 界面上没有任何确认（只有 stderr）。至少要有「MCP：N 个服务 / M 个工具」的只读展示 + 启动失败告警 |
 | 取消语义 | 取消只让我们不再等，server 侧调用照跑（没发 `notifications/cancelled`），而 GUI 已显示「已取消」 |
 | respawn | 崩掉不重启（刻意的，见 §二.7） |
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
-| 提案问句里的工具名 | 显示的是压缩后的尾段（`git_status`），不是配置里写的 `git.status`——`askPrompt` 只拿得到压缩名。要改需让它在问句前查回 `mcpToolRef.origName`；与 GUI 提案卡同批做也行。低优先，不误事 |
+
+★ 提案卡（GUI 侧）与问句工具名两项已于 2026-11-06 闭合（§二.8 四版）：`tool:"mcp"`
+判别值 + 渲染分支 core/GUI/协议/测试同批落地，问句经 `hub.Lookup` 用真实工具名。
 
 
 ★ 入参 schema 的 `$schema` / `$defs` 已不再“原样透传”：三版补入规约（§二.9 / §七），

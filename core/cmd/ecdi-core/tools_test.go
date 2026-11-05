@@ -469,7 +469,7 @@ func TestAskPrompt_SingleLineAndSpecific(t *testing.T) {
 		{"run_command", map[string]any{"command": "go test ./..."}, "go test"},
 	}
 	for _, c := range cases {
-		q := askPrompt(c.name, c.args, "")
+		q := askPrompt(c.name, c.args, "", nil)
 		if strings.Contains(q, "\n") {
 			t.Errorf("[%s] 问句含换行：%q", c.name, q)
 		}

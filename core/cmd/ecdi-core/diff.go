@@ -16,9 +16,11 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -231,8 +233,12 @@ func diffOps(a, b []string) []diffOp {
 // askDetail：为一次 ask 组装 detail。**问句文本（askPrompt）不动**——detail 是
 // 叠加的审阅数据，问句仍是单行摘要与回落路径（GUI 拿不到/看不懂 detail 时显示它）。
 //
-// 返回 nil = 不带该字段（未知工具「看不懂就不发」——比发一个残缺的诚实）。
-func askDetail(name string, args map[string]any, root string) map[string]any {
+// mcpRef 非 nil = MCP 工具调用（session.go 已查过 hub）。nil = 内置工具或查表
+// 未命中。返回 nil = 不带该字段（未知工具「看不懂就不发」——比发一个残缺的诚实）。
+func askDetail(name string, args map[string]any, root string, mcpRef *mcpToolRef) map[string]any {
+	if mcpRef != nil {
+		return mcpAskDetail(mcpRef.serverName, mcpRef.origName, args)
+	}
 	switch name {
 	case "write_file":
 		return writeFileDetail(args, root)
@@ -241,16 +247,50 @@ func askDetail(name string, args map[string]any, root string) map[string]any {
 	case "run_command":
 		return runCommandDetail(args, root)
 	}
-	// ★ MCP 工具**刻意不带 detail**（2026-11-05 评审结论）。
-	//   `detail.tool` 是 GUI 的**判别式**，不是描述字段：协议 §3.6 把它枚举成
-	//   write_file / edit_file / run_command / task，GUI 按它 switch 分支
-	//   （AppTranscript.cpp:833/850/863），未知值只落一行「（提案类型 X）」。
-	//   而 MCP 工具的判别值只能是 `mcp__<srv>__<tool>` 这样的复合名 ⇒ 卡片会
-	//   建出来、默认展开、里面什么都没有 —— 比不发 detail 更糟（它假装有提案）。
-	//   现在的形态：问句照 old 路径走，`askPrompt` 的 MCP 分支已带 200 字符
-	//   参数摘要；等 GUI 那批加上 `tool:"mcp"` 分支后两边一起改。
+	// MCP 工具自 2026-11-06 起带 detail（判别值 "mcp"，见 mcpAskDetail）。走到
+	// 这里 = 名字带 mcp__ 前缀却在 hub 里查不到——理论不可达（表里没有就轮不到
+	// ask 门），防御式回落 nil，仍比发一张残缺卡诚实。
 	return nil
 }
+
+// mcpAskDetail：MCP 工具调用的提案卡。★ 一版教训（2026-11-05，已撤销）：
+// 曾把 `mcp__<srv>__<tool>` 复合名整个塞进 `detail.tool`——但那是 GUI 的**判别式**
+// （协议 §3.6），复合名不枚举里 ⇒ 卡建出来、默认展开、里面一行垃圾。现在的
+// 契约：判别值固定 "mcp"，服务名与真实工具名拆进 server / toolName（压缩名是
+// 给模型的，给人看的必须是配置里的真名——hub.Lookup 的输出）。
+//
+// argsKv：参数的**显示友好**形态（键排序、值紧凑 JSON 文本化）——JSON 对象在
+// wire 上无序，GUI 不该猜语义，core 自己把行准备好（与 run_command 的 note
+// 「core 按换行分好行」同一分工）。原始参数全文在 tool_call 块的 args 卡里。
+func mcpAskDetail(server, orig string, args map[string]any) map[string]any {
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	kv := make([]map[string]string, 0, len(keys))
+	for _, k := range keys {
+		v := args[k]
+		b, err := json.Marshal(v)
+		if err != nil {
+			// args 来自 JSON 解析，到不了这里；防御式降级成 %v 而不是丢弃该键。
+			b = []byte(fmt.Sprintf("%v", v))
+		}
+		kv = append(kv, map[string]string{"k": k, "v": clipRunes(string(b), mcpArgClipRunes)})
+	}
+	return map[string]any{
+		"tool":     "mcp",
+		"server":   server,
+		"toolName": orig,
+		"argsKv":   kv,
+	}
+}
+
+// mcpArgClipRunes：单个参数值在提案行里的上限（码点）。run_command 的命令
+// 「不截断」是因为它是一条语义整体；MCP 参数是任意键值，一个值就能把 wire 行
+// 撑爆（比如某工具的 content 参数），2048 码点足够看清"授权了什么"，全文在
+// tool_call 块的 args 卡里。截断用现成的 clipRunes（agent.go，尾 …）。
+const mcpArgClipRunes = 2048
 
 // writeFileDetail：diff 的旧侧 = **批准前**的磁盘内容（不存在 = 新文件，标准
 // `--- /dev/null` 头）。读不了（权限/目录/二进制）⇒ 不带 diff——审阅回落问句，

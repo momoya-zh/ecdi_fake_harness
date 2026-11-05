@@ -8,7 +8,7 @@
 # 两个臂：
 #   A（正常，mcp.json 由本脚本生成）：
 #       1 个服务 / 2 个工具（跨两页）→ 模型发起 mcp__smoke__git_status
-#       → ask（detail 必须缺席）→ allow → 真调用 → tool_result 回模型 → 收尾 idle
+#       → ask（带提案卡 detail，2026-11-06 起）→ allow → 真调用 → tool_result 回模型 → 收尾 idle
 #   B（降级，mixed.json）：
 #       不存在的命令 + 正常服务 ⇒ 坏服务只点名、好服务照常注册、caps 仍带 mcp
 #
@@ -241,8 +241,22 @@ def arm_a(core, llm, port):
         check("A/ask 门被触发（外部工具默认过门）", ask is not None)
         if ask:
             q = ask.get("question", "")
-            check("A/问句带服务与工具", "MCP 工具" in q and "smoke" in q and "git_status" in q, q)
-            check("A/ask 不带 detail（判别式护栏）", "detail" not in ask, list(ask.keys()))
+            check("A/问句带服务与真实工具名", "MCP 工具" in q and "smoke" in q and "git.status" in q, q)
+            # ★ 2026-11-06 起 MCP 的 ask 带提案卡 detail（判别值 "mcp"，与 GUI
+            #   渲染分支同批放开）。此前这里断言的是「不带 detail」——那条判据
+            #   把一版复合名事故后的回落形态认证成了绿的，同日随批翻转。
+            det = ask.get("detail")
+            check("A/ask 带提案卡 detail", isinstance(det, dict), type(det).__name__)
+            if isinstance(det, dict):
+                check("A/detail 判别值与服务", det.get("tool") == "mcp" and det.get("server") == "smoke",
+                      {k: det.get(k) for k in ("tool", "server")})
+                check("A/detail 真实工具名", det.get("toolName") == "git.status", det.get("toolName"))
+                kv = det.get("argsKv")
+                check("A/detail argsKv 是键值数组", isinstance(kv, list) and len(kv) >= 1,
+                      type(kv).__name__)
+                if isinstance(kv, list):
+                    hit = [e for e in kv if isinstance(e, dict) and e.get("k") == "short" and e.get("v") == "true"]
+                    check("A/argsKv 含 short=true（与调用参数一致）", bool(hit), kv)
             c.send({"t": "answer", "seq": 2, "id": ask.get("id"), "choice": "allow"})
 
         tc = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_call", 15)

@@ -665,7 +665,11 @@ func countLines(s string) int {
 //	参数摘要对一条长命令不够。问句保持**单行**：GUI 的 ask 行有折叠摘要
 //	（UiCommon.cpp AskSummary），多行问句在折叠态会被压成一行，反而不如一开始就
 //	写清楚；完整参数仍在工具卡的 args 里（block_start 下发过）。
-func askPrompt(name string, args map[string]any, raw string) string {
+//
+// mcpRef 非 nil = MCP 工具调用：问句用**真实工具名**（hub.Lookup 还原的
+// origName）——压缩名 `git_status` 是给模型的，和提案卡里的 `git.status`
+// 同屏不一致会让人怀疑是两个东西。查不到（nil）时回落压缩名拆段，仍诚实。
+func askPrompt(name string, args map[string]any, raw string, mcpRef *mcpToolRef) string {
 	clip := func(s string, n int) string {
 		r := []rune(s)
 		if len(r) <= n {
@@ -699,8 +703,14 @@ func askPrompt(name string, args map[string]any, raw string) string {
 	if strings.HasPrefix(name, "mcp__") {
 		parts := strings.SplitN(name, "__", 3)
 		if len(parts) == 3 {
+			toolName := parts[2]
+			server := parts[1]
+			if mcpRef != nil {
+				toolName = mcpRef.origName
+				server = mcpRef.serverName
+			}
 			return fmt.Sprintf("允许调用 MCP 工具 %s（服务：%s）吗？参数：%s",
-				parts[2], parts[1], summarizeArgs(raw))
+				toolName, server, summarizeArgs(raw))
 		}
 	}
 	return fmt.Sprintf("允许执行 %s 吗？参数：%s", name, summarizeArgs(raw))

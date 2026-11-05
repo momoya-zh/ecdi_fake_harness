@@ -1,4 +1,4 @@
-{"t":"hello","seq":0,"ts":"2026-11-05T10:00:00.000Z","protocol":5,"core":"0.5.0","session":"s-v5-proposal-1","caps":["tools","ask","workspace"]}
+{"t":"hello","seq":0,"ts":"2026-11-05T10:00:00.000Z","protocol":6,"core":"0.6.0","session":"s-v6-proposal-1","caps":["tools","ask","workspace","jobs"]}
 {"t":"state","seq":1,"ts":"2026-11-05T10:00:00.010Z","value":"running"}
 {"t":"block_start","seq":2,"ts":"2026-11-05T10:00:00.020Z","id":"b1","kind":"user","client_id":"p1","text":"给 tools/ 加一个生成配置模板的脚本，改好它的 main，然后跑一遍验证"}
 {"t":"block_end","seq":3,"ts":"2026-11-05T10:00:00.030Z","id":"b1","ok":true}
@@ -23,9 +23,17 @@
 {"t":"delta","seq":22,"ts":"2026-11-05T10:00:02.120Z","id":"b6","text":"written: out/config.json\n\n14 fixtures checked, every fixture behaves as advertised"}
 {"t":"block_end","seq":23,"ts":"2026-11-05T10:00:02.130Z","id":"b6","ok":true,"summary":"exit 0"}
 {"t":"block_end","seq":24,"ts":"2026-11-05T10:00:02.140Z","id":"b5","ok":true,"summary":"python tools/gen_config.py && python protocol/validate.py"}
-{"t":"block_start","seq":25,"ts":"2026-11-05T10:00:02.150Z","id":"b7","kind":"assistant"}
-{"t":"delta","seq":26,"ts":"2026-11-05T10:00:02.160Z","id":"b7","text":"三步都完成了：脚本已写入并补全，`validate.py` 全绿（14 夹具）。"}
-{"t":"block_end","seq":27,"ts":"2026-11-05T10:00:02.170Z","id":"b7","ok":true}
-{"t":"usage","seq":28,"ts":"2026-11-05T10:00:02.180Z","turn":1,"input":9860,"output":1120}
-{"t":"state","seq":29,"ts":"2026-11-05T10:00:02.190Z","value":"idle"}
-{"t":"bye","seq":30,"ts":"2026-11-05T10:00:02.200Z","reason":"eof","code":0}
+{"t":"block_start","seq":25,"ts":"2026-11-05T10:00:02.200Z","id":"b8","kind":"tool_call","name":"mcp__smoke__git_status","args":{"path":"tools/","verbose":true}}
+{"t":"ask","seq":26,"ts":"2026-11-05T10:00:02.210Z","id":"q4","kind":"permission","question":"允许调用 MCP 工具 git.status（服务：smoke）吗？参数：path=\"tools/\" verbose=true","options":[{"key":"allow","label":"允许"},{"key":"deny","label":"拒绝"}],"default":"deny","detail":{"tool":"mcp","server":"smoke","toolName":"git.status","argsKv":[{"k":"path","v":"\"tools/\""},{"k":"verbose","v":"true"}]}}
+{"t":"state","seq":27,"ts":"2026-11-05T10:00:02.220Z","value":"waiting"}
+{"t":"state","seq":28,"ts":"2026-11-05T10:00:02.700Z","value":"running"}
+{"t":"block_start","seq":29,"ts":"2026-11-05T10:00:02.710Z","id":"b9","kind":"tool_result","for":"b8"}
+{"t":"delta","seq":30,"ts":"2026-11-05T10:00:02.720Z","id":"b9","text":"## modified:   gui/src/App.h\n## modified:   protocol/fixtures/proposal/write-edit-run-asks.jsonl"}
+{"t":"block_end","seq":31,"ts":"2026-11-05T10:00:02.800Z","id":"b9","ok":true}
+{"t":"block_end","seq":32,"ts":"2026-11-05T10:00:02.810Z","id":"b8","ok":true,"summary":"mcp__smoke__git_status"}
+{"t":"block_start","seq":33,"ts":"2026-11-05T10:00:02.820Z","id":"b7","kind":"assistant"}
+{"t":"delta","seq":34,"ts":"2026-11-05T10:00:02.830Z","id":"b7","text":"四步都完成了：脚本已写入并补全，`validate.py` 全绿，MCP 的 `git.status` 也确认了工作区状态。"}
+{"t":"block_end","seq":35,"ts":"2026-11-05T10:00:02.840Z","id":"b7","ok":true}
+{"t":"usage","seq":36,"ts":"2026-11-05T10:00:02.850Z","turn":1,"input":9860,"output":1120}
+{"t":"state","seq":37,"ts":"2026-11-05T10:00:02.860Z","value":"idle"}
+{"t":"bye","seq":38,"ts":"2026-11-05T10:00:02.870Z","reason":"eof","code":0}

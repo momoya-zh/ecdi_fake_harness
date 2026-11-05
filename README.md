@@ -39,7 +39,7 @@
 | `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
 | `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
 | `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · **variant-c 落地对照**（`variant-c-ecdi-mapping.md`）· GUI 原型（单文件 HTML） |
-| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 28 断言，两臂，已进 `regress.py` §2f） |
+| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 32 断言，两臂，已进 `regress.py` §2f） |
 
 ## 协议要点
 
@@ -182,7 +182,7 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 决策、偏差（规范锚 `2024-11-05` vs `positioning` §5.3 的 `2026-07-28`）与已知缺口见
 `docs/mcp-host-plan.md`。
 ★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 脚本化
-SSE 端点，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；读数与边界见方案 §四.5；已接进 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
+SSE 端点，两臂 **32 条断言**（含 ask 门、参数穿越、bye 后无残留）；读数与边界见方案 §四.5；已接进 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
 
 **④c 无参数启动**（P3.5，2026-10-24）
 
@@ -326,7 +326,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `fixtures/scale/scale-transcript-2000.jsonl` | 规模基线（2000 块 / 8906 条消息 / **921 KB**） |
 | `fixtures/cot/cot-session.jsonl` | **思维链**：长 + 流式 + **默认折叠**（1044 条消息 / 44 块）。★ `hello` 带 `context`、思维链 `block_end` 带 `tokens` |
 | `fixtures/subagent/parallel-two-agents.jsonl` | **v5 子代理正向**：两个 `task` 并行，`delta` 在 a1/a2 间交错 |
-| `fixtures/proposal/write-edit-run-asks.jsonl` | **v5 提案卡正向**：三个 `ask` 各带 `detail`（write/edit diff + run 键值） |
+| `fixtures/proposal/write-edit-run-asks.jsonl` | **v5 提案卡正向**：四个 `ask` 各带 `detail`（write/edit diff + run 键值 + **mcp 服务/工具/argsKv**，2026-11-06 增补，声明升 `6`） |
 | `fixtures/jobs/background-task.jsonl` | **v6 后台作业正向**：`job start/output/end` + `job_output`/`job_kill` 控制链 |
 | `fixtures/hostile/job-output-before-start.jsonl` | **v6 / I14 负向**：`output` 出现在 `start` 之前 |
 
@@ -466,8 +466,9 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
    复用 L1 的 Job Object 句柄；它同时是"可用 agent"的下一块短板。
 2. **P4 Phase I：路径可点 + 只读预览**——产品侧最后一块半成品（A–H 已落地，G 只到尖峰）。
 3. ~~**MCP host**~~ **已落地（2026-11-05）**：stdio 传输 + 整树清退 + ask 门 + 24KB 输出上限，
-   见 `docs/mcp-host-plan.md`。**剩下的三件**：① GUI 侧提案卡（`detail.tool:"mcp"` 判别值 + 渲染
-   分支）② 产品面可见性（现在配了 `mcp.json` 界面上没有任何确认）③ HTTP/SSE 传输。
+   见 `docs/mcp-host-plan.md`。**剩下的两件**：① 产品面可见性（现在配了 `mcp.json` 界面上没有任何确认）
+   ② HTTP/SSE 传输。~~GUI 侧提案卡~~ **已落地（2026-11-06）**：`detail.tool:"mcp"` 判别值 +
+   渲染分支 core/GUI/协议/测试同批放开（server/toolName/argsKv，问句同批改真实工具名）。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
