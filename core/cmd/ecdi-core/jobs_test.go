@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ── 假进程：jobs_test 专用（不碰真平台原语）──────────────────────────
@@ -366,5 +367,96 @@ func TestJobHub_ShutdownKillsAll(t *testing.T) {
 	}
 	if ends != 3 {
 		t.Fatalf("3 个在跑作业应各有一条 end，got %d", ends)
+	}
+}
+
+// ── ⑨ GBK 输出在入口归一（decode.go）────────────────────────────
+
+func TestJobSink_GBKDecodedToUTF8(t *testing.T) {
+	withFakeGBK(t)
+	j := &job{status: "running", started: time.Now(), dec: &streamDecoder{}}
+	s := &jobSink{j: j}
+
+	// 「中文」的 GBK 字节在两个 write 中间切开：0xD6 | 0xD0 0xCE 0xC4。
+	if _, err := s.Write([]byte{0xD6}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Write([]byte{0xD0, 0xCE, 0xC4}); err != nil {
+		t.Fatal(err)
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if string(j.buf) != "中文" {
+		t.Fatalf("尾窗应是 UTF-8「中文」，got %q", j.buf)
+	}
+	if j.total != int64(len("中文")) {
+		t.Fatalf("total 应按转码后字节计，got %d want %d", j.total, len("中文"))
+	}
+	if !utf8.Valid(j.buf) {
+		t.Fatal("尾窗必须是合法 UTF-8（GUI/journal 只接受 UTF-8）")
+	}
+}
+
+func TestJobFlush_DoesNotSplitRunes(t *testing.T) {
+	h, _, l := newFakeHub(t)
+	// 8191 个 ASCII + 一个 3 字节字符正好跨过 jobEmitChunk(8KB) 边界。
+	payload := strings.Repeat("a", 8191) + "中" + strings.Repeat("b", 10)
+	j := &job{
+		status:    "running",
+		hub:       h,
+		started:   time.Now(),
+		dec:       &streamDecoder{},
+		stopFlush: make(chan struct{}),
+	}
+	j.buf = []byte(payload)
+	j.total = int64(len(payload))
+
+	j.flush()
+
+	var text string
+	for _, m := range l.all() {
+		if m["t"] == "job" && m["phase"] == "output" {
+			text += m["text"].(string)
+		}
+	}
+	if text == "" {
+		t.Fatal("flush 应至少发出一条 output")
+	}
+	if !utf8.ValidString(text) {
+		t.Fatalf("output.text 必须是合法 UTF-8，got %q", text)
+	}
+	j.mu.Lock()
+	emitted := j.emitted
+	j.mu.Unlock()
+	if emitted >= j.total {
+		// 只有一块时也会对齐；不对齐的判据在下面（切点不能是续字节）。
+	}
+	if emitted < j.total && !utf8.RuneStart(j.buf[emitted]) {
+		t.Fatalf("emitted=%d 落在字符中间（buf[emitted]=%#x）", emitted, j.buf[emitted])
+	}
+}
+
+func TestJobRingTrim_DoesNotSplitRunes(t *testing.T) {
+	j := &job{dec: &streamDecoder{}}
+	chunk := []byte(strings.Repeat("中", 1000)) // 3000 B
+	// 100 次 ≈ 300KB，超过 256KB 窗口后开始裁剪；汉字 3 字节 ⇒ 裁剪必然落在字符中间。
+	for i := 0; i < 100; i++ {
+		if _, err := (&jobSink{j: j}).Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.buf) > jobOutWindow {
+		t.Fatalf("窗口超限：%d > %d", len(j.buf), jobOutWindow)
+	}
+	if !utf8.Valid(j.buf) {
+		t.Fatal("窗口裁剪后尾窗必须是合法 UTF-8")
+	}
+	if !utf8.RuneStart(j.buf[0]) {
+		t.Fatalf("窗口起点落在字符中间：%#x", j.buf[0])
+	}
+	if j.dropped <= 0 {
+		t.Fatal("应记录被丢弃的字节")
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"unicode/utf8"
 	"time"
 )
 
@@ -48,7 +49,8 @@ type job struct {
 	hub     *jobHub
 
 	mu       sync.Mutex
-	buf      []byte // 尾部窗口：覆盖绝对偏移 [startOff, total)
+	dec      *streamDecoder // 原始字节 → UTF-8（GBK 归一，见 decode.go）
+	buf      []byte // 尾部窗口：覆盖绝对偏移 [startOff, total)；**始终是 UTF-8**
 	startOff int64
 	total    int64
 	dropped  int64
@@ -150,6 +152,7 @@ func (h *jobHub) start(command, cwd, call string, cfg SandboxConfig) (*job, erro
 		started:   time.Now(),
 		hub:       h,
 		status:    "running",
+		dec:       &streamDecoder{},
 		stopFlush: make(chan struct{}),
 	}
 	proc, err := h.startProc(command, cwd, cfg, &jobSink{j: j})
@@ -224,15 +227,34 @@ func (s *jobSink) Write(p []byte) (int, error) {
 	j := s.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.buf = append(j.buf, p...)
-	j.total += int64(len(p))
+	// ★ 解码在**入口**做：环窗、游标、output 事件、job_output 读出来的就都是
+	//   UTF-8（见 decode.go）。跨 write 的半个多字节字符由 streamDecoder 扣住。
+	if utf8 := j.dec.Write(p); len(utf8) > 0 {
+		j.appendLocked(utf8)
+	}
+	return len(p), nil
+}
+
+// appendLocked：把已解码的 UTF-8 字节追加进尾窗并维护溢出计数。
+// 调用方必须持有 j.mu。
+func (j *job) appendLocked(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	j.buf = append(j.buf, b...)
+	j.total += int64(len(b))
 	if over := len(j.buf) - jobOutWindow; over > 0 {
+		// ★ 环形窗口的**起点必须落在字符边界**：否则窗口裁剪会把一个汉字切成
+		//   两半，此后 startOff 处的 output/job_output 都以半个字符开头（U+FFFD）。
+		//   宁可多丢 ≤3 字节，也不把字符撕开；多丢的字节如实计入 dropped。
+		for over < len(j.buf) && !utf8.RuneStart(j.buf[over]) {
+			over++
+		}
 		copy(j.buf, j.buf[over:])
 		j.buf = j.buf[:len(j.buf)-over]
 		j.startOff += int64(over)
 		j.dropped += int64(over)
 	}
-	return len(p), nil
 }
 
 // finish：wait 返回后落终态、补发尾部输出、发 end。只执行一次。
@@ -258,6 +280,14 @@ func (j *job) finish(err error, proc *bgProcess) {
 		}
 	default:
 		j.status = "exited"
+	}
+	j.mu.Unlock()
+
+	// ★ 解码器里可能还扣着 1-3 个字节（流在半个字符处结束/被杀）。
+	//   不 Flush 就是**静默丢字**——这里补进尾窗，后面的 flush 会完整发出去。
+	j.mu.Lock()
+	if tail := j.dec.Flush(); len(tail) > 0 {
+		j.appendLocked(tail)
 	}
 	j.mu.Unlock()
 
@@ -343,6 +373,11 @@ func (j *job) flush() {
 	end := j.total
 	if end-start > jobEmitChunk {
 		end = start + jobEmitChunk
+	}
+	// ★ 不从 UTF-8 字符中间切开（8KB 处的续字节会让这一条 output 以半个
+	//   字符结尾，GUI 侧就是 U+FFFD）。最多回退 3 字节，不可能把整块吞掉。
+	for end > start && end < j.total && !utf8.RuneStart(j.buf[end-j.startOff]) {
+		end--
 	}
 	text := string(j.buf[start-j.startOff : end-j.startOff])
 	total, dropped := j.total, j.dropped
@@ -433,6 +468,10 @@ func (j *job) renderLocked() toolResult {
 	end := j.total
 	if end > start && end-start > jobReadLimit {
 		start = end - jobReadLimit
+		// 起点**往前**退到字符边界（最多 2 字节）：后退是"多给"，前进是"丢字"。
+		for start > j.startOff && !utf8.RuneStart(j.buf[start-j.startOff]) {
+			start--
+		}
 		lost += 0
 	}
 	data := ""

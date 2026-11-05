@@ -20,8 +20,8 @@ L1 沙盒已经能整树清退进程，缺的是「把作业的生命周期从�
 4. 作业随**会话**存活：单轮取消不杀后台作业；会话结束（`bye`/EOF/core 退出）全杀。
 5. 后台命令仍过 ask 门；提案卡 `detail` 增 `background:true`。
 
-**不做**：PTY / 交互式 stdin；跨进程重启恢复；作业优先级/配额调度；GBK 控制台解码
-（既有问题，另批）。
+**不做**：PTY / 交互式 stdin；跨进程重启恢复；作业优先级/配额调度。
+（GBK 控制台解码最初列在这里；**2026-11-05 已补**，见文末「GBK 输出解码」。）
 
 ## 协议：v6（新增 `t:"job"`）
 
@@ -78,7 +78,7 @@ L1 沙盒已经能整树清退进程，缺的是「把作业的生命周期从�
 
 ## 风险与未决
 
-- 作业输出仍按 UTF-8 解释（GBK 控制台是已知老问题）。
+- ~~作业输出仍按 UTF-8 解释~~：已改为 core 侧转码（见文末），非 Windows 仍无 GBK 解码器。
 - 30 分钟 / 256KB / 并发 4 是先验默认值；需要时再开 flag（`--job-*`）。
 - v6 让 v5 GUI 拒连；本仓 GUI 同步升级，README 兼容矩阵一并记录。
 ## 实现状态（2026-11-05，已落地）
@@ -115,5 +115,36 @@ L1 沙盒已经能整树清退进程，缺的是「把作业的生命周期从�
 
 - 作业卡**没有**独立行（见上）；若以后要独立行，需新增 TimelineEntry::Kind 并同步
   parity/session 探针的 row-kind 统计。
-- 输出编码仍按 UTF-8 解释（GBK 控制台输出会显示为替换字符），与前台命令同一已知限制。
+- ~~输出编码仍按 UTF-8 解释~~：已改为 core 侧 GBK→UTF-8 归一（见下节）。
 - 并发 4 / 256KB / 30min 仍是先验默认值，未开 CLI flag。
+
+## GBK 输出解码（2026-11-05 同日补齐）
+
+**问题**：Windows 控制台程序按 CP936 输出；`encoding/json` 把非法 UTF-8 字节替换成
+U+FFFD，`cmd` 的中文输出在工具卡/作业卡里整段变成「？」。
+
+**做法**（`core/cmd/ecdi-core/decode.go` + `decode_windows.go`）：
+
+- 前台 `run_command`：输出已收集完 ⇒ 整段判定——合法 UTF-8 原样，否则按 GBK 解
+  （`MultiByteToWideChar(936)`），平台无解码器则逐字节替换。
+- 后台作业：`jobSink.Write` 入口用 `streamDecoder` 增量解码，**环窗与游标里存的就是
+  UTF-8**；纯 ASCII 立即透传，首个非 ASCII 字节判定编码，跨 write 的半个字符被扣住、
+  作业结束 `Flush` 补出；`output` 事件与 `job_output` 的切点退到 UTF-8 字符边界
+  （否则每条消息尾部会带半个字符 ⇒ U+FFFD）。
+- `job.output.bytes` / `dropped` 因此按**转码后**字节计；协议 §1.3 / §3.13 已写明口径。
+
+**读数**：
+
+- `TestDecodeGBK_RealCodePage` / `TestDecodeProcessOutput_GBK`：`D6 D0 CE C4` → 「中文」。
+- `TestRunCommand_GBKEndToEnd`：真实 `cmd /c echo 中文`（CP936 管道）经 `run_command`
+  回来是「中文」——接线判据，不是解码器自证。
+- `TestBackgroundJob_GBKEndToEnd`：真实进程 → `jobSink` → `job.output.text` 是合法 UTF-8。
+- `TestStreamDecoder_*`：ASCII 立即透传 / UTF-8 跨 write 切分 / GBK 首字节扣住 /
+  末字节配对 / Flush 尾巴 / 锁定后遇非法字节。
+- `TestJobFlush_DoesNotSplitRunes`：8191B ASCII + 3B 汉字跨 8KB 边界，事件仍是合法 UTF-8。
+
+**边界**：
+
+- 探测式而非声明式：一段恰好也是合法 UTF-8 的 GBK 字节会被当成 UTF-8（罕见，不崩）。
+- 非 Windows 无系统代码页 API ⇒ GBK 输出走替换字符；不为此在 stdlib-only 的 core 里加依赖。
+- `read_file` 的文件内容不在本条范围（文件是用户内容，仍按 UTF-8 解释）。

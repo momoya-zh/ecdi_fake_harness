@@ -67,6 +67,23 @@
 - 未知字段**必须忽略**（前向兼容）；未知 `t` 值**忽略并记录**（不得崩溃）。
 - 流里不允许 pretty-print（一行就是一整条消息）。
 
+### 1.3 子进程输出的编码（2026-11-05）
+
+core 执行 `run_command` / 后台作业时，**负责把子进程输出转成 UTF-8 再上协议**：
+
+- Windows 控制台程序（cmd 内建命令、老工具、按 CP936 输出的运行时）吐 GBK；
+  协议与 GUI 只接受 UTF-8（`encoding/json` 会把非法字节替换成 U+FFFD，中文整段变「？」）。
+- 判定是**探测式**：整段合法 UTF-8 ⇒ 原样；否则按 GBK 解；平台没有 GBK 解码器
+  （非 Windows）⇒ 逐字节替换，**不静默丢内容**。一段恰好也是合法 UTF-8 的 GBK
+  字节会被当成 UTF-8（探测的固有边界，不改协议）。
+- 后台作业是流式的：纯 ASCII 立即透传（两种编码里 ASCII 同字节），首个非 ASCII
+  字节才判定编码；判定后按该编码续解，跨读边界的半个字符被扣住、作业结束时补出。
+  `output` 事件与 `job_output` 的切点都对齐到 UTF-8 字符边界。
+- ⇒ `tool_result.output` 与 `job.output.text` **保证是合法 UTF-8**；
+  `job.output.bytes` / `dropped` 按**转码后**字节计。
+- **不覆盖**：`read_file` 的文件内容仍按 UTF-8 解释（非 UTF-8 文件显示替换字符）。
+  文件是用户内容、不是进程输出，本节的探测策略不适用。
+
 ---
 
 ## 2. 信封
@@ -428,6 +445,9 @@ GUI 收到 0 必须落到 `ctxCapacity = 0`（显示 `—`），不得保留旧�
 | `exitCode` | end | 进程退出码；`killed` / `timeout` 为 -1 |
 | `durationMs` | end | 从 start 到进程结束的墙钟毫秒 |
 
+★ `text` / `bytes` 的口径（§1.3）：core 已把进程输出（含 GBK 控制台）转成 UTF-8；
+`text` 是转码后的**新增**文本，`bytes` / `dropped` 按转码后字节计。
+
 ★ **为什么是独立消息而不是 `block`**：作业跨轮存活，而块是「一条助手消息内的流式单元」
 （I2/I6）。把作业塞进块会让块在 `block_end` 之后继续变（直接违反 I6），也会把
 「一轮结束」与「作业结束」两个时刻混为一谈。
@@ -774,7 +794,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
-| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
+| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡）· §1.3 子进程输出统一转 UTF-8（GBK 控制台） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
 | **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 · **2026-11-05 增补（仍属 v5，只增不改）**：§3.6 `ask` 增可选 `detail`（提案卡：write/edit 带 `diff`、run/task 带结构化字段；渲染数据**非不变量对象**，validate 不查），§7 增 `ask` 提案卡渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**；`detail` 同为未知字段被忽略 ⇒ 问句照显、无提案体。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
 | **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |

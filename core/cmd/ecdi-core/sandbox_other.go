@@ -61,7 +61,7 @@ func runCommandInSandbox(ctx context.Context, command string, root string, timeo
 	}()
 
 	waitErr := cmd.Wait()
-	text := trimOutput(outBuf.String())
+	text := trimOutput(decodeProcessOutput(outBuf.Bytes()))
 	close(done)
 	watcher.Wait()
 
@@ -84,7 +84,7 @@ func runCommandUnsandboxed(ctx context.Context, command string, root string, tim
 	cmd.Dir = root
 	cmd.Env = childEnv()
 	out, err := cmd.CombinedOutput()
-	text := trimOutput(string(out))
+	text := trimOutput(decodeProcessOutput(out))
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
 		return toolResult{OK: false, Output: fmt.Sprintf("命令超时（%d 秒）已请求终止：\n%s", timeoutS, text)}

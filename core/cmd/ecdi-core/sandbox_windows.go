@@ -423,7 +423,9 @@ func runCommandInSandbox(ctx context.Context, command string, root string, timeo
 	}()
 
 	waitErr := cmd.Wait()
-	text := trimOutput(outBuf.String())
+	// ★ GBK 归一：Windows 控制台命令按 CP936 输出，整段转一次再进工具结果
+	//   （详见 decode.go 头注；GUI/protocol 只接受 UTF-8）。
+	text := trimOutput(decodeProcessOutput(outBuf.Bytes()))
 	close(done)
 	watcher.Wait()
 
@@ -448,7 +450,7 @@ func runCommandUnsandboxed(ctx context.Context, command string, root string, tim
 	cmd.Env = childEnv()
 	hideChildWindow(cmd)
 	out, err := cmd.CombinedOutput()
-	text := trimOutput(string(out))
+	text := trimOutput(decodeProcessOutput(out))
 	switch {
 	case ctx.Err() == context.DeadlineExceeded:
 		return toolResult{OK: false, Output: fmt.Sprintf("命令超时（%d 秒）已请求终止：\n%s", timeoutS, text)}
