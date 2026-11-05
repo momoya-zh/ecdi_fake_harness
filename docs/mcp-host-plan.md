@@ -95,6 +95,7 @@
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、E2E | ✅ 11 案全绿 |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；**独立跑**，尚未接进 `regress.py` | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
 | `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理 | ✅ |
@@ -124,6 +125,20 @@
    **不是产品缺陷，是测试自己前后矛盾**：断言要「正常退出」，脚本却在杀它。
    修法：第 3 轮改 `job_list`（同样是「控制工具不过 ask 门」的证据，`job_kill` 的语义由
    `jobs_test.go:297` 的 `toolKill` 单测覆盖）+ bye 之前先等 `job end`。
+5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`）**：不是只握手——
+   一次真实工具调用从模型请求穿到 server 再穿回来。真 `ecdi-core.exe` + 真 stdio server
+   （python）+ 脚本化 SSE 端点，**两臂 28 条断言全绿**：
+   - **A 正常**：`hello protocol=6` 且 `caps` 增 `"mcp"`；服务端协商到 `2025-06-18`（只告警，
+     见 §二.4）；`tools/list` 两页全追（2 个工具）；上交模型的压缩名是
+     `mcp__smoke__git_status` 与 `mcp__smoke______`（中文名逐 rune 折 `_`，全部 ≤64 且落在
+     `[A-Za-z0-9_-]`）；**ask 默认拦下**且消息里**没有 `detail`**；allow 后 `tools/call`
+     真执行（server 回执 `ok: {"short": true}`，证明参数穿过 JSON-RPC）；结果回模型、第二轮
+     收尾回 `idle`；bye 退出码 0 且 server **无残留**（整树清退的第三个独立判据）。
+   - **B 降级**：不存在的命令 + 正常服务 ⇒ 坏服务被点名（`启动服务 broken 失败`）、好服务
+     照常注册 2 个工具、`caps` 仍带 `mcp`、退出码 0。
+   - **边界（如实）**：模型端点是脚本化 SSE，不是真厂商端点；MCP server 是仓库自带 mock；
+     不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**。读数落 `.scratch/mcp-smoke/`
+     （`result.json` + `fake-llm.log`，gitignored），复跑只差一条 `go build`。
 
 ## 五、 明确的已知缺口（下一步的输入）
 
@@ -136,6 +151,7 @@
 | respawn | 崩掉不重启（刻意的，见 §二.7） |
 | 工具入参 schema 透传 | MCP 的 `inputSchema` 原样上交；`$schema` / `$defs` 之类在部分端点可能被拒，未验证也未剥离 |
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
+| 提案问句里的工具名 | 显示的是压缩后的尾段（`git_status`），不是配置里写的 `git.status`——`askPrompt` 只拿得到压缩名。要改需让它在问句前查回 `mcpToolRef.origName`；与 GUI 提案卡同批做也行。低优先，不误事 |
 
 ## 六、 修订记录（一版 → 二版）
 
