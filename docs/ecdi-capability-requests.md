@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.20**（2026-11-05；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.21**（2026-11-05；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -862,7 +862,7 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 | 项 | 内容 |
 |---|---|
 | 原编号 | 2026-11-05 用户观察（REQ-18 收口时暴露）；原为 REQ-18 条目内的一行「附带观察」，本轮升级为独立 REQ |
-| 状态 | 🔄 **开放**（两例均为能力缺口，ECDI 侧未补；本仓均有绕行、**不阻断使用**）。★ **2026-11-05 15:5x 增量**：**19-A 的 ECDI 侧已落地**——ECDI `#87` / commit `1142738`（`CursorShape` 追加 7 值 + `CursorHandleFor` 补 `IDC_*` + `Platform87.CursorShapeMapping`），**ClangCL 588/588 全绿**且**判别力已证**（回退一条映射 ⇒ 恰该用例红，587 passed / 1 failed）。本条**仍开放**到本仓收敛（等新 `ECDI.lib` 交付） |
+| 状态 | ✅ **19-A 已闭合（2026-11-05 16:1x）· 19-B 仍开放**。★ **2026-11-05 15:5x 增量**：**19-A 的 ECDI 侧已落地**——ECDI `#87` / commit `1142738`（`CursorShape` 追加 7 值 + `CursorHandleFor` 补 `IDC_*` + `Platform87.CursorShapeMapping`），**ClangCL 588/588 全绿**且**判别力已证**（回退一条映射 ⇒ 恰该用例红，587 passed / 1 failed）。★★ **2026-11-05 16:1x 闭合（19-A）**：新 `ECDI.lib` 到位（11975450 B · `c5208346…`，旧库备份 `.scratch/ECDI.lib.prev-20261105`）+ 已装头同步 `CursorShape.h`（唯一漂移，另加安装期 `Core/version.h`）；本仓收敛 = `SplitterBar` **删 66 行绕行**（几何容差判据 / 句柄缓存 / `::GetCursor()` 值比较 / 三处出口恢复 / `<Windows.h>`），只留一行 `GetCursor()` override；重链后 `tools/regress.py` **RESULT: PASS**（11m54s，全部探针 rc=0）。**19-B 仍开放**（`AppPreview.cpp` 的 `ShellExecuteW` 未动，等 ECDI 侧裁决） |
 | 归属 | **ECDI 侧**（`CursorShape` **值域** + `CursorHandleFor` **映射**两处）。已按 §1.1 查 `Widget.h` 基类公共头、`CursorShape.h`、`Win32PlatformWindow.cpp`、`TextBox.h` 先例，以及 ECDI 自带 `src/Tests/PlatformQuickfixTests.cpp`（取证时点 HEAD `daed47c`） |
 | 缺口（一句话） | **自述通路是完整的，表达力是残缺的**：`Widget::GetCursor()` → `Window::OnQueryCursor`（`Window.cpp:657` 取命中控件形态）→ `WM_SETCURSOR`（`Win32PlatformWindow.cpp:1153-1174`）→ `::SetCursor`，四段全在；但枚举只有两个值（`CursorShape.h:13-16`），`CursorHandleFor`（`:44-60`）除 `IBeam` 外一律回落 `IDC_ARROW` ⇒ **「左右拉伸」这个词在框架里不存在** |
 | ★ 代价（本条存在的理由） | 本仓 `gui/src/SplitterBar.cpp` 为绕行付出：**匿名命名空间 44 行**（`:19-62`——句柄缓存 ×2、几何判据 `PointerOverBar` 含 16px 容差、`RestoreArrowIfSizeWe`）+ **5 处调用点**（`:100/104/160-161/169/179`）+ `#include <Windows.h>`。★★ 其中最贵的是 `if (::GetCursor() == SizeWeCursor())` 这一行：应用必须**逆推「当前光标是不是我设的」**才能不覆盖 `TextBox` 的 `IBeam`——而「谁拥有光标」这份知识框架本来就有（它每次 `WM_SETCURSOR` 都重查一遍） |
@@ -1041,6 +1041,20 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.21（2026-11-05）★★ REQ-19-A 闭合：换新库 + 本仓 `SplitterBar` 收敛 + `regress` PASS**
+  ① 用户 15:57 交付新 `ECDI.lib`（**11975450 B · `c5208346…`**；旧 `3866a17d…` / 11974558 B 已备份
+     `.scratch/ECDI.lib.prev-20261105`），并同步安装头 `Core/CursorShape.h`。
+  ② 安装面核对：`third_party/ecdi/include` 与 ECDI 源码头 `diff -rq` **唯一漂移 = `Core/CursorShape.h`**
+     （即本次改动本身）+ 安装期生成的 `Core/version.h` ⇒ 纯值域追加，其余公共头零变化。
+  ③ **本仓收敛**：`SplitterBar.cpp` **182 → 116 行**——删掉匿名命名空间 44 行（几何容差判据 /
+     句柄缓存 / `::GetCursor()` 值比较 / `RestoreArrowIfSizeWe`）、5 处调用点、`<Windows.h>`；
+     `SplitterBar.h` 加一行 `GetCursor()` override 返回 `CursorShape::SizeWE`（与 `TextBox.h:38` 同款）。
+     ⇒ 光标交回框架：每条 `WM_SETCURSOR` 按命中控件重查，鼠标离开自动换回，**应用侧零状态机**。
+  ④ 重链 `cmake --build gui/build`（Ninja，34 步）后 `tools/regress.py` **RESULT: PASS**（11m54s，
+     全部探针 `rc=0`）。
+  ⑤ **19-A ✅ 闭合**；**19-B 仍开放**（`AppPreview.cpp` 的 `ShellExecuteW` 未动，等 ECDI 侧裁决是否
+     提供 `RevealInFileManager`/`OpenExternal`）。
+  ⑥ 头部 v5.20 → **v5.21**。
 - **v5.20（2026-11-05）★ REQ-19-A 的 ECDI 侧已落地（ECDI #87 / `1142738`），588/588 + 判别力已证**
   ① ECDI 侧三处改动全部落地：`CursorShape` 追加 `SizeWE=2`…`Cross=8`（只追加末尾）、
      `CursorHandleFor` 每值一行 `IDC_*`、`Platform87.CursorShapeMapping` 用例。

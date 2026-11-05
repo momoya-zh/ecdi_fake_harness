@@ -26,6 +26,16 @@ public:
 
     [[nodiscard]] bool ConsumesMouseInput() const noexcept override { return true; }
 
+    /// @brief 悬停形态自述（★ ECDI #87 / REQ-19-A）：左右拉伸光标交给框架设。
+    /// @details 平台层每条 `WM_SETCURSOR` 都按命中控件重查一遍 ⇒ 鼠标离开后光标
+    ///          自动换回目标控件的形态，本控件**不需要**任何设/恢复逻辑。
+    ///          命中由 `HitTestWindow` 决定，故也不需要几何判据（历史上那 44 行
+    ///          绕行——几何容差 + `::GetCursor()` 值比较 + 三处出口恢复——已随
+    ///          `CursorShape` 补齐值域整块删除）。
+    [[nodiscard]] ECDI::CursorShape GetCursor() const noexcept override {
+        return ECDI::CursorShape::SizeWE;
+    }
+
 protected:
     void OnPaint(ECDI::PaintContext& ctx, int x, int y) override;
     void OnMouseMove(const ECDI::MouseMoveEvent& event) override;
