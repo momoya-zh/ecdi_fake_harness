@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.7**（2026-11-04；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.18**（2026-11-05；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -744,6 +744,152 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 
 ---
 
+### REQ-18 ✅ `ForgetSubtree` 清捕获登记时未同步释放 OS 捕获 —— 摘树路径的 `::SetCapture` 泄漏（**原立案描述；2026-11-05 结案：归属反转 harness 侧，主诉撤单，见下方「复核订正 4」**）
+
+> 立案：2026-11-05 14:2x，用户报告「鼠标偶尔变成左右拉伸样式，离开拉伸区后仍不恢复」。
+> ★ 用户 14:30 裁定「你登记，然后我去 ECDI 修」⇒ **本仓只登记，不改 ECDI、不改本仓代码**。
+>
+> ★★ **2026-11-05 14:35 复核订正（原判不改写，增量记录）**：用户实测「卡住后点一下左键
+> **不自愈**，会一直保持那个状态」。★ 该结果**不否证**下面的源码链，但把下方「点一下是否自愈」
+> 当作「10 秒零代码验证」是**判据设计错误**——它是**单向判据**：`WM_SETCURSOR` 只在鼠标移动 /
+> 窗口激活时发（ECDI `Win32PlatformWindow.cpp:1154-1174`），一次 Down+Up 虽会经
+> `Application.cpp:455/508` 跨边界走到 `SetMouseCapture(false) → ::ReleaseCapture()`，
+> 却**不会重设 `::SetCursor` 的结果** ⇒ 「恢复」可证实捕获泄漏，「不恢复」**不能证伪**。
+> ⇒ **「OS 捕获泄漏 ⇒ 光标卡住」这一因果链仍属待验证假说**，源码链只是确定了「摘树时框架登记
+> 被清、Up 的释放被幂等短路」这个**代码事实**。★★ **建议暂缓 ECDI 侧修复**：先补机读判据
+> （本仓只读探针 `::GetCapture()` / `::GetCursor()`），或做「移出窗口后点击是否被吞」的行为对照；
+> 在机制坐实前改 `ForgetSubtree`，有重蹈 `REQ-01/03/04/07` 归属误判的风险。
+>
+> ★★ **2026-11-05 14:38 复核订正 2**：用户补充「**在 UI 界面外点一下再回去就恢复了**」。
+> ⇒ 关键自变量从「点没点」变成「**有没有移出窗口再回来**」，出现两个竞争解释：
+> **H1（ECDI 侧 OS 捕获残留）**：窗口内点击仍在同一捕获窗口内，Down/Up 不足以打破；
+> 窗口外点击被系统 / 别的窗口夺走捕获（`WM_CAPTURECHANGED` → `OnCaptureLost`）⇒ 恢复。
+> **H2（纯 harness 侧，无需 ECDI 缺陷）**：`WM_SETCURSOR` 只在鼠标移动 / 窗口激活 / 重新进入
+> 时发；移出窗口触发 `WM_MOUSELEAVE`（`Win32PlatformWindow.cpp:1143-1150`），移回时第一次
+> `WM_SETCURSOR` 把光标设回 Arrow，而新位置上 `SplitterBar` 不再收到 `OnMouseMove` ⇒ 恢复；
+> 窗口内点击若不伴随鼠标移动，则不产生重查 ⇒ 不恢复。
+> ★ **H2 能同时解释两条观测**（窗口内点不恢复 / 移出再回来恢复），且只需 harness 侧
+> 「一次性 `SetCursor` 无恢复」这一个**已知**缺陷 ⇒ 按奥卡姆剃刀**本轮倾向 H2**，
+> 即 **REQ-18 很可能是第 5 次归属误判**（前四次 = `REQ-01/03/04/07`）。源码链仍是客观代码
+> 事实，但它**是否导致本现象**未坐实。
+> ★★ **判别实验 X（零代码、30 秒，请用户做）**：卡住后**全程不点击**，只把鼠标移出窗口到
+> 桌面、停一下、再移回窗口内。恢复 ⇒ H2 成立、ECDI 无缺陷、本条改判 harness 侧（或撤单）；
+> 不恢复且必须窗口外点一下 ⇒ H1 成立、维持 ECDI 侧。辅助 **Y**：窗口外那一下，目标窗口 /
+> 桌面的**首次点击是否被吞**（被吞 = OS 捕获实锤）。
+> ⇒ **状态改 ⏸️ 待裁决；明确暂缓 ECDI 侧修复**。原判（v5.8 / v5.9）逐条保留，不改写。
+>
+> ★★ **2026-11-05 14:41 复核订正 3（实验 X 结果）**：用户回报「**不点击、只移出窗口再回来，
+> 依旧是左右拉的样子**」⇒ **X = 不恢复**，方向指向 H1（重新进入窗口并没有触发光标重查）。
+> ★ 但**仍不判 ECDI**：① 混淆变量未排除（移回路径是否又扫过分割条、窗口外那一下首次点击
+> 是否被吞）；② 按 `Application.cpp:455/508`，窗口内一次完整 Down+Up 本应跨边界走到
+> `ReleaseCapture()`，与「窗口内点一下不自愈」有一处不吻合。⇒ **行为判据已用尽**，
+> 再靠肉眼二分就是第三次过度推断。
+> ★★ **下一步改为受控对照（只改一个自变量，且不碰 ECDI）**：先修本仓 `SplitterBar` 这个
+> **两条假说都承认存在**的缺陷（`OnMouseLeave` 恢复 Arrow / `SetCursor` 按状态决定），
+> 再按原路径复现一次：症状消失 ⇒ 归属 harness 侧、REQ-18 降级或撤单、ECDI 不用动；
+> 仍卡 ⇒ H1 实锤，再去 ECDI 改 `ForgetSubtree`（或先加只读探针 `::GetCapture()` 取读数）。
+> 状态**保持 ⏸️ 待裁决**，不来回翻转。
+>
+> ★★★ **2026-11-05 15:05 结案（复核订正 4）：归属反转 → harness 侧，REQ-18 撤单，ECDI 不用动**
+> 用户按 v5.15 判据复验，回报「**两者都好了**」：a 离开分割条后光标恢复箭头；
+> b 拖动跟手、分割线不再常亮蓝色。原稳定复现路径（设置 → 点服务商行（不改配置） →
+> 关闭 → 扫分割条 → 拖分割条）**全绿**。⇒ 状态 ⏸️ 待裁决 → **✅ 闭合（归属反转）**。
+>
+> **两阶段受控对照（每步只加一个自变量，ECDI 全程零改动）**：
+>
+> | 阶段 | 唯一的自变量 | 观测 |
+> |---|---|---|
+> | S0 基线 | — | 光标恒 `SIZEWE`；拖拽仅在该操作序列后退化（蓝线常亮、必须极慢才跟手） |
+> | S1 | 修 `SplitterBar.cpp`：光标按几何位置决定 + `OnMouseLeave` 对称恢复（v5.12/v5.13） | 光标症状**消失**；拖拽症状**仍在** |
+> | S2 | 再把 `AppSettings.cpp` 的列表自我重建挪到下一 tick（`App.h`/`AppStream.cpp`，v5.15） | **两症状全消** |
+>
+> ⇒ 仅改 harness 侧即完整消除全部症状，**无需 ECDI 侧假说**。按 §1.1「先证伪不需要改对方的
+> 解释」与「只改一个自变量」纪律：v5.8 判「ECDI 侧 OS 捕获泄漏」**不成立为已确认缺陷**，
+> 这是继 `REQ-01/03/04/07` 之后的**第 5 次归属误判**（v5.10 的预判应验）。
+>
+> **诚实的边界（跳过必须说出来）**：
+> ① **H1/H2 机制二分仍未完成**：实验 X（移出再回来不恢复）指向 H1，但未排除「移回路径
+>    又扫过分割条」「窗口外首次点击是否被吞」两个混淆变量；本结案**不宣称 H2 成立**。
+>    能确定的是「去除 harness 侧触发点后症状全消」，不是「ECDI 内部到底发生了什么」。
+> ② `::GetCapture()` 的**物理读数自始至终没测**；ECDI 三处源码（`Window.cpp:721-725` /
+>    `Application.cpp:508` / `Window.cpp:617-626`）仍是**客观代码事实**，但只能记为
+>    **潜在隐患观察项**，不叫已确认缺陷、不占新 REQ 号、不跟进（按 11-04「评估降权、
+>    能投入使用优先」）。若 ECDI 侧日后想自查，建议挂 `MouseCaptureTests.cpp` 单测断言
+>    `::GetCapture() == nullptr`（修复前须红）。
+> ③ **S1 / S2 两个改动各自是否必要，未做反向对照**（没试「只做 S2、回退 S1」）。按同一条
+>    定调，不为凑读数去回退已工作的代码；两处**都保留**。
+> ④ 本轮**未加机读判据**（`--cursor-probe` 未授权、未做），验收凭据是用户在
+>    `gui/cmake-build-release-visual-studio/harness_gui.exe` 上的**一次人工复验**。
+>
+> ★ **对本仓的处置**：`REQ-18` 主诉撤单；下表所有原判断言（归属 / 合计结论 / 建议修法 /
+> 验收判据 / 待办）均为 **v5.8 立案时的历史记录**，按本仓「历史不改写」惯例**逐条保留、
+> 整体由本结案段取代**，不再执行。★ **用户不必去 ECDI 改 `ForgetSubtree`**，亦不必换库重链。
+> 附带观察 `CursorShape` 缺 `SizeWE` 仍只是能力缺口、有绕行，依旧不单独立 REQ。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-05 用户反馈（光标卡在 `IDC_SIZEWE`）；14:27 补充精确复现路径 |
+| 状态 | ✅ **闭合（2026-11-05 15:05，归属反转为 harness 侧）**——两阶段受控对照（S1 修 `SplitterBar` / S2 延迟重建）后两症状全消，**ECDI 零改动**；主诉撤单，见上方「复核订正 4」。原 ⏸️ 待裁决轨迹见 §6 v5.10–v5.15 |
+| 归属 | **ECDI 侧**（`Window::ForgetSubtree` 与 `Window::SetCaptureWidget` 幂等契约冲突 ⇒ **OS 级鼠标捕获泄漏**）。已按 §1.1 纪律查 `Widget.h` 基类公共头 **与 ECDI 源码仓**（`D:\Project\ECDI`，取证时点 HEAD `daed47c`），并核对其自带 `src/Tests/MouseCaptureTests.cpp`（审计 #60 / C3 同族）。★★ **2026-11-05 15:05 结案改判：归属 harness 侧**（本行仅保留 v5.8 立案时原判，不再执行；见上方「复核订正 4」） |
+| 现象 | 鼠标扫过左右分割条后变成 `IDC_SIZEWE`，移开后**不恢复**；稳定复现路径 = 点「设置」→ 在服务商列表**点任意一行**（云知声 / DeepSeek 均可，**不改任何配置**）→ 直接「关闭」→ 扫过分割条 |
+| ★ 受控对照（只改一个自变量） | ① 设置 → **直接关闭** → 扫分割条 ⇒ **正常恢复**；② 同上但中间**点一下服务商行** ⇒ **稳定卡住**。自变量只有「点击回调里是否发生列表自我重建」，其余（浮层显隐、鼠标路径、主题、服务商是谁、有无配置改动）逐位相同。用户 14:27 明确「什么配置都不改就会稳定触发」 |
+| ★ 已核实①（本仓触发点） | `gui/src/AppSettings.cpp:1102-1149`：服务商行 `Button::SetOnClick` 回调**无条件**执行 `:1147` `RebuildSettingsProviderList()` + `:1148` `RebuildSettingsModelList()`；而 `:1073-1075` 的重建首步就是 `while (GetChildCount()>0) RemoveChild(GetChildAt(0))` ⇒ **把当前正被点击的 Button 自己摘树销毁**（发生在 Down 与 Up 之间） |
+| ★ 已核实②（ECDI 摘树路径） | `ECDI/src/Window/Window.cpp:721-725`：`ForgetSubtree` 在捕获目标落在被摘子树内时只做 `m_captureWidget = nullptr`——**只清框架登记，不调 `m_platformWindow->SetMouseCapture(false)`**；OS 侧 Down 时建立的 `::SetCapture(m_hwnd)`（`Win32PlatformWindow.cpp:1415`）仍挂在窗口上 |
+| ★ 已核实③（释放被幂等短路） | `ECDI/src/Application/Application.cpp:508` Up 末尾调 `window.SetCaptureWidget(nullptr)`，注释还写着「摘树路径已由 `ForgetSubtree` 清空（幂等）」；但 `Window.cpp:617-626` 的幂等判据是 `wasCaptured = (m_captureWidget != nullptr)`——此时已被 ② 清成 `nullptr` ⇒ `willCapture == wasCaptured == false` ⇒ **提前 return，`SetMouseCapture(false)` 永不调用**，`::ReleaseCapture()` 不发生 |
+| ⇒ 合计结论 | 「摘树清登记」与「Up 靠登记跨边界释放」是**同一个状态位的两半**：前者把它提前清零，后者就再也跨不过边界 ⇒ **只要控件在 Down/Up 之间摘树，OS 捕获必然残留**。ECDI `Win32PlatformWindow.cpp:1114` 自述「唯一自愈出口 = 用户下一次任意点击」与本现象一致 |
+| ★ 证据强度（诚实标注） | 上述**源码链条是确定的**（三处源码 + 两组受控对照）；但「`::GetCapture()` 在关闭后仍等于本窗口 HWND」这一**物理读数尚未实测** ⇒ 本条判为「源码级闭环的已确认缺陷」，**不冒充已有机读证据**。待补：ECDI 侧单测断言 `::GetCapture()`，或本仓 `--cursor-probe`；另请用户试「卡住后在空白处点一下左键是否自愈」（若是，即 `Application.cpp:1114` 预言的自愈出口） |
+| 影响面 | 不只是光标：OS 捕获残留会让本窗口吞掉客户区外的鼠标消息、hover/命中路径异常；本仓之所以**先**看见光标，是因为 `SplitterBar` 用了「一次性 `SetCursor`、无恢复」的裸 Win32 调用绕开了 ECDI 的 `WM_SETCURSOR` 逐次重查契约（`Win32PlatformWindow.cpp:1154-1174` / `Widget.h:315-319`），它是**显影剂**，不是根因 |
+| 建议修法（**不替 ECDI 裁决**） | **案 A（本仓倾向）**：`Window::ForgetSubtree` ② 清捕获登记时同步 `m_platformWindow->SetMouseCapture(false)`。平台层已具备安全性：`Win32PlatformWindow.cpp:1420-1437` 的 `SetMouseCapture(false)` 自带 `GetCapture() == m_hwnd` 守卫与 `ReleasingGuard`（抑制 `::ReleaseCapture` 同步投递 `WM_CAPTURECHANGED` 造成的伪失捕上报），不会误伤别人的捕获。**案 B**：让 `SetCaptureWidget` 的幂等判据独立于可被摘树清空的 `m_captureWidget`（另记 OS 捕获状态位），使 Up 的 `nullptr` 调用仍能跨边界释放。两案都须守住 `OnCaptureLost`（`Window.cpp:642-651`）「只清登记、不回调平台」与 #59 契约 C「脱树不补发 Up / Leave」；另 `ForgetSubtree` 是 `noexcept`，新调用的异常规格由 ECDI 侧评估 |
+| 本仓侧放大器（**不属本条**） | `gui/src/SplitterBar.cpp:48/107` 裸 `::SetCursor(IDC_SIZEWE)`、`:111-116` `OnMouseLeave` 不恢复 ⇒ 本仓自行收敛（补对称恢复 / 收敛到契约），**不在 ECDI 侧修**。附带观察：`CursorShape`（`ECDI/include/ECDI/Core/CursorShape.h:13-16`）只有 `Arrow`/`IBeam`，今天没有合规通路自述「左右拉伸」——是能力缺口而非缺陷，本轮**不单独立 REQ**，留一行指针。★ **2026-11-05 15:1x 增量订正**：用户定调「没有现成链路，让使用者直接操作 Win32 了」⇒ 已立 **REQ-19**（本行「不单独立 REQ」按历史不改写保留，但**结论已被取代**） |
+| 验收判据 | ① **ECDI 侧单测**（建议挂 `MouseCaptureTests.cpp`）：Down 建立捕获 → 在 Up 之前 `RemoveChild` 摘掉该控件 → 派发 Up → 断言 `::GetCapture() == nullptr`；修复前必须**红**。② 本仓换 `ECDI.lib` 重链后，按上述 C 路径人工复现：设置 → 点服务商行 → 关闭 → 扫分割条 ⇒ 光标必须恢复。③ 负对照仍在：不点服务商行的分支不得回归。④ 若本仓加 `--cursor-probe`，其负对照（点行→关闭）修复前须读到 `GetCapture()==m_hwnd`，否则判据空转 |
+| 待办 / 开放问题 | ① 用户去 ECDI 修，修完回传库与 commit；② 本仓是否同批做 `--cursor-probe` / `SplitterBar` 收敛（**当前未授权，未做**）；③ 其它在事件回调内自我重建的调用点（`AppSettings.cpp:360/1336-1337`、`AppUiMain.cpp:894-895`、`AppStream.cpp:209`）是否同族，待本仓自查 |
+
+---
+
+### REQ-19 🔄 应用侧「无合规通路」两例 —— 光标形态值域（**19-A**）/ shell 打开文件（**19-B**），**记作能力缺口、不是缺陷**
+
+> 立案：2026-11-05 15:1x，用户观察「harness 那自己修好了，不过这也看出一个问题，**我们没有现成链路，
+> 让使用者直接操作 Win32 了**」。
+> ⇒ 本条把 REQ-18 里那句「`CursorShape` 缺 `SizeWE` 是能力缺口、有绕行、不单独立 REQ」**升级为独立条目**：
+> 缺口本身不新鲜，新鲜的是**代价被量化了**——为绕开它，本仓写了 44 行辅助代码 + 5 个调用点，
+> 并且**亲手造出了 REQ-18 那条「光标卡住」**（该条最终判定 harness 侧、ECDI 零改动，根因就是这个绕行）。
+>
+> ★ **2026-11-05 15:18 用户裁定**：① 光标缺口取 **案 A**（`CursorShape` 只追加值域，**不**补通用逃生舱）；
+> ② `AppPreview` 的 `ShellExecuteW` **并入本条**（19-B），记作**能力缺口**，**不另立 REQ-20**。
+
+#### 19-A 光标形态值域（原 REQ-18「附带观察」升级）
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-05 用户观察（REQ-18 收口时暴露）；原为 REQ-18 条目内的一行「附带观察」，本轮升级为独立 REQ |
+| 状态 | 🔄 **开放**（两例均为能力缺口，ECDI 侧未补；本仓均有绕行、**不阻断使用**） |
+| 归属 | **ECDI 侧**（`CursorShape` **值域** + `CursorHandleFor` **映射**两处）。已按 §1.1 查 `Widget.h` 基类公共头、`CursorShape.h`、`Win32PlatformWindow.cpp`、`TextBox.h` 先例，以及 ECDI 自带 `src/Tests/PlatformQuickfixTests.cpp`（取证时点 HEAD `daed47c`） |
+| 缺口（一句话） | **自述通路是完整的，表达力是残缺的**：`Widget::GetCursor()` → `Window::OnQueryCursor`（`Window.cpp:657` 取命中控件形态）→ `WM_SETCURSOR`（`Win32PlatformWindow.cpp:1153-1174`）→ `::SetCursor`，四段全在；但枚举只有两个值（`CursorShape.h:13-16`），`CursorHandleFor`（`:44-60`）除 `IBeam` 外一律回落 `IDC_ARROW` ⇒ **「左右拉伸」这个词在框架里不存在** |
+| ★ 代价（本条存在的理由） | 本仓 `gui/src/SplitterBar.cpp` 为绕行付出：**匿名命名空间 44 行**（`:19-62`——句柄缓存 ×2、几何判据 `PointerOverBar` 含 16px 容差、`RestoreArrowIfSizeWe`）+ **5 处调用点**（`:100/104/160-161/169/179`）+ `#include <Windows.h>`。★★ 其中最贵的是 `if (::GetCursor() == SizeWeCursor())` 这一行：应用必须**逆推「当前光标是不是我设的」**才能不覆盖 `TextBox` 的 `IBeam`——而「谁拥有光标」这份知识框架本来就有（它每次 `WM_SETCURSOR` 都重查一遍） |
+| ★★ 结构性后果 | 裸 `::SetCursor` 是**一次性写、无 owner、无恢复** ⇒ 应用被迫**手写光标状态机**（进入设 / 离开还 / 松手还 / 几何兜底），框架 `WM_SETCURSOR` 的**逐次重查**（`Widget.h:315-319` 明写「每次重查」）因此被完全弃用 ⇒ 从「框架每帧自愈」退化成「谁最后写谁赢」。**REQ-18 的光标卡死就是这条绕行的直接产物**（绕行自伤，不是框架缺陷） |
+| ★ 补齐后本仓能删什么 | `SplitterBar` 只需一行 override：`CursorShape GetCursor() const noexcept override { return CursorShape::SizeWE; }`（与 `TextBox.h:38` 的 `IBeam` 完全同款）。`PointerOverBar` / `RestoreArrowIfSizeWe` / 三处出口恢复 / `#include <Windows.h>` **全部作废**；16px 容差那套 hack 也不需要——命中由 `HitTestWindow` 决定，3px 条宽不是应用该操心的事 |
+| 建议修法（**案 A 已于 15:18 由用户裁定采纳**） | **案 A（采纳）**：`CursorShape` **只追加末尾、不重排**（头文件 `:10` 自己写了这条约定）——至少 `SizeWE` / `SizeNS` / `SizeNWSE` / `SizeNESW` / `SizeAll` / `Hand` / `Cross` / `Wait`；`CursorHandleFor` 补 `IDC_*` 映射（未知值仍回落 `IDC_ARROW`，保持今天的安全缺省）；`PlatformQuickfixTests.cpp:198-202` 同批加断言（现成模板，两行 `EXPECT_TRUE`）。**案 B（已否决，记录理由）**：通用逃生舱 `CursorShape::PlatformDefined` + host 钩子 ⇒ 会把平台头重新泄回应用、破坏跨平台抽象；光标本就是 OS 概念，枚举补全已够覆盖，不必为单个消费者开洞 |
+| ★ 边界（不夸大） | 这是**表达力缺口**，不是错误行为——今天所有路径自洽（未知形态一律 Arrow），且有绕行。按 2026-11-04「不为采数据挡功能」定调，**不排期**、不阻断任何功能 |
+| ★ 纪律产出（本条真正的教训，两例共用） | 「应用里出现 `#include <Windows.h>` + 裸 Win32 调用」= **一条潜在 REQ 的信号**，不是实现细节。本仓全量盘点后只剩 2 处：① **19-A**（`SplitterBar.cpp` 光标）；② **19-B**（`AppPreview.cpp:39-40` `ShellExecuteW`，框架无「用系统默认程序打开 / 定位文件」能力）——15:18 用户裁定**并入本条**，不另立 REQ-20 |
+| 验收判据 | ① ECDI 侧单测（挂 `PlatformQuickfixTests.cpp`）：某 Widget override `GetCursor()` 返回 `SizeWE` ⇒ 断言 `CursorHandleFor(SizeWE)` 等于 `::LoadCursor(nullptr, IDC_SIZEWE)`；② 本仓收敛后 `SplitterBar.cpp` **不再出现 `#include <Windows.h>` / `::SetCursor` / `::GetCursor`**（可 `grep` 判定）；③ 负对照：`TextBox` 仍 `IBeam`、普通控件仍 `Arrow`（`PlatformQuickfixTests.cpp:198-202` 既有两条不得回归）；④ 人工：扫过分割条出现左右箭头、离开恢复、拖拽跟手（REQ-18 结案时那组判据原样复用） |
+| 待办 / 开放问题（19-A） | ① ECDI 补值后本仓才做收敛（**当前不预做**——REQ-18 已证明「先改本仓再等框架」会多走一轮）；② 取值集合（只要 `SizeWE` 还是补齐 8 个）留给 ECDI 裁决，本仓不预设；③ 案 B 已否决 ⇒ 验收判据 ②（`SplitterBar.cpp` 无 Win32）恒成立，不需重写 |
+
+#### 19-B shell「在文件管理器中定位 / 打开」无能力面 —— 应用只能裸 `ShellExecuteW`
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-05 15:18 用户裁定「并入 REQ-19，记作能力缺口」（**不另立 REQ-20**） |
+| 状态 | 🔄 **开放**（能力缺口；本仓有绕行、**不阻断使用**） |
+| 归属 | **ECDI 侧（能力面缺失，非错误行为）**。已按 §1.1 核实：ECDI 全库（`include/` + `src/`）**零** `ShellExecute` 引用（只用到 `shellapi.h` 的 `Shell_NotifyIconW` / `SHGetFileInfoW` / 拖放族）；而平台层「把系统能力包成方法」**已是既有做法**——`PlatformWindow.h:72/76` 的 `GetClipboardText` / `SetClipboardText` ⇒ 本条要的是**沿用同一范式再加一个方法**，不是新范式 |
+| ★ 最干净的对照（同一文件、20 行之内） | `gui/src/AppPreview.cpp` 预览面板 foot 栏两个**相邻**按钮：**「复制路径」**（`:263-265`）走 `m_window->GetPlatformWindow().SetClipboardText(...)` —— **零 Win32**；**「在资源管理器中显示」**（`:241-250`）只能 `ShellExecuteW(nullptr, L"open", L"explorer.exe", L"/select,\"…\"", nullptr, SW_SHOWNORMAL)`，并为它付 `#include <windows.h>` + `<shellapi.h>`（`:39-40`）。★ 同一个栏、同一个文件、同一个用途族，一个走框架一个走 OS ⇒ 归属无争议 |
+| 代价 | ① 应用要懂 **`ShellExecuteW` 的返回值域**（`<=32` 判失败、`SE_ERR_*` 语义）才能写错误分支；② `explorer.exe /select` 是 Windows 专有 ⇒ 换平台即失效，而框架其它地方都做了跨平台收敛；③ 探针只能断言路径/参数构造、**不能真开 shell**（有副作用）⇒ 该路径天然缺机读覆盖（`AppPreview.cpp:9-10` 已自述） |
+| 建议修法（**案 A 风格，最小**） | `PlatformWindow` 增一个**窄**方法，例如 `bool RevealInFileManager(const std::string& path)`（或更通用的 `bool OpenExternal(const std::string& target)`），失败返回 false，**错误语义留给调用方**决定是否提示；Win32 实现内部 `ShellExecuteW` + `<=32` 判定，其它平台各自实现（`explorer` / `xdg-open` / `open`）。★ **不要求**做通用 shell 抽象层（YAGNI，与 19-A 否决案 B 同一个理由） |
+| 边界（不夸大） | 能力缺口、非缺陷：今天行为正确（能定位文件、失败有 notice），只是实现越过了框架。按 11-04「不为采数据挡功能」定调**不排期** |
+| 验收判据 | ① ECDI 侧单测：对 `RevealInFileManager` 做**参数构造**断言或注入 stub（**不真开 shell**）；② 本仓收敛后 `AppPreview.cpp` **不再出现 `#include <windows.h>` / `<shellapi.h>` / `ShellExecuteW`**（可 `grep` 判定）；③ 负对照：相邻「复制路径」路径不回归；④ 人工：点按钮真能定位到文件，失败分支 notice 仍显示 |
+| 待办 / 开放问题（19-B） | ① 命名与粒度（`RevealInFileManager` 专名 vs `OpenExternal` 通用）留给 ECDI 裁决；② 本仓收敛在 ECDI 落地后做，**当前不预做**；③ ★ 若 ECDI 判定「拉起外部程序」超出框架边界（安全考量：应用不该能拉起任意 exe），则本条**转为不登记**、本仓保留绕行——这一分歧**由对方给结论，本仓不预设** |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -893,6 +1039,184 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.18（2026-11-05）★ REQ-19 裁定：光标取案 A；`ShellExecuteW` 并入 19-B 记作能力缺口**
+  ① 用户 15:18 裁「**案A吧，并入REQ19记作能力缺口**」⇒ 19-A 修法锁定为「`CursorShape` **只追加末尾**」，
+     `CursorHandleFor` 补 `IDC_*` + `PlatformQuickfixTests` 加断言；**案 B（通用逃生舱）记为已否决**
+     （会把平台头泄回应用；光标本就是 OS 概念，枚举补全即够）。
+  ② **19-B 立案（并入，不另立 REQ-20）**：`AppPreview.cpp:241-250`「在资源管理器中显示」只能裸
+     `ShellExecuteW` + `<windows.h>`/`<shellapi.h>`；★ 而**同一 foot 栏相邻**的「复制路径」
+     （`:263-265`）走 `PlatformWindow::SetClipboardText` ⇒ **同一文件 20 行内的一对一对照**，
+     归属无争议。
+  ③ ECDI 侧核实（§1.1）：全库**零** `ShellExecute` 引用；平台层「把系统能力包成方法」已有范式先例
+     ——`PlatformWindow.h:72/76` 的 `GetClipboardText`/`SetClipboardText` ⇒ 要的是沿用同一范式，不是新范式。
+  ④ 建议 `PlatformWindow` 增**窄**方法（`RevealInFileManager` 或 `OpenExternal`），失败返回 false；
+     **不做通用 shell 抽象**（YAGNI，与 19-A 否决案 B 同理由）。★ 若 ECDI 认为「拉起外部程序」超出
+     框架边界（安全考量），本条**转不登记**、本仓保留绕行——**由对方裁决，本仓不预设**。
+  ⑤ 两例统一标「**能力缺口、非缺陷、不排期**」；本仓收敛**一律等 ECDI 落地后做**（当前不预做，
+     REQ-18 已证明「先改本仓再等框架」会多走一轮）。本轮只改**账本一个文件**。
+  ⑥ 头部 v5.17 → **v5.18**。
+- **v5.17（2026-11-05）★ REQ-19 立案：`CursorShape` 值域缺第三种形态 ⇒ 应用只能裸调 Win32（ECDI 侧，开放）**
+  ① 用户 15:1x 观察（REQ-18 收口后）：「harness 那自己修好了，不过这也看出一个问题，
+     **我们没有现成链路，让使用者直接操作 Win32 了**」。
+  ② 缺口定位：自述通路四段完整（`GetCursor` → `OnQueryCursor` → `WM_SETCURSOR` → `::SetCursor`），
+     **残的是值域**——`CursorShape.h:13-16` 只有 `Arrow`/`IBeam`，`Win32PlatformWindow.cpp:44-60`
+     除 `IBeam` 外一律回落 `IDC_ARROW` ⇒ 「左右拉伸」在框架里不存在。
+  ③ 代价量化（本条立案理由）：本仓 `SplitterBar.cpp` 绕行为此付出**匿名命名空间 44 行 + 5 个调用点 +
+     `#include <Windows.h>`**；其中最贵的是用 `::GetCursor()` 值比较去逆推「光标是不是我设的」——
+     而框架本来就知道（每次 `WM_SETCURSOR` 重查）。★ 裸 `::SetCursor` 无 owner ⇒ 应用被迫手写光标
+     状态机，**REQ-18 的光标卡死正是这条绕行的产物**（该条已判 harness 侧、ECDI 零改动）。
+  ④ 建议案 A（只追加末尾，与 `TextBox.h:38` 同款 override 即可替代全部绕行）/ 案 B（通用逃生舱，
+     不作首选，会把平台头泄回应用）。**不替 ECDI 裁决**；按 11-04 定调**不排期**、不阻断功能。
+  ⑤ ★ 纪律产出：「应用出现 `#include <Windows.h>` + 裸 Win32 调用」= 潜在 REQ 的**信号**。
+     本仓全量盘点后仅剩 2 处：本条（`SplitterBar.cpp` 光标）与 `AppPreview.cpp:39-40` `ShellExecuteW`
+     （框架无「打开外部 URL」能力）——后者**是否并入待裁**，不擅自扩大范围。
+  ⑥ REQ-18 条目内原「附带观察…不单独立 REQ」按历史不改写保留，但已加**增量订正**指向本条
+     （结论被取代）。本轮只改**账本一个文件**，未改代码 / ECDI / 探针。
+  ⑦ 头部 v5.16 → **v5.17**。
+- **v5.16（2026-11-05）★★ REQ-18 结案：归属反转 harness 侧，撤单，ECDI 不用动**
+  ① 用户 15:05 回报 v5.15 判据「**两者都好了**」：a 光标离开分割条恢复箭头；
+     b 拖动跟手、蓝线不再常亮。原稳定复现路径全绿。
+  ② 两阶段受控对照（每步只加一个自变量、ECDI 全程零改动）：S0 基线两症状齐发 →
+     S1 修 `SplitterBar.cpp`（几何判据 + `OnMouseLeave` 对称恢复，v5.12/v5.13）⇒ 光标愈、
+     拖拽仍退化 → S2 把 `AppSettings.cpp` 的自我重建挪到下一 tick（v5.15 三文件）⇒
+     **两症状全消**。⇒ 不需 ECDI 侧假说即可解释并修复，v5.8 的「OS 捕获泄漏」判为
+     **第 5 次归属误判**（前四次 `REQ-01/03/04/07`；v5.10 的预判应验）。
+  ③ 状态 ⏸️ 待裁决 → **✅ 闭合（归属反转）**；标题状态符 🔄 → ✅、条目顶部加
+     「复核订正 4 / 结案」、状态行与归属行加时点订正，**下表原判逐条保留不改写**
+     （历史不改写惯例），整体由结案段取代。★ **用户不必去 ECDI 改 `ForgetSubtree`**，
+     亦不必换库重链。
+  ④ 诚实边界：H1/H2 机制二分仍未完成（实验 X 的两个混淆变量未排除，不宣称 H2 成立）；
+     `::GetCapture()` 物理读数自始至终未测 ⇒ ECDI 三处源码只记为**潜在隐患观察项**，
+     不叫缺陷、不占新 REQ、不跟进；S1/S2 各自必要性未做反向对照，两处都保留；
+     未加 `--cursor-probe`，凭据是用户一次人工复验。
+  ⑤ 本轮只改**账本 + 今日日志**，未改任何代码 / ECDI / 探针；工作区五个 M
+     （账本 + 四个源码文件）保持，**未 commit**（commit ≠ push，等指令）。
+  ⑥ 头部 v5.15 → **v5.16**。
+- **v5.15（2026-11-05）★ 延迟重建落地（用户授权三文件），待复验**
+  ① 用户 15:00 授权「改这三个文件」。改动：`AppSettings.cpp:1147-1148` 的 `OnClick` 内两行
+     重建 → 只置 `m_settingsListDirty = true`；`App.h` 新增该标志；
+     `AppStream.cpp::OnReplayTick` 新增消费块，在 tick 里调
+     `RebuildSettingsProviderList()` + `RebuildSettingsModelList()`。
+  ② 安全性核实：`kReplayTimer` 在窗口初始化时**无条件**启动（`App.cpp:688`，33ms），
+     消费块位于 `OnReplayTick` 的 `if (!m_sess->source) return;` 之前 ⇒ 空会话也能消费；
+     字段区 `SetText` 仍即时生效，只有「[编辑中]」标记最多迟一帧。
+     ⇒ Down/Up 完整走完才摘树，焦点 / 捕获 / hover 三条登记不再被中途清空。
+  ③ 校验：三文件 BOM 与 HEAD 一致（`AppStream.cpp` 工作区 CRLF 是既有本地漂移，
+     `.gitattributes eol=lf` 提交时归一化，HEAD 为 LF）、`git diff --check` 干净、
+     三文件 diff 仅 4 / 11 / 9 行、precommit 三门绿；编译仍由用户在 CLion / VS 完成
+     （Bash 下 MSVC 缺 `INCLUDE`，见 v5.12）。
+  ④ **待复验**：设置 → 点服务商行 → 关闭 → 扫分割条 → 拖分割条：
+     a 离开后光标恢复；b 拖动跟手、蓝线不常亮。两者都好 ⇒ 触发点坐实为「回调内摘树」，
+     **归属 harness 侧，REQ-18 降级或撤单，ECDI 不用动**；仍异常 ⇒ 才去 ECDI 改
+     `ForgetSubtree` 或先加只读探针 `::GetCapture()`。
+  ⑤ 状态仍 ⏸️ 待裁决；头部 v5.14 → **v5.15**；未 commit。
+- **v5.14（2026-11-05）★ 复验 2：光标提示已正常，拖拽仅在「那次操作之后」退化**
+  ① 用户 14:58 复验：a) 分割条上左右箭头**正常显示**（16px 容差生效）；
+     b) 分割线**正常高亮**（`m_dragging` 生效），但**必须非常慢地移动鼠标才跟得上**；
+     且只在「设置 → 点服务商行 → 关闭」**之后**出现，**操作前完全正常**，并会一直保持蓝色。
+  ② ⇒ v5.13 的「3px 热区没提示 ⇒ 按不准」**不是主因**（a 已正常而 b 仍异常），该推断作废，
+     原记录保留不改写；容差本身无副作用，暂留。
+  ③ ★ 新结论：拖拽代码逐字未改 ⇒ 不是本轮修复引入的回归。「一直是蓝的」说明
+     `m_dragging` / `m_hovered` 粘住；「必须非常慢才跟上」说明每条 Move 都在跑完整的
+     `SetSize → Arrange → m_sidebarDirty → 侧栏重建` 重链 ⇒ **同一个操作序列污染了全局
+     鼠标状态**，光标卡住只是它的症状之一。SplitterBar 修复只治了显示，没治状态。
+  ④ ★ **排除一条假说**：`HarnessApplication::OnTimer`（`App.cpp:147-172`）对
+     `kReplayTimer` 在 override 里无条件分流到 `OnReplayTick`，**不依赖焦点**；
+     只有基类 `Application::OnTimer`（ECDI `Application.cpp:311-329`）的光标 / 动画 tick
+     走焦点链 ⇒ 「`RemoveChild` 清焦点 ⇒ tick 停摆 ⇒ 侧栏不重建」**不成立**，别往这条查。
+  ⑤ ★★ **下一步（等用户原子授权）**：把 `AppSettings.cpp:1147-1148` 的列表自我重建从
+     `OnClick` 回调挪到下一 tick（`App.h` 新增 `m_settingsListDirty` +
+     `AppStream.cpp::OnReplayTick` 消费，复用 `m_modelListDirty` 同族通道），
+     让 Down/Up 完整走完再摘树。这同时是 H1/H2 的判别：**若「操作后拖动也正常」⇒
+     触发点就是「回调内摘树」，归属回到 harness 侧，ECDI 不用改**。
+  ⑥ 状态仍 ⏸️ 待裁决；本轮**未改任何代码**（涉及新文件，需另行授权）。头部 v5.13 → **v5.14**。
+- **v5.13（2026-11-05）★ 复现结果：光标已恢复，但拖拽「不跟手」——补光标判据容差**
+  ① 用户 14:51 反馈：新构建（其实际运行的是 `gui/cmake-build-release-visual-studio/harness_gui.exe`，
+     14:48:47 晚于源码 14:48:06，确认含本轮改动）下**光标卡住已消失**，但左右栏拉不动 / 不跟手。
+  ② ★ **拖拽代码逐字未改**（`OnMouseButtonDown` 的 `m_dragging/SetCaptureWidget`、
+     `OnMouseMove` 的 `delta → SetSize → m_onResize` 全部保持原样）⇒ 不是尺寸链回归。
+     最可能的原因是**光标提示消失**：`PointerOverBar` 用 `GetAbsolutePosition()` 重算的
+     **3px** 矩形与 ECDI HitTest 的命中口径差 1-2px 即整片 miss ⇒ 分割条上恒为 Arrow，
+     3px 热区没有视觉提示，用户按不准 ⇒ 观感「拉不动」。
+  ③ 处置：`PointerOverBar` 加 `kCursorTolerance = 16px`（**只影响提示形态**，
+     实际拖拽命中仍由 ECDI HitTest 决定）；`OnMouseMove` / 拖拽逻辑不变。
+  ④ **待用户复验两条**：a) 鼠标停在分割条上是否重新显示左右箭头；b) 按住拖动时
+     分割线是否高亮（`m_dragging` 生效的可见证据）且宽度是否连续变化。
+     a 是 b 否 ⇒ 另查 `m_sidebarDirty` 的 tick 重建链（`AppUiMain.cpp:141-147`）或捕获残留；
+     a 否 ⇒ 几何口径仍不对，改用「由 hover 状态驱动 + 宽松兜底」。
+  ⑤ 状态**仍 ⏸️ 待裁决**：光标症状已除，但 H1/H2 的机制二分尚未完成。
+     头部 v5.12 → **v5.13**；本轮代码改动仍只 `gui/src/SplitterBar.cpp`。
+- **v5.12（2026-11-05）★ REQ-18 受控对照已就位：本仓 `SplitterBar` 修复落地（待复现）**
+  ① 用户 14:44 授权「改 SplitterBar」；本轮代码改动**只** `gui/src/SplitterBar.cpp`（+62/−3）。
+  ② 修法：光标不再按「这条 Move 是否派发给我」决定，改为按「**事件坐标是否真落在自身热区**」
+     决定（`PointerOverBar`：MouseEvent 客户区坐标 ↔ `Widget::GetAbsolutePosition()` 同基准，
+     依据 `Widget.cpp:368-369` 的 HitTest 坐标变换与 `:785-804` 的逆变换）；
+     `OnMouseLeave` / 拖拽松手离开热区时 `RestoreArrowIfSizeWe()` 只把「确实是我们设下的
+     SIZEWE」改回 Arrow，**不覆盖 TextBox 的 IBeam** 等 `WM_SETCURSOR` 正规路径的形态。
+  ③ 这是**两条假说都承认存在**的那个 harness 侧缺陷 ⇒ 只改这一个自变量，**ECDI 零改动**。
+  ④ 验证状态：`git diff --check` 干净、BOM / LF 与 HEAD 一致（漂移 0）、precommit 三门绿；
+     ★ **增量编译未跑成**：Bash 下 `cmake --build gui/build --target harness_gui` 报
+     `C1083 无法打开包括文件 "algorithm" / "map"`，且**未改的 `Transcript.cpp` 同样失败**
+     ⇒ 是 MSVC 环境未初始化（缺 `INCLUDE`），**不是本改动的语法错误**；按本仓惯例交给用户在
+     VS / CLion 编译。静态核对已做：`GetAbsolutePosition/GetWidth/GetHeight` 均 const noexcept、
+     `MouseButtonUpEvent → MouseButtonEvent → MouseEvent` 有 `GetMouseX/Y`、
+     `LoadCursor/GetCursor/SetCursor` 由 Windows.h 提供。
+  ⑤ **待用户复现**（设置 → 点服务商行 → 关闭 → 扫分割条）：症状消失 ⇒ 归属 harness 侧、
+     REQ-18 降级或撤单、ECDI 不用动；仍卡 ⇒ H1 实锤，再去 ECDI 改 `ForgetSubtree`
+     （或先加只读探针 `::GetCapture()`）。状态**保持 ⏸️ 待裁决**，不提前改判。
+     头部 v5.11 → **v5.12**。
+- **v5.11（2026-11-05）★ REQ-18 复核订正 3：实验 X = 不恢复，行为判据用尽，改走本仓受控对照**
+  ① 用户 14:41 回报：不点击、只移出窗口再回来，**依旧是 `IDC_SIZEWE`** ⇒ 14:38 的判别实验 X
+     结果 = 不恢复，方向指向 **H1**（ECDI 捕获残留），即重新进入窗口并没有触发光标重查。
+  ② ★ **仍不判 ECDI、状态保持 ⏸️ 待裁决**：混淆变量未排除（移回路径是否又扫过分割条、
+     窗口外首次点击是否被吞）；且按 `Application.cpp:455/508`，窗口内一次 Down+Up 本应
+     跨边界走到 `ReleaseCapture()`，与「窗口内点一下不自愈」有一处不吻合。
+  ③ ★★ **收口决定**：连续三次行为判据都不足以二分，不再靠肉眼推断。改为**只改一个自变量**
+     的受控对照 —— 先修本仓 `SplitterBar`（两条假说都承认它「一次性 `SetCursor`、无恢复」
+     是真缺陷），**不碰 ECDI**，再按原路径复现：症状消失 ⇒ 归属 harness 侧、REQ-18 降级或
+     撤单；仍卡 ⇒ H1 实锤，再去 ECDI 改 `ForgetSubtree`（或先加只读探针读 `::GetCapture()`）。
+  ④ 本轮仍**只改本账本一个文件**；未改 ECDI、未改本仓代码 / 探针（代码改动等用户授权）。
+     头部 v5.10 → **v5.11**；状态不来回翻转，保持 ⏸️。
+- **v5.10（2026-11-05）★ REQ-18 复核订正 2：状态改 ⏸️ 待裁决，可能是第 5 次归属反转**
+  ① 用户 14:38 补充「**在 UI 界面外点一下再回去就恢复了**」⇒ 关键自变量从「点没点」变成
+     「**有没有移出窗口再回来**」。
+  ② 两个竞争解释：**H1** = ECDI OS 捕获残留，窗口外点击被系统夺走捕获（`WM_CAPTURECHANGED`
+     → `OnCaptureLost`）才打破；**H2** = 纯 harness 侧，`WM_SETCURSOR` 在鼠标重新进入窗口时
+     把光标设回 Arrow（`Win32PlatformWindow.cpp:1143-1150, 1154-1174`），窗口内点击不伴随
+     移动则不重查。H2 同时解释两条观测且只需一个已知缺陷（`SplitterBar` 一次性 `SetCursor`
+     无恢复）⇒ **按奥卡姆剃刀本轮倾向 H2**。
+  ③ ★ 若 H2 坐实，本条即**第 5 次归属误判**（前四次 `REQ-01/03/04/07`，成因均为「未先证伪
+     harness 侧解释就判 ECDI」）。三处源码仍是客观代码事实，但**与本现象的因果链未坐实**。
+  ④ **判别实验 X（零代码）**：卡住后全程不点击，只把鼠标移出窗口到桌面、停一下、再移回；
+     恢复 ⇒ H2、本条改判 harness 侧或撤单；不恢复且必须窗口外点一下 ⇒ H1、维持 ECDI 侧。
+     辅助 Y：窗口外首次点击是否被吞（被吞 = OS 捕获实锤）。
+  ⑤ **状态 🔄 → ⏸️ 待裁决**，条目顶部加醒目复核标注 2；**明确暂缓 ECDI 侧修复**。
+     v5.8 / v5.9 原判逐条保留，不改写。头部 v5.9 → **v5.10**。
+  ⑥ 本轮仍**只改本账本一个文件**；未改 ECDI、未改本仓代码 / 探针。
+- **v5.9（2026-11-05）★ REQ-18 复核订正：点击自愈判据是单向的，机制降级为待验证假说**
+  ① 用户 14:35 实测：光标卡住后点一下左键**不自愈**、会一直保持那个状态。
+  ② 复盘：v5.8 条目里「点一下是否自愈（若是即 `Application.cpp:1114` 预言的自愈出口）」被写成
+     双向验证，实为**单向判据**——`WM_SETCURSOR` 只在鼠标移动 / 窗口激活时发
+     （`Win32PlatformWindow.cpp:1154-1174`），点击本身**不重设 `::SetCursor` 的结果**；
+     而一次完整 Down+Up 按源码会跨边界释放 OS 捕获（`Application.cpp:455/508` +
+     `Window.cpp:617-626`），但「释放捕获」≠「重设光标」⇒ 不恢复既可能因为没移动鼠标，
+     也可能因为另有状态在每次 Move 重设 SIZEWE，两种解释都还没排除。
+  ③ 结论：三处源码事实与两组受控对照**仍成立**；「OS 捕获泄漏 ⇒ 光标卡住」这一**因果链降级为
+     待验证假说**。条目内已加醒目标注；状态暂留 🔄，但**建议暂缓 ECDI 侧改动**，避免在机制
+     坐实前重蹈 `REQ-01/03/04/07` 的归属误判。
+  ④ 下一步二选一：a) 零代码行为对照 = 卡住后把鼠标移出本窗口、点别的窗口看第一次点击是否被吞
+     （OS 捕获的直接后果），再移回本窗口明显移动一段看是否恢复；b) 授权本仓加**只读**探针
+     `::GetCapture()` / `::GetCursor()`，把机制变成读数（推荐，一锤定音）。
+  ⑤ 本轮仍**只改本账本一个文件**；未改 ECDI、未改本仓代码 / 探针。头部 v5.8 → **v5.9**。
+- **v5.8（2026-11-05）★ REQ-18 立案：`ForgetSubtree` 摘树路径泄漏 OS 鼠标捕获（ECDI 侧，开放）**
+  ① 用户 14:0x 报告光标卡在 `IDC_SIZEWE`；14:27 补充精确路径：设置 → 点服务商行（**不改配置**）→ 关闭 ⇒ 稳定触发；设置 → 直接关闭 ⇒ 正常（**只改一个自变量**）。
+  ② 本仓触发点 `AppSettings.cpp:1102-1149` 的 `OnClick` 在回调内 `RebuildSettingsProviderList()`（`:1073-1075` 摘光子节点）⇒ 被点击的 Button 在 Down/Up 之间摘树。
+  ③ ECDI 侧三处源码闭环：`Window.cpp:721-725` 只清 `m_captureWidget`、不调 `SetMouseCapture(false)`；`Application.cpp:508` Up 末尾的 `SetCaptureWidget(nullptr)` 被 `Window.cpp:617-626` 的幂等判据短路；`Win32PlatformWindow.cpp:1415` 的 `::SetCapture` 因此永不配对释放。
+  ④ 归属判 **ECDI 侧**；已按 §1.1 查 `Widget.h` 基类公共头 + ECDI 源码仓（取证时点 HEAD `daed47c`）+ `MouseCaptureTests.cpp`。★ **证据强度如实标注**：源码链确定，`::GetCapture()` 物理读数**未实测**，不冒充机读证据。
+  ⑤ 建议案 A = `ForgetSubtree` 清捕获时同步 `SetMouseCapture(false)`（平台层已有 `GetCapture()==m_hwnd` 守卫 + `ReleasingGuard`）；案 B = 幂等判据改用独立 OS 状态位。**不替 ECDI 裁决**，两案取舍与 `noexcept` 异常规格评估都留给对方。
+  ⑥ **用户裁定「你登记，然后我去 ECDI 修」** ⇒ 本轮**只改本账本一个文件**；未改 ECDI、未改本仓任何代码 / 探针 / 其它文档载体。REQ-18 保持 🔄 开放，待换库重链 + 人工复现后回写闭合。
+  ⑦ 附带观察（`CursorShape` 缺 `SizeWE`）**不单独立 REQ**，只在 REQ-18 条目内留一行指针（能力缺口、有绕行；按 2026-11-04 定调不为采数据挡功能）。
+  ⑧ 头部 v5.7 → **v5.8**。
 - **v5.7（2026-11-04）★ REQ-17 闭合：IME 无组合直插通路补齐（中文标点丢字）**
   ① 用户 20:04 交付带修复的 `ECDI.lib`（11974558 B）；本仓换库备份旧库 `.scratch/ECDI.lib.prev-20261104`（11974328 B）。
   ② ECDI **#86** 三处：翻译器新增 `WM_IME_CHAR`（`return 0` 而非 `nullopt`，堵非 Unicode 语义的二次拆包）· `CommitComposition` 的 F8 判据收窄为「无组合 ∧ 空结果」· 吞字计数器对 `WM_CHAR` 与 `WM_IME_CHAR` 同时递减（否则丢字变双写）。
