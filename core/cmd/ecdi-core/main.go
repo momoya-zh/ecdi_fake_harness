@@ -71,6 +71,7 @@ func main() {
 	sandboxMemMB := flag.Int("sandbox-memory-mb", 1024, "L1 沙盒作业内存上限（MB）")
 	sandboxMaxProcs := flag.Int("sandbox-max-procs", 32, "L1 沙盒作业最大活跃进程数（防 fork 炸弹）")
 	sandboxDropPrivs := flag.Bool("sandbox-drop-privs", true, "是否通过受限令牌剥离管理员/调试高危特权")
+	mcpConfig := flag.String("mcp-config", "", "MCP 配置文件路径（缺省在工作区或全局配置目录自动发现）")
 	flag.Parse()
 
 	setSandboxConfig(SandboxConfig{
@@ -167,6 +168,7 @@ func main() {
 			ProviderID: *providerID, Context: *contextTokens, MaxOutput: *maxOutput},
 		strings.Split(*allowTools, ","), providerEnv, *resumeID, *sessionID, *workspace, *globalMemory, *failSummarize,
 		agentOpts{on: *agents, maxParallel: *maxAgents, maxTurns: *agentMaxTurns, timeout: *agentTimeout},
+		*mcpConfig,
 		lines, &curState, logf, os.Stdout)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)

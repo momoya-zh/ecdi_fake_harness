@@ -241,6 +241,14 @@ func askDetail(name string, args map[string]any, root string) map[string]any {
 	case "run_command":
 		return runCommandDetail(args, root)
 	}
+	// ★ MCP 工具**刻意不带 detail**（2026-11-05 评审结论）。
+	//   `detail.tool` 是 GUI 的**判别式**，不是描述字段：协议 §3.6 把它枚举成
+	//   write_file / edit_file / run_command / task，GUI 按它 switch 分支
+	//   （AppTranscript.cpp:833/850/863），未知值只落一行「（提案类型 X）」。
+	//   而 MCP 工具的判别值只能是 `mcp__<srv>__<tool>` 这样的复合名 ⇒ 卡片会
+	//   建出来、默认展开、里面什么都没有 —— 比不发 detail 更糟（它假装有提案）。
+	//   现在的形态：问句照 old 路径走，`askPrompt` 的 MCP 分支已带 200 字符
+	//   参数摘要；等 GUI 那批加上 `tool:"mcp"` 分支后两边一起改。
 	return nil
 }
 

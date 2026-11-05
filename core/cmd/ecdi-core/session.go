@@ -76,6 +76,9 @@ type session struct {
 
 	// ── 协议 v6：后台长任务（docs/background-job-plan.md）──────────────
 	jobs *jobHub
+
+	// ── MCP Host：外部工具能力（docs/mcp-host-plan.md）───────────────
+	mcp *mcpHub
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求（与假 core 同构）。
@@ -87,6 +90,7 @@ type pendingWorkspace struct {
 
 func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmConfig,
 	resumeID, sessionID, workspace, globalMemory string, failSummarize bool, ag agentOpts,
+	mcpConfig string,
 	in <-chan wire.StampedLine, stc *atomic.Int32, log func(string, ...any),
 	outW io.Writer) *session {
 
@@ -137,6 +141,16 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 				s.cwd = norm
 			}
 		}
+	}
+
+	// ── MCP Host 初始化（发现并启动配置的服务，拉取工具列表）──
+	if mcpHub, err := NewMCPHub(mcpConfig, s.cwd); err == nil {
+		s.mcp = mcpHub
+		if len(s.mcp.ToolDefs()) > 0 {
+			s.log("mcp hub initialized: %d tools registered", len(s.mcp.ToolDefs()))
+		}
+	} else {
+		s.log("WARNING: mcp hub initialization failed: %v", err)
 	}
 
 	// L2 resume 处理：从 .meta.json + .jsonl 获取 lastSeq 续号与块序号，从 .context.jsonl 顺序重放历史
@@ -201,6 +215,9 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 	caps := []string{"tools", "ask", "workspace", "model", "jobs"}
 	if s.agents.on {
 		caps = append(caps, "agents")
+	}
+	if s.mcp != nil && len(s.mcp.ToolDefs()) > 0 {
+		caps = append(caps, "mcp")
 	}
 	hello := map[string]any{"t": "hello", "protocol": 6, "core": "0.6.0",
 		"session": s.sessionID, "caps": caps}
@@ -303,6 +320,11 @@ func (s *session) nextBlockID() string {
 func (s *session) run() error {
 	defer s.jobs.shutdown()
 	defer func() {
+		if s.mcp != nil {
+			s.mcp.Close()
+		}
+	}()
+	defer func() {
 		if s.ctxWriter != nil {
 			_ = s.ctxWriter.Close()
 		}
@@ -353,6 +375,9 @@ func (s *session) processLine(sl wire.StampedLine) bool {
 		// ★ I14：bye 之前必须把在跑作业的 end 发完（否则 journal 里留下
 		//   "有 start 无 end" 的作业，历史回放时它永远停在运行中）。
 		s.jobs.shutdown()
+		if s.mcp != nil {
+			s.mcp.Close()
+		}
 		s.emit(map[string]any{"t": "bye", "reason": "eof", "code": 0})
 		return true
 	default:
@@ -418,6 +443,9 @@ func (s *session) handlePrompt(text, clientID string) {
 	if l.exitBye {
 		s.log("bye during turn — exiting")
 		s.jobs.shutdown()
+		if s.mcp != nil {
+			s.mcp.Close()
+		}
 		s.emit(map[string]any{"t": "bye", "reason": "eof", "code": 0})
 		os.Exit(0)
 	}
@@ -524,6 +552,15 @@ func (l *turnListener) drain() []wire.StampedLine {
 	return out
 }
 
+// toolDefs：上交给模型的根代理完整工具列表（内置 + 子代理 task + MCP 扩展工具）。
+func (s *session) toolDefs() []toolDef {
+	defs := toolDefsFor(s.agents.on, 0)
+	if s.mcp != nil {
+		defs = append(defs, s.mcp.ToolDefs()...)
+	}
+	return defs
+}
+
 // chatLoop：LLM ⇄ 工具循环。返回是否被 cancel。
 func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) bool {
 	for {
@@ -531,7 +568,7 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 			return true
 		}
 		textBlocks := &streamBlocks{sess: s}
-		calls, usage, err := s.llm.Stream(turnCtx, s.buildRequestMessages(), toolDefsFor(s.agents.on, 0),
+		calls, usage, err := s.llm.Stream(turnCtx, s.buildRequestMessages(), s.toolDefs(),
 			func(content, reasoning string) {
 				textBlocks.onDelta(content, reasoning, turnCtx)
 			})
@@ -770,7 +807,7 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	case denied:
 		res = toolResult{OK: false, Output: "用户拒绝了该操作。"}
 	default:
-		res = executeToolWithJobs(c.Name, argsMap, s.cwd, s.jobs, callID)
+		res = s.execTool(turnCtx, c.Name, argsMap, callID)
 		s.log("tool %s executed: ok=%v len=%d", c.Name, res.OK, len(res.Output))
 	}
 
@@ -792,11 +829,44 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	}
 	s.emit(map[string]any{"t": "block_end", "id": callID, "ok": res.OK, "summary": summary})
 
+	// MCP 服务死掉要**说出来**：一条 system 块（与「上下文压缩失败」同一处置）。
+	// 不说的话，用户看到的是「工具反复失败」，而真相是子进程没了、本会话不会重启它。
+	s.emitMCPDeadNotices()
+
 	// 结果回模型（GUI 渲染与模型输入同一份文本，§4.4）
 	s.history = append(s.history, chatMessage{Role: "tool",
 		ToolCallID: c.ID, Content: res.Output})
 	if s.ctxWriter != nil {
 		_ = s.ctxWriter.AppendMsg(contextlog.Message{Role: "tool", Content: res.Output, ToolCallID: c.ID})
+	}
+}
+
+// execTool：内置分发 / MCP 路由的**唯一**入口。
+//
+// ★ 必须看 CallTool 的 `handled`（2026-11-05 评审修）：`HasTool` 与 `CallTool`
+//   是两次独立加锁，中间被 `hub.Close()` 清表（bye / EOF 路径）时，旧写法
+//   `res, _ =` 会拿到零值 toolResult ⇒ 发出一条**空输出、ok=false** 的
+//   tool_result 进 history，模型看到的是空字符串而不是「未知工具」。
+func (s *session) execTool(ctx context.Context, name string, args map[string]any, callID string) toolResult {
+	if s.mcp != nil {
+		if r, handled := s.mcp.CallTool(ctx, name, args); handled {
+			return r
+		}
+	}
+	return executeToolWithJobs(name, args, s.cwd, s.jobs, callID)
+}
+
+// emitMCPDeadNotices：把「MCP 服务已退出」发成一条 system 块。
+// 取走即清（hub 侧幂等），所以同一次死亡只说一次。发不出去（nil hub）就什么都不做。
+func (s *session) emitMCPDeadNotices() {
+	if s.mcp == nil {
+		return
+	}
+	for _, note := range s.mcp.TakeDeadNotices() {
+		nid := s.nextBlockID()
+		s.emit(map[string]any{"t": "block_start", "id": nid, "kind": "system", "text": note})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
+		s.log("mcp: %s", note)
 	}
 }
 

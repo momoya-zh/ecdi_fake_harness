@@ -597,11 +597,17 @@ func childEnv() []string {
 }
 
 // trimOutput：超限时保留头尾各半（错误信息几乎都在尾部，只留头等于把最有用的截掉）。
-func trimOutput(s string) string {
-	if len(s) <= runCmdOutLimit {
+func trimOutput(s string) string { return trimOutputTo(s, runCmdOutLimit) }
+
+// trimOutputTo：同一条截断语义的可配上限版本。
+// ★ 抽出来是为了给 MCP 工具输出复用（mcp.go `clipMCPOutput`）——那些上限
+//   （24KB 命令输出 / 40KB 读文件）是**本仓纪律**：截断必须显式标注，不能让
+//   模型拿着半份结果下结论。MCP 原先没有任何上限，一次大表 dump 就能打爆上下文。
+func trimOutputTo(s string, limit int) string {
+	if len(s) <= limit {
 		return s
 	}
-	half := runCmdOutLimit / 2
+	half := limit / 2
 	head := safeCut(s, half)
 	tail := safeTail(s, half)
 	dropped := len(s) - len(head) - len(tail)
@@ -689,6 +695,13 @@ func askPrompt(name string, args map[string]any, raw string) string {
 		// 走到这里说明有人绕过了委派路径，仍要给出可读问句。
 		t, _ := args["task"].(string)
 		return fmt.Sprintf("允许派一个子代理吗？任务：%s", clip(strings.TrimSpace(t), 120))
+	}
+	if strings.HasPrefix(name, "mcp__") {
+		parts := strings.SplitN(name, "__", 3)
+		if len(parts) == 3 {
+			return fmt.Sprintf("允许调用 MCP 工具 %s（服务：%s）吗？参数：%s",
+				parts[2], parts[1], summarizeArgs(raw))
+		}
 	}
 	return fmt.Sprintf("允许执行 %s 吗？参数：%s", name, summarizeArgs(raw))
 }

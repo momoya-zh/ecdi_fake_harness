@@ -79,10 +79,27 @@ func waitFor(t *testing.T, c *outCollector, desc string, cond func(map[string]an
 	return nil
 }
 
+// isolateMCPDiscovery：让被测 session **不可能**读到「运行这台机器的人」的全局
+// mcp.json。
+//
+// ★ 为什么必须（2026-11-05 评审）：MCP 配置的三级回退里最后一级读
+//   `%APPDATA%\ecdi-fake-harness\mcp.json`（非 Windows 读 `$HOME/.config/...`），
+//   而所有 session 测试都传 `mcpConfig=""` + 临时 workspace ⇒ 只要开发机上放了
+//   这一份全局配置，`go test` 就会在每个 session 测试里**拉起真的 MCP 服务**
+//   （最坏 5s/服务 × N）。测试必须密闭，不能依赖跑测试的人没配过 MCP。
+func isolateMCPDiscovery(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("APPDATA", dir)
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+}
+
 // newTestSession：建一个完整 session（真实出站路径），返回 session 与收集器。
 // stc 与 in 通道由调用方驱动（模拟 GUI 侧）；进程 cwd 切到临时工作区。
 func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*session, *outCollector, chan wire.StampedLine, *atomic.Int32) {
 	t.Helper()
+	isolateMCPDiscovery(t)
 	if wsRoot == "" {
 		wsRoot = t.TempDir()
 	}
@@ -100,6 +117,7 @@ func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*sessio
 	sess := newSession(
 		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
 		strings.Split(allowTools, ","), nil, "", "s-test-1", "", "", false, agentOpts{},
+		"",
 		lines, &stc,
 		func(string, ...any) {}, col)
 	return sess, col, lines, &stc
@@ -108,6 +126,7 @@ func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*sessio
 // newTestSessionAgents：开着子代理的同一套基建（--agents 的对照臂）。
 func newTestSessionAgents(t *testing.T, serverURL, wsRoot string, ag agentOpts) (*session, *outCollector, chan wire.StampedLine, *atomic.Int32) {
 	t.Helper()
+	isolateMCPDiscovery(t)
 	if wsRoot == "" {
 		wsRoot = t.TempDir()
 	}
@@ -125,6 +144,7 @@ func newTestSessionAgents(t *testing.T, serverURL, wsRoot string, ag agentOpts) 
 	sess := newSession(
 		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
 		[]string{"read_file", "list_dir", "grep"}, nil, "", "s-test-1", "", "", false, ag,
+		"",
 		lines, &stc, func(string, ...any) {}, col)
 	return sess, col, lines, &stc
 }
@@ -489,7 +509,13 @@ func TestLoopE2E_BackgroundJob(t *testing.T) {
 	scripts := []sseScript{
 		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-bg","function":{"name":"run_command","arguments":"{\"command\":\"echo hello-bg\",\"background\":true}"}}]`)}},
 		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-o1","function":{"name":"job_output","arguments":"{\"job_id\":\"j1\",\"wait_seconds\":5}"}}]`)}},
-		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-k1","function":{"name":"job_kill","arguments":"{\"job_id\":\"j1\"}"}}]`)}},
+		// ★ 第三轮用 `job_list` 而不是 `job_kill`（2026-11-05 修 flaky）：
+		//   `job_output` 的语义是「有输出就回」，不是「等进程退出」——它返回时 echo
+		//   常常还在跑，于是紧跟的 `job_kill` 会把作业杀成 `killed`，与「echo 应以
+		//   exited/0 正常退出」的断言直接对撞。整包跑时实测约 2/3 概率红、单跑全绿。
+		//   `job_list` 同样是「控制工具不过 ask 门」的同一类证据（断言 asks==1 仍成立），
+		//   而 `job_kill` 的语义已由 jobs_test.go 的 `toolKill` 单测覆盖。
+		{chunks: []string{deltaChunk("", "", `[{"index":0,"id":"call-l1","function":{"name":"job_list","arguments":"{}"}}]`)}},
 		{chunks: []string{deltaChunk("后台任务已经结束。", "", "")}},
 	}
 	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
@@ -512,6 +538,14 @@ func TestLoopE2E_BackgroundJob(t *testing.T) {
 
 	waitFor(t, col, "state idle", func(m map[string]any) bool {
 		return m["t"] == "state" && m["value"] == "idle"
+	})
+	// ★ 先等作业**自己**结束再 bye（2026-11-05 修 flaky）：
+	//   `bye` 会 `jobs.shutdown()` 杀掉还在跑的作业（I14 要求补一条 end），
+	//   于是「echo 应以 exited/0 结束」这条断言与「idle 后立刻 bye」构成竞态 ——
+	//   整包跑时 echo 慢一点就被杀成 `killed`，实测约 2/3 概率红（单跑 3/3 绿）。
+	//   断言要的是「正常退出」，那就等它退出；bye 只负责收尾。
+	waitFor(t, col, "job end", func(m map[string]any) bool {
+		return m["t"] == "job" && m["phase"] == "end"
 	})
 	sendLine(lines, stc, `{"t":"bye","seq":3}`)
 	select {
@@ -1055,6 +1089,7 @@ func TestSummarizeArgsTruncates(t *testing.T) {
 // ── L3 记忆文件测试 ─────────────────────────────────────────────
 
 func TestMemory_LoadingAndPromptInjection(t *testing.T) {
+	isolateMCPDiscovery(t)
 	tmpDir := t.TempDir()
 	wsMemDir := filepath.Join(tmpDir, ".ecdi", "memory")
 	if err := os.MkdirAll(wsMemDir, 0755); err != nil {
@@ -1071,7 +1106,7 @@ func TestMemory_LoadingAndPromptInjection(t *testing.T) {
 
 	sess := newSession(
 		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k", Context: 10000},
-		nil, nil, "", "s-test-mem-1", tmpDir, "", false, agentOpts{}, lines, &stc,
+		nil, nil, "", "s-test-mem-1", tmpDir, "", false, agentOpts{}, "", lines, &stc,
 		func(string, ...any) {}, col)
 	t.Cleanup(func() {
 		if sess.ctxWriter != nil {
@@ -1105,6 +1140,7 @@ func TestMemory_LoadingAndPromptInjection(t *testing.T) {
 }
 
 func TestMemory_ResumeNotice(t *testing.T) {
+	isolateMCPDiscovery(t)
 	tmpDir := t.TempDir()
 	wsMemDir := filepath.Join(tmpDir, ".ecdi", "memory")
 	if err := os.MkdirAll(wsMemDir, 0755); err != nil {
@@ -1121,7 +1157,7 @@ func TestMemory_ResumeNotice(t *testing.T) {
 
 	sess := newSession(
 		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k"},
-		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, agentOpts{}, lines, &stc,
+		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, agentOpts{}, "", lines, &stc,
 		func(string, ...any) {}, col)
 	t.Cleanup(func() {
 		if sess.ctxWriter != nil {

@@ -1,0 +1,747 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestHelperMCPMock：供单元测试拉起的子进程 Mock MCP Server。
+func TestHelperMCPMock(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_MCP") != "1" {
+		return
+	}
+
+	sendResp := func(id any, result any, errObj *jsonrpcError) {
+		resp := jsonrpcResponse{
+			JSONRPC: "2.0",
+			ID:      id,
+		}
+		if errObj != nil {
+			resp.Error = errObj
+		} else {
+			raw, _ := json.Marshal(result)
+			resp.Result = raw
+		}
+		data, _ := json.Marshal(resp)
+		_, _ = os.Stdout.Write(append(data, '\n'))
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var req jsonrpcRequest
+		if err := json.Unmarshal(line, &req); err != nil {
+			continue
+		}
+
+		switch req.Method {
+		case "initialize":
+			res := mcpInitializeResult{
+				ProtocolVersion: "2024-11-05",
+				Capabilities:    map[string]any{},
+			}
+			res.ServerInfo.Name = "mock-server"
+			res.ServerInfo.Version = "1.0.0"
+			sendResp(req.ID, res, nil)
+
+		case "notifications/initialized":
+			// 通知无响应
+
+		case "tools/list":
+			// 分页分支（GO_MOCK_MCP_PAGINATE=1）：规范允许 nextCursor，客户端必须追到底
+			var lp struct {
+				Cursor string `json:"cursor"`
+			}
+			if pBytes, err := json.Marshal(req.Params); err == nil {
+				_ = json.Unmarshal(pBytes, &lp)
+			}
+			if os.Getenv("GO_MOCK_MCP_PAGINATE") == "1" {
+				if lp.Cursor == "" {
+					sendResp(req.ID, mcpToolsListResult{
+						Tools:      []mcpTool{{Name: "page1_tool", Description: "first page"}},
+						NextCursor: "c2",
+					}, nil)
+				} else {
+					sendResp(req.ID, mcpToolsListResult{
+						Tools: []mcpTool{{Name: "page2_tool", Description: "second page"}},
+					}, nil)
+				}
+				continue
+			}
+
+			tools := []mcpTool{
+				{
+					Name:        "echo",
+					Description: "Echo back input",
+					InputSchema: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"msg": map[string]any{"type": "string"},
+						},
+						"required": []string{"msg"},
+					},
+				},
+				{
+					Name:        "failing_tool",
+					Description: "A tool that reports isError=true",
+					InputSchema: nil,
+				},
+				{
+					Name:        "sleep_tool",
+					Description: "A tool that sleeps",
+					InputSchema: nil,
+				},
+				{
+					Name:        "crash_tool",
+					Description: "A tool that crashes the process",
+					InputSchema: nil,
+				},
+				{
+					Name:        "big_tool",
+					Description: "Returns more than the output cap",
+					InputSchema: nil,
+				},
+				{
+					Name:        "spawn_tree_tool",
+					Description: "Spawns a grandchild that keeps writing a heartbeat",
+					InputSchema: nil,
+				},
+			}
+			sendResp(req.ID, mcpToolsListResult{Tools: tools}, nil)
+
+		case "tools/call":
+			var params struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			}
+			pBytes, _ := json.Marshal(req.Params)
+			_ = json.Unmarshal(pBytes, &params)
+
+			switch params.Name {
+			case "echo":
+				msg, _ := params.Arguments["msg"].(string)
+				sendResp(req.ID, mcpCallToolResult{
+					Content: []mcpContentItem{
+						{Type: "text", Text: "echo: " + msg},
+					},
+				}, nil)
+			case "failing_tool":
+				sendResp(req.ID, mcpCallToolResult{
+					Content: []mcpContentItem{
+						{Type: "text", Text: "operation failed"},
+					},
+					IsError: true,
+				}, nil)
+			case "sleep_tool":
+				time.Sleep(2 * time.Second)
+				sendResp(req.ID, mcpCallToolResult{
+					Content: []mcpContentItem{
+						{Type: "text", Text: "done sleeping"},
+					},
+				}, nil)
+			case "crash_tool":
+				os.Exit(42)
+			case "big_tool":
+				sendResp(req.ID, mcpCallToolResult{
+					Content: []mcpContentItem{
+						{Type: "text", Text: strings.Repeat("x", 100*1024)},
+					},
+				}, nil)
+			case "spawn_tree_tool":
+				// 拉一个**孙进程**（心跳写文件）。它的存活与否就是「整树清退」的判据：
+				// 杀掉直系子进程而孙进程还活着，心跳文件会继续长。
+				child := exec.Command(os.Args[0], "-test.run=TestHelperMCPHeartbeatChild", "--")
+				child.Env = append(os.Environ(),
+					"GO_WANT_MCP_HEARTBEAT=1",
+					"GO_MOCK_MCP_HEARTBEAT="+os.Getenv("GO_MOCK_MCP_HEARTBEAT"),
+				)
+				_ = child.Start()
+				sendResp(req.ID, mcpCallToolResult{
+					Content: []mcpContentItem{{Type: "text", Text: "spawned"}},
+				}, nil)
+			default:
+				sendResp(req.ID, nil, &jsonrpcError{Code: -32601, Message: "Method not found"})
+			}
+		}
+	}
+	os.Exit(0)
+}
+
+// TestHelperMCPHeartbeatChild：孙进程本体——每 50ms 往心跳文件追加一行。
+// 只要它活着，文件就在长；整树清退生效后文件必须停止生长。
+func TestHelperMCPHeartbeatChild(t *testing.T) {
+	if os.Getenv("GO_WANT_MCP_HEARTBEAT") != "1" {
+		return
+	}
+	path := os.Getenv("GO_MOCK_MCP_HEARTBEAT")
+	if path == "" {
+		os.Exit(0)
+	}
+	for i := 0; i < 400; i++ {
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			os.Exit(0)
+		}
+		_, _ = f.WriteString("tick\n")
+		_ = f.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	os.Exit(0)
+}
+
+func TestMCP_SchemaSanitization(t *testing.T) {
+	tool := mcpTool{
+		Name:        "query",
+		Description: "Database query",
+		InputSchema: nil, // 模拟 schema 为空
+	}
+	defName, def := mcpToolToDef("db", tool)
+	if defName != "mcp__db__query" {
+		t.Fatalf("expected name mcp__db__query, got %s", defName)
+	}
+	if def.Name != "mcp__db__query" {
+		t.Fatalf("expected def.Name mcp__db__query, got %s", def.Name)
+	}
+	if def.Description != "[MCP: db] Database query" {
+		t.Fatalf("unexpected description: %s", def.Description)
+	}
+
+	params := def.Parameters
+	if params["type"] != "object" {
+		t.Fatalf("expected type object, got %v", params["type"])
+	}
+	req, ok := params["required"].([]string)
+	if !ok || req == nil {
+		t.Fatalf("required must be non-nil string slice, got %v", params["required"])
+	}
+}
+
+func TestMCP_FindConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. 无文件时为空
+	if p := findMCPConfigFile("", tmpDir); p != "" {
+		t.Fatalf("expected empty path, got %s", p)
+	}
+
+	// 2. 工作区根目录下 mcp.json
+	p2 := filepath.Join(tmpDir, "mcp.json")
+	_ = os.WriteFile(p2, []byte(`{}`), 0644)
+	if found := findMCPConfigFile("", tmpDir); found != p2 {
+		t.Fatalf("expected %s, got %s", p2, found)
+	}
+
+	// 3. .ecdi/mcp.json 优先级高于根目录 mcp.json
+	ecdiDir := filepath.Join(tmpDir, ".ecdi")
+	_ = os.MkdirAll(ecdiDir, 0755)
+	p3 := filepath.Join(ecdiDir, "mcp.json")
+	_ = os.WriteFile(p3, []byte(`{}`), 0644)
+	if found := findMCPConfigFile("", tmpDir); found != p3 {
+		t.Fatalf("expected .ecdi path %s, got %s", p3, found)
+	}
+
+	// 4. 显式路径最高优先
+	explicit := filepath.Join(tmpDir, "custom.json")
+	_ = os.WriteFile(explicit, []byte(`{}`), 0644)
+	if found := findMCPConfigFile(explicit, tmpDir); found != explicit {
+		t.Fatalf("expected explicit path %s, got %s", explicit, found)
+	}
+}
+
+func TestMCP_HubLifecycleAndToolExecution(t *testing.T) {
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"mock": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP": "1",
+				},
+			},
+		},
+	}
+
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	// 1. 验证工具注册
+	if !hub.HasTool("mcp__mock__echo") {
+		t.Fatalf("expected tool mcp__mock__echo registered")
+	}
+	if !hub.HasTool("mcp__mock__failing_tool") {
+		t.Fatalf("expected tool mcp__mock__failing_tool registered")
+	}
+
+	defs := hub.ToolDefs()
+	if len(defs) != 6 {
+		t.Fatalf("expected 6 toolDefs, got %d", len(defs))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 2. 正常调用
+	res, handled := hub.CallTool(ctx, "mcp__mock__echo", map[string]any{"msg": "hello from test"})
+	if !handled {
+		t.Fatalf("tool should be handled")
+	}
+	if !res.OK {
+		t.Fatalf("tool call should succeed, got output: %s", res.Output)
+	}
+	if res.Output != "echo: hello from test" {
+		t.Fatalf("unexpected output: %s", res.Output)
+	}
+
+	// 3. 失败工具调用（isError: true）
+	resFail, handledFail := hub.CallTool(ctx, "mcp__mock__failing_tool", map[string]any{})
+	if !handledFail {
+		t.Fatalf("tool should be handled")
+	}
+	if resFail.OK {
+		t.Fatalf("expected res.OK == false")
+	}
+	if resFail.Output != "operation failed" {
+		t.Fatalf("unexpected fail output: %s", resFail.Output)
+	}
+
+	// 4. 未知工具（返回 handled=false）
+	_, handledUnknown := hub.CallTool(ctx, "unknown_tool", nil)
+	if handledUnknown {
+		t.Fatalf("unknown tool should return handled=false")
+	}
+
+	// 5. 关闭后再次调用
+	hub.Close()
+	if len(hub.ToolDefs()) != 0 {
+		t.Fatalf("toolDefs should be empty after close")
+	}
+}
+
+func TestMCP_TimeoutAndCrash(t *testing.T) {
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"mock": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP": "1",
+				},
+			},
+		},
+	}
+
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	// 1. 测试超时
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	resTimeout, handled := hub.CallTool(timeoutCtx, "mcp__mock__sleep_tool", map[string]any{})
+	if !handled {
+		t.Fatalf("tool should be handled")
+	}
+	if resTimeout.OK {
+		t.Fatalf("expected timeout error, but got OK")
+	}
+
+	// 2. 测试进程崩溃
+	resCrash, handledCrash := hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
+	if !handledCrash {
+		t.Fatalf("tool should be handled")
+	}
+	if resCrash.OK {
+		t.Fatalf("expected crash error, but got OK")
+	}
+
+	// 3. 崩溃后再次调用应当优雅返回错误而非死锁
+	resAfterCrash, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "hi"})
+	if resAfterCrash.OK {
+		t.Fatalf("expected fail after crash")
+	}
+}
+
+func TestMCP_MultipleServers(t *testing.T) {
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"srv1": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP": "1",
+				},
+			},
+			"srv2": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP": "1",
+				},
+			},
+			"disabled_srv": {
+				Command:  os.Args[0],
+				Args:     []string{"-test.run=TestHelperMCPMock", "--"},
+				Disabled: true,
+			},
+		},
+	}
+
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	// 验证 srv1 与 srv2 工具分别注册且带前缀
+	if !hub.HasTool("mcp__srv1__echo") {
+		t.Fatalf("expected mcp__srv1__echo")
+	}
+	if !hub.HasTool("mcp__srv2__echo") {
+		t.Fatalf("expected mcp__srv2__echo")
+	}
+	if hub.HasTool("mcp__disabled_srv__echo") {
+		t.Fatalf("disabled server should not be registered")
+	}
+
+	// 验证两服务并行调用独立工作
+	res1, _ := hub.CallTool(context.Background(), "mcp__srv1__echo", map[string]any{"msg": "from srv1"})
+	if !res1.OK || res1.Output != "echo: from srv1" {
+		t.Fatalf("unexpected res1: %+v", res1)
+	}
+
+	res2, _ := hub.CallTool(context.Background(), "mcp__srv2__echo", map[string]any{"msg": "from srv2"})
+	if !res2.OK || res2.Output != "echo: from srv2" {
+		t.Fatalf("unexpected res2: %+v", res2)
+	}
+}
+
+// TestMCP_ProcessTreeKilled：**整树**清退（不是只杀直系子进程）。
+//
+// ★ 判据是行为，不是调用：让 MCP server 拉一个会持续写心跳文件的**孙进程**，
+//   然后关掉 hub —— 心跳必须停。只 `Process.Kill()` 直系子进程的实现会红
+//   （`npx` → node 正是这个形状）。
+func TestMCP_ProcessTreeKilled(t *testing.T) {
+	hb := filepath.Join(t.TempDir(), "heartbeat.txt")
+	size := func() int64 {
+		st, err := os.Stat(hb)
+		if err != nil {
+			return 0
+		}
+		return st.Size()
+	}
+
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"mock": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP":     "1",
+					"GO_MOCK_MCP_HEARTBEAT": hb,
+				},
+			},
+		},
+	}
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+
+	if _, ok := hub.CallTool(context.Background(), "mcp__mock__spawn_tree_tool", map[string]any{}); !ok {
+		t.Fatalf("spawn_tree_tool 应被处理")
+	}
+	// 先确认孙进程真的活起来了（否则后面的「停止生长」没有区分力）
+	deadline := time.Now().Add(3 * time.Second)
+	for size() == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if size() == 0 {
+		t.Fatalf("孙进程没起来，判据无效（心跳文件一直是空的）")
+	}
+
+	hub.Close()
+	time.Sleep(200 * time.Millisecond) // 让在途 tick 落地
+	before := size()
+	time.Sleep(500 * time.Millisecond)
+	after := size()
+	if after != before {
+		t.Fatalf("孙进程仍在跑（心跳 %d -> %d 字节）：整树清退没生效，只杀了直系子进程", before, after)
+	}
+}
+
+// TestMCP_ToolNameSanitization：MCP 名字空间 → provider 的 function.name 空间。
+//
+// ★ 判据是**真实约束**（`^[a-zA-Z0-9_-]{1,64}$`，OpenAI 兼容端点含 DeepSeek 都按
+//   这条校验），不是「看着顺眼」：MCP 规范对工具名没有任何约束，原样上交会让
+//   **整轮请求** 400 —— 一次配置就把会话打死。同名同输入必须恒得同名（可复现）。
+func TestMCP_ToolNameSanitization(t *testing.T) {
+	valid := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+	exact := []struct{ server, tool, want string }{
+		{"db", "query", "mcp__db__query"},
+		{"fs", "git.status", "mcp__fs__git_status"},
+		{"fs", "read file", "mcp__fs__read_file"},
+		{"s", "a:b/c", "mcp__s__a_b_c"},
+	}
+	for _, c := range exact {
+		got := mcpToolName(c.server, c.tool)
+		if got != c.want {
+			t.Fatalf("mcpToolName(%q,%q) = %q, want %q", c.server, c.tool, got, c.want)
+		}
+	}
+
+	// 中文 + 超长 + 特殊字符：只要求「合法、≤64、稳定、可区分」
+	longTool := strings.Repeat("工具名", 50) // 中文，且远超 64 字节
+	names := []string{
+		mcpToolName("中文服务", longTool),
+		mcpToolName("very-long-server-name-that-eats-the-budget", longTool),
+		mcpToolName("very-long-server-name-that-eats-the-budget", longTool+"X"),
+	}
+	for i, n := range names {
+		if !valid.MatchString(n) {
+			t.Fatalf("name[%d] 不合法：%q", i, n)
+		}
+		if len(n) > providerToolNameMax {
+			t.Fatalf("name[%d] 超长 %d：%q", i, len(n), n)
+		}
+	}
+	if names[1] == names[2] {
+		t.Fatalf("两个不同工具压出了同名：%q（截断后必须靠哈希区分）", names[1])
+	}
+	if again := mcpToolName("very-long-server-name-that-eats-the-budget", longTool); again != names[1] {
+		t.Fatalf("同名同输入必须恒得同名（可复现），got %q vs %q", again, names[1])
+	}
+
+	// 撞名消解：`git.status` 与 `git_status` 压成同一个 plain name（`.` 与 `_` 不同源）
+	a := mcpToolName("s", "git.status")
+	b := mcpToolName("s", "git_status")
+	if a != b {
+		t.Fatalf("前提错了：两个工具本该压成同名，got %q / %q", a, b)
+	}
+	hashed := mcpToolNameHashed("s", "git_status", true)
+	if hashed == a || !valid.MatchString(hashed) {
+		t.Fatalf("撞名消解失败：%q", hashed)
+	}
+}
+
+// TestMCP_OutputClip：输出上限必须**显式标注**（本仓纪律），不能静默截。
+func TestMCP_OutputClip(t *testing.T) {
+	small := "hello"
+	if got := clipMCPOutput(small); got != small {
+		t.Fatalf("未超限时不该动：%q", got)
+	}
+
+	big := strings.Repeat("y", mcpOutLimit*2)
+	got := clipMCPOutput(big)
+	if len(got) >= len(big) {
+		t.Fatalf("超限输出没有被截：%d -> %d", len(big), len(got))
+	}
+	if !strings.Contains(got, "中间省略") {
+		t.Fatalf("截断必须显式标注，got 前 80 字：%q", got[:80])
+	}
+	if len(got) > mcpOutLimit+200 {
+		t.Fatalf("截断后仍超上限：%d", len(got))
+	}
+}
+
+// TestMCP_DeadServerNotice：服务崩掉不能只体现在「工具反复失败」上——
+// hub 必须登记一次，会话取走后清空（同一次死亡只说一次）。
+func TestMCP_DeadServerNotice(t *testing.T) {
+	hub := newTestHub(t)
+	defer hub.Close()
+
+	if notes := hub.TakeDeadNotices(); len(notes) != 0 {
+		t.Fatalf("一开始不该有死亡通告：%v", notes)
+	}
+
+	// 撞崩进程
+	res, handled := hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
+	if !handled || res.OK {
+		t.Fatalf("crash_tool 应被处理且失败：handled=%v res=%+v", handled, res)
+	}
+	// 崩溃后再次调用：必须回明确文本（不是空输出、不是死锁）
+	res2, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "hi"})
+	if res2.OK {
+		t.Fatalf("崩溃后不该成功")
+	}
+	if strings.TrimSpace(res2.Output) == "" {
+		t.Fatalf("崩溃后必须给出非空说明（空输出会让模型以为参数写错了）")
+	}
+
+	notes := hub.TakeDeadNotices()
+	if len(notes) != 1 || !strings.Contains(notes[0], "mock") {
+		t.Fatalf("应有且仅有一条 mock 的死亡通告：%v", notes)
+	}
+	if again := hub.TakeDeadNotices(); len(again) != 0 {
+		t.Fatalf("取走后必须清空（同一次死亡只说一次）：%v", again)
+	}
+}
+
+// TestMCP_ToolsListPagination：nextCursor 必须追到底，否则分页服务端的工具
+// 会被静默丢掉一半（模型看不见就不会调用，且没有任何提示）。
+func TestMCP_ToolsListPagination(t *testing.T) {
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"paged": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP":  "1",
+					"GO_MOCK_MCP_PAGINATE": "1",
+				},
+			},
+		},
+	}
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	for _, want := range []string{"mcp__paged__page1_tool", "mcp__paged__page2_tool"} {
+		if !hub.HasTool(want) {
+			t.Fatalf("缺工具 %s（tools/list 分页没追到底）；已注册：%v", want, hub.ToolDefs())
+		}
+	}
+}
+
+// newTestHub：拉起一个 mock MCP 服务（单测公共夹具）。
+func newTestHub(t *testing.T) *mcpHub {
+	t.Helper()
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"mock": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env:     map[string]string{"GO_WANT_HELPER_MCP": "1"},
+			},
+		},
+	}
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	return hub
+}
+
+// 发现配置 → 拉起 Server → caps 声明 → LLM 生成 MCP tool_call → ask 门及 detail 提案卡
+// → 批准执行 → tool_result 回灌 → LLM 产出最终回复。
+// TestLoopE2E_MCPTool：端到端验证 MCP 工具在完整 Agent 循环中的闭环表现：
+// 发现配置 → 拉起 Server → caps 声明 → LLM 生成 MCP tool_call → ask 门
+// → 批准执行 → tool_result 回灌 → LLM 产出最终回复。
+func TestLoopE2E_MCPTool(t *testing.T) {
+	ws := t.TempDir()
+	mcpPath := filepath.Join(ws, "mcp.json")
+	mcpCfg := fmt.Sprintf(`{
+		"mcpServers": {
+			"mock": {
+				"command": %s,
+				"args": ["-test.run=TestHelperMCPMock", "--"],
+				"env": {
+					"GO_WANT_HELPER_MCP": "1"
+				}
+			}
+		}
+	}`, mustJSON(os.Args[0]))
+	if err := os.WriteFile(mcpPath, []byte(mcpCfg), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var recorded [][]byte
+	scripts := []sseScript{
+		{ // 第 1 轮：模型调用 mcp__mock__echo 工具
+			chunks: []string{
+				deltaChunk("", "调用外部 MCP 服务", ""),
+				deltaChunk("", "", `[{"index":0,"id":"call-mcp-1","function":{"name":"mcp__mock__echo","arguments":"{\"msg\":\"mcp-ok\"}"}}]`),
+			},
+		},
+		{ // 第 2 轮：拿到 MCP 执行结果后回复
+			chunks: []string{deltaChunk("MCP 回执已收到。", "", "")},
+			usage:  &chatUsage{PromptTokens: 88, CompletionTokens: 33},
+		},
+	}
+	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "", ws)
+	done := runSession(s)
+
+	// 1. 握手与 caps 校验
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":6,"gui":"test"}`)
+	hello := waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+	hasMCP := false
+	for _, c := range hello["caps"].([]any) {
+		if c == "mcp" {
+			hasMCP = true
+		}
+	}
+	if !hasMCP {
+		t.Fatalf("mcp cap missing in hello: %v", hello["caps"])
+	}
+
+	// 2. 发 prompt
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"请调用 echo 服务"}`)
+
+	// 3. ask 门出现（MCP 工具默认全过 ask 门）
+	ask := waitFor(t, col, "ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	askID := ask["id"].(string)
+	q := ask["question"].(string)
+	if !strings.Contains(q, "echo") || !strings.Contains(q, "mock") {
+		t.Fatalf("ask.question 应包含 MCP 工具及服务名，got %q", q)
+	}
+
+	// ★ MCP 的 ask **刻意不带 detail**（2026-11-05 评审）：
+	//   `detail.tool` 是 GUI 的**判别式**（协议 §3.6 枚举 write_file/edit_file/
+	//   run_command/task），GUI 按它 switch（AppTranscript.cpp:833/850/863），
+	//   未知值只落一行「（提案类型 X）」。MCP 的判别值只能是 `mcp__<srv>__<tool>`
+	//   复合名 ⇒ 会建出一张「展开了但什么都没有」的卡，比不发更糟。
+	//   所以这里的判据是**没有** detail —— 这条断言原先断言的是 core 自己发的
+	//   `tool/server/mcpTool` 三个字段，等于把错误的契约认证成了绿的。
+	if det, has := ask["detail"]; has && det != nil {
+		t.Fatalf("MCP ask 不应带 detail（GUI 判别式不接受 mcp__* 复合名）：%v", det)
+	}
+
+	// 4. 用户允许
+	sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"allow"}`, mustJSON(askID)))
+
+	// 5. 工具结果输出（真执行来自 mock MCP server）
+	waitFor(t, col, "tool_result delta", func(m map[string]any) bool {
+		return m["t"] == "delta" && strings.Contains(m["text"].(string), "echo: mcp-ok")
+	})
+
+	// 6. 最终助手回复
+	waitFor(t, col, "final text", func(m map[string]any) bool {
+		return m["t"] == "delta" && strings.Contains(m["text"].(string), "MCP 回执已收到。")
+	})
+
+	// 7. 回到 idle
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+
+	// 8. 收尾
+	sendLine(lines, stc, `{"t":"bye"}`)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not exit after bye")
+	}
+}

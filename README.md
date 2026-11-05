@@ -167,6 +167,18 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 （主历史只落一条结论摘要）；用量单独记账（见协议要点 v5 条）。决策与授权模型详见
 `docs/P3-real-core-spec.md` §4.4.2。
 
+★ **MCP Host（stdio，2026-11-05）**：core 是 MCP **host**——按配置拉起 MCP server 子进程、
+握手、`tools/list`（分页追到底）、把外部工具以 `mcp__<srv>__<tool>` 注册进模型工具表。
+配置三级发现：`--mcp-config=<path>` → `<workspace>/.ecdi/mcp.json` 或 `<workspace>/mcp.json`
+→ `%APPDATA%\ecdi-fake-harness\mcp.json`；格式 `{"mcpServers":{"<name>":{"command","args","env","disabled"}}}`。
+纪律：外部工具**默认全过 ask 门**（可在 `--allow-tools` 里按全名逐个豁免）、输出上限 24KB
+（超出头尾各半并标注）、`hello.caps` 增 `"mcp"`、子代理**拿不到**外部工具、会话退出**整树清退**
+（Windows Job Object / POSIX 进程组）、崩溃时发一条 `system` 块而不是只让工具反复失败。
+★ 工具名会被压进 provider 的 `function.name` 空间（`[A-Za-z0-9_-]`、≤64、超长带哈希）
+——MCP 规范不管这条，OpenAI 兼容端点管；不压就是**整轮 400**。
+决策、偏差（规范锚 `2024-11-05` vs `positioning` §5.3 的 `2026-07-28`）与已知缺口见
+`docs/mcp-host-plan.md`。
+
 **④c 无参数启动**（P3.5，2026-10-24）
 
 ```bash
@@ -412,14 +424,17 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 思维链默认折叠 · 上下文用量环 · 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
 ask **提案卡**（write/edit 审批前看 unified diff、run/task 看完整作用域）·
 run_command 默认 **L1 沙盒**（Job Object 整树强杀 / 内存≤1GB / 进程≤32 / 特权剥离，提案卡两行展示边界）·
+后台长任务（协议 v6 `job`，job_id / 增量回读 / 取消 / GBK 控制台转码）·
+MCP Host（stdio JSON-RPC 2.0，工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 ·
+24KB 输出上限 · 整树清退 · 崩溃显式提示）·
 I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 
 ### **还**不能做什么（★ 这是下一步的输入）
 
 | 缺什么 | 状态 |
 |---|---|
-| ★ **run_command 后台长任务（③）** | 现最长 300s 且阻塞一轮对话；零 job_id / 输出回读 / 取消入口。L1 作业句柄可直接复用——这是沙盒之后最自然的下一项 |
-| ★ **MCP host** | 决策 **A**（harness 管配置）已于 2026-10-14 拍板，**零实现**。P3 落地后「没有 core 就没有可授予的对象」这个前置障碍已消失——它可以开工了 |
+| ★ **长会话上下文管理（截断/摘要）** | 现每轮全量携带历史 messages，长交互或大文件读取容易超出模型 context window 限制 |
+| ★ **MCP HTTP/SSE 传输** | 当前已实现 stdio 进程传输；远程或持久 HTTP/SSE 传输留作后续扩展 |
 | ★ **用户模式的机器判据** | **零覆盖**。25 个探针全部跑在开发者模式下（那是刻意的：分流必须对既有基线零扰动），于是 P4 Phase J 新增的产品面——无参启动那一侧——一个断言都没有。最小补法：两相加进 `--rebuild-probe` 或新开 `--mode-probe`（用户模式下指定句柄逐个必须不可见 / 切回开发者后快照与基线一致）。方案 §12「已知缺口」 |
 | **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
@@ -445,7 +460,9 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 1. **③ 后台长任务**——`run_command` 拆出后台作业（job_id / 输出回读 / 取消），
    复用 L1 的 Job Object 句柄；它同时是"可用 agent"的下一块短板。
 2. **P4 Phase I：路径可点 + 只读预览**——产品侧最后一块半成品（A–H 已落地，G 只到尖峰）。
-3. **MCP host**——能力侧；P3 落地后「没有 core 就没有可授予的对象」这个前置障碍已消失。
+3. ~~**MCP host**~~ **已落地（2026-11-05）**：stdio 传输 + 整树清退 + ask 门 + 24KB 输出上限，
+   见 `docs/mcp-host-plan.md`。**剩下的三件**：① GUI 侧提案卡（`detail.tool:"mcp"` 判别值 + 渲染
+   分支）② 产品面可见性（现在配了 `mcp.json` 界面上没有任何确认）③ HTTP/SSE 传输。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
