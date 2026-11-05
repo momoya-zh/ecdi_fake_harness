@@ -95,7 +95,7 @@
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、E2E | ✅ 11 案全绿 |
-| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；**独立跑**，尚未接进 `regress.py` | ✅ |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
 | `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理 | ✅ |
@@ -139,6 +139,11 @@
    - **边界（如实）**：模型端点是脚本化 SSE，不是真厂商端点；MCP server 是仓库自带 mock；
      不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**。读数落 `.scratch/mcp-smoke/`
      （`result.json` + `fake-llm.log`，gitignored），复跑只差一条 `go build`。
+   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==28`（钉死，少一条即红）、
+     `failed==0`、`rc==0`。缺二进制显式 **SKIP**（§2e 的 rebuild 已计过失败，不重复计数）；
+     二进制比 `core/**/*.go` 旧按 **FAILED**（测旧代码比不测更糟）；超时按 FAILED（drive.py
+     自带 90s 看门狗，先清子进程再退出）。负对照实测：拿掉 `server.py` ⇒ **14/28 green、门变红**；
+     恢复后 sha256 一致、28/28 回绿。
 
 ## 五、 明确的已知缺口（下一步的输入）
 

@@ -39,7 +39,7 @@
 | `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
 | `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
 | `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · **variant-c 落地对照**（`variant-c-ecdi-mapping.md`）· GUI 原型（单文件 HTML） |
-| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 28 断言，两臂） |
+| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 28 断言，两臂，已进 `regress.py` §2f） |
 
 ## 协议要点
 
@@ -179,7 +179,7 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 决策、偏差（规范锚 `2024-11-05` vs `positioning` §5.3 的 `2026-07-28`）与已知缺口见
 `docs/mcp-host-plan.md`。
 ★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 脚本化
-SSE 端点，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；读数与边界见方案 §四.5。
+SSE 端点，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；读数与边界见方案 §四.5；已接进 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
 
 **④c 无参数启动**（P3.5，2026-10-24）
 
