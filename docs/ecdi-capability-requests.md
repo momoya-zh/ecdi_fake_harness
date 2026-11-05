@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.18**（2026-11-05；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.19**（2026-11-05；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -868,11 +868,13 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 | ★ 代价（本条存在的理由） | 本仓 `gui/src/SplitterBar.cpp` 为绕行付出：**匿名命名空间 44 行**（`:19-62`——句柄缓存 ×2、几何判据 `PointerOverBar` 含 16px 容差、`RestoreArrowIfSizeWe`）+ **5 处调用点**（`:100/104/160-161/169/179`）+ `#include <Windows.h>`。★★ 其中最贵的是 `if (::GetCursor() == SizeWeCursor())` 这一行：应用必须**逆推「当前光标是不是我设的」**才能不覆盖 `TextBox` 的 `IBeam`——而「谁拥有光标」这份知识框架本来就有（它每次 `WM_SETCURSOR` 都重查一遍） |
 | ★★ 结构性后果 | 裸 `::SetCursor` 是**一次性写、无 owner、无恢复** ⇒ 应用被迫**手写光标状态机**（进入设 / 离开还 / 松手还 / 几何兜底），框架 `WM_SETCURSOR` 的**逐次重查**（`Widget.h:315-319` 明写「每次重查」）因此被完全弃用 ⇒ 从「框架每帧自愈」退化成「谁最后写谁赢」。**REQ-18 的光标卡死就是这条绕行的直接产物**（绕行自伤，不是框架缺陷） |
 | ★ 补齐后本仓能删什么 | `SplitterBar` 只需一行 override：`CursorShape GetCursor() const noexcept override { return CursorShape::SizeWE; }`（与 `TextBox.h:38` 的 `IBeam` 完全同款）。`PointerOverBar` / `RestoreArrowIfSizeWe` / 三处出口恢复 / `#include <Windows.h>` **全部作废**；16px 容差那套 hack 也不需要——命中由 `HitTestWindow` 决定，3px 条宽不是应用该操心的事 |
-| 建议修法（**案 A 已于 15:18 由用户裁定采纳**） | **案 A（采纳）**：`CursorShape` **只追加末尾、不重排**（头文件 `:10` 自己写了这条约定）——至少 `SizeWE` / `SizeNS` / `SizeNWSE` / `SizeNESW` / `SizeAll` / `Hand` / `Cross` / `Wait`；`CursorHandleFor` 补 `IDC_*` 映射（未知值仍回落 `IDC_ARROW`，保持今天的安全缺省）；`PlatformQuickfixTests.cpp:198-202` 同批加断言（现成模板，两行 `EXPECT_TRUE`）。**案 B（已否决，记录理由）**：通用逃生舱 `CursorShape::PlatformDefined` + host 钩子 ⇒ 会把平台头重新泄回应用、破坏跨平台抽象；光标本就是 OS 概念，枚举补全已够覆盖，不必为单个消费者开洞 |
+| 建议修法（**案 A 已于 15:18 由用户裁定采纳**） | **案 A（采纳）**：`CursorShape` **只追加末尾、不重排**（头文件 `:10` 自己写了这条约定）——取值集合见下一行；`CursorHandleFor` 补 `IDC_*` 映射（未知值仍回落 `IDC_ARROW`，保持今天的安全缺省）。**案 B（已否决，记录理由）**：通用逃生舱 `CursorShape::PlatformDefined` + host 钩子 ⇒ 会把平台头重新泄回应用、破坏跨平台抽象；光标本就是 OS 概念，枚举补全已够覆盖，不必为单个消费者开洞 |
+| ★ 取值边界（2026-11-05 15:21 用户补：「应该同时也缺了上下箭头」） | **主张**：`SizeWE`（今天就有消费者）+ `SizeNS`（水平分割条；本仓今天没有，但同一个 `SplitterBar` 加 `Side::Top/Bottom` 立刻需要）——两者是**同一族、同一次补齐**，不要只补一半。**同族可选**：`SizeNWSE`/`SizeNESW`（角部）、`SizeAll`（可拖面板）、`Hand`（可点链接/路径）、`Cross`（精确取点）——本仓**当前无消费者，不主张**，纳不纳入由 ECDI 裁。**明确不收**：`Wait` / `AppStarting`——那是**模态忙闲态**，不是「悬停在这个控件上」的自述，应由应用级 API 承担，混进本枚举会把「逐次重查」的语义搞坏 |
+| ★ 建议补丁（ECDI 侧，可直接落地） | **①** `include/ECDI/Core/CursorShape.h` 只追加末尾（`:10` 的约定）：`SizeWE=2` / `SizeNS=3` / `SizeNWSE=4` / `SizeNESW=5` / `SizeAll=6` / `Hand=7` / `Cross=8`。**②** `Win32PlatformWindow.cpp` 的 `CursorHandleFor` 每个新值一行 `return ::LoadCursorW(nullptr, IDC_SIZEWE);`（`IDC_SIZENS` / `IDC_SIZENWSE` / `IDC_SIZENESW` / `IDC_SIZEALL` / `IDC_HAND` / `IDC_CROSS`），缺省仍回落 `IDC_ARROW`。**③** 测试：见下方验收判据 ①（★ **不能直测 `CursorHandleFor`**——它在 `Win32PlatformWindow.cpp` 的**匿名 namespace** 里，这正是本条原判据要改的原因） |
 | ★ 边界（不夸大） | 这是**表达力缺口**，不是错误行为——今天所有路径自洽（未知形态一律 Arrow），且有绕行。按 2026-11-04「不为采数据挡功能」定调，**不排期**、不阻断任何功能 |
 | ★ 纪律产出（本条真正的教训，两例共用） | 「应用里出现 `#include <Windows.h>` + 裸 Win32 调用」= **一条潜在 REQ 的信号**，不是实现细节。本仓全量盘点后只剩 2 处：① **19-A**（`SplitterBar.cpp` 光标）；② **19-B**（`AppPreview.cpp:39-40` `ShellExecuteW`，框架无「用系统默认程序打开 / 定位文件」能力）——15:18 用户裁定**并入本条**，不另立 REQ-20 |
-| 验收判据 | ① ECDI 侧单测（挂 `PlatformQuickfixTests.cpp`）：某 Widget override `GetCursor()` 返回 `SizeWE` ⇒ 断言 `CursorHandleFor(SizeWE)` 等于 `::LoadCursor(nullptr, IDC_SIZEWE)`；② 本仓收敛后 `SplitterBar.cpp` **不再出现 `#include <Windows.h>` / `::SetCursor` / `::GetCursor`**（可 `grep` 判定）；③ 负对照：`TextBox` 仍 `IBeam`、普通控件仍 `Arrow`（`PlatformQuickfixTests.cpp:198-202` 既有两条不得回归）；④ 人工：扫过分割条出现左右箭头、离开恢复、拖拽跟手（REQ-18 结案时那组判据原样复用） |
-| 待办 / 开放问题（19-A） | ① ECDI 补值后本仓才做收敛（**当前不预做**——REQ-18 已证明「先改本仓再等框架」会多走一轮）；② 取值集合（只要 `SizeWE` 还是补齐 8 个）留给 ECDI 裁决，本仓不预设；③ 案 B 已否决 ⇒ 验收判据 ②（`SplitterBar.cpp` 无 Win32）恒成立，不需重写 |
+| 验收判据 | ① ECDI 侧单测（挂 `PlatformQuickfixTests.cpp`，**复用 ②-b 装置**）：Host 的 `OnQueryCursor` 返回 `SizeWE` ⇒ 真窗口发 `WM_SETCURSOR(HTCLIENT)` ⇒ 断言 `::GetCursor() == ::LoadCursorW(nullptr, IDC_SIZEWE)`，用例尾恢复箭头（②-b 同款卫生）。★ **原判据（直测 `CursorHandleFor`）不可行，已订正**——它是 `Win32PlatformWindow.cpp` 匿名 namespace 内的静态函数，测试拿不到；★ **判别力**：修复前该用例必红（`::GetCursor()` 落在 `IDC_ARROW`），这正是它该有的样子。② 本仓收敛后 `SplitterBar.cpp` **不再出现 `#include <Windows.h>` / `::SetCursor` / `::GetCursor`**（可 `grep` 判定）；③ 负对照：`TextBox` 仍 `IBeam`、普通控件仍 `Arrow`（`PlatformQuickfixTests.cpp:198-202` 既有两条不得回归）；④ 人工：扫过分割条出现左右箭头、离开恢复、拖拽跟手（REQ-18 结案时那组判据原样复用） |
+| 待办 / 开放问题（19-A） | ① ECDI 补值后本仓才做收敛（**当前不预做**——REQ-18 已证明「先改本仓再等框架」会多走一轮）；② 取值集合按上方「取值边界」行：**主张 `SizeWE` + `SizeNS`**，其余同族可选、`Wait`/`AppStarting` 明确不收——最终由 ECDI 裁，本仓不预设；③ 案 B 已否决 ⇒ 验收判据 ②（`SplitterBar.cpp` 无 Win32）恒成立，不需重写 |
 
 #### 19-B shell「在文件管理器中定位 / 打开」无能力面 —— 应用只能裸 `ShellExecuteW`
 
@@ -1039,6 +1041,19 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.19（2026-11-05）★ REQ-19-A 补「上下箭头」与可落地补丁；★ 订正一条不可执行的验收判据**
+  ① 用户 15:21 补「**目前看来应该同时也缺了上下箭头**」⇒ 新增「取值边界」行：**主张 `SizeWE` + `SizeNS`
+     同批补齐**（同一个 `SplitterBar` 加 `Side::Top/Bottom` 立刻需要；只补一半 = 留第二次改动）；
+     `SizeNWSE`/`SizeNESW`/`SizeAll`/`Hand`/`Cross` 同族可选、本仓**无消费者不主张**；
+     **`Wait`/`AppStarting` 明确不收**——模态忙闲态 ≠ 「悬停自述」，混进枚举会破坏「逐次重查」语义。
+  ② 新增「建议补丁」行（ECDI 侧可直接落地）：`CursorShape` 追加 `SizeWE=2 … Cross=8` →
+     `CursorHandleFor` 每值一行 `return ::LoadCursorW(nullptr, IDC_*)`（缺省仍 `IDC_ARROW`）→ 测试。
+  ③ ★★ **订正验收判据 ①（自伤）**：原写「断言 `CursorHandleFor(SizeWE)` 等于 `::LoadCursor(...)`」
+     **根本不可执行**——该函数在 `Win32PlatformWindow.cpp` 的**匿名 namespace** 内，测试取不到。
+     改为复用既有 ②-b 装置（真窗口 + `WM_SETCURSOR(HTCLIENT)` + 断言 `::GetCursor() == ::LoadCursorW(IDC_SIZEWE)`），
+     并补「修复前必红」的判别力说明。★ 教训入账：**判据写在账本里就必须能跑**，否则等于账本自己
+     制造了一个「恒成立的负向用例」（与协议 §8.5 同一条纪律）。
+  ④ 头部 v5.18 → **v5.19**。
 - **v5.18（2026-11-05）★ REQ-19 裁定：光标取案 A；`ShellExecuteW` 并入 19-B 记作能力缺口**
   ① 用户 15:18 裁「**案A吧，并入REQ19记作能力缺口**」⇒ 19-A 修法锁定为「`CursorShape` **只追加末尾**」，
      `CursorHandleFor` 补 `IDC_*` + `PlatformQuickfixTests` 加断言；**案 B（通用逃生舱）记为已否决**
