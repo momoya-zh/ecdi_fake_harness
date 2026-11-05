@@ -252,30 +252,98 @@ func (w *LogWriter) Close() error {
 	return err
 }
 
-// FindCompressionCutPoint = 寻找不破坏 tool_call 与 tool 配对的合法切分点
-// 切分点必须落在完整一轮边界上（即被保留段的第一条必须是 role == "user"）。
-// 寻找满足切分后旧消息为 [0, to] 的最大合法 to。
-func FindCompressionCutPoint(msgs []Message, retainBudgetCount int) (int, bool) {
+// FindCompressionCutPoint = 按“保留预算”寻找不破坏 tool_call/tool 配对的合法切分点。
+//
+// 切分点必须落在完整一轮边界上：被保留段的第一条必须是 role == "user"。
+// 从末尾向前累计估算 token，返回**最靠后**的 user 边界 i（切在 i-1），
+// 使保留段 msgs[i:] 的估算 ≤ retainBudgetTokens。
+//
+// ★ 2026-11-05：从“保留 N 条消息”改成“保留 N token”。
+//
+//	旧实现固定保留 2 条，会让最后 1 轮里挂着的 20 条工具消息整轮留在保留区，
+//	一刀都切不进当前轮；RetainRatio 也从未被用上。
+//
+// ★ 找不到预算内的边界时，**退回最近的 user 边界**（至少保留最后 1 轮），
+//
+//	而不是返回 false——大单轮本来就无法既守预算又保住“完整一轮”，
+//	此时应由调用方的硬顶/折叠逻辑决定下一步，而不是在这里放弃压缩。
+//	只有 msgs[1:] 里根本没有 user（连一轮都切不出来）时才返回 false。
+func FindCompressionCutPoint(msgs []Message, retainBudgetTokens int) (int, bool) {
 	if len(msgs) <= 2 {
 		return -1, false
 	}
-	// 从后往前保留约 retainBudgetCount 条消息，寻找其前方的最近一个 user 消息位置
-	targetRetainStart := len(msgs) - retainBudgetCount
-	if targetRetainStart < 1 {
-		targetRetainStart = 1
-	}
-
-	for i := targetRetainStart; i < len(msgs); i++ {
-		if msgs[i].Role == "user" {
-			// msgs[i] 是一轮的起点，故 [0, i-1] 是前几轮的完整区间
-			return i - 1, true
+	fallback := -1
+	best := -1
+	suffix := 0
+	for i := len(msgs) - 1; i >= 1; i-- {
+		suffix += EstimateMessageTokens(msgs[i])
+		if msgs[i].Role != "user" {
+			continue
 		}
-	}
-	// 若后面找不到，尝试往前找
-	for i := targetRetainStart - 1; i >= 1; i-- {
-		if msgs[i].Role == "user" {
-			return i - 1, true
+		if fallback < 0 {
+			fallback = i // 离末尾最近的 user 边界（保留段最短）
 		}
+		if suffix > retainBudgetTokens {
+			// 再往前的 user 边界只会把更多消息算进保留段 ⇒ 不可能重新满足预算。
+			break
+		}
+		best = i // 预算内更早的边界 = 保留更多最近上下文
+	}
+	if best >= 0 {
+		return best - 1, true
+	}
+	if fallback >= 0 {
+		return fallback - 1, true
 	}
 	return -1, false
+}
+
+// ── 内部估算（防爆判据用；绝不用于生成 GUI 的 usage 读数）──────────
+//
+// 口径刻意取“宁可高估”：估算只决定“要不要修剪/压缩”，高估的代价是
+// 多折一点旧工具输出；低估的代价是 HTTP 400 context_length_exceeded。
+
+const (
+	// MessageOverheadTokens：单条消息的 role/分隔/JSON 包装开销。
+	MessageOverheadTokens = 8
+	// asciiBytesPerToken：ASCII/代码的通用折算率（英文 ≈ 4 字节/token）。
+	asciiBytesPerToken = 4
+)
+
+// EstimateStringTokens：保守估算一段文本的 token 数。
+//
+// ASCII 按 4 字节/token；非 ASCII rune 每个至少按 1 token 计——中文常见
+// tokenizer 约 1 token/字，UTF-8 3 字节/字，按英文的 4 字节/token 会把中文
+// 少算 25%–55%。emoji 等补充平面字符再按 2 token 计（一个 rune 常被切成多片）。
+func EstimateStringTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	tokens, asciiBytes := 0, 0
+	for _, r := range s {
+		switch {
+		case r < 0x80:
+			asciiBytes++
+		case r >= 0x1F000:
+			tokens += 2
+		default:
+			tokens++
+		}
+	}
+	return tokens + (asciiBytes+asciiBytesPerToken-1)/asciiBytesPerToken
+}
+
+// EstimateMessageTokens：单条 Message 的保守 token 估算（含 tool_calls 参数）。
+func EstimateMessageTokens(m Message) int {
+	n := MessageOverheadTokens +
+		EstimateStringTokens(m.Content) +
+		EstimateStringTokens(m.ToolCallID)
+	for _, tc := range m.ToolCalls {
+		n += MessageOverheadTokens +
+			EstimateStringTokens(tc.ID) +
+			EstimateStringTokens(tc.Type) +
+			EstimateStringTokens(tc.Function.Name) +
+			EstimateStringTokens(tc.Function.Arguments)
+	}
+	return n
 }

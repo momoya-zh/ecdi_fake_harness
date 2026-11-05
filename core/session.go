@@ -400,7 +400,8 @@ func (s *session) handlePrompt(text string, clientID string) {
 				})
 				s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
 			} else {
-				cutTo, ok := contextlog.FindCompressionCutPoint(s.messages, 2)
+				cutTo, ok := contextlog.FindCompressionCutPoint(s.messages,
+					int(float64(s.contextLimit)*contextlog.RetainRatio))
 				if ok && cutTo >= 0 {
 					beforeOccupancy := occupancy
 					count := cutTo + 1

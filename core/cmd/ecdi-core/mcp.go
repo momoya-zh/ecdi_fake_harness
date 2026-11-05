@@ -642,9 +642,11 @@ func mcpToolDefNamed(name, serverName string, t mcpTool) (string, toolDef) {
 			"required":   []string{},
 		}
 	} else {
-		cpy := make(map[string]any, len(schema))
-		for k, v := range schema {
-			cpy[k] = v
+		// ★ 先规约再补默认：`$schema` / `$defs` 不能原样交给端点（见
+		//   sanitizeMCPInputSchema 的注释），本地 `$ref` 会在这里展开成实体。
+		cpy, warns := sanitizeMCPInputSchema(schema)
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "[mcp] 工具 %s/%s 的 inputSchema: %s\n", serverName, t.Name, w)
 		}
 		if _, ok := cpy["type"]; !ok {
 			cpy["type"] = "object"
@@ -666,7 +668,250 @@ func mcpToolDefNamed(name, serverName string, t mcpTool) (string, toolDef) {
 	}
 }
 
-// ── 工具命名（provider 约束 vs MCP 约束的落差）────────────────────
+// ── 入参 schema 规约（2026-11-05 三版）────────────────────────────
+
+// sanitizeMCPInputSchema：MCP 服务给的 inputSchema → 上交给模型的 parameters。
+//
+// 为什么必须动它：MCP 服务常用 zod / pydantic 生成 schema，会带 `$schema`、
+// `$defs` 与指向 `$defs` 的 `$ref`。部分 OpenAI 兼容端点不接受这些元关键字，
+// 而失败的代价是**整轮请求 400**（一次配置打死整个会话），不是单个工具不可用。
+//
+// 做法（顺序不能换）：
+//  1. 递归删 `$schema`；
+//  2. 本地 `$ref`（`#/...` JSON Pointer）**就地展开**——把 `$defs`/`definitions`
+//     里的定义填到引用处，同层的兄弟键（`description` 之类）保留并覆盖目标同名字段；
+//  3. 展开完再删 `$defs` / `definitions`（draft-07 旧名）。
+//
+// 递归引用无法有限展开：那一处降级成 `{}`（允许任意值）并记 warning。宁可让
+// 模型看到宽松的入参，也不留一个指向已删 `$defs` 的悬空 `$ref`——后者是确定的
+// 400，前者只是校验变松（真正的参数校验仍在 MCP 服务端）。
+//
+// 返回的是**深拷贝**，不改 `t.InputSchema`；外链 `$ref`（`http(s)://...`）原样
+// 保留（我们无从展开，也不该替服务端改语义）。`properties` 里名字恰好叫
+// `$schema` / `$defs` 的**属性**不会被误删：剥键只发生在 schema 对象上，不发生在
+// 「属性名 → schema」的映射层。
+func sanitizeMCPInputSchema(schema map[string]any) (map[string]any, []string) {
+	if schema == nil {
+		return map[string]any{}, nil
+	}
+	root := cloneSchemaValue(schema).(map[string]any)
+	s := &schemaSanitizer{root: root}
+	out, _ := s.walkSchema(root, nil).(map[string]any)
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, s.warnings
+}
+
+type schemaSanitizer struct {
+	root     map[string]any
+	warnings []string
+}
+
+// warn：同一工具里同一个 ref 可能被展开多次（每个引用点都会撞一次递归），
+// 去重后再交给 stderr，避免一条 schema 刷出一屏同样的告警。
+func (s *schemaSanitizer) warn(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	for _, w := range s.warnings {
+		if w == msg {
+			return
+		}
+	}
+	s.warnings = append(s.warnings, msg)
+}
+
+// walkSchema：按 JSON Schema 的关键字表递归。★ 不能对任意 map 无脑剥键——
+// `properties` 的键是**用户属性名**，那里出现 `$defs` 是合法的。
+func (s *schemaSanitizer) walkSchema(v any, stack []string) any {
+	switch x := v.(type) {
+	case map[string]any:
+		if ref, ok := x["$ref"].(string); ok && ref != "" {
+			return s.expandRef(ref, x, stack)
+		}
+		return s.walkSchemaObject(x, stack)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = s.walkSchema(item, stack)
+		}
+		return out
+	case []string:
+		return append([]string(nil), x...)
+	default:
+		return v
+	}
+}
+
+// walkSchemaObject：schema 对象的键级规约（不含 `$ref` 展开）。
+func (s *schemaSanitizer) walkSchemaObject(obj map[string]any, stack []string) map[string]any {
+	out := make(map[string]any, len(obj))
+	for k, v := range obj {
+		switch k {
+		case "$schema", "$defs", "definitions":
+			// 元关键字与定义容器：展开完引用后不再上交。
+			continue
+		case "$ref":
+			// 由 expandRef 处理；外链路径会单独放回。
+			continue
+		case "properties", "patternProperties", "dependentSchemas":
+			out[k] = s.walkSchemaMap(v, stack)
+		case "dependencies":
+			out[k] = s.walkDependencies(v, stack)
+		case "allOf", "anyOf", "oneOf", "prefixItems":
+			out[k] = s.walkSchemaArray(v, stack)
+		case "items":
+			out[k] = s.walkSchemaOrArray(v, stack)
+		case "additionalProperties", "additionalItems", "contains", "propertyNames",
+			"not", "if", "then", "else", "unevaluatedProperties", "unevaluatedItems",
+			"contentSchema":
+			out[k] = s.walkSchema(v, stack)
+		default:
+			// 未知关键字（含 vendor 扩展）：形状原样保留，只做深拷贝。
+			out[k] = cloneSchemaValue(v)
+		}
+	}
+	return out
+}
+
+func (s *schemaSanitizer) walkSchemaMap(v any, stack []string) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return cloneSchemaValue(v)
+	}
+	out := make(map[string]any, len(m))
+	for name, sub := range m {
+		out[name] = s.walkSchema(sub, stack) // name 是属性名，不是关键字
+	}
+	return out
+}
+
+func (s *schemaSanitizer) walkSchemaArray(v any, stack []string) any {
+	arr, ok := v.([]any)
+	if !ok {
+		return cloneSchemaValue(v)
+	}
+	out := make([]any, len(arr))
+	for i, sub := range arr {
+		out[i] = s.walkSchema(sub, stack)
+	}
+	return out
+}
+
+// walkSchemaOrArray：`items` 在 draft-07 既可以是 schema，也可以是 schema 数组。
+func (s *schemaSanitizer) walkSchemaOrArray(v any, stack []string) any {
+	if _, ok := v.([]any); ok {
+		return s.walkSchemaArray(v, stack)
+	}
+	return s.walkSchema(v, stack)
+}
+
+// walkDependencies：属性依赖的值是字符串数组（不是 schema），模式依赖的
+// 值才是 schema —— 两种都必须保持原样语义。
+func (s *schemaSanitizer) walkDependencies(v any, stack []string) any {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return cloneSchemaValue(v)
+	}
+	out := make(map[string]any, len(m))
+	for name, dep := range m {
+		if _, isArray := dep.([]any); isArray {
+			out[name] = cloneSchemaValue(dep)
+			continue
+		}
+		out[name] = s.walkSchema(dep, stack)
+	}
+	return out
+}
+
+// expandRef：展开一个 `$ref`。外链保留原样；本地引用按 JSON Pointer 解析。
+func (s *schemaSanitizer) expandRef(ref string, obj map[string]any, stack []string) any {
+	if !strings.HasPrefix(ref, "#") {
+		// 外链：不猜远端内容，保留 `$ref`，只规约同层兄弟键。
+		out := s.walkSchemaObject(obj, stack)
+		out["$ref"] = ref
+		return out
+	}
+
+	for _, seen := range stack {
+		if seen == ref {
+			s.warn("递归 $ref %s 无法有限展开，该处降级为 {}（允许任意值）", ref)
+			return map[string]any{}
+		}
+	}
+
+	target, ok := s.resolve(ref)
+	if !ok {
+		s.warn("$ref %s 无法解析，该处降级为 {}（允许任意值）", ref)
+		return map[string]any{}
+	}
+
+	next := append(append([]string(nil), stack...), ref)
+	expanded := s.walkSchema(cloneSchemaValue(target), next)
+	out, isMap := expanded.(map[string]any)
+	if !isMap {
+		// 目标是布尔 schema：没有可合并的兄弟键，原样返回。
+		return expanded
+	}
+	// 兄弟键覆盖目标同名字段（JSON Schema 2020-12 的 $ref 兄弟语义）。
+	for k, v := range s.walkSchemaObject(obj, stack) {
+		out[k] = v
+	}
+	return out
+}
+
+// resolve：解析本地 JSON Pointer（`#` = 根，`#/a/b` = 逐层下钻）。
+func (s *schemaSanitizer) resolve(ref string) (any, bool) {
+	if ref == "#" {
+		return s.root, true
+	}
+	if !strings.HasPrefix(ref, "#/") {
+		return nil, false
+	}
+	var cur any = s.root
+	for _, raw := range strings.Split(ref[2:], "/") {
+		token := strings.ReplaceAll(raw, "~1", "/")
+		token = strings.ReplaceAll(token, "~0", "~")
+		switch node := cur.(type) {
+		case map[string]any:
+			next, ok := node[token]
+			if !ok {
+				return nil, false
+			}
+			cur = next
+		case []any:
+			idx, err := strconv.Atoi(token)
+			if err != nil || idx < 0 || idx >= len(node) {
+				return nil, false
+			}
+			cur = node[idx]
+		default:
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// cloneSchemaValue：只克隆 JSON 会出现的容器类型；标量不可变，直接复用。
+func cloneSchemaValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = cloneSchemaValue(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = cloneSchemaValue(val)
+		}
+		return out
+	case []string:
+		return append([]string(nil), x...)
+	default:
+		return v
+	}
+}
 
 // sanitizeNamePart：压到 `[A-Za-z0-9_-]`。非 ASCII（中文工具名不是没可能）与
 // 其它标点一律折成 `_`，逐 rune 处理（不会切出半个汉字）。
@@ -687,10 +932,11 @@ func sanitizeNamePart(s string) string {
 // mcpToolName：MCP 原始名 → provider 能接受的 `function.name`（≤64，字符集受限）。
 //
 // ★ 为什么必须有：OpenAI 兼容端点（含 DeepSeek）对 `function.name` 的约束是
-//   `^[a-zA-Z0-9_-]{1,64}$`，而 MCP 规范对工具名**没有任何约束**——`git.status`、
-//   带空格、中文都合法。原样上交的后果不是「这个工具调不动」，而是**整轮请求 400**，
-//   即一次配置就把整个会话打死。名字只是我们发给模型的外号，真实调用走
-//   `mcpToolRef.origName`，所以压名字是**无损**的。
+//
+//	`^[a-zA-Z0-9_-]{1,64}$`，而 MCP 规范对工具名**没有任何约束**——`git.status`、
+//	带空格、中文都合法。原样上交的后果不是「这个工具调不动」，而是**整轮请求 400**，
+//	即一次配置就把整个会话打死。名字只是我们发给模型的外号，真实调用走
+//	`mcpToolRef.origName`，所以压名字是**无损**的。
 func mcpToolName(server, tool string) string { return mcpToolNameHashed(server, tool, false) }
 
 func mcpToolNameHashed(server, tool string, forceHash bool) string {
@@ -909,9 +1155,10 @@ func (h *mcpHub) noteDead(server, reason string) {
 // TakeDeadNotices：取走「自上次取走以来新死掉的服务」的人向说明（取过即清）。
 //
 // ★ 为什么要有：服务崩掉之后 `close(done)`，所有后续调用都返回错误字符串，
-//   但那是**模型**看得到的；界面上除了「工具反复失败」什么都没有。本仓对
-//   「发生了什么但没人说」的既有处置是发一条 system 块（上下文压缩失败就是
-//   这么做的），这里同一口径。会话在每次工具调用收尾时调用一次。
+//
+//	但那是**模型**看得到的；界面上除了「工具反复失败」什么都没有。本仓对
+//	「发生了什么但没人说」的既有处置是发一条 system 块（上下文压缩失败就是
+//	这么做的），这里同一口径。会话在每次工具调用收尾时调用一次。
 func (h *mcpHub) TakeDeadNotices() []string {
 	if h == nil {
 		return nil

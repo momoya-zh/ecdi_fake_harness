@@ -29,6 +29,30 @@ import (
 	"ecdi-fake-core/internal/wire"
 )
 
+// ── L2 防爆（docs/session-persistence-decisions.md §7.3）────────────
+//
+// 四层：源头限流（工具已有的硬上限）→ 水位前移 → Stage 1 折叠 → Stage 2/3。
+// 所有数字都是具名常量，不散落魔数（§7.2 验收要求）。
+const (
+	// Stage 1：原文估算 ≥ 70% 窗口时启用旧工具载荷折叠（粘性）。
+	maskTriggerRatio = 0.70
+	// 保留最近 N 条 tool 结果（及其 tool_call 参数）原文。
+	maskKeepRecentTools = 4
+	// 无 ctxCapacity 时的绝对载荷软上限：未折叠工具载荷 > 256KB 就折叠。
+	maskAbsoluteBytes = 256 << 10
+	// 小于这个体积的载荷不值得折（占位文案本身也要空间）。
+	maskMinPayloadBytes = 1024
+	maskHeadRunes       = 300
+	maskTailRunes       = 200
+	// 摘要输出上限（rune）与摘要输入占窗口的比例上限。
+	summaryMaxRunes   = 2000
+	summaryInputRatio = 0.60
+	// 硬顶预留的估算误差（2%）。
+	contextMarginRatio = 0.02
+	// 子代理保留最近 N 条 tool 结果，其余折叠（子代理上下文是一次性探查）。
+	agentMaskKeepRecent = 2
+)
+
 type session struct {
 	in  <-chan wire.StampedLine
 	out *wire.Out
@@ -64,6 +88,25 @@ type session struct {
 	failSummarize    bool
 	lastCompressTurn int
 	ctxWriter        *contextlog.LogWriter
+
+	// ── L2 防爆（§7.3）：请求视图折叠 + 内部估算锚点 ────────────────
+	// maskOn/maskKeep 只影响 buildRequestMessages 的**视图**：不删消息节点、
+	// 不改 s.history、不写 context.jsonl（tool_call/tool 配对与 compact 的
+	// replaces 索引因此天然保持不变）。
+	maskOn          bool
+	maskKeep        int
+	maskNoticedTurn int
+	// usageBase* = 上一次 API usage 对应的“视图基准”。它只是内部防爆判据的
+	// 下限校准，绝不写进发给 GUI 的 usage（D1：usage 只发 API 真值）。
+	// 任何视图变化（折叠档位/压缩/换模型/换工作区）都必须让它失效——
+	// 否则会拿“折叠后的 prompt_tokens”去判断“要不要折叠原文视图”，
+	// 得出 50% 的假水位然后在下一个请求直接爆窗。
+	usageBaseTokens int
+	usageBaseLen    int
+	usageBaseTier   int
+	usageBaseValid  bool
+	toolDefsEst     int
+	toolDefsEstOK   bool
 
 	// ── L3 记忆文件（docs/session-persistence-decisions.md §8）────────
 	globalMemoryDir string
@@ -309,8 +352,9 @@ func (s *session) setState(v wire.State) {
 // nextBlockID：块 id（b1 / b2 …）。★ v5 起**原子**——子代理并行后有两路
 // goroutine 同时分配块号，非原子的「读-加-写」会给出重复 id（I1 的直接违反）。
 // ★ 刻意只有**一个**计数器、不按代理前缀分空间：id 只要流内唯一即满足契约，
-//   归属由 `agent` 字段表达；分空间会让根代理的 id 也变（今天是 b1/b2…），
-//   而「--agents 关闭时逐字节不变」是回归基线的前提。
+//
+//	归属由 `agent` 字段表达；分空间会让根代理的 id 也变（今天是 b1/b2…），
+//	而「--agents 关闭时逐字节不变」是回归基线的前提。
 func (s *session) nextBlockID() string {
 	return fmt.Sprintf("b%d", s.blockNo.Add(1))
 }
@@ -341,7 +385,8 @@ func (s *session) run() error {
 
 // processLine：轮间的一条 gui→core 消息。返回 true = 已发 bye，调用方该退出。
 // （轮内到达的消息由 turnListener 收走、轮后经 drain 回到这里处置——
-//   判据用的是**到达态**戳，所以「轮内抢跑的 prompt」在这里照样被拒绝。）
+//
+//	判据用的是**到达态**戳，所以「轮内抢跑的 prompt」在这里照样被拒绝。）
 func (s *session) processLine(sl wire.StampedLine) bool {
 	msg := wire.ParseGui(sl.Text)
 	arrived := wire.StateOf(sl.St)
@@ -393,21 +438,14 @@ func (s *session) handlePrompt(text, clientID string) {
 	s.setState(wire.StateRunning)
 	s.ensureCtxWriter()
 
-	// ── L2 压缩触发检查（§7.2）────────────────────────────────────
-	if s.ctxCapacity > 0 && s.lastUsage != nil {
-		occupancy := s.lastUsage.PromptTokens
-		thresh := int(float64(s.ctxCapacity) * contextlog.CompressThresholdRatio)
-		if occupancy >= thresh && (s.turn-s.lastCompressTurn >= 2 || s.lastCompressTurn == 0) {
-			s.compressContext(occupancy)
-		}
-		if occupancy >= s.ctxCapacity {
-			s.emit(map[string]any{
-				"t": "error", "fatal": false,
-				"message": "上下文已达 100% 且压缩无法腾出足够空间，请新开会话",
-			})
-			s.setState(wire.StateIdle)
-			return
-		}
+	// ── L2 防爆预检（§7.3）────────────────────────────────────────
+	// 轮首就把“即将追加的新 user 消息”计入硬顶判据（旧实现只看上一轮 API 的
+	// lastUsage，不含新消息），并在压缩成功后用**重算的估算**再判一次——
+	// 旧代码拿压缩前的 occupancy 判 100%，会出现“压完还是拒”。
+	extra := contextlog.MessageOverheadTokens + contextlog.EstimateStringTokens(text)
+	if _, ok := s.ensureContextBudget(extra); !ok {
+		s.setState(wire.StateIdle)
+		return
 	}
 
 	// ① 回显用户（协议 §4 + I9；缺失 client_id 补 auto- 前缀本地 id——
@@ -479,10 +517,10 @@ func (s *session) handlePrompt(text, clientID string) {
 
 // turnListener = 整轮运行期间的 stdin 消费者（P3 与假 core 的关键差别）。
 //
-//   * cancel → cancelTurn()：正在进行的 HTTP 流立刻断（A6 的机制本体）；
-//   * answer → answers 通道（ask 门消费）；
-//   * bye    → exitBye + cancelTurn（handlePrompt 收尾后按协议发 bye 并退出）；
-//   * prompt/workspace → **deferred 队列**：不就地处置（此刻状态机正在轮中间，
+//   - cancel → cancelTurn()：正在进行的 HTTP 流立刻断（A6 的机制本体）；
+//   - answer → answers 通道（ask 门消费）；
+//   - bye    → exitBye + cancelTurn（handlePrompt 收尾后按协议发 bye 并退出）；
+//   - prompt/workspace → **deferred 队列**：不就地处置（此刻状态机正在轮中间，
 //     就地处置容易和 handlePrompt 的状态写入交错），轮后由 handlePrompt 用
 //     **到达态**戳统一处置——「轮内到达」不会被误判成「轮后到达」。
 type turnListener struct {
@@ -567,8 +605,14 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 		if turnCtx.Err() != nil {
 			return true
 		}
+		// ── 每一次请求前都过水位（§7.3）：单轮连续 5–15 次工具调用时，
+		//    轮首那一次检查远远不够。ensure 在硬顶仍破时已发 error。
+		reqMsgs, ok := s.ensureContextBudget(0)
+		if !ok {
+			return false
+		}
 		textBlocks := &streamBlocks{sess: s}
-		calls, usage, err := s.llm.Stream(turnCtx, s.buildRequestMessages(), s.toolDefs(),
+		calls, usage, err := s.llm.Stream(turnCtx, reqMsgs, s.toolDefs(),
 			func(content, reasoning string) {
 				textBlocks.onDelta(content, reasoning, turnCtx)
 			})
@@ -587,7 +631,22 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 				"message": fmt.Sprintf("模型请求失败：%v", err)})
 			return false
 		}
+		asstContent := textBlocks.assistantText.String()
 		if len(calls) == 0 {
+			// 收尾的 assistant 文本也必须进历史：下一轮模型看不到自己上一轮
+			// 的结论时，多轮对话会退化成“只记得用户说过什么”。（fake core
+			// 一直是这样做的；真 core 原先漏了。）
+			if strings.TrimSpace(asstContent) != "" {
+				s.history = append(s.history, chatMessage{Role: "assistant", Content: asstContent})
+				if s.ctxWriter != nil {
+					_ = s.ctxWriter.AppendMsg(contextlog.Message{
+						Role: "assistant", Content: asstContent,
+					})
+				}
+				s.recordUsageBase(usage, len(s.history), true)
+			} else {
+				s.recordUsageBase(usage, len(s.history), false)
+			}
 			return false // 模型不再发起调用 ⇒ 一轮结束
 		}
 
@@ -603,7 +662,6 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 				Function: contextlog.FuncSpec{Name: c.Name, Arguments: c.Arguments},
 			})
 		}
-		asstContent := textBlocks.assistantText.String()
 		s.history = append(s.history, chatMessage{Role: "assistant",
 			Content: asstContent, ToolCalls: apiCalls})
 		if s.ctxWriter != nil {
@@ -611,6 +669,9 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 				Role: "assistant", Content: asstContent, ToolCalls: tcLog,
 			})
 		}
+		// 基准点放在 assistant 之后、tool 结果之前：usage.CompletionTokens
+		// 已经覆盖这条 assistant（含 tool_calls 参数），后面的工具结果才算“新增”。
+		s.recordUsageBase(usage, len(s.history), true)
 
 		// ② 执行（I3 只允许一个未决 ask ⇒ 串行；唯一例外是 `task` 委派，
 		//    它的并发边界在 runToolCalls 里。规格 §7）
@@ -621,7 +682,8 @@ func (s *session) chatLoop(turnCtx context.Context, answerCh chan wire.GuiMsg) b
 // runToolCalls：把一条 assistant 消息里的全部工具调用执行完。
 //
 // ★ 没有 `task` 调用、或子代理没开启时，就是今天那条**顺序循环**——
-//   逐字节不变（`--agents` 关闭是回归基线的对照臂）。
+//
+//	逐字节不变（`--agents` 关闭是回归基线的对照臂）。
 //
 // ★ 有 `task` 时按**三相**走，而不是「边跑边并行」。理由是 I3：
 //
@@ -692,9 +754,10 @@ func (s *session) runToolCalls(turnCtx context.Context, calls []aggregatedCall, 
 }
 
 // markToolCancelled：取消后未执行的调用补一条占位 tool 消息，保持历史完整
-//（否则下一轮请求会带一个没有 tool 响应的 tool_calls）。
+// （否则下一轮请求会带一个没有 tool 响应的 tool_calls）。
 // ★ 不发块：那个 tool_call 块在取消路径下也没有 start（本循环在 emit 之前就
-//   退出了），凭空补一个 end 会违反 I1。
+//
+//	退出了），凭空补一个 end 会违反 I1。
 func (s *session) markToolCancelled(c aggregatedCall) {
 	s.history = append(s.history, chatMessage{Role: "tool",
 		ToolCallID: c.ID, Content: "（用户取消，未执行）"})
@@ -721,7 +784,7 @@ func hasTaskCall(calls []aggregatedCall) bool {
 // 不是"发消息那一行"——自守与该 ask 是同一条不变量的两半，分开就没人管。
 //
 // 问句由调用方给：普通工具走 askPrompt，委派走 delegationAskPrompt
-//（后者要带授权范围，两条问题不是同一个句式）。
+// （后者要带授权范围，两条问题不是同一个句式）。
 //
 // ★ detail（2026-11-05，协议 v5 §3.6 可选字段）：结构化提案——write/edit 的
 // unified diff、run/task 的作用域字段。nil = 不带该字段（消息与 v5.7 之前逐字节
@@ -844,9 +907,10 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 // execTool：内置分发 / MCP 路由的**唯一**入口。
 //
 // ★ 必须看 CallTool 的 `handled`（2026-11-05 评审修）：`HasTool` 与 `CallTool`
-//   是两次独立加锁，中间被 `hub.Close()` 清表（bye / EOF 路径）时，旧写法
-//   `res, _ =` 会拿到零值 toolResult ⇒ 发出一条**空输出、ok=false** 的
-//   tool_result 进 history，模型看到的是空字符串而不是「未知工具」。
+//
+//	是两次独立加锁，中间被 `hub.Close()` 清表（bye / EOF 路径）时，旧写法
+//	`res, _ =` 会拿到零值 toolResult ⇒ 发出一条**空输出、ok=false** 的
+//	tool_result 进 history，模型看到的是空字符串而不是「未知工具」。
 func (s *session) execTool(ctx context.Context, name string, args map[string]any, callID string) toolResult {
 	if s.mcp != nil {
 		if r, handled := s.mcp.CallTool(ctx, name, args); handled {
@@ -870,22 +934,390 @@ func (s *session) emitMCPDeadNotices() {
 	}
 }
 
-// ── L2 上下文压缩（docs/session-persistence-decisions.md §7.2）──────────
+// ── L2 防爆：估算、折叠、预算压缩（docs/session-persistence-decisions.md §7.3）──
 
-func (s *session) compressContext(occupancy int) {
-	if s.failSummarize {
-		s.log("compression failed due to --fail-summarize")
-		nid := s.nextBlockID()
-		s.emit(map[string]any{
-			"t": "block_start", "id": nid, "kind": "system",
-			"text": "[上下文压缩失败: 摘要生成失败，本轮照常发送]",
-		})
-		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
+// estimateChatMessage = 单条请求消息的保守 token 估算（与 contextlog 同口径）。
+func estimateChatMessage(m chatMessage) int {
+	n := contextlog.MessageOverheadTokens +
+		contextlog.EstimateStringTokens(m.Content) +
+		contextlog.EstimateStringTokens(m.ToolCallID)
+	for _, tc := range m.ToolCalls {
+		n += contextlog.MessageOverheadTokens +
+			contextlog.EstimateStringTokens(tc.ID) +
+			contextlog.EstimateStringTokens(tc.Function.Name) +
+			contextlog.EstimateStringTokens(tc.Function.Arguments)
+	}
+	return n
+}
+
+func estimateChatMessages(msgs []chatMessage) int {
+	total := 0
+	for _, m := range msgs {
+		total += estimateChatMessage(m)
+	}
+	return total
+}
+
+// toolDefsTokens：tools 数组的估算（工具 schema 也是 prompt 的一部分）。
+// 同一会话内工具表不变，缓存一次即可。
+func (s *session) toolDefsTokens() int {
+	if s.toolDefsEstOK {
+		return s.toolDefsEst
+	}
+	defs := s.toolDefs()
+	n := 0
+	if len(defs) > 0 {
+		if b, err := json.Marshal(defs); err == nil {
+			n = contextlog.EstimateStringTokens(string(b))
+		}
+	}
+	s.toolDefsEst = n
+	s.toolDefsEstOK = true
+	return n
+}
+
+// outputReserve = 必须为请求体 max_tokens 预留的窗口。
+// 只在配置合理（0 < maxOutput < ctx/2）时预留；否则视为配置异常，不拿它算硬顶。
+func (s *session) outputReserve() int {
+	if s.ctxCapacity <= 0 || s.maxOutput <= 0 || s.maxOutput >= s.ctxCapacity/2 {
+		return 0
+	}
+	return s.maxOutput
+}
+
+// hardCap = 允许发送的 prompt token 上限；留 2% 给估算误差。
+func (s *session) hardCap() int {
+	if s.ctxCapacity <= 0 {
+		return 0
+	}
+	margin := int(float64(s.ctxCapacity) * contextMarginRatio)
+	cap := s.ctxCapacity - s.outputReserve() - margin
+	if cap < 0 {
+		cap = 0
+	}
+	return cap
+}
+
+// compressTrigger = Stage 2 软触发线。
+// ★ 必须和 hardCap 取小：100k 窗口 + 32k max_tokens 时硬顶只有 68k，
+//
+//	若还按 85%×100k = 85k 触发，请求会先 400。
+func (s *session) compressTrigger() int {
+	if s.ctxCapacity <= 0 {
+		return 0
+	}
+	trigger := int(float64(s.ctxCapacity) * contextlog.CompressThresholdRatio)
+	if h := int(float64(s.hardCap()) * 0.90); h < trigger {
+		trigger = h
+	}
+	return trigger
+}
+
+func (s *session) compressAllowed() bool {
+	return s.lastCompressTurn == 0 || s.turn-s.lastCompressTurn >= 2
+}
+
+func (s *session) currentMaskTier() int {
+	if !s.maskOn || s.maskKeep <= 0 {
+		return 0
+	}
+	return s.maskKeep
+}
+
+func (s *session) invalidateUsageBase() { s.usageBaseValid = false }
+
+// recordUsageBase：把“上一次请求的视图基准”记下来，供下次估算取下限。
+// includeCompletion：assistant 消息（含 tool_calls）是否已追加进 history；
+// 已追加则 completion 覆盖它，否则只算 prompt（最终回答未落历史时）。
+func (s *session) recordUsageBase(u *chatUsage, historyLen int, includeCompletion bool) {
+	if u == nil {
 		return
 	}
+	base := u.PromptTokens
+	if includeCompletion {
+		base += u.CompletionTokens
+	}
+	s.usageBaseTokens = base
+	s.usageBaseLen = historyLen
+	s.usageBaseTier = s.currentMaskTier()
+	s.usageBaseValid = true
+}
 
-	var cmsgs []contextlog.Message
-	for _, m := range s.history {
+// estimateRequest：渲染后请求的保守 token 估算。
+// 扫描视图是主判据（视图变化时不会拿旧锚点算错）；API usage 锚点只在
+// **同一视图**下作为下限校准（provider 的真实 tokenizer 通常比估算大）。
+func (s *session) estimateRequest(msgs []chatMessage) int {
+	total := estimateChatMessages(msgs) + s.toolDefsTokens()
+	if s.usageBaseValid && s.usageBaseTier == s.currentMaskTier() &&
+		s.usageBaseLen >= 0 && s.usageBaseLen <= len(s.history) {
+		anchored := s.usageBaseTokens
+		for _, m := range s.history[s.usageBaseLen:] {
+			anchored += estimateChatMessage(m)
+		}
+		if anchored > total {
+			total = anchored
+		}
+	}
+	return total
+}
+
+// historyToolPayloadBytes：未折叠的工具载荷总量（含最近 K 条）。
+func historyToolPayloadBytes(history []chatMessage) int {
+	total := 0
+	for _, m := range history {
+		if m.Role == "tool" {
+			total += len(m.Content)
+		}
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Function.Arguments)
+		}
+	}
+	return total
+}
+
+type maskStats struct {
+	ToolResults int
+	ToolArgs    int
+	BytesSaved  int
+}
+
+// maskHistory 返回请求视图：消息条数/顺序不变，只把较早的大工具载荷折叠。
+// ★ 纯函数：不改 history；ToolCalls 切片先拷贝再改写，避免别名污染。
+func maskHistory(history []chatMessage, keepRecent int) ([]chatMessage, maskStats) {
+	var stats maskStats
+	if len(history) == 0 || keepRecent <= 0 {
+		return history, stats
+	}
+	keep := map[string]bool{}
+	kept := 0
+	for i := len(history) - 1; i >= 0 && kept < keepRecent; i-- {
+		if history[i].Role == "tool" {
+			keep[history[i].ToolCallID] = true
+			kept++
+		}
+	}
+	names := map[string]string{}
+	for _, m := range history {
+		for _, tc := range m.ToolCalls {
+			names[tc.ID] = tc.Function.Name
+		}
+	}
+	out := make([]chatMessage, len(history))
+	for i, m := range history {
+		out[i] = m
+		switch m.Role {
+		case "tool":
+			if keep[m.ToolCallID] || len(m.Content) <= maskMinPayloadBytes {
+				continue
+			}
+			folded := foldToolOutput(m.Content, names[m.ToolCallID])
+			if len(folded) >= len(m.Content) {
+				continue // 折了反而更大：不折
+			}
+			stats.ToolResults++
+			stats.BytesSaved += len(m.Content) - len(folded)
+			out[i].Content = folded
+		case "assistant":
+			if len(m.ToolCalls) == 0 {
+				continue
+			}
+			calls := make([]apiToolCall, len(m.ToolCalls))
+			copy(calls, m.ToolCalls)
+			changed := false
+			for j, tc := range calls {
+				if keep[tc.ID] || len(tc.Function.Arguments) <= maskMinPayloadBytes {
+					continue
+				}
+				folded := foldToolArguments(tc.Function.Arguments)
+				if len(folded) >= len(tc.Function.Arguments) {
+					continue
+				}
+				stats.ToolArgs++
+				stats.BytesSaved += len(tc.Function.Arguments) - len(folded)
+				calls[j].Function.Arguments = folded
+				changed = true
+			}
+			if changed {
+				out[i].ToolCalls = calls
+			}
+		}
+	}
+	return out, stats
+}
+
+// foldToolOutput：旧工具结果的头尾预览 + 显式长度标注。
+// 只读工具可以“重新调用”；写/执行/委派类不能建议重跑（run_command 不幂等）。
+func foldToolOutput(content, toolName string) string {
+	runes := []rune(content)
+	head := clipRunes(content, maskHeadRunes)
+	tail := ""
+	if len(runes) > maskHeadRunes+maskTailRunes {
+		tail = string(runes[len(runes)-maskTailRunes:])
+	}
+	hint := "需要原文请重新调用对应工具。"
+	switch {
+	case isReadOnlyTool(toolName):
+		hint = "需要原文请重新调用该工具。"
+	case toolName != "":
+		hint = "不要为了恢复原文重复执行该操作；需要时重新读取/重新生成。"
+	}
+	return fmt.Sprintf("[历史工具输出已折叠：原长 %d 字节，工具 %s。%s]\n%s\n…\n%s",
+		len(content), toolName, hint, head, tail)
+}
+
+// foldToolArguments：把参数 JSON 里的大字段折成短预览，保留 path/command
+// 这类元信息，且输出仍是合法 JSON（部分端点会对历史参数做 JSON 校验）。
+func foldToolArguments(raw string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return fmt.Sprintf(`{"_folded":"[历史参数已折叠：原长 %d 字节]"}`, len(raw))
+	}
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			if len(val) > 512 {
+				m[k] = clipRunes(val, 200) + fmt.Sprintf("…[已折叠 %d 字节]", len(val))
+			}
+		default:
+			b, err := json.Marshal(v)
+			if err != nil || len(b) <= 512 {
+				continue
+			}
+			m[k] = fmt.Sprintf("[已折叠 %d 字节]", len(b))
+		}
+	}
+	if b, err := json.Marshal(m); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf(`{"_folded":"[历史参数已折叠：原长 %d 字节]"}`, len(raw))
+}
+
+// emitNotice：system 块。压缩/折叠/失败都必须可见（本仓“反对静默改写”）。
+func (s *session) emitNotice(text string, ok bool) {
+	nid := s.nextBlockID()
+	s.emit(map[string]any{"t": "block_start", "id": nid, "kind": "system", "text": text})
+	s.emit(map[string]any{"t": "block_end", "id": nid, "ok": ok})
+}
+
+func (s *session) emitMaskNoticeIfNeeded(stats maskStats) {
+	if stats.ToolResults == 0 && stats.ToolArgs == 0 {
+		return
+	}
+	if s.maskNoticedTurn == s.turn {
+		return
+	}
+	s.maskNoticedTurn = s.turn
+	s.emitNotice(fmt.Sprintf(
+		"[已折叠较早的工具输出以控制上下文：%d 条结果、%d 处调用参数（原文仍在转录中，可重新读取）]",
+		stats.ToolResults, stats.ToolArgs), true)
+	s.log("context pruning: folded %d results / %d args, saved %d bytes",
+		stats.ToolResults, stats.ToolArgs, stats.BytesSaved)
+}
+
+// maybeEnableMasking：Stage 1 的启用判据。
+// 有 ctxCapacity：按原文估算 70% 触发（粘性，避免“折一次→读数变小→不折了”振荡）；
+// 无 ctxCapacity：按绝对载荷 256KB 触发（§7.3 的裁决，不是猜分母）。
+func (s *session) maybeEnableMasking(extraTokens int) {
+	if s.maskOn {
+		return
+	}
+	if s.ctxCapacity > 0 {
+		raw := s.estimateRequest(s.buildRequestMessages()) + extraTokens
+		if raw >= int(float64(s.ctxCapacity)*maskTriggerRatio) {
+			s.maskOn = true
+			s.maskKeep = maskKeepRecentTools
+			s.invalidateUsageBase()
+			s.log("context pruning enabled: raw estimate=%d tokens (ctx=%d)", raw, s.ctxCapacity)
+		}
+		return
+	}
+	if n := historyToolPayloadBytes(s.history); n > maskAbsoluteBytes {
+		s.maskOn = true
+		s.maskKeep = maskKeepRecentTools
+		s.invalidateUsageBase()
+		s.log("context pruning enabled by absolute payload cap (%d bytes)", n)
+	}
+}
+
+// ensureContextBudget：每次发请求前的唯一水位入口（轮首 / 每次 Stream）。
+// extraTokens = 尚未进入 history 的新内容（轮首的新 user 消息）。
+// 返回最终应发送的 messages；ok=false 表示硬顶仍破，已发 error。
+func (s *session) ensureContextBudget(extraTokens int) ([]chatMessage, bool) {
+	s.maybeEnableMasking(extraTokens)
+
+	msgs, stats := s.renderRequest()
+	s.emitMaskNoticeIfNeeded(stats)
+	base := s.estimateRequest(msgs)
+
+	if s.ctxCapacity <= 0 {
+		// 无分母：不做比例压缩 / LLM 摘要；只保留绝对载荷折叠（§7.3）。
+		return msgs, true
+	}
+
+	trigger := s.compressTrigger()
+	hard := s.hardCap()
+	attempted := false
+
+	if base >= trigger && s.compressAllowed() {
+		attempted = true
+		if s.compressContext(base) {
+			msgs, stats = s.renderRequest()
+			s.emitMaskNoticeIfNeeded(stats)
+			base = s.estimateRequest(msgs)
+		}
+	}
+	// 硬顶：即便冷却/未到软线也必须再试一次（只试一次，失败就进兜底）。
+	if base+extraTokens > hard && !attempted {
+		attempted = true
+		if s.compressContext(base) {
+			msgs, stats = s.renderRequest()
+			s.emitMaskNoticeIfNeeded(stats)
+			base = s.estimateRequest(msgs)
+		}
+	}
+	// 硬顶压力下把折叠档位降到 1（只保留最后 1 条 tool 结果），再试。
+	if base+extraTokens > hard && s.maskKeep > 1 {
+		s.maskKeep = 1
+		s.maskNoticedTurn = 0 // 更激进的折叠不是静默的：强制再发一条可见提示
+		s.invalidateUsageBase()
+		s.log("context hard cap: lowering mask keep to 1")
+		msgs, stats = s.renderRequest()
+		s.emitMaskNoticeIfNeeded(stats)
+		base = s.estimateRequest(msgs)
+	}
+	// 最后兜底：确定性紧急压缩（只在合法 user 边界上切）。
+	if base+extraTokens > hard {
+		if s.emergencyCompact(base) {
+			msgs, stats = s.renderRequest()
+			s.emitMaskNoticeIfNeeded(stats)
+			base = s.estimateRequest(msgs)
+		}
+	}
+	if base+extraTokens > hard {
+		s.log("context hard cap exceeded: estimate=%d extra=%d hard=%d ctx=%d",
+			base, extraTokens, hard, s.ctxCapacity)
+		s.emit(map[string]any{"t": "error", "fatal": false,
+			"message": "上下文已达硬上限且压缩无法腾出足够空间，请新开会话"})
+		return nil, false
+	}
+	return msgs, true
+}
+
+func (s *session) pct(tokens int) int {
+	if s.ctxCapacity <= 0 {
+		return 0
+	}
+	return int(float64(tokens) * 100 / float64(s.ctxCapacity))
+}
+
+// contextMessages：把当前请求视图转成 contextlog 消息（供切分/摘要）。
+func (s *session) contextMessages() []contextlog.Message {
+	hist := s.history
+	if s.maskOn && s.maskKeep > 0 {
+		hist, _ = maskHistory(s.history, s.maskKeep)
+	}
+	cmsgs := make([]contextlog.Message, 0, len(hist))
+	for _, m := range hist {
 		var tcs []contextlog.ToolCall
 		for _, tc := range m.ToolCalls {
 			tcs = append(tcs, contextlog.ToolCall{
@@ -897,68 +1329,184 @@ func (s *session) compressContext(occupancy int) {
 			Role: m.Role, Content: m.Content, ToolCalls: tcs, ToolCallID: m.ToolCallID,
 		})
 	}
+	return cmsgs
+}
 
-	cutTo, ok := contextlog.FindCompressionCutPoint(cmsgs, 2)
-	if !ok || cutTo < 0 {
-		return
-	}
-
-	var sb strings.Builder
-	for i := 0; i <= cutTo; i++ {
-		m := cmsgs[i]
-		sb.WriteString(fmt.Sprintf("[%s]: ", m.Role))
-		content := m.Content
-		if m.Role == "tool" && len([]rune(content)) > 200 {
-			content = string([]rune(content)[:200]) + "…(截断)"
+func (s *session) summaryInputLimit() int {
+	limit := int(float64(s.ctxCapacity) * summaryInputRatio)
+	// 摘要请求自己也要给 max_tokens 留位置：不能占满 hardCap。
+	if hard := s.hardCap(); hard > 0 {
+		if h := int(float64(hard) * 0.90); h < limit {
+			limit = h
 		}
-		sb.WriteString(content)
-		sb.WriteString("\n")
 	}
+	if limit < 1 {
+		limit = 1
+	}
+	return limit
+}
 
-	prompt := "请对以下对话历史做精炼摘要。必须保留：用户目标、已做出的决定、已改动的文件、未完成事项、关键约束。直接输出摘要正文，不要寒暄：\n\n" + sb.String()
+// buildSummaryPrompt：逐条预览 + 总长封顶。
+// ★ 与旧实现的关键差别：assistant 的 tool_calls 参数也进摘要（旧实现只拼
+//
+//	Content，`write_file` 改过哪个文件、`run_command` 跑了什么都丢失）。
+func (s *session) buildSummaryPrompt(cmsgs []contextlog.Message, cutTo int) string {
+	const header = "请对以下对话历史做精炼摘要。必须保留：用户目标、已做出的决定、已改动的文件、未完成事项、关键约束。直接输出摘要正文，不要寒暄，不超过 500 字：\n\n"
+	lines := make([]string, 0, cutTo+1)
+	for i := 0; i <= cutTo; i++ {
+		lines = append(lines, summaryLine(cmsgs[i]))
+	}
+	limit := s.summaryInputLimit()
+	body := strings.Join(lines, "")
+	dropped := 0
+	for len(lines) > 1 && contextlog.EstimateStringTokens(header+body) > limit {
+		// 保留第一条（通常是用户目标），从第二条开始丢最旧的。
+		lines = append(lines[:1], lines[2:]...)
+		dropped++
+		body = fmt.Sprintf("[已省略较早的 %d 条消息]\n", dropped) + strings.Join(lines, "")
+	}
+	if contextlog.EstimateStringTokens(header+body) > limit {
+		body = clipRunes(body, limit*2) // 最后手段：2 字符/token
+	}
+	return header + body
+}
 
-	summary, err := s.generateSummary(prompt)
+func summaryLine(m contextlog.Message) string {
+	switch m.Role {
+	case "tool":
+		return fmt.Sprintf("[tool]: %s\n", clipRunes(m.Content, 200))
+	case "assistant":
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("[assistant]: %s\n", clipRunes(m.Content, 300)))
+		for _, tc := range m.ToolCalls {
+			b.WriteString(fmt.Sprintf("  (调用 %s：%s)\n",
+				tc.Function.Name, clipRunes(tc.Function.Arguments, 200)))
+		}
+		return b.String()
+	default:
+		return fmt.Sprintf("[%s]: %s\n", m.Role, clipRunes(m.Content, 500))
+	}
+}
+
+// compressContext：Stage 2（LLM 摘要）。返回是否真的压缩了。
+func (s *session) compressContext(before int) bool {
+	if s.ctxCapacity <= 0 {
+		return false
+	}
+	if s.failSummarize {
+		s.log("compression failed due to --fail-summarize")
+		s.emitNotice("[上下文压缩失败: 摘要生成失败，本轮照常发送]", false)
+		return false
+	}
+	cmsgs := s.contextMessages()
+	budget := int(float64(s.ctxCapacity) * contextlog.RetainRatio)
+	if budget < 1 {
+		budget = 1
+	}
+	cutTo, ok := contextlog.FindCompressionCutPoint(cmsgs, budget)
+	if !ok || cutTo < 0 {
+		s.log("compression skipped: no legal cut point")
+		return false
+	}
+	summary, err := s.generateSummary(s.buildSummaryPrompt(cmsgs, cutTo))
 	if err != nil {
 		s.log("summary generation failed: %v", err)
-		nid := s.nextBlockID()
-		s.emit(map[string]any{
-			"t": "block_start", "id": nid, "kind": "system",
-			"text": "[上下文压缩失败: 摘要生成超时或报错，本轮照常发送]",
-		})
-		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
-		return
+		s.emitNotice("[上下文压缩失败: 摘要生成超时或报错，本轮照常发送]", false)
+		return false
 	}
-
+	summary = clipRunes(strings.TrimSpace(summary), summaryMaxRunes)
 	count := cutTo + 1
+
+	// 先做“干跑”：换完历史后重算。若没变小（例如只剩一条旧摘要可换，
+	// 或保留段本来就很小），就不要写 compact、不要发 notice——那只是
+	// 把摘要越摘要越薄。★ 绝不再假写 50%。
+	old := s.history
+	s.history = append([]chatMessage{
+		{Role: "user", Content: contextlog.SummaryPrefix + summary},
+	}, old[cutTo+1:]...)
+	s.invalidateUsageBase()
+	after := s.estimateRequest(s.buildRequestMessages())
+	if after >= before {
+		s.history = old
+		s.log("compression discarded: no size reduction (%d -> %d)", before, after)
+		return false
+	}
 	if s.ctxWriter != nil {
 		_ = s.ctxWriter.AppendCompact(summary, 0, cutTo)
 	}
-
-	sumMsg := chatMessage{
-		Role:    "user",
-		Content: contextlog.SummaryPrefix + summary,
-	}
-	newHistory := make([]chatMessage, 0, len(s.history)-count+1)
-	newHistory = append(newHistory, sumMsg)
-	newHistory = append(newHistory, s.history[cutTo+1:]...)
-	s.history = newHistory
-
-	afterOccupancy := int(float64(s.ctxCapacity) * contextlog.TargetRatio)
-	if s.lastUsage != nil {
-		s.lastUsage.PromptTokens = afterOccupancy
-	}
 	s.lastCompressTurn = s.turn
 
-	beforePct := int(float64(occupancy) * 100 / float64(s.ctxCapacity))
-	afterPct := int(float64(afterOccupancy) * 100 / float64(s.ctxCapacity))
+	notice := fmt.Sprintf("[上下文已压缩:%d 条 → 摘要,占用约 %d%% → 约 %d%%]",
+		count, s.pct(before), s.pct(after))
+	s.emitNotice(notice, true)
+	s.log("compressed %d messages: %s", count, notice)
+	return true
+}
 
-	nid := s.nextBlockID()
-	noticeText := fmt.Sprintf("[上下文已压缩:%d 条 → 摘要,占用 %d%% → %d%%]", count, beforePct, afterPct)
-	s.emit(map[string]any{
-		"t": "block_start", "id": nid, "kind": "system", "text": noticeText,
-	})
-	s.emit(map[string]any{"t": "block_end", "id": nid, "ok": true})
-	s.log("compressed %d messages: %s", count, noticeText)
+// deterministicSummary：Stage 3 的纯本地摘要（无 LLM、无网络）。
+func deterministicSummary(msgs []contextlog.Message, cutTo int) string {
+	var sb strings.Builder
+	sb.WriteString("[自动紧急摘要] 以下为压缩前对话的确定性提取，可能丢失细节：\n")
+	for i := 0; i <= cutTo; i++ {
+		m := msgs[i]
+		switch m.Role {
+		case "user":
+			if t := strings.TrimSpace(m.Content); t != "" {
+				sb.WriteString("- 用户: " + clipRunes(t, 200) + "\n")
+			}
+		case "assistant":
+			if t := strings.TrimSpace(m.Content); t != "" {
+				sb.WriteString("- 助手: " + clipRunes(firstLine(t), 150) + "\n")
+			}
+			for _, tc := range m.ToolCalls {
+				sb.WriteString(fmt.Sprintf("  - 调用 %s %s\n",
+					tc.Function.Name, clipRunes(tc.Function.Arguments, 120)))
+			}
+		}
+		if sb.Len() > 8000 {
+			break
+		}
+	}
+	return sb.String()
+}
+
+// emergencyCompact：硬顶将破且 LLM 摘要不可用时的最后兜底。
+// ★ 只能在合法 user 边界上切；单轮内部无法安全压缩（会拆散 tool_call/tool 配对）。
+func (s *session) emergencyCompact(before int) bool {
+	if s.ctxCapacity <= 0 {
+		return false
+	}
+	cmsgs := s.contextMessages()
+	cutTo, ok := contextlog.FindCompressionCutPoint(cmsgs, 0)
+	if !ok || cutTo < 0 {
+		return false
+	}
+	summary := clipRunes(deterministicSummary(cmsgs, cutTo), summaryMaxRunes)
+	if strings.TrimSpace(summary) == "" {
+		return false
+	}
+	old := s.history
+	s.history = append([]chatMessage{
+		{Role: "user", Content: contextlog.SummaryPrefix + summary},
+	}, old[cutTo+1:]...)
+	s.invalidateUsageBase()
+	after := s.estimateRequest(s.buildRequestMessages())
+	// 最后兜底也要“至少腾出 10%”才值得写：否则只是在反复摘摘要。
+	if after >= before || float64(after) > float64(before)*0.90 {
+		s.history = old
+		s.log("emergency compaction discarded: no meaningful reduction (%d -> %d)", before, after)
+		return false
+	}
+	if s.ctxWriter != nil {
+		_ = s.ctxWriter.AppendCompact(summary, 0, cutTo)
+	}
+	s.lastCompressTurn = s.turn
+	s.emitNotice(fmt.Sprintf(
+		"[上下文已达硬上限，已用确定性规则紧急压缩：%d 条 → 摘要（可能丢失细节），建议新开会话]",
+		cutTo+1), true)
+	s.log("emergency compaction: %d messages, %d%% -> %d%%",
+		cutTo+1, s.pct(before), s.pct(after))
+	return true
 }
 
 func (s *session) generateSummary(prompt string) (string, error) {
@@ -990,8 +1538,9 @@ func (s *session) generateSummary(prompt string) (string, error) {
 // 全部块在流结束时收尾。cancel/错误路径 closeAll(false)。
 //
 // ★ v5：agentID/parentID 非空时，每个 block_start 都带上归属（§3.3），
-//   且 delta 走**合批器**（见 agent.go deltaCoalescer）。根代理两者皆空 ⇒
-//   输出与 v4 逐字节相同（delta 粒度是既有探针的读数基线，不动它）。
+//
+//	且 delta 走**合批器**（见 agent.go deltaCoalescer）。根代理两者皆空 ⇒
+//	输出与 v4 逐字节相同（delta 粒度是既有探针的读数基线，不动它）。
 type streamBlocks struct {
 	sess     *session
 	agentID  string
@@ -1081,8 +1630,9 @@ func (b *streamBlocks) closeAll(ok bool) {
 
 // ── 请求消息组装 ────────────────────────────────────────────────
 
-// buildRequestMessages：系统消息（现建——工作区切换即时生效）+ 历史。
-func (s *session) buildRequestMessages() []chatMessage {
+// renderRequest：系统消息（现建——工作区切换即时生效）+ **折叠后的历史视图**。
+// ★ 返回的 stats 供 ensureContextBudget 发可见提示；它是纯函数，不改 s.history。
+func (s *session) renderRequest() ([]chatMessage, maskStats) {
 	sys := fmt.Sprintf("你是一个运行在用户本机 GUI（harness）里的编码 agent。当前工作区：%s。\n"+
 		"相对路径以工作区为根解析；越界路径（含符号链接指向外面）会被直接拒绝。\n"+
 		"工具：read_file / list_dir / grep 可直接用；write_file / edit_file / run_command "+
@@ -1099,9 +1649,20 @@ func (s *session) buildRequestMessages() []chatMessage {
 	if s.memResult != nil && s.memResult.PromptText != "" {
 		sys += s.memResult.PromptText
 	}
-	msgs := make([]chatMessage, 0, len(s.history)+1)
+	hist := s.history
+	var stats maskStats
+	if s.maskOn && s.maskKeep > 0 {
+		hist, stats = maskHistory(s.history, s.maskKeep)
+	}
+	msgs := make([]chatMessage, 0, len(hist)+1)
 	msgs = append(msgs, chatMessage{Role: "system", Content: sys})
-	return append(msgs, s.history...)
+	return append(msgs, hist...), stats
+}
+
+// buildRequestMessages：系统消息 + 历史视图（折叠只影响这里，不改历史本身）。
+func (s *session) buildRequestMessages() []chatMessage {
+	msgs, _ := s.renderRequest()
+	return msgs
 }
 
 // parseArgs：arguments 字符串 → map（GUI 的 args 卡片直接显示）。
@@ -1222,6 +1783,13 @@ func (s *session) handleModelSwitch(msg wire.GuiMsg, arrived wire.State) {
 	s.providers[msg.Provider] = pc
 	s.llm = newLLMClient(pc, s.log)
 
+	// 换模型 = 换 tokenizer + 换分母：折叠档位重新按新窗口评估，
+	// 估算锚点立即失效（折叠可逆是选 B 的核心理由：切到大窗口能再用回原文）。
+	s.maskOn = false
+	s.maskKeep = maskKeepRecentTools
+	s.maskNoticedTurn = 0
+	s.invalidateUsageBase()
+
 	ack["ok"] = true
 	ack["model"] = pc.Model
 	ack["context"] = s.ctxCapacity
@@ -1276,6 +1844,8 @@ func (s *session) handleWorkspace(msg wire.GuiMsg, arrived wire.State) {
 	}
 	s.log("workspace switched: %s", s.cwd)
 	s.loadMemories()
+	// 记忆区段是 system prompt 的一部分：换了工作区，估算锚点即失效。
+	s.invalidateUsageBase()
 	s.emit(map[string]any{"t": "workspace", "request_id": msg.RequestID,
 		"ok": true, "path": resolved})
 }

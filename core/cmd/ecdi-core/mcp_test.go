@@ -229,6 +229,169 @@ func TestMCP_SchemaSanitization(t *testing.T) {
 	}
 }
 
+func TestMCP_InputSchemaStripping(t *testing.T) {
+	original := map[string]any{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type":    "object",
+		"properties": map[string]any{
+			"item": map[string]any{
+				"$ref":        "#/$defs/Item",
+				"description": "被引用的条目",
+			},
+			"list": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"$ref": "#/$defs/Item"},
+			},
+			"legacy": map[string]any{"$ref": "#/definitions/Legacy"},
+			// ★ 属性名恰好叫 $defs：剥键只发生在 schema 对象上，这里必须留下。
+			"$defs":    map[string]any{"type": "string"},
+			"external": map[string]any{"$ref": "https://example.com/schema.json"},
+			"nestedMeta": map[string]any{
+				"$schema":    "http://example.com/nested",
+				"type":       "object",
+				"properties": map[string]any{"a": map[string]any{"type": "string"}},
+			},
+		},
+		"required": []string{"item"},
+		"$defs": map[string]any{
+			"Item": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":    map[string]any{"type": "integer"},
+					"child": map[string]any{"$ref": "#/$defs/Item"}, // 递归
+				},
+				"required": []string{"id"},
+			},
+		},
+		"definitions": map[string]any{
+			"Legacy": map[string]any{"type": "string", "enum": []any{"a", "b"}},
+		},
+	}
+
+	// 规约本身要能报出递归降级（mcpToolToDef 只负责往 stderr 转述）。
+	// 同一个 ref 被展开多次也只报一条：告警按工具去重，不能刷屏。
+	warns := func() []string {
+		_, w := sanitizeMCPInputSchema(original)
+		return w
+	}()
+	if len(warns) != 1 {
+		t.Fatalf("递归 $ref 应去重成 1 条 warning，got %d: %v", len(warns), warns)
+	}
+	if !strings.Contains(warns[0], "递归") {
+		t.Fatalf("warning 应说明递归无法展开，got %v", warns)
+	}
+
+	_, def := mcpToolToDef("db", mcpTool{
+		Name:        "query",
+		Description: "Database query",
+		InputSchema: original,
+	})
+
+	// 1. 元关键字与定义容器必须消失；本地引用字符串也不能残留。
+	for _, key := range []string{"$schema", "$defs", "definitions"} {
+		if _, has := def.Parameters[key]; has {
+			t.Fatalf("parameters 仍含顶层 %s: %#v", key, def.Parameters)
+		}
+	}
+	raw, err := json.Marshal(def.Parameters)
+	if err != nil {
+		t.Fatalf("marshal parameters: %v", err)
+	}
+	for _, bad := range []string{"#/$defs/Item", "#/definitions/Legacy"} {
+		if strings.Contains(string(raw), bad) {
+			t.Fatalf("本地 $ref 未展开（仍含 %s）：%s", bad, raw)
+		}
+	}
+
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters.properties 类型不对: %#v", def.Parameters["properties"])
+	}
+
+	// 2. $defs/Item 被展开，同层 description 保留。
+	item, ok := props["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("item 未被展开: %#v", props["item"])
+	}
+	if item["type"] != "object" || item["description"] != "被引用的条目" {
+		t.Fatalf("item 展开后语义不对: %#v", item)
+	}
+	itemProps, ok := item["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("item.properties 类型不对: %#v", item["properties"])
+	}
+	if id, ok := itemProps["id"].(map[string]any); !ok || id["type"] != "integer" {
+		t.Fatalf("item.properties.id 未展开: %#v", itemProps["id"])
+	}
+	// 3. 递归那一处降级为 {}，不能留下悬空 $ref 或 $defs。
+	child, ok := itemProps["child"].(map[string]any)
+	if !ok || len(child) != 0 {
+		t.Fatalf("递归 child 应降级为空 schema，got %#v", itemProps["child"])
+	}
+
+	// 4. items 里的引用同样展开。
+	list, ok := props["list"].(map[string]any)
+	if !ok {
+		t.Fatalf("list 类型不对: %#v", props["list"])
+	}
+	if items, ok := list["items"].(map[string]any); !ok || items["type"] != "object" {
+		t.Fatalf("list.items 未展开: %#v", list["items"])
+	}
+
+	// 5. draft-07 的 definitions 也展开。
+	legacy, ok := props["legacy"].(map[string]any)
+	if !ok || legacy["type"] != "string" {
+		t.Fatalf("legacy 未展开: %#v", props["legacy"])
+	}
+	if enum, ok := legacy["enum"].([]any); !ok || len(enum) != 2 {
+		t.Fatalf("legacy.enum 丢失: %#v", legacy["enum"])
+	}
+
+	// 6. 名字叫 $defs 的**属性**不能被误删。
+	if literal, ok := props["$defs"].(map[string]any); !ok || literal["type"] != "string" {
+		t.Fatalf("属性名 $defs 被误删: %#v", props["$defs"])
+	}
+
+	// 7. 外链无法展开，原样保留（不替服务端改语义）。
+	if external, ok := props["external"].(map[string]any); !ok ||
+		external["$ref"] != "https://example.com/schema.json" {
+		t.Fatalf("外链 $ref 应原样保留: %#v", props["external"])
+	}
+
+	// 7.1 嵌套 schema 里的 $schema 也要删（递归，不是只删根层）。
+	if nested, ok := props["nestedMeta"].(map[string]any); !ok {
+		t.Fatalf("nestedMeta 类型不对: %#v", props["nestedMeta"])
+	} else if _, has := nested["$schema"]; has {
+		t.Fatalf("嵌套 $schema 未剥离: %#v", nested)
+	}
+
+	// 8. 原 InputSchema 不被改写（同一 mcpTool 可能被冲突消解重算）。
+	if _, has := original["$schema"]; !has {
+		t.Fatal("原 schema 的 $schema 被删了（规约必须深拷贝）")
+	}
+	origProps := original["properties"].(map[string]any)
+	if origItem, ok := origProps["item"].(map[string]any); !ok || origItem["$ref"] != "#/$defs/Item" {
+		t.Fatalf("原 schema 的 item.$ref 被改写: %#v", origProps["item"])
+	}
+
+	// 9. 解析不了的本地 $ref：同样降级为 {} 并告警，不能留悬空引用。
+	broken := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"x": map[string]any{"$ref": "#/$defs/Missing"},
+		},
+		"$defs": map[string]any{},
+	}
+	brokenOut, brokenWarns := sanitizeMCPInputSchema(broken)
+	if len(brokenWarns) != 1 || !strings.Contains(brokenWarns[0], "无法解析") {
+		t.Fatalf("无法解析的 $ref 应报 1 条 warning，got %v", brokenWarns)
+	}
+	brokenProps := brokenOut["properties"].(map[string]any)
+	if x, ok := brokenProps["x"].(map[string]any); !ok || len(x) != 0 {
+		t.Fatalf("无法解析的 $ref 应降级为空 schema，got %#v", brokenProps["x"])
+	}
+}
+
 func TestMCP_FindConfigFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -437,8 +600,9 @@ func TestMCP_MultipleServers(t *testing.T) {
 // TestMCP_ProcessTreeKilled：**整树**清退（不是只杀直系子进程）。
 //
 // ★ 判据是行为，不是调用：让 MCP server 拉一个会持续写心跳文件的**孙进程**，
-//   然后关掉 hub —— 心跳必须停。只 `Process.Kill()` 直系子进程的实现会红
-//   （`npx` → node 正是这个形状）。
+//
+//	然后关掉 hub —— 心跳必须停。只 `Process.Kill()` 直系子进程的实现会红
+//	（`npx` → node 正是这个形状）。
 func TestMCP_ProcessTreeKilled(t *testing.T) {
 	hb := filepath.Join(t.TempDir(), "heartbeat.txt")
 	size := func() int64 {
@@ -455,7 +619,7 @@ func TestMCP_ProcessTreeKilled(t *testing.T) {
 				Command: os.Args[0],
 				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
 				Env: map[string]string{
-					"GO_WANT_HELPER_MCP":     "1",
+					"GO_WANT_HELPER_MCP":    "1",
 					"GO_MOCK_MCP_HEARTBEAT": hb,
 				},
 			},
@@ -491,8 +655,9 @@ func TestMCP_ProcessTreeKilled(t *testing.T) {
 // TestMCP_ToolNameSanitization：MCP 名字空间 → provider 的 function.name 空间。
 //
 // ★ 判据是**真实约束**（`^[a-zA-Z0-9_-]{1,64}$`，OpenAI 兼容端点含 DeepSeek 都按
-//   这条校验），不是「看着顺眼」：MCP 规范对工具名没有任何约束，原样上交会让
-//   **整轮请求** 400 —— 一次配置就把会话打死。同名同输入必须恒得同名（可复现）。
+//
+//	这条校验），不是「看着顺眼」：MCP 规范对工具名没有任何约束，原样上交会让
+//	**整轮请求** 400 —— 一次配置就把会话打死。同名同输入必须恒得同名（可复现）。
 func TestMCP_ToolNameSanitization(t *testing.T) {
 	valid := regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
@@ -605,7 +770,7 @@ func TestMCP_ToolsListPagination(t *testing.T) {
 				Command: os.Args[0],
 				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
 				Env: map[string]string{
-					"GO_WANT_HELPER_MCP":  "1",
+					"GO_WANT_HELPER_MCP":   "1",
 					"GO_MOCK_MCP_PAGINATE": "1",
 				},
 			},

@@ -1,7 +1,7 @@
 # MCP Host 接入方案与落地记录
 
 日期：2026-11-05。前置：`docs/positioning.md` §5（MCP 决策 A：harness 管理 MCP 配置）、L1 沙盒（`ed85206`）、后台长任务（`5f6e1f4`）。
-状态：**已落地并复核修订（2026-11-05 二版）**。
+状态：**已落地并复核修订（2026-11-05 二版；同日三版补入参 schema 规约）**。
 
 > ★ 二版说明：一版（外部实现）把功能跑通了，评审发现 8 处需要收口的地方，
 > 二版全部改完并补了判据。改动清单见 §六「修订记录」——本文正文描述的是
@@ -86,15 +86,22 @@
    默认展开、里面只有一行垃圾，`note` 里的服务/工具/参数一个字都不显示。
    **发一个消费者不认识的 detail 比不发更糟**（它假装有提案）。现在回到问句路径，
    `askPrompt` 的 MCP 分支带 200 字符参数摘要；等 GUI 那批加 `tool:"mcp"` 分支后两边一起改。
+9. **入参 schema 规约（2026-11-05 三版补）**：`inputSchema` 不再原样上交——
+   递归删 `$schema`，把本地 `$ref`（`#/$defs/...`、`#/definitions/...`）就地展开，
+   再删 `$defs` / `definitions`。部分 OpenAI 兼容端点对元关键字不宽容，而失败是
+   **整轮请求 400**，不是单个工具不可用。递归引用无法有限展开时，该处降级为 `{}`
+   并在 stderr 点名（服务端仍会校验真实参数）；外链 `$ref` 无法展开，原样保留。
+   ★ 剥键只发生在 schema 对象上：`properties` 里恰好叫 `$defs` 的**属性名**不受影响
+   ——对任意 map 无脑删键会把用户参数名删掉。
 
 ## 三、 实现架构与分工
 
 | 模块 | 职责 | 状态 |
 |---|---|---|
-| `core/cmd/ecdi-core/mcp.go` | JSON-RPC 2.0 协议层、`mcpClient`（单 server 的 stdio 握手/调用）、`mcpHub`（多 server 注册、配置解析、工具发现与调度、死亡登记） | ✅ |
+| `core/cmd/ecdi-core/mcp.go` | JSON-RPC 2.0 协议层、`mcpClient`（单 server 的 stdio 握手/调用）、`mcpHub`（多 server 注册、配置解析、工具发现与调度、死亡登记、**入参 schema 规约**） | ✅ |
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
-| `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、E2E | ✅ 11 案全绿 |
+| `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、E2E | ✅ 12 案全绿 |
 | `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **28 条断言**（含 ask 门、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
@@ -102,14 +109,18 @@
 | `diff.go` | **不再**给 MCP 发 `detail`（理由见 §二.8） | ✅ 二版回退 |
 | `docs/` + `README` | 决策、偏差、已知缺口 | ✅ 二版重写 |
 
-## 四、 验收读数（2026-11-05 二版，实测）
+## 四、 验收读数（2026-11-05 二版 + 同日三版补丁，实测）
 
-1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**11 案全绿**，
+1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**12 案全绿**，
    `-race -count=3` 无竞态报告。新增的判据都带**区分力**：
    - `TestMCP_ProcessTreeKilled`：孙进程心跳文件在 `hub.Close()` 后必须停止生长。
      ★ 做了变异验证——把整树句柄拿掉（只留 `Process.Kill`）这条**会红**
      （实测 `心跳 25 -> 75 字节`），证明它测的是「整树」而不是「调用过 kill」；
    - `TestMCP_ToolNameSanitization`：`^[a-zA-Z0-9_-]{1,64}$` + 同名同输入恒同名 + 撞名消解；
+   - `TestMCP_InputSchemaStripping`：`$schema`/`$defs`/`definitions` 必须消失；
+     本地 `$ref` 展开后语义仍在（含兄弟 `description`、`items` 内的引用）；递归引用
+     降级为 `{}` 且同一 ref 只报一条 warning；`properties` 里叫 `$defs` 的**属性名**
+     不能被误删；外链 `$ref` 原样保留；原 `InputSchema` 不被改写。
    - `TestMCP_OutputClip`：超限必须带「中间省略」标注，未超限逐字不动；
    - `TestMCP_DeadServerNotice`：崩溃后必须**非空**说明，且死亡通告「只说一次」；
    - `TestMCP_ToolsListPagination`：`nextCursor` 追到底，两页工具都在。
@@ -144,7 +155,6 @@
      二进制比 `core/**/*.go` 旧按 **FAILED**（测旧代码比不测更糟）；超时按 FAILED（drive.py
      自带 90s 看门狗，先清子进程再退出）。负对照实测：拿掉 `server.py` ⇒ **14/28 green、门变红**；
      恢复后 sha256 一致、28/28 回绿。
-
 ## 五、 明确的已知缺口（下一步的输入）
 
 | 缺什么 | 说明 |
@@ -154,9 +164,13 @@
 | 产品面可见性 | `positioning` §5.1 的图把「配置管理」画在 `harness_gui` 上，实现是 core 全包、GUI 零入口 ⇒ 用户写了 `mcp.json` 界面上没有任何确认（只有 stderr）。至少要有「MCP：N 个服务 / M 个工具」的只读展示 + 启动失败告警 |
 | 取消语义 | 取消只让我们不再等，server 侧调用照跑（没发 `notifications/cancelled`），而 GUI 已显示「已取消」 |
 | respawn | 崩掉不重启（刻意的，见 §二.7） |
-| 工具入参 schema 透传 | MCP 的 `inputSchema` 原样上交；`$schema` / `$defs` 之类在部分端点可能被拒，未验证也未剥离 |
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
 | 提案问句里的工具名 | 显示的是压缩后的尾段（`git_status`），不是配置里写的 `git.status`——`askPrompt` 只拿得到压缩名。要改需让它在问句前查回 `mcpToolRef.origName`；与 GUI 提案卡同批做也行。低优先，不误事 |
+
+
+★ 入参 schema 的 `$schema` / `$defs` 已不再“原样透传”：三版补入规约（§二.9 / §七），
+本表不再把它列为缺口。真厂商端点是否接受**外链** `$ref` 仍未验证，但本地 `$ref`
+已展开、两个元关键字已消失。
 
 ## 六、 修订记录（一版 → 二版）
 
@@ -172,3 +186,22 @@
 | 8 | 「全量单测全绿」 | 改为「本功能 11 案全绿 + 已知 flaky 单列」→ 连 flaky 一起修掉，回到 5/5 全绿 |
 | 9 | `HasTool` → `CallTool` 的 `handled` 被丢弃 | `execTool` 统一入口，`handled=false` 回落内置分发 |
 | 10 | `done` 双 close 无互斥 / 阻塞写持锁 | `sync.Once`；写走独立 `wmu` |
+
+## 七、 三版补丁（2026-11-05）：入参 schema 规约
+
+- **问题**：一/二版把 MCP 的 `inputSchema` 原样上交。zod / pydantic 生成的 schema
+  常带 `$schema`、`$defs` 与指向 `$defs` 的 `$ref`；部分 OpenAI 兼容端点对这类
+  元关键字不宽容，失败是**整轮请求 400**——一个 MCP 服务就能把会话打死。
+- **改法**：`mcpToolDefNamed` 先过 `sanitizeMCPInputSchema`——递归删 `$schema`，
+  本地 `$ref` 就地从 `$defs` / `definitions` 展开，再删这两个容器；同层兄弟键
+  （如 `description`）保留并覆盖目标同名字段。递归引用无法有限展开时该处降级为
+  `{}`，同一个 ref 只往 stderr 报一条；外链 `$ref` 原样保留。全程深拷贝，不改
+  服务端给的原始结构；剥键只发生在 schema 对象上，属性名层不剥。
+- **判据**：`TestMCP_InputSchemaStripping`（本地引用展开 / 递归降级 / 属性名
+  `$defs` 不误删 / 外链保留 / 原 schema 不变）；`TestMCP_SchemaSanitization`
+  仍盖 nil schema 的默认补齐。MCP 相关 **12 案全绿**。
+- **未验证**：真厂商端点是否接受**外链** `$ref`，以及各家对 `$defs` 的实际拒收
+  行为——本补丁只保证我们不再主动上交这两个元关键字；远端引用不替服务端展开。
+- **诚实边界**：展开是文本级深拷贝，同一 `$defs` 被多处引用时会被复制，请求体
+  可能变大；当前**没有**节点/字节预算，指数级 `$ref` 图理论上可放大请求体。
+  MCP 不是安全边界（§二.7），这条按已知边界记录，不假装它是沙盒。

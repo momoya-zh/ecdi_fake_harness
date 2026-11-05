@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"ecdi-fake-core/internal/contextlog"
 	"ecdi-fake-core/internal/wire"
 )
 
@@ -83,10 +84,11 @@ func waitFor(t *testing.T, c *outCollector, desc string, cond func(map[string]an
 // mcp.json。
 //
 // ★ 为什么必须（2026-11-05 评审）：MCP 配置的三级回退里最后一级读
-//   `%APPDATA%\ecdi-fake-harness\mcp.json`（非 Windows 读 `$HOME/.config/...`），
-//   而所有 session 测试都传 `mcpConfig=""` + 临时 workspace ⇒ 只要开发机上放了
-//   这一份全局配置，`go test` 就会在每个 session 测试里**拉起真的 MCP 服务**
-//   （最坏 5s/服务 × N）。测试必须密闭，不能依赖跑测试的人没配过 MCP。
+//
+//	`%APPDATA%\ecdi-fake-harness\mcp.json`（非 Windows 读 `$HOME/.config/...`），
+//	而所有 session 测试都传 `mcpConfig=""` + 临时 workspace ⇒ 只要开发机上放了
+//	这一份全局配置，`go test` 就会在每个 session 测试里**拉起真的 MCP 服务**
+//	（最坏 5s/服务 × N）。测试必须密闭，不能依赖跑测试的人没配过 MCP。
 func isolateMCPDiscovery(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -98,6 +100,14 @@ func isolateMCPDiscovery(t *testing.T) {
 // newTestSession：建一个完整 session（真实出站路径），返回 session 与收集器。
 // stc 与 in 通道由调用方驱动（模拟 GUI 侧）；进程 cwd 切到临时工作区。
 func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*session, *outCollector, chan wire.StampedLine, *atomic.Int32) {
+	t.Helper()
+	return newTestSessionCfg(t, llmConfig{
+		BaseURL: serverURL, Model: "test-model", Key: "test-key-123",
+	}, allowTools, wsRoot)
+}
+
+// newTestSessionCfg：同上，但允许测试指定 Context/MaxOutput（§7.3 防爆测试用）。
+func newTestSessionCfg(t *testing.T, cfg llmConfig, allowTools, wsRoot string) (*session, *outCollector, chan wire.StampedLine, *atomic.Int32) {
 	t.Helper()
 	isolateMCPDiscovery(t)
 	if wsRoot == "" {
@@ -115,7 +125,7 @@ func newTestSession(t *testing.T, serverURL, allowTools, wsRoot string) (*sessio
 	stc.Store(wire.CodeIdle)
 
 	sess := newSession(
-		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
+		cfg,
 		strings.Split(allowTools, ","), nil, "", "s-test-1", "", "", false, agentOpts{},
 		"",
 		lines, &stc,
@@ -1175,5 +1185,460 @@ func TestMemory_ResumeNotice(t *testing.T) {
 	}
 	if !sawResumeNotice {
 		t.Fatalf("expected [记忆已更新] notice on resume with memory, but got: %v", msgs)
+	}
+}
+
+// ── §7.3：轮内防爆（Stage 1 折叠 / Stage 2 压缩）───────────────
+
+// TestLoopE2E_ContextPruningMidTurn：单轮连续读大文件。
+// 判据：任何一次请求都没有超过 provider 的硬窗口（服务端超过 100KB 就回
+// 400 context_length_exceeded），且折叠提示可见、usage 仍是 API 真值。
+func TestLoopE2E_ContextPruningMidTurn(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(filepath.Join(ws, "big.txt"), []byte(strings.Repeat("A", 8192)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	const rounds = 14
+	var mu sync.Mutex
+	var bodies [][]byte
+	reqNo := 0
+	var lastUsage chatUsage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		n := reqNo
+		reqNo++
+		mu.Unlock()
+
+		var req struct {
+			Messages  []chatMessage     `json:"messages"`
+			Tools     []json.RawMessage `json:"tools"`
+			MaxTokens int               `json:"max_tokens"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		// 模拟 provider 的真实硬窗口：请求里未折叠的工具载荷超过 100KB 就 400。
+		payload := 0
+		for _, m := range req.Messages {
+			if m.Role == "tool" {
+				payload += len(m.Content)
+			}
+			for _, tc := range m.ToolCalls {
+				payload += len(tc.Function.Arguments)
+			}
+		}
+		if payload > 100<<10 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":{"message":"context_length_exceeded","code":"context_length_exceeded"}}`)
+			return
+		}
+
+		u := chatUsage{PromptTokens: 1200 + n*500, CompletionTokens: 40}
+		mu.Lock()
+		lastUsage = u
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		if n < rounds {
+			calls := fmt.Sprintf(
+				`[{"index":0,"id":"call-%d","function":{"name":"read_file","arguments":"{\"path\":\"big.txt\"}"}}]`, n)
+			fmt.Fprintf(w, "data: %s\n\n", deltaChunk("", "", calls))
+		} else {
+			fmt.Fprintf(w, "data: %s\n\n", deltaChunk("全部读完了。", "", ""))
+		}
+		fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d}}\n\n",
+			u.PromptTokens, u.CompletionTokens)
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	s, col, lines, stc := newTestSessionCfg(t, llmConfig{
+		BaseURL: srv.URL, Model: "test-model", Key: "test-key-123",
+		Context: 24000, MaxOutput: 1000,
+	}, "read_file", ws)
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":3,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"把 big.txt 多读几遍再总结"}`)
+	waitFor(t, col, "final assistant", func(m map[string]any) bool {
+		return m["t"] == "delta" && strings.Contains(m["text"].(string), "全部读完了")
+	})
+	waitFor(t, col, "idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":2}`)
+	<-done
+
+	all := parseAll(t, col)
+	for _, m := range all {
+		if m["t"] == "error" {
+			t.Fatalf("不应出现错误（说明请求超窗了）：%v", m)
+		}
+	}
+	foundFold := false
+	for _, m := range all {
+		if m["t"] == "block_start" && m["kind"] == "system" &&
+			strings.Contains(m["text"].(string), "已折叠") {
+			foundFold = true
+		}
+	}
+	if !foundFold {
+		t.Fatalf("应出现「已折叠」system notice；收到 %v", all)
+	}
+
+	mu.Lock()
+	gotBodies := append([][]byte(nil), bodies...)
+	gotLastUsage := lastUsage
+	mu.Unlock()
+	if len(gotBodies) != rounds+1 {
+		t.Fatalf("应恰好 %d 次 LLM 请求，got %d", rounds+1, len(gotBodies))
+	}
+	for i, b := range gotBodies {
+		var req struct {
+			Messages []chatMessage `json:"messages"`
+		}
+		if err := json.Unmarshal(b, &req); err != nil {
+			t.Fatalf("第 %d 个请求体解析失败: %v", i, err)
+		}
+		payload := 0
+		for _, m := range req.Messages {
+			if m.Role == "tool" {
+				payload += len(m.Content)
+			}
+			for _, tc := range m.ToolCalls {
+				payload += len(tc.Function.Arguments)
+			}
+		}
+		if payload > 100<<10 {
+			t.Fatalf("第 %d 个请求超窗：工具载荷 %d 字节", i, payload)
+		}
+	}
+
+	// 最后一个请求里必须真的出现了折叠占位（不是只发了 notice），
+	// 且 tool_call 与 tool 结果一一配对。
+	var lastReq struct {
+		Messages []chatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(gotBodies[len(gotBodies)-1], &lastReq); err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]bool{}
+	tools := map[string]bool{}
+	folded := false
+	for _, m := range lastReq.Messages {
+		if strings.Contains(m.Content, "[历史工具输出已折叠") {
+			folded = true
+		}
+		if m.Role == "tool" {
+			tools[m.ToolCallID] = true
+		}
+		for _, tc := range m.ToolCalls {
+			calls[tc.ID] = true
+		}
+	}
+	if !folded {
+		t.Fatalf("最后一个请求里没有折叠占位：%s", gotBodies[len(gotBodies)-1])
+	}
+	for id := range calls {
+		if !tools[id] {
+			t.Fatalf("tool_call %s 没有配对的 tool 结果", id)
+		}
+	}
+	for id := range tools {
+		if !calls[id] {
+			t.Fatalf("tool 结果 %s 没有配对的 tool_call", id)
+		}
+	}
+
+	// D1：usage 仍是最后一次 API 返回值，不是估算。
+	usageMsg := waitFor(t, col, "usage", func(m map[string]any) bool { return m["t"] == "usage" })
+	if int(usageMsg["input"].(float64)) != gotLastUsage.PromptTokens ||
+		int(usageMsg["output"].(float64)) != gotLastUsage.CompletionTokens {
+		t.Fatalf("usage 必须是 API 真值 %d/%d，got %v",
+			gotLastUsage.PromptTokens, gotLastUsage.CompletionTokens, usageMsg)
+	}
+}
+
+// TestCompressContext_StaleOccupancyDoesNotReject：复现旧 bug——
+// 压缩成功后仍拿压缩前的 occupancy 判 100%，会把本轮直接拒掉。
+// 同时验证：50% 假读数没有被写回 lastUsage，compact 落盘，history 首条是摘要。
+func TestCompressContext_StaleOccupancyDoesNotReject(t *testing.T) {
+	const ctxCap = 8000
+	const mainPromptTokens = 4321
+	const mainCompletion = 55
+
+	var mu sync.Mutex
+	summaryCalls, mainCalls := 0, 0
+	var mainBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Messages []chatMessage     `json:"messages"`
+			Tools    []json.RawMessage `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		mu.Lock()
+		if len(req.Tools) == 0 {
+			summaryCalls++
+		} else {
+			mainCalls++
+			mainBody = append([]byte(nil), body...)
+		}
+		mu.Unlock()
+		if len(req.Tools) == 0 {
+			fmt.Fprintf(w, "data: %s\n\n", deltaChunk("用户目标是测试压缩；前两轮已完成读取。", "", ""))
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":20}}\n\n")
+		} else {
+			fmt.Fprintf(w, "data: %s\n\n", deltaChunk("已压缩并继续。", "", ""))
+			fmt.Fprintf(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d}}\n\n",
+				mainPromptTokens, mainCompletion)
+		}
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		fl.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	ws := t.TempDir()
+	sessDir := filepath.Join(ws, ".ecdi", "sessions")
+	if err := os.MkdirAll(sessDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	s, col, _, _ := newTestSessionCfg(t, llmConfig{
+		BaseURL: srv.URL, Model: "test-model", Key: "test-key-123",
+		Context: ctxCap, MaxOutput: 500,
+	}, "", ws)
+	t.Cleanup(func() {
+		if s.ctxWriter != nil {
+			_ = s.ctxWriter.Close()
+		}
+	})
+
+	// 3 轮，每轮 10KB tool 结果：原文 ≈ 9k token，压缩后只剩最后 1 轮 + 摘要。
+	big := strings.Repeat("Z", 10240)
+	for turn := 0; turn < 3; turn++ {
+		callID := fmt.Sprintf("c%d", turn)
+		s.history = append(s.history,
+			chatMessage{Role: "user", Content: fmt.Sprintf("第 %d 轮目标", turn)},
+			chatMessage{Role: "assistant", ToolCalls: []apiToolCall{{
+				ID: callID, Type: "function",
+				Function: funcSpec{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+			}}},
+			chatMessage{Role: "tool", ToolCallID: callID, Content: big},
+			chatMessage{Role: "assistant", Content: fmt.Sprintf("第 %d 轮完成", turn)},
+		)
+	}
+	// 旧实现会把这个值当 occupancy：8000 >= 8000 ⇒ 压缩成功后仍报 100% 拒绝。
+	s.lastUsage = &chatUsage{PromptTokens: ctxCap, CompletionTokens: 0}
+	origLen := len(s.history)
+
+	done := make(chan struct{})
+	go func() {
+		s.handlePrompt("继续", "p1")
+		close(done)
+	}()
+	waitFor(t, col, "idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	<-done
+
+	mu.Lock()
+	gotSummaryCalls, gotMainCalls := summaryCalls, mainCalls
+	gotMainBody := append([]byte(nil), mainBody...)
+	mu.Unlock()
+
+	all := parseAll(t, col)
+	for _, m := range all {
+		if m["t"] == "error" {
+			t.Fatalf("压缩成功后不应再报错（旧 bug：拿压缩前 occupancy 判 100%%）：%v", m)
+		}
+	}
+	if gotSummaryCalls != 1 {
+		t.Fatalf("应恰好 1 次摘要请求，got %d", gotSummaryCalls)
+	}
+	if gotMainCalls != 1 {
+		t.Fatalf("压缩后主请求必须发出，got %d 次", gotMainCalls)
+	}
+	foundCompressed := false
+	for _, m := range all {
+		if m["t"] == "block_start" && m["kind"] == "system" &&
+			strings.Contains(m["text"].(string), "上下文已压缩") {
+			foundCompressed = true
+		}
+	}
+	if !foundCompressed {
+		t.Fatalf("应出现「上下文已压缩」system notice；收到 %v", all)
+	}
+	if len(s.history) >= origLen {
+		t.Fatalf("压缩后 history 应变短：%d -> %d", origLen, len(s.history))
+	}
+	if len(s.history) == 0 || !strings.HasPrefix(s.history[0].Content, contextlog.SummaryPrefix) {
+		t.Fatalf("history[0] 应是摘要消息，got %+v", s.history)
+	}
+	if !strings.Contains(string(gotMainBody), "以下为此前对话摘要") {
+		t.Fatalf("主请求必须带上摘要消息：%s", gotMainBody)
+	}
+	// D1：lastUsage 必须是最后一次 API 真值，不是 50% 假读数。
+	if s.lastUsage == nil || s.lastUsage.PromptTokens != mainPromptTokens ||
+		s.lastUsage.CompletionTokens != mainCompletion {
+		t.Fatalf("lastUsage 应为 API 真值 %d/%d，got %+v",
+			mainPromptTokens, mainCompletion, s.lastUsage)
+	}
+	usageMsg := waitFor(t, col, "usage", func(m map[string]any) bool { return m["t"] == "usage" })
+	if int(usageMsg["input"].(float64)) != mainPromptTokens ||
+		int(usageMsg["output"].(float64)) != mainCompletion {
+		t.Fatalf("usage 应为 API 真值 %d/%d，got %v",
+			mainPromptTokens, mainCompletion, usageMsg)
+	}
+
+	// compact 行落盘（原始 msg 行仍在，压缩只是追加一条记录）。
+	data, err := os.ReadFile(filepath.Join(sessDir, "s-test-1.context.jsonl"))
+	if err != nil {
+		t.Fatalf("读 context.jsonl 失败: %v", err)
+	}
+	if !strings.Contains(string(data), `"t":"compact"`) {
+		t.Fatalf("context.jsonl 应有 compact 记录：%s", data)
+	}
+	if !strings.Contains(string(data), `"t":"msg"`) {
+		t.Fatalf("context.jsonl 仍应保留原始 msg 行：%s", data)
+	}
+}
+
+// TestMaskHistoryViewOnlyAndPairingSafe：折叠是纯视图——
+// 条数/顺序不变、最近 K 条原文不动、原 history 不被改写、参数折叠后仍是合法 JSON。
+func TestMaskHistoryViewOnlyAndPairingSafe(t *testing.T) {
+	bigArgs := `{"path":"x.txt","content":"` + strings.Repeat("Q", 5000) + `"}`
+	big := strings.Repeat("R", 5000)
+	msgs := []chatMessage{
+		{Role: "assistant", ToolCalls: []apiToolCall{
+			{ID: "c1", Type: "function", Function: funcSpec{Name: "write_file", Arguments: bigArgs}},
+			{ID: "c2", Type: "function", Function: funcSpec{Name: "write_file", Arguments: bigArgs}},
+		}},
+		{Role: "tool", ToolCallID: "c1", Content: big},
+		{Role: "tool", ToolCallID: "c2", Content: big},
+	}
+
+	view, stats := maskHistory(msgs, 1)
+	if len(view) != len(msgs) {
+		t.Fatalf("视图条数必须不变：%d -> %d", len(msgs), len(view))
+	}
+	if stats.ToolResults != 1 || stats.ToolArgs != 1 {
+		t.Fatalf("应折 1 条旧结果 + 1 处旧参数，got %+v", stats)
+	}
+	// 最近 1 条（c2）原文完整
+	if view[2].Content != big {
+		t.Fatalf("最近 1 条 tool 结果不应被折叠")
+	}
+	if view[0].ToolCalls[1].Function.Arguments != bigArgs {
+		t.Fatalf("最近 1 条 tool_call 参数不应被折叠")
+	}
+	// 旧结果被折叠，但仍是同一条目、id 不变
+	if view[1].ToolCallID != "c1" || !strings.Contains(view[1].Content, "历史工具输出已折叠") {
+		t.Fatalf("旧 tool 结果应折叠且保留 id：%+v", view[1])
+	}
+	// 旧参数折叠后仍是合法 JSON，且保留 path
+	var folded map[string]any
+	if err := json.Unmarshal([]byte(view[0].ToolCalls[0].Function.Arguments), &folded); err != nil {
+		t.Fatalf("折叠后的参数必须是合法 JSON: %v", err)
+	}
+	if folded["path"] != "x.txt" {
+		t.Fatalf("折叠后应保留 path 元信息：%v", folded)
+	}
+	// 纯函数：原 history 一字未改
+	if msgs[0].ToolCalls[0].Function.Arguments != bigArgs || msgs[1].Content != big {
+		t.Fatalf("maskHistory 不得改写原 history")
+	}
+}
+
+// TestMasking_AbsoluteCapWithoutContext：无 hello.context 时的 Q1 裁决——
+// 不做比例压缩，但未折叠工具载荷 > 256KB 仍要折叠；小会话不动。
+func TestMasking_AbsoluteCapWithoutContext(t *testing.T) {
+	s, _, _, _ := newTestSessionCfg(t, llmConfig{
+		BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k",
+	}, "", t.TempDir())
+	s.turn = 1
+	s.history = []chatMessage{{Role: "tool", ToolCallID: "c1", Content: strings.Repeat("x", 100<<10)}}
+	s.maybeEnableMasking(0)
+	if s.maskOn {
+		t.Fatalf("100KB < 256KB，不应触发绝对上限折叠")
+	}
+	s.history = []chatMessage{{Role: "tool", ToolCallID: "c1", Content: strings.Repeat("x", 300<<10)}}
+	s.maybeEnableMasking(0)
+	if !s.maskOn {
+		t.Fatalf("300KB > 256KB，无 ctxCapacity 也应触发折叠")
+	}
+}
+
+// TestEmergencyCompact_WritesVisibleDeterministicSummary：Stage 3 的本体。
+// 不调 LLM、只在合法 user 边界切；落盘 compact，并给出可见 notice。
+func TestEmergencyCompact_WritesVisibleDeterministicSummary(t *testing.T) {
+	ws := t.TempDir()
+	sessDir := filepath.Join(ws, ".ecdi", "sessions")
+	if err := os.MkdirAll(sessDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	s, col, _, _ := newTestSessionCfg(t, llmConfig{
+		BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k", Context: 4000,
+	}, "", ws)
+	t.Cleanup(func() {
+		if s.ctxWriter != nil {
+			_ = s.ctxWriter.Close()
+		}
+	})
+	s.turn = 1
+	s.ensureCtxWriter()
+
+	big := strings.Repeat("Z", 10240)
+	for turn := 0; turn < 3; turn++ {
+		callID := fmt.Sprintf("c%d", turn)
+		s.history = append(s.history,
+			chatMessage{Role: "user", Content: fmt.Sprintf("第 %d 轮目标", turn)},
+			chatMessage{Role: "assistant", ToolCalls: []apiToolCall{{
+				ID: callID, Type: "function",
+				Function: funcSpec{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+			}}},
+			chatMessage{Role: "tool", ToolCallID: callID, Content: big},
+			chatMessage{Role: "assistant", Content: fmt.Sprintf("第 %d 轮完成", turn)},
+		)
+	}
+	before := s.estimateRequest(s.buildRequestMessages())
+	if !s.emergencyCompact(before) {
+		t.Fatalf("应能做出确定性的紧急压缩（before=%d）", before)
+	}
+	if len(s.history) == 0 || !strings.HasPrefix(s.history[0].Content, contextlog.SummaryPrefix) {
+		t.Fatalf("history[0] 应是摘要，got %+v", s.history)
+	}
+	if !strings.Contains(s.history[0].Content, "自动紧急摘要") {
+		t.Fatalf("紧急摘要应带显式标记：%s", s.history[0].Content)
+	}
+	found := false
+	for _, m := range parseAll(t, col) {
+		if m["t"] == "block_start" && m["kind"] == "system" &&
+			strings.Contains(m["text"].(string), "紧急压缩") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("紧急压缩必须可见")
+	}
+	data, err := os.ReadFile(filepath.Join(sessDir, "s-test-1.context.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"t":"compact"`) {
+		t.Fatalf("紧急压缩也应追加 compact 记录：%s", data)
 	}
 }

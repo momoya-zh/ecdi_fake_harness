@@ -337,7 +337,11 @@ func (a *subagent) messages() []chatMessage {
 		"任务无法完成就直接说明原因。用用户的语言回答。", a.sess.cwd, a.task)
 	msgs := make([]chatMessage, 0, len(a.history)+1)
 	msgs = append(msgs, chatMessage{Role: "system", Content: sys})
-	return append(msgs, a.history...)
+	// ★ 子代理没有 API usage 锚点（它的 usage 只累加到 inTok/outTok），
+	//   所以只能做纯本地的“保留最近 2 条 tool 结果”折叠，零额外请求。
+	//   历史本身不动：每次组装请求时现算视图（与根代理同一条纪律）。
+	hist, _ := maskHistory(a.history, agentMaskKeepRecent)
+	return append(msgs, hist...)
 }
 
 // delegationAskPrompt：委派问句（单行——GUI 的 ask 行有折叠摘要）。

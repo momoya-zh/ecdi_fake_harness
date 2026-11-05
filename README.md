@@ -176,6 +176,9 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 （Windows Job Object / POSIX 进程组）、崩溃时发一条 `system` 块而不是只让工具反复失败。
 ★ 工具名会被压进 provider 的 `function.name` 空间（`[A-Za-z0-9_-]`、≤64、超长带哈希）
 ——MCP 规范不管这条，OpenAI 兼容端点管；不压就是**整轮 400**。
+★ 入参 schema 先规约再上交：递归删 `$schema`、本地 `$ref` 从 `$defs` / `definitions`
+就地展开后删容器；递归引用降级为 `{}` 并告警——部分端点对这些元关键字不宽容，
+失败同样是**整轮 400**。规则与诚实边界见 `docs/mcp-host-plan.md` §二.9 / §七。
 决策、偏差（规范锚 `2024-11-05` vs `positioning` §5.3 的 `2026-07-28`）与已知缺口见
 `docs/mcp-host-plan.md`。
 ★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 脚本化
