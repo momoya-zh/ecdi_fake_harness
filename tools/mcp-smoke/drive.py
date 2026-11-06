@@ -5,12 +5,16 @@
 # 覆盖 Go 单测证明不了的那一段：真子进程握手 / 真分页 tools/list /
 # 真 function.name 压缩 / 真 ask 门 / 真 tools/call 往返 / bye 后整树清空。
 #
-# 两个臂：
+# 六个臂（A–F）：
 #   A（正常，mcp.json 由本脚本生成）：
 #       1 个服务 / 2 个工具（跨两页）→ 模型发起 mcp__smoke__git_status
 #       → ask（带提案卡 detail，2026-11-06 起）→ allow → 真调用 → tool_result 回模型 → 收尾 idle
 #   B（降级，mixed.json）：
 #       不存在的命令 + 正常服务 ⇒ 坏服务只点名、好服务照常注册、caps 仍带 mcp
+#   C（Streamable HTTP，2025-06-18）/ D（legacy HTTP+SSE，transport:"sse"）：
+#       真 HTTP 端点 + 脚本化 SSE 回执，断言 hello.mcp 的 transport 标识与 DELETE 收尾
+#   E（HTTP 不可达）：连接被拒 ⇒ 不注册工具、hello.mcp.failed 非空、退出码 0
+#   F（运行期，七版）：--mcp-env=minimal 不泄漏 + 崩溃后按需重启
 #
 # 判据纪律（与 regress.py 同口径）：
 #   * 不靠目视：每条断言都机读，失败即退出码 1，明细落 result.json。

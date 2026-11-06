@@ -127,7 +127,7 @@ func newTestSessionCfg(t *testing.T, cfg llmConfig, allowTools, wsRoot string) (
 	sess := newSession(
 		cfg,
 		strings.Split(allowTools, ","), nil, "", "s-test-1", "", "", false, agentOpts{},
-		"",
+		"", 0,
 		lines, &stc,
 		func(string, ...any) {}, col)
 	return sess, col, lines, &stc
@@ -154,7 +154,7 @@ func newTestSessionAgents(t *testing.T, serverURL, wsRoot string, ag agentOpts) 
 	sess := newSession(
 		llmConfig{BaseURL: serverURL, Model: "test-model", Key: "test-key-123"},
 		[]string{"read_file", "list_dir", "grep"}, nil, "", "s-test-1", "", "", false, ag,
-		"",
+		"", 0,
 		lines, &stc, func(string, ...any) {}, col)
 	return sess, col, lines, &stc
 }
@@ -1116,7 +1116,7 @@ func TestMemory_LoadingAndPromptInjection(t *testing.T) {
 
 	sess := newSession(
 		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k", Context: 10000},
-		nil, nil, "", "s-test-mem-1", tmpDir, "", false, agentOpts{}, "", lines, &stc,
+		nil, nil, "", "s-test-mem-1", tmpDir, "", false, agentOpts{}, "", 0, lines, &stc,
 		func(string, ...any) {}, col)
 	t.Cleanup(func() {
 		if sess.ctxWriter != nil {
@@ -1167,7 +1167,7 @@ func TestMemory_ResumeNotice(t *testing.T) {
 
 	sess := newSession(
 		llmConfig{BaseURL: "http://127.0.0.1:9", Model: "test-model", Key: "k"},
-		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, agentOpts{}, "", lines, &stc,
+		nil, nil, "s-resume-1", "s-resume-1", tmpDir, "", false, agentOpts{}, "", 0, lines, &stc,
 		func(string, ...any) {}, col)
 	t.Cleanup(func() {
 		if sess.ctxWriter != nil {

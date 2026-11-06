@@ -530,7 +530,7 @@ func TestMCP_ConfigProblemVisible(t *testing.T) {
 	ws := t.TempDir()
 	missing := filepath.Join(ws, "nope.json")
 
-	hub, err := NewMCPHub(missing, ws)
+	hub, err := NewMCPHub(missing, ws, defaultMCPCallTimeout)
 	if err != nil {
 		t.Fatalf("缺文件不应返回 error（本次不启用，但状态要可见）：%v", err)
 	}
@@ -543,7 +543,7 @@ func TestMCP_ConfigProblemVisible(t *testing.T) {
 	if err := os.WriteFile(badPath, []byte(`{"mcpServers":`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	hub, err = NewMCPHub("", ws)
+	hub, err = NewMCPHub("", ws, defaultMCPCallTimeout)
 	if err == nil || hub == nil {
 		t.Fatalf("坏 JSON 应返回 hub + error，got hub=%v err=%v", hub, err)
 	}
@@ -1432,5 +1432,129 @@ func TestLoopE2E_MCPCancelHonest(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("session did not exit after bye")
+	}
+}
+
+// ── 单次调用超时测试 ──────────────────────────────────────────────
+
+func TestMCP_CallTimeout_HubDefault(t *testing.T) {
+	isolateMCPDiscovery(t)
+	cancelLog := filepath.Join(t.TempDir(), "cancel.log")
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"mock": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP":    "1",
+					"GO_MOCK_MCP_CANCEL_LOG": cancelLog,
+				},
+			},
+		},
+	}
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	// 设置全局单次调用超时为 150ms
+	hub.SetCallTimeout(150 * time.Millisecond)
+
+	// 1. 调用 sleep_tool（会 sleep 1s）触发超时，传入普通 context.Background()
+	res, handled := hub.CallTool(context.Background(), "mcp__mock__sleep_tool", map[string]any{})
+	if !handled {
+		t.Fatal("sleep_tool should be handled")
+	}
+	if res.OK {
+		t.Fatal("expected timeout failure, got OK=true")
+	}
+	if !strings.Contains(res.Output, "调用超时") || !strings.Contains(res.Output, "已向 MCP 服务发送取消通知") {
+		t.Fatalf("预期超时提示人话，got: %s", res.Output)
+	}
+
+	// 确认服务端真收到了 cancellation 通知
+	waitFileContains(t, cancelLog, `"reason":"调用超时"`, 3*time.Second)
+
+	// 2. 超时后子进程未被强杀，同一连接继续可用
+	resEcho, handledEcho := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "alive after timeout"})
+	if !handledEcho {
+		t.Fatal("echo should be handled")
+	}
+	if !resEcho.OK || !strings.Contains(resEcho.Output, "alive after timeout") {
+		t.Fatalf("expected echo success after timeout, got: %+v", resEcho)
+	}
+}
+
+func TestMCP_CallTimeout_ConfigOverride(t *testing.T) {
+	isolateMCPDiscovery(t)
+	timeoutSec := 0.15 // 150ms 服务级超时
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"custom": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP": "1",
+				},
+				Timeout: &timeoutSec,
+			},
+		},
+	}
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	// 全局设为 60s，但该服务配置了 150ms
+	hub.SetCallTimeout(60 * time.Second)
+
+	start := time.Now()
+	res, handled := hub.CallTool(context.Background(), "mcp__custom__sleep_tool", map[string]any{})
+	elapsed := time.Since(start)
+	if !handled {
+		t.Fatal("tool should be handled")
+	}
+	if res.OK {
+		t.Fatal("expected timeout, got OK=true")
+	}
+	if !strings.Contains(res.Output, "调用超时") {
+		t.Fatalf("expected timeout text, got: %s", res.Output)
+	}
+	// 验证确实是在 ~150ms 超时，而不是等了 60s
+	if elapsed > 2*time.Second {
+		t.Fatalf("expected quick timeout (~150ms), but took %v", elapsed)
+	}
+}
+
+func TestMCP_CallTimeout_ConfigDisableZero(t *testing.T) {
+	isolateMCPDiscovery(t)
+	zeroTimeout := 0.0 // 0 = 显式禁用超时
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"custom": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env: map[string]string{
+					"GO_WANT_HELPER_MCP": "1",
+				},
+				Timeout: &zeroTimeout,
+			},
+		},
+	}
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	// 全局设为 100ms 超时，但该服务配置了 timeout: 0（不设限）
+	hub.SetCallTimeout(100 * time.Millisecond)
+
+	// 传入普通 echo 调用，应该顺利完成
+	res, handled := hub.CallTool(context.Background(), "mcp__custom__echo", map[string]any{"msg": "zero-timeout-ok"})
+	if !handled || !res.OK {
+		t.Fatalf("expected tool success with zero timeout, got: %+v", res)
 	}
 }

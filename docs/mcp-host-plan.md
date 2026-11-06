@@ -59,7 +59,8 @@
 
 6. **配置发现三级回退**：`--mcp-config=<path>` → `<workspace>/.ecdi/mcp.json` 或
    `<workspace>/mcp.json` → `%APPDATA%/ecdi-fake-harness/mcp.json`（非 Windows 走
-   `$HOME/.config/...`）。格式 `{"mcpServers": {"<name>": {"command","args","env","disabled"}}}`。
+   `$HOME/.config/...`）。格式 `{"mcpServers": {"<name>":
+   {"command","args","env","disabled","url","headers","transport","timeout"}}}`（字段语义见 §九 / §十一）。
    ★ 显式路径打错**不再静默**：打一行 warning 并本次不启用（一版是完全无声的）。
 
 7. **生命周期与安全边界**：
@@ -114,8 +115,8 @@
 | `core/cmd/ecdi-core/mcp_http.go` | Streamable HTTP（POST + JSON/SSE 响应、session/版本头、DELETE）与 legacy HTTP+SSE（GET endpoint + POST + SSE 回执） | ✅ 六版新增 |
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
-| `core/cmd/ecdi-core/mcp_test.go` + `mcp_http_test.go` | 单测：mock server（stdio + httptest HTTP/SSE）、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、**启动状态/配置错误可见**、**HTTP 头/SSE/会话/重定向/E2E** | ✅ 22 案全绿 |
-| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + stdio server + HTTP/SSE server + 脚本化 SSE，四臂 **64 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、**Streamable/legacy 传输与头**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
+| `core/cmd/ecdi-core/mcp_test.go` + `mcp_http_test.go` | 单测：mock server（stdio + httptest HTTP/SSE）、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、**启动状态/配置错误可见**、**HTTP 头/SSE/会话/重定向/E2E** | ✅ 33 案（`go test -list` 实测；二版读数 22 案全绿，四–七版 +8、八版 +3） |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + stdio server + HTTP/SSE server + 脚本化 SSE，六臂（A–F）**83 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、**Streamable/legacy 传输与头**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句（四版起用**真实工具名**）；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
 | `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理；**`hello.mcp` + 启动失败 `system` 块** | ✅ 五版新增 |
@@ -126,7 +127,8 @@
 
 ## 四、 验收读数（2026-11-05 二版 + 同日三版补丁 + 2026-11-06 四/五版增补，实测）
 
-1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**22 案全绿**，
+1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**22 案全绿**
+   （二版读数；四–七版 +8 案、八版 +3 案，现今 `go test -list` 实测 **33 案**，见 §十一），
    `-race -count=3` 无竞态报告。新增的判据都带**区分力**：
    - `TestMCP_ProcessTreeKilled`：孙进程心跳文件在 `hub.Close()` 后必须停止生长。
      ★ 做了变异验证——把整树句柄拿掉（只留 `Process.Kill`）这条**会红**
@@ -172,7 +174,7 @@
    `jobs_test.go:297` 的 `toolKill` 单测覆盖）+ bye 之前先等 `job end`。
 5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版增补提案卡、五版增补 `hello.mcp`、六版增补 HTTP/SSE、七版增补 F 臂）**：不是只握手——
    一次真实工具调用从模型请求穿到 server 再穿回来。真 `ecdi-core.exe` + 真 stdio server
-   + 真 HTTP/SSE server（python）+ 脚本化 SSE 端点，**五臂 83 条断言全绿**：
+   + 真 HTTP/SSE server（python）+ 脚本化 SSE 端点，**六臂（A–F）83 条断言全绿**：
    - **A 正常**：`hello protocol=6` 且 `caps` 增 `"mcp"`；服务端协商到 `2025-06-18`（只告警，
      见 §二.4）；`tools/list` 两页全追（2 个工具）；上交模型的压缩名是
      `mcp__smoke__git_status` 与 `mcp__smoke______`（中文名逐 rune 折 `_`，全部 ≤64 且落在
@@ -213,7 +215,7 @@
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
 
 ★ **HTTP/SSE 传输已于 2026-11-06 闭合（六版，§九）**：Streamable HTTP + legacy
-HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 标识、四臂冒烟。
+HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 标识、六臂（A–F）冒烟。
 本表不再把它列为缺口。
 
 ★ **产品面可见性已于 2026-11-06 闭合（五版，§八）**：`hello.mcp` 启动期状态 +
@@ -348,7 +350,7 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
   `name · http · N 工具`，stdio 行文案不变；协议 §3.1 只增字段。
 - **判据**：`mcp_http_test.go` 覆盖 JSON/SSE 响应、session/版本头、auth、302 拒绝、
   连接拒绝进 Failed、配置互斥、legacy POST/SSE、SSE 解析边界；E2E
-  `TestLoopE2E_MCPToolHTTP` 走完整 ask→call→idle；冒烟五臂 83 条（C Streamable、
+  `TestLoopE2E_MCPToolHTTP` 走完整 ask→call→idle；冒烟六臂（A–F）83 条（C Streamable、
   D legacy、E 不可达，A/B 仍覆盖 stdio，F 为七版运行期臂）。
 - **诚实边界（本期不做）**：
   1. 不实现 GET 上的服务端主动通知流、legacy 重连/`Last-Event-ID`；tools-only 场景
@@ -425,10 +427,27 @@ tool_result 行；全部改动在 core（`mcp_runtime.go` / `mcp.go` / `mcp_stdi
   `summary=已取消` + `state cancelled→idle`，且 mock 真收到通知）。
 - **诚实边界**：规范是 SHOULD，服务端可以不遵守；我们只说「已发送」，不说「已停止」。
 
-### 4. 本版明确不做
+### 4. 本版明确不做与闭合记录
 
-- **per-call 超时**：MCP 调用仍无单次墙钟上限，取消是用户手动的逃生门（下一批候选；
-  需要先定「超时该不该杀服务」——杀会丢掉同连接上的后续调用）。
+- ★ **per-call 超时已于 2026-11-06 闭合（八版，见 §十一）**：支持全局 `--mcp-timeout`（默认 60s）与 `mcp.json` 单服务 `"timeout": <sec>`；超时自动发取消通知，且取消通知未送达（僵死）时主动清退并触发下次按需 respawn。
 - **后台/主动重启**：没有调用就不重启；不做崩溃计数持久化（每会话重置）。
 - **GUI 运行期状态刷新**：`hello.mcp.services[].tools` 仍是**启动期快照**；重启后若服务
   端工具集变了，副标/卡片上的数字不会跟着变（转录里的 system 通告才是真值）。
+
+## 十一、 八版（2026-11-06）：单次调用超时（per-call timeout）
+
+- **问题**：此前 MCP 工具调用无任何单次墙钟上限，完全依赖 `turnCtx` 与用户手动点击“停止”。一旦外部 MCP 服务卡死、死锁或网络永久悬停，整个会话将无限阻塞。
+- **配置模型**：
+  1. 全局命令行开关：`--mcp-timeout`（`core` 参数，默认 `60s`；设为 `0` 或 `<=0` 表示无超时限制）；
+  2. 配置文件服务级覆盖：`mcp.json` 中每个服务可配置可选字段 `"timeout": 120`（秒，数字）；显式配置 `0` 表示针对该服务禁用超时；未配置时继承全局默认。
+- **超时与清退生命周期决策**：
+  1. 调用超时时，派生带超时的 context，底层自动向服务端投递 `notifications/cancelled(reason: "调用超时")`；
+  2. 人话回执：tool_result 区分「通知已送达」（`（调用超时：已向 MCP 服务发送取消通知；服务端可能仍在执行，迟到的结果会被丢弃）`）与「通知未送达」；
+  3. **是否杀进程**：
+     - 若取消通知成功送达（`Notified == true`），说明服务仍在消费事件，**不杀死进程**，保持连接复用；
+     - 若写入取消通知都超时/失败（stdio 连 stdin 都不读了，说明进程死锁卡死），主动调用 `Close()` 判定为僵死；后续调用将自然触发既有的 3 次按需 respawn 机制重新拉起新子进程。
+- **判据**：
+  - `TestMCP_CallTimeout_HubDefault`：全局默认超时触发，取消通知成功送达，进程存活，后续 echo 调用成功；
+  - `TestMCP_CallTimeout_ConfigOverride`：服务级 `timeout: 0.15` 精确覆盖全局 60s 默认值；
+  - `TestMCP_CallTimeout_ConfigDisableZero`：服务级 `timeout: 0` 显式禁用超时限制；
+  - `tools/mcp-smoke/drive.py` 83 条断言全绿（真二进制真链路，不派生 Go mock 子进程）。

@@ -133,7 +133,7 @@ type pendingWorkspace struct {
 
 func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmConfig,
 	resumeID, sessionID, workspace, globalMemory string, failSummarize bool, ag agentOpts,
-	mcpConfig string,
+	mcpConfig string, mcpTimeout time.Duration,
 	in <-chan wire.StampedLine, stc *atomic.Int32, log func(string, ...any),
 	outW io.Writer) *session {
 
@@ -189,7 +189,7 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 	// ── MCP Host 初始化（发现并启动配置的服务，拉取工具列表）──
 	// ★ 2026-11-06：配置层错误也保留 hub（带 status.Problem）——产品面要靠它
 	//   把"配置坏了"与"根本没配"分开；只打 stderr 等于没发生（见 mcp.go Status）。
-	if mcpHub, err := NewMCPHub(mcpConfig, s.cwd); mcpHub != nil {
+	if mcpHub, err := NewMCPHub(mcpConfig, s.cwd, mcpTimeout); mcpHub != nil {
 		s.mcp = mcpHub
 		if err != nil {
 			s.log("WARNING: mcp hub initialization failed: %v", err)

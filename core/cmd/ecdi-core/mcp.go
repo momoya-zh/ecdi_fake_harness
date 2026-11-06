@@ -49,6 +49,10 @@ const (
 	// mcpInitTimeoutS：单个服务的握手预算。★ 并发发起（newMCPHubFromConfig），
 	// 但它仍在 hello 之前的同步路径上 ⇒ 不能长到让 GUI 首屏干等。
 	mcpInitTimeoutS = 5
+
+	// defaultMCPCallTimeout：单次工具调用的默认超时预算。
+	// 0 或 <=0 表示无上限；可通过配置中单服务的 timeout 或全局 --mcp-timeout 覆盖。
+	defaultMCPCallTimeout = 60 * time.Second
 )
 
 // ── MCP 配置文件结构 ─────────────────────────────────────────────
@@ -63,6 +67,19 @@ type mcpServerConfig struct {
 	Headers   map[string]string `json:"headers,omitempty"`
 	Transport string            `json:"transport,omitempty"` // stdio | http | sse（省略按 command/url 推断）
 	Disabled  bool              `json:"disabled,omitempty"`
+	// Timeout：单次调用的超时秒数（支持 30, 120, 0.2 等；显式 0 表示不超时；省略则继承全局默认）。
+	Timeout *float64 `json:"timeout,omitempty"`
+}
+
+// callTimeout：计算该服务单次工具调用的有效超时。
+func (c mcpServerConfig) callTimeout(defaultTimeout time.Duration) time.Duration {
+	if c.Timeout != nil {
+		if *c.Timeout <= 0 {
+			return 0
+		}
+		return time.Duration(*c.Timeout * float64(time.Second))
+	}
+	return defaultTimeout
 }
 
 // transportKind：归一化传输类型，并把「配置自相矛盾」挡在启动之前。
@@ -394,6 +411,11 @@ func (c *mcpClient) callTool(ctx context.Context, origToolName string, args map[
 		// 取消/超时走诚实文本：GUI 的「已取消」只在取消通知确实送出时才是全话。
 		var ce *mcpCanceledError
 		if errors.As(err, &ce) {
+			// ★ 超时且取消通知未送达（如 stdio 彻底死锁未读 stdin）：主动关闭连接清退僵死进程
+			if errors.Is(ce.Reason, context.DeadlineExceeded) && !ce.Notified {
+				mcpLogf(c.name, "调用超时且取消通知未送达（服务端可能已无响应），关闭连接")
+				c.Close()
+			}
 			return toolResult{OK: false, Output: ce.toolText()}, nil
 		}
 		return toolResult{
@@ -533,23 +555,36 @@ type mcpHub struct {
 	respawnMu sync.Mutex
 	// closed：会话退出后禁止重启（否则 bye 之后还能拉起新子进程）。
 	closed atomic.Bool
+	// defaultCallTimeout：未在配置中指定超时时的默认单次工具调用超时。
+	defaultCallTimeout time.Duration
 	// status：启动期快照（见上方类型注释）。构造期写入，之后只读。
 	status mcpHubStatus
 }
 
 func newEmptyMCPHub(rootDir string) *mcpHub {
 	return &mcpHub{
-		clients:   make(map[string]*mcpClient),
-		toolMap:   make(map[string]mcpToolRef),
-		serverCfg: make(map[string]mcpServerConfig),
-		rootDir:   rootDir,
-		dead:      make(map[string]string),
-		respawn:   make(map[string]int),
+		clients:            make(map[string]*mcpClient),
+		toolMap:            make(map[string]mcpToolRef),
+		serverCfg:          make(map[string]mcpServerConfig),
+		rootDir:            rootDir,
+		dead:               make(map[string]string),
+		respawn:            make(map[string]int),
+		defaultCallTimeout: defaultMCPCallTimeout,
 		status: mcpHubStatus{
 			Services: []mcpServerStatus{},
 			Failed:   []mcpFailureStatus{},
 		},
 	}
+}
+
+// SetCallTimeout：设置未单独配置超时时的默认工具调用超时。
+func (h *mcpHub) SetCallTimeout(d time.Duration) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.defaultCallTimeout = d
 }
 
 const (
@@ -1116,12 +1151,13 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 // ★ 2026-11-06：配置层错误不再只返回 nil——返回的 hub 仍带 status.Problem，
 // 会话把它放进 hello.mcp 并把失败发成 system 块。否则"文件写错了"在界面上
 // 与"根本没配"完全一样（都只有一行 stderr），正是产品面可见性要补的洞。
-func NewMCPHub(explicitPath string, workspaceRoot string) (*mcpHub, error) {
+func NewMCPHub(explicitPath string, workspaceRoot string, defaultCallTimeout time.Duration) (*mcpHub, error) {
 	cfgPath, source := findMCPConfigFileWithSource(explicitPath, workspaceRoot)
 	if cfgPath == "" {
 		// ★ 显式给了路径却找不到 = 用户以为开了 MCP。静默吞掉是这条链上最容易
 		//   让人怀疑「是不是根本没实现」的失败方式，必须说出来。
 		hub := newEmptyMCPHub(workspaceRoot)
+		hub.defaultCallTimeout = defaultCallTimeout
 		if explicitPath != "" {
 			problem := fmt.Sprintf("--mcp-config 指定的文件不存在：%s", explicitPath)
 			fmt.Fprintf(os.Stderr, "[mcp] 警告: %s（本次不启用 MCP）\n", problem)
@@ -1134,6 +1170,7 @@ func NewMCPHub(explicitPath string, workspaceRoot string) (*mcpHub, error) {
 	cfg, err := loadMCPConfig(cfgPath)
 	if err != nil {
 		hub := newEmptyMCPHub(workspaceRoot)
+		hub.defaultCallTimeout = defaultCallTimeout
 		hub.status.Source = source
 		hub.status.Config = cfgPath
 		hub.status.Problem = err.Error()
@@ -1143,6 +1180,7 @@ func NewMCPHub(explicitPath string, workspaceRoot string) (*mcpHub, error) {
 	if err != nil {
 		return hub, err
 	}
+	hub.defaultCallTimeout = defaultCallTimeout
 	hub.status.Source = source
 	hub.status.Config = cfgPath
 	fmt.Fprintf(os.Stderr, "[mcp] 配置 %s：%d 个服务、%d 个工具\n", cfgPath, len(hub.clients), len(hub.toolDefs))
@@ -1230,7 +1268,20 @@ func (h *mcpHub) CallTool(ctx context.Context, name string, args map[string]any)
 		}
 	}
 
-	res, err := client.callTool(ctx, ref.origName, args)
+	// ★ 单次调用超时控制：优先服务级配置，否则继承全局默认；<=0 表示无超时上限。
+	h.mu.RLock()
+	defaultTimeout := h.defaultCallTimeout
+	h.mu.RUnlock()
+	timeout := client.cfg.callTimeout(defaultTimeout)
+
+	callCtx := ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	res, err := client.callTool(callCtx, ref.origName, args)
 	if err != nil {
 		return toolResult{
 			OK:     false,
@@ -1238,8 +1289,8 @@ func (h *mcpHub) CallTool(ctx context.Context, name string, args map[string]any)
 		}, true
 	}
 	if client.isDead() {
-		// 调用期间崩的：本轮结果已丢，不重试；登记一次，下次调用再重启。
-		h.noteDead(ref.serverName, "进程在调用期间退出")
+		// 调用期间崩的（或因死锁超时被主动清退的）：本轮结果已丢，不重试；登记一次，下次调用再重启。
+		h.noteDead(ref.serverName, "服务无响应或进程已退出")
 	}
 	return res, true
 }

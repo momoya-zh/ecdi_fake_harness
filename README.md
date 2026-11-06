@@ -39,7 +39,7 @@
 | `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
 | `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
 | `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · **variant-c 落地对照**（`variant-c-ecdi-mapping.md`）· GUI 原型（单文件 HTML） |
-| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 71 断言，四臂含 Streamable HTTP 与 legacy SSE，已进 `regress.py` §2f） |
+| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 83 条断言，六臂（A–F）含 Streamable HTTP 与 legacy SSE，已进 `regress.py` §2f） |
 
 ## 协议要点
 
@@ -172,7 +172,7 @@ MCP server 子进程或连远程端点、握手、`tools/list`（分页追到底
 `mcp__<srv>__<tool>` 注册进模型工具表。
 配置三级发现：`--mcp-config=<path>` → `<workspace>/.ecdi/mcp.json` 或 `<workspace>/mcp.json`
 → `%APPDATA%\ecdi-fake-harness\mcp.json`；格式 `{"mcpServers":{"<name>":{…}}}`：
-本地 `{"command","args","env","disabled"}`，远程 `{"url","headers","transport","disabled"}`
+本地 `{"command","args","env","disabled","timeout"}`，远程 `{"url","headers","transport","disabled","timeout"}`
 （`transport` 省略按 `url` ⇒ `http`；`"sse"` 走 legacy HTTP+SSE）。`command` 与 `url`
 二选一，混写显式失败而不是半启动。
 纪律：外部工具**默认全过 ask 门**（可在 `--allow-tools` 里按全名逐个豁免）、输出上限 24KB
@@ -198,8 +198,11 @@ stdio 行文案不变——用户才分得清「配的是本地进程还是远�
 `notifications/cancelled`（stdio 写 stdin、HTTP 发通知 POST），tool_result 按「送没送到」
 如实措辞——GUI 的「已取消」不再替服务端打包票；崩溃的 stdio 服务在**下一次调用前**
 按需重启（最多 3 次），重启成功/失败各发一条 `system` 块。规则与诚实边界见方案 §十。
+★ **单次调用超时（2026-11-06 八版）**：`--mcp-timeout`（默认 60s；0 不限）控制单个 MCP
+调用的墙钟上限；`mcp.json` 支持服务级细粒度覆盖 `"timeout": <sec>`（0 针对该服务禁用）。
+超时真发取消通知，且通知未能送达（如 stdio 彻底死锁）的主动清退并触发下次按需 respawn。
 ★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 真
-HTTP/SSE server + 脚本化 SSE 端点，五臂 **83 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
+HTTP/SSE server + 脚本化 SSE 端点，六臂（A–F）**83 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
 状态与传输标识、参数穿越、bye 后无残留、HTTP 不可达降级，以及 F 臂的
 `--mcp-env=minimal` 不泄漏与崩溃后按需重启）；读数与边界见方案 §四.5 / §十；已接进
 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
@@ -464,7 +467,7 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 |---|---|
 | ★ **长会话上下文管理（截断/摘要）** | 现每轮全量携带历史 messages，长交互或大文件读取容易超出模型 context window 限制 |
 | **MCP HTTP 的服务端通知流** | Streamable HTTP 只做了「请求-响应」方向；GET 上的主动通知、legacy 重连 / `Last-Event-ID`、OAuth 动态注册均未做（方案 §九「诚实边界」） |
-| **MCP 单次调用超时** | 仍无 per-call 墙钟上限：卡死的 server 调用只能靠用户点停止（取消会发 `notifications/cancelled`）；要不要「超时即杀服务」还没定，见方案 §十.4 |
+| ~~**MCP 单次调用超时**~~ **已落地（2026-11-06）** | `--mcp-timeout`（默认 60s；0 不限）+ 服务级 `mcp.json` `"timeout": <sec>`；超时真发取消通知——送达则保留连接复用，未送达（stdio 僵死）才清退并触发按需 respawn。规则与诚实边界见方案 §十一 |
 | ★ **用户模式的机器判据** | **零覆盖**。26 个探针全部跑在开发者模式下（那是刻意的：分流必须对既有基线零扰动），于是 P4 Phase J 新增的产品面——无参启动那一侧——一个断言都没有。最小补法：两相加进 `--rebuild-probe` 或新开 `--mode-probe`（用户模式下指定句柄逐个必须不可见 / 切回开发者后快照与基线一致）。方案 §12「已知缺口」 |
 | **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
@@ -498,7 +501,7 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
    ~~HTTP/SSE 传输~~ **已落地（2026-11-06）**：Streamable HTTP（`2025-06-18`）+ legacy
    HTTP+SSE（`transport:"sse"`）+ `url/headers` 配置 + 状态里的传输标识。
    ~~运行期语义~~ **已落地（2026-11-06）**：`--mcp-env=minimal`、崩溃后按需重启（上限 3 次）、
-   取消时真发 `notifications/cancelled`；五臂冒烟 **83 条**。
+   取消时真发 `notifications/cancelled`；六臂（A–F）冒烟 **83 条**。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 

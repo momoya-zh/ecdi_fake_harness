@@ -74,6 +74,7 @@ func main() {
 	mcpConfig := flag.String("mcp-config", "", "MCP 配置文件路径（缺省在工作区或全局配置目录自动发现）")
 	mcpEnv := flag.String("mcp-env", mcpEnvInherit, "MCP stdio 子进程环境：inherit（继承并剔除密钥，默认）| minimal（只留白名单）")
 	mcpRespawn := flag.Bool("mcp-respawn", true, "MCP stdio 服务崩溃后按需自动重启（每会话每服务上限 3 次）")
+	mcpTimeout := flag.Duration("mcp-timeout", defaultMCPCallTimeout, "单个 MCP 工具调用的默认墙钟上限（0 表示无上限）")
 	flag.Parse()
 
 	setSandboxConfig(SandboxConfig{
@@ -177,7 +178,7 @@ func main() {
 			ProviderID: *providerID, Context: *contextTokens, MaxOutput: *maxOutput},
 		strings.Split(*allowTools, ","), providerEnv, *resumeID, *sessionID, *workspace, *globalMemory, *failSummarize,
 		agentOpts{on: *agents, maxParallel: *maxAgents, maxTurns: *agentMaxTurns, timeout: *agentTimeout},
-		*mcpConfig,
+		*mcpConfig, *mcpTimeout,
 		lines, &curState, logf, os.Stdout)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)
