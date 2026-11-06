@@ -485,3 +485,24 @@ struct JobProbeRec {
     bool matched = true;
     std::string note;
 };
+
+// ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。
+//   两侧判据同一手法：模型侧读 `hello.mcp`（协议字段），视图侧读副标/卡片/
+//   失败 system 块的实际控件。正向夹具必须**同时**有成功服务与失败服务——
+//   只有成功时，副标里的「（K 个失败）」与卡片红行永远走不到。
+struct McpProbeRec {
+    std::string phase = "settle";      // 同步探针，一相
+    size_t modelServices = 0;          // 模型：hello.mcp.services 条数
+    size_t modelFailed = 0;            // 模型：hello.mcp.failed 条数
+    size_t modelTools = 0;             // 模型：services[].tools 之和
+    bool modelHas = false;             // 模型：hello 带 mcp 字段
+    bool cardVisible = false;          // 视图：MCP 卡是否显形
+    size_t cardRows = 0;               // 视图：卡片列表行数
+    size_t serviceRows = 0;            // 视图：含每个服务名的行数（应 == modelServices）
+    size_t failureRows = 0;            // 视图：含每个失败服务名的行数（应 == modelFailed）
+    size_t renderedMcpNotices = 0;     // 视图：屏上含 "[MCP]" 的 system 行（失败/配置错误）
+    bool subtitleHasMcp = false;       // 视图：会话头副标含 "MCP"
+    bool subtitleMatched = false;      // 视图：副标含 McpStatusText() 逐字结果
+    bool matched = true;               // 元断言（见 ProbeMcp.cpp 头注）
+    std::string note;
+};

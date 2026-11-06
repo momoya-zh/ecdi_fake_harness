@@ -377,6 +377,9 @@ void HarnessApp::OnReplayTick() {
                 // ★ 协议 v6（2026-11-05）：后台作业卡片。同步组——卡片挂在工具行上，
                 //   标题/正文在 settle 后已是终态，不需要等下一帧。
                 {&CliOptions::jobProbe, &ProbeState::jobProbeDone, &HarnessApp::RunJobProbe},
+                // ★ 2026-11-06：MCP 产品面可见性。同步组——hello.mcp 在 settle
+                //   前已解析完，卡片/副标/失败行都是终态。
+                {&CliOptions::mcpProbe, &ProbeState::mcpProbeDone, &HarnessApp::RunMcpProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
@@ -759,6 +762,42 @@ void HarnessApp::RouteLastMessage() {
             }
             RebuildMemoryList();
         }
+        // ★★ 2026-11-06：MCP 启动期状态（协议 §3.1 可选 `mcp`）。
+        //   ★ 只有字段在场才置 has=true；缺字段 ≠ 0 个服务（那是"没配/未启用"，
+        //     副标与卡片都不该出现）。旧 core 不认这个字段是本仓要支持的形态。
+        m_sess->mcp = McpStatus{};
+        if (const json::Value* m = msg.Find("mcp"); m && m->IsObject()) {
+            m_sess->mcp.has = true;
+            m_sess->mcp.source = m->GetString("source");
+            m_sess->mcp.config = m->GetString("config");
+            m_sess->mcp.problem = m->GetString("problem");
+            if (const json::Value* d = m->Find("disabled"); d && d->IsNumber()) {
+                m_sess->mcp.disabled = static_cast<int>(d->number);
+            }
+            if (const json::Value* svcs = m->Find("services"); svcs && svcs->IsArray()) {
+                for (const auto& item : svcs->array) {
+                    if (!item.IsObject()) continue;
+                    McpServiceItem s;
+                    s.name = item.GetString("name");
+                    if (const json::Value* n = item.Find("tools"); n && n->IsNumber()) {
+                        s.tools = static_cast<int>(n->number);
+                    }
+                    if (!s.name.empty()) m_sess->mcp.services.push_back(std::move(s));
+                }
+            }
+            if (const json::Value* fails = m->Find("failed"); fails && fails->IsArray()) {
+                for (const auto& item : fails->array) {
+                    if (!item.IsObject()) continue;
+                    McpFailureItem f;
+                    f.name = item.GetString("name");
+                    f.error = item.GetString("error");
+                    if (!f.name.empty()) m_sess->mcp.failed.push_back(std::move(f));
+                }
+            }
+        }
+        // ★ 无论字段在不在都重建一次：字段缺席时要能把上一份 hello 的卡片收掉
+        //   （同一 Session 重新握手/切 core 时不留陈旧状态）。
+        RebuildMcpCard();
         m_hudDirty = true;
         if (m_devMode) {
             AddNoticeRow("core " + msg.GetString("core") + " · session " +

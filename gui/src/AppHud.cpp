@@ -902,6 +902,8 @@ std::vector<std::string> HarnessApp::HudUnbuilt() const {
         if (n == "inspectorToggle") return h.inspectorToggle != nullptr;
         if (n == "inspMemoryCard") return h.inspMemoryCard != nullptr;
         if (n == "memoryList") return h.memoryList != nullptr;
+        if (n == "inspMcpCard") return h.inspMcpCard != nullptr;
+        if (n == "mcpList") return h.mcpList != nullptr;
         if (n == "exportToggle") return h.exportToggle != nullptr;
         if (n == "moreToggle") return h.moreToggle != nullptr;
         if (n == "moreMenu") return h.moreMenu != nullptr;
@@ -979,6 +981,11 @@ void HarnessApp::RefreshHud() {
             if (!m_sess->memories.empty()) {
                 sub += " · 记忆 " + std::to_string(m_sess->memories.size());
             }
+            // ★ 2026-11-06：MCP 启动期状态（产品面可见性）。没有 MCP 状态时
+            //   McpStatusText() 返回空串 ⇒ 副标逐字不变。
+            if (std::string mcpText = McpStatusText(); !mcpText.empty()) {
+                sub += " · " + mcpText;
+            }
             // ★ 0d：会话计数——让用户看见"现在有几个会话、我在第几个"。
             sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
                    std::to_string(m_sessions.size());
@@ -1000,6 +1007,11 @@ void HarnessApp::RefreshHud() {
                     if (!m.skipped) loaded++;
                 }
                 sub += " · 记忆 " + std::to_string(loaded);
+            }
+            // ★ 2026-11-06：MCP 状态在**用户模式**也要可见（产品面默认视图）。
+            //   与开发者分支共用 McpStatusText()，两处不各拼一份文案。
+            if (std::string mcpText = McpStatusText(); !mcpText.empty()) {
+                sub += " · " + mcpText;
             }
             if (m_sessions.size() > 1) {
                 sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +

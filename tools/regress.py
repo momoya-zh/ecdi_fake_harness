@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # ============================================================
-# 全量回归验证套件：6 夹具基线 + 24 个探针 + 1 个仪器声明 + REQ-03 live A/B
+# 全量回归验证套件：6 夹具基线 + 25 个探针 + 1 个仪器声明 + REQ-03 live A/B
 # + live 设置探针（真 core，2e）+ MCP 真链路冒烟（2f）+ 协议校验
 # ------------------------------------------------------------
 # 判据说明（本仓纪律）：
@@ -40,7 +40,7 @@ OUT = ROOT / ".scratch"
 #   冒烟逻辑本身在 tools/mcp-smoke/ 里，不复制一份到门内。
 MCP_SMOKE = ROOT / "tools" / "mcp-smoke" / "drive.py"
 MCP_RESULT = OUT / "mcp-smoke" / "result.json"
-MCP_SMOKE_CHECKS = 32  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail 4 断言，2026-11-06）
+MCP_SMOKE_CHECKS = 37  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail 4 断言，2026-11-06；32→37：hello.mcp 状态与失败块 5 断言，同日）
 
 # ============================================================
 # ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹
@@ -130,6 +130,9 @@ PROPOSAL = "protocol/fixtures/proposal/write-edit-run-asks.jsonl"
 # ★★ 协议 v6（2026-11-05）：后台作业正向夹具（run_command background → job start/
 #   output/end → job_output/job_kill 两条控制工具链）。
 JOB = "protocol/fixtures/jobs/background-task.jsonl"
+# ★★ 2026-11-06：MCP 产品面可见性正向夹具（hello.mcp：2 个正常服务 + 1 个失败
+#   + 1 个禁用；hello 之后跟一条失败 system 块）。
+MCP_STATUS = "protocol/fixtures/mcp/status.jsonl"
 # ★★ 门控反面（2026-11-04）：发 agent 消息但 hello.caps **不含** agents
 #   ⇒ 内容照旧渲染，代理卡**不得**出现（协议 §3.1）。
 AGENT_CAP_MISSING = "protocol/fixtures/subagent/agent-cap-missing.jsonl"
@@ -217,6 +220,10 @@ EXTRA_PROBES = [
     #   正向：job start 把状态贴到发起它的 run_command 工具行（标题含 j1+状态、
     #   正文含命令与尾部输出）。负向对照另跑一支（demo 无 job ⇒ 不得出现「后台」）。
     ("--job-probe", "jobProbe", JOB, [], []),
+    # ★★ 2026-11-06：MCP 产品面可见性（hello.mcp）。
+    #   正向：副标计数、检视栏卡行、失败 system 块三者都必须与模型侧一致；
+    #   负向对照另跑一支（demo 无 mcp 字段 ⇒ 卡片/副标/失败行全缺）。
+    ("--mcp-probe", "mcpProbe", MCP_STATUS, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
@@ -704,6 +711,41 @@ def check_job_probe_negative():
     return (0 if ok else 1), detail
 
 
+def check_mcp_probe_negative():
+    """`--mcp-probe` 的负对照：没有 `hello.mcp` 的夹具上，MCP 面必须整段缺席。
+
+    ★ 为什么必须单独跑一支：正向只证明「有状态时会显示」，「每个会话都预先
+      显示一张 MCP 空卡 / 副标恒带 MCP」的实现同样能绿。只有"没有字段时
+      卡片不可见、0 行、副标无 MCP、0 条 MCP system 行"才能把两者分开。
+    """
+    out = OUT / "_reg-mcp-probe-negative.json"
+    out.unlink(missing_ok=True)
+    try:
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
+                            "--theme", "light", "--mcp-probe",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("--mcp-probe (negative)", None, out)
+        return 1, "TIMEOUT"
+    record("--mcp-probe (negative)", r.returncode, out)
+    if not out.exists():
+        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    rows = d.get("mcpProbe") or []
+    if not rows:
+        return 1, "NO ROWS (key=mcpProbe)"
+    rec = rows[0]
+    ok = (rec.get("matched") is True and rec.get("modelHas") is False
+          and rec.get("cardVisible") is False and rec.get("cardRows") == 0
+          and rec.get("subtitleHasMcp") is False
+          and rec.get("renderedMcpNotices") == 0)
+    detail = (f"modelHas={rec.get('modelHas')} cardVisible={rec.get('cardVisible')} "
+              f"cardRows={rec.get('cardRows')} subtitleHasMcp={rec.get('subtitleHasMcp')} "
+              f"notices={rec.get('renderedMcpNotices')} matched={rec.get('matched')}")
+    return (0 if ok else 1), detail
+
+
 def check_agent_probe_cap_gate():
     """`--agent-probe` 的**门控**反面：core 发了 agent 消息却没声明 `caps.agents`。
 
@@ -934,7 +976,7 @@ def main():
     print("\n== 1b. 侧栏行宽判据 (sidebarGeom) ==")
     fail += check_sidebar_geom()
 
-    print("\n== 2a. 补齐探针 (8) ==")
+    print("\n== 2a. 补齐探针 (17) ==")
     # 配置必须在跑批前落盘：delprov 要有 provider（否则自述 skipped-empty-config），
     # settings 要一个**隔离**路径（它的 cleanup 会删掉这一轮跑的配置文件）。
     write_probe_config(DELPROV_CONFIG,
@@ -963,6 +1005,9 @@ def main():
     n, detail = check_job_probe_negative()
     fail += n
     print(f"  {'--job-probe':18s} {detail}  (negative/DEMO：无 job 就不得出现后台字样)")
+    n, detail = check_mcp_probe_negative()
+    fail += n
+    print(f"  {'--mcp-probe':18s} {detail}  (negative/DEMO：无 mcp 字段就整段缺席)")
 
     print("\n== 2c. REQ-03 异步投递 (live A/B) ==")
     core = ROOT / "core" / "bin" / "fake-core.exe"

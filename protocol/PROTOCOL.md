@@ -119,8 +119,9 @@ core 执行 `run_command` / 后台作业时，**负责把子进程输出转成 U
 | `protocol` | 协议**主版本**。GUI 的版本较低时必须拒绝并显示错误（§9） |
 | `core` | 核心版本，仅用于显示 |
 | `session` | 会话 id；`--resume` 时回放同一 id |
-| `caps` | 能力声明，GUI 据此决定是否显示对应交互。★ **v3**：支持工作区切换的 core **必须**声明 `"workspace"`；未声明的 core，GUI **不得**显示工作区选择器。★ **v5**：支持子代理的 core **必须**声明 `"agents"`；未声明 ⇒ GUI **不得**显示代理卡、`toolDefs` 也不该出现 `task`（§3.12）。★ **v6**：`"jobs"`（§3.13）与 **`"mcp"`**（2026-11-05 增补，MCP Host 已注册 ≥1 个外部工具；**纯信息性**——GUI 今天没有对应交互，未知 cap 必须忽略，不得据此拒连） |
+| `caps` | 能力声明，GUI 据此决定是否显示对应交互。★ **v3**：支持工作区切换的 core **必须**声明 `"workspace"`；未声明的 core，GUI **不得**显示工作区选择器。★ **v5**：支持子代理的 core **必须**声明 `"agents"`；未声明 ⇒ GUI **不得**显示代理卡、`toolDefs` 也不该出现 `task`（§3.12）。★ **v6**：`"jobs"`（§3.13）与 **`"mcp"`**（2026-11-05 增补，MCP Host 已注册 ≥1 个外部工具；**纯信息性**——GUI 只在 `hello.mcp` 在场时显示 MCP 状态，未知 cap 必须忽略，不得据此拒连） |
 | `context` | ★ **v2 新增（可选）**：上下文窗口容量（**token 数**）。= 「上下文占用百分比」的**分母** |
+| `mcp` | ★ **2026-11-06 增补（可选，仍属 v6，只增不改）**：MCP Host 的**启动期状态快照**（见下）。字段：`source`（`explicit` / `workspace` / `global`；空 = 未发现配置）、`config`（实际读取的路径；显式路径不存在时为用户给的那个路径）、`services`（`[{name, tools}]`，**按服务名升序**；`tools` = 已注册进模型工具表的数量，撞名消解后仍被跳过的不计）、`failed`（`[{name, error}]`，按服务名升序）、`disabled`（被 `"disabled": true` 跳过的服务数）、`problem`（配置层错误：解析失败 / 显式路径不存在）。`services` / `failed` **恒为数组**（可为空，不得为 `null`）。★ **在场规则**：只要发现或尝试过配置就发（全部失败 / 全部禁用也发）；完全没配置则**不发**。★ 与 `caps.mcp` **正交**：`caps.mcp` 只表示"已注册 ≥1 个外部工具"，校验失败时 GUI 必须靠 `hello.mcp.failed` 显示失败，**不得**用 `caps` 反推。★ 这是启动期快照，不是实时状态；服务运行期崩掉走 `system` 块（`TakeDeadNotices`），不在这里改写历史 |
 
 ★ **`context` 为什么必须存在（2026-10-14）**：用户要求显示「上下文已占用的百分比」。
 **百分比必须有分母**——而 v1 的协议里**没有任何字段**给出容量（`usage` 只有 `turn`/`input`/`output`）
@@ -614,6 +615,22 @@ GUI 侧对 `prompt` / `cancel` / `workspace` 的按钮使能**只由 `state` 驱
 | 回答态 | 展开体**不随回答隐藏**（审计痕迹），只禁用按钮——同 `ApplyAnsweredLook` 单点 |
 | 回落 | `detail` 缺失/非对象/`tool` 未知 ⇒ 只渲染问句文本（= v4 行为），不得崩、不得空卡 |
 
+#### MCP 状态（v6 增补，2026-11-06）
+
+**一句话**：`hello.mcp` 是只读展示数据——会话头给计数、检视栏给明细、失败另发
+`system` 块。它**不改变**工具行为，也不替代 `caps.mcp`。
+
+| 元素 | 规格 |
+|---|---|
+| 会话头副标 | `MCP <N> 个服务 / <M> 个工具`；有失败追加 `（<K> 个失败）`，否则有禁用追加 `（<K> 个禁用）`；`problem` 非空显示 `MCP 配置错误`。**缺 `hello.mcp` 时整段不出现**（不得显示 0 服务） |
+| 检视栏「MCP」卡 | 默认隐藏，`hello.mcp` 在场时显形。行序：`配置 · <来源>`（弱化）→ `problem` 的 `✗ 配置错误`（错误色）→ 每个成功服务 `<name> · <N> 工具`（正文）→ 每个失败服务 `✗ <name> · 启动失败`（错误色）→ `<K> 个服务已禁用`（弱化）→ 读到了配置但无可用项时 `（无可用服务）`（弱化） |
+| 失败/配置错误 | core 在 `hello` 之后逐条发 `kind:"system"` 块：`[MCP] 服务 <name> 启动失败：<error>（本次未启用）`、`[MCP] 配置错误：<problem>`。与运行期死亡通告同形态；**成功不发**（不往转录里塞例行成功行） |
+| 信息边界 | GUI **不**扫 `mcp.json`、不猜服务名/工具名；`failed[].error` 原样透出，GUI 不解析、不编造 |
+
+★ **为什么失败既要 `hello.mcp.failed` 又要 `system` 块**：前者是**状态**（卡片里一直看得见），
+后者是**事件**（用户模式默认界面可见、可进 journal）。只有其一，要么状态不可追溯，要么失败
+只在某个被收起的卡片里。
+
 #### 后台作业卡（v6 新增，2026-11-05）
 
 **一句话**：`job` 状态**贴在发起它的 `run_command` tool_call 行**上（同一张工具卡，不新建行、
@@ -757,12 +774,13 @@ face ⇒ 字重与基线与旁边文字对不上，**比原样更难看**。⇒ 
 | `fixtures/hostile/parent-dangling.jsonl` | ★ **v5 / I13 负向**：`parent` 指向一个**不存在**的块——归属竖线无处可连 |
 | `fixtures/jobs/background-task.jsonl` | ★ **v6 后台作业正向基线**（`protocol:6`）：`run_command background=true` 过 ask 门 → `job phase=start`（`call` 指向 tool_call 块）→ 输出增量 → `job_output` 取到增量 → `job_kill` → `job phase=end status=killed`。用途：作业卡（标题挂 j1+终态、正文尾部输出）与 `--job-probe` 的读数基线；同批负对照 = demo 夹具（无 `job` 消息 ⇒ 零后台字样） |
 | `fixtures/hostile/job-output-before-start.jsonl` | ★ **v6 / I14 负向**：`phase=output` 出现在任何 `start` 之前——GUI 会给一个不存在的作业建卡，模型侧也无从对账 |
-| `fixtures/proposal/write-edit-run-asks.jsonl` | ★ **v5 提案卡正向基线**（`protocol:5`）：三个 `ask` 各带 `detail`——`write_file`（新文件 = 全 `+` 行 diff）/ `edit_file`（替换片段 diff）/ `run_command`（完整命令 + cwd + 超时）。每个 `ask` 严格配对 `state=waiting → state=running`。用途：提案卡展开体与 `--proposal-probe` 的读数基线；同批负对照 = 既有 demo 夹具（无 `detail` ⇒ 零 diff 行） |
+| `fixtures/proposal/write-edit-run-asks.jsonl` | ★ **v5/v6 提案卡正向基线**（`protocol:6`）：四个 `ask` 各带 `detail`——`write_file`（新文件 = 全 `+` 行 diff）/ `edit_file`（替换片段 diff）/ `run_command`（完整命令 + cwd + 超时）/ **`mcp`**（服务 + 真实工具名 + argsKv，2026-11-06 增补）。每个 `ask` 严格配对 `state=waiting → state=running`。用途：提案卡展开体与 `--proposal-probe` 的读数基线；同批负对照 = 既有 demo 夹具（无 `detail` ⇒ 零 diff 行） |
+| `fixtures/mcp/status.jsonl` | ★ **2026-11-06 MCP 状态可见性正向基线**（`protocol:6`）：`hello.mcp` 带 2 个正常服务（fs 3 工具 / smoke 2 工具）、1 个失败服务 `broken`、1 个禁用；`hello` 之后跟一条 `[MCP] 服务 broken 启动失败` 的 `system` 块。用途：会话头副标、检视栏 MCP 卡、失败行与 `--mcp-probe` 的读数基线；负对照 = demo 夹具（无 `mcp` 字段 ⇒ 整段缺席） |
 
 **否定型断言必须配正对照**：先用 `demo-session.jsonl` 证明路径通，再用 hostile 目录证明失败被**显式**暴露。
 
-★ **十七份夹具的版本声明**（2026-11-05 起）：其余夹具声明 `protocol:3`，v5 夹具声明 `5`
-（`subagent` 正向 + 三份 hostile + `proposal`），v6 夹具声明 `6`（`jobs` 正向 + 一份 hostile）。这不是凑数：I9 / I10 只约束
+★ **十八份夹具的版本声明**（2026-11-06 起）：其余夹具声明 `protocol:3`，v5 夹具声明 `5`
+（`subagent` 正向 + 三份 hostile），v6 夹具声明 `6`（`jobs` 正向 + 一份 hostile + `proposal` + `mcp/status`）。这不是凑数：I9 / I10 只约束
 `hello.protocol >= 3`、I12 / I13 只约束 `>= 5`，若 hostile 停在低版本，负向用例会被版本门整个豁免 ——
 它会**永远通过**，而永远通过的负向用例与不存在无法区分（§8.5 末尾那条的同族错误）。
 `validate.py` 按 `hello.protocol` 分流，不按文件名或目录名。
@@ -797,7 +815,7 @@ python protocol/validate.py            # 退出码 = 未通过预期的夹具数
 
 | 版本 | 日期 | 变更 | 旧 GUI 的表现 |
 |---|---|---|---|
-| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡）· §1.3 子进程输出统一转 UTF-8（GBK 控制台）· **2026-11-06 增补（仍属 v6，只增不改）**：§3.6 `detail.tool` 枚举增 `"mcp"` 判别值（`server`/`toolName`/`argsKv` 三字段），§7 增 mcp 提案卡键值行规格——MCP 工具的 ask 自此带 detail（此前刻意不带，一版复合名事故后回落问句） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；对 `tool:"mcp"` 落一行「（提案类型 mcp）」中性说明（回落义务），不崩不空卡。★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
+| **6** | 2026-11-05 | §3.13 新增 `job`（后台作业生命周期：`start`/`output`/`end`；**不进 `state`、不进 `usage`**）· §3.1 `caps` 增 `"jobs"` · §3.6 `detail` 增可选 `background` · §5 新增 **I14** · §7 增后台作业卡渲染规格（挂在发起它的 run_command 卡）· §1.3 子进程输出统一转 UTF-8（GBK 控制台）· **2026-11-06 增补（仍属 v6，只增不改）**：§3.6 `detail.tool` 枚举增 `"mcp"` 判别值（`server`/`toolName`/`argsKv` 三字段），§7 增 mcp 提案卡键值行规格——MCP 工具的 ask 自此带 detail（此前刻意不带，一版复合名事故后回落问句） · **2026-11-06 增补（三）**：§3.1 增可选 `hello.mcp`（MCP 启动期状态：`source`/`config`/`services`/`failed`/`disabled`/`problem`；`caps.mcp` 语义不变），§7 增会话头副标/检视栏 MCP 卡/失败 `system` 行——产品面可见性（此前配了 `mcp.json` 界面无任何确认） | v5 GUI 把 `job` 按 I5 **忽略并计数**（`unknownTypes` +1）⇒ 后台作业不可见，但**不崩、不丢转录**；对 `tool:"mcp"` 落一行「（提案类型 mcp）」中性说明（回落义务），不崩不空卡。★ 声明 `protocol:6` 的 core 会被 v5 GUI **拒绝连接**（§9 上限规则）⇒ core 升 6 必须同步升级 GUI |
 | **5** | 2026-11-04 | §3.12 新增 `agent`（子代理生命周期：`start`/`end`、独立轮数与 token 用量；**不进 `state`、不进 `usage`**）· §3.3 增可选 `agent` / `parent`（归属正交维度，**不新增 `kind`**）· §3.1 `caps` 增 `"agents"` · §5 新增 **I12 / I13** · §7 增子代理缩进与归属竖线的渲染规格 · **2026-11-05 增补（仍属 v5，只增不改）**：§3.6 `ask` 增可选 `detail`（提案卡：write/edit 带 `diff`、run/task 带结构化字段；渲染数据**非不变量对象**，validate 不查），§7 增 `ask` 提案卡渲染规格 | v4 GUI 把 `agent` 按 I5 **忽略并计数**（`unknownTypes` +1），`agent`/`parent` 是未知字段也按 I5 忽略 ⇒ 子代理的行**全部平铺在根层级**、代理卡不存在，但**不崩、不丢内容**；`detail` 同为未知字段被忽略 ⇒ 问句照显、无提案体。★ 声明 `protocol:5` 的 core 会被 v4 GUI **拒绝连接**（§9 上限规则）⇒ core 升 5 时必须连同 `caps` 声明 `agents` |
 | **4** | 2026-10-25 | §4 新增 gui→core `model`（提供商/模型热切换，cap `"model"`；仅 `idle` 合法，排队语义在 GUI）· §3.11 新增 core→gui `model` 确认（I10 同族）· §5 新增 **I11** · §3.7 `usage` 增可选 `context`（分母按轮覆盖，§3.1 的未定项定案）· **2026-10-27 增补**：§4 `model` 请求增可选 `model`（同一端点下换模型；省略 = 沿用注册表），§3.11 明确「取不到模型名必须回 `ok:false`」 | v3 GUI 把 `model` 消息按 I5 忽略并计数（`unknownTypes` +1），不能热切换但一切照旧；声明 `protocol:4` 的 core 会被 v3 GUI **拒绝连接**（§9 上限规则），故 core 升 4 时必须连同 caps 声明 `model` |
 | **3** | 2026-10-20 | §4 新增 `workspace`（含路径规范化、不改 `state`、未决遇断开算失败）；`prompt.client_id` + GUI 即时临时用户气泡 / core 同 id 确认；§3.8 `error.client_id`（拒绝可定位）；§3.1 `caps` 必须声明 `workspace`；§5 新增 **I9** / **I10**；§7 新增待确认 / 失败气泡两个渲染态；§8 明确临时块不进入规范转录与回放 | v2 GUI 不认识 `workspace` 与新 `prompt` 语义，不能实现工作区切换和即时气泡；高版本必须拒绝 |

@@ -555,6 +555,49 @@ type mcpToolRef struct {
 	desc       string
 }
 
+// ── 启动期状态（hello.mcp 的数据源，2026-11-06）─────────────────
+//
+// ★ 为什么要在 hub 上留这一层：MCP 配置与启动完全发生在 hello 之前，而产品面
+// （GUI）此前只能看到 `caps` 里有没有 "mcp"——用户写了 mcp.json 却没有任何
+// 确认，启动失败也只有 stderr。把「读了哪个文件、起了哪些服务、各自几个工具、
+// 谁失败了、禁用了几个」做成快照随 hello 下发，GUI 才能显示而不靠猜。
+//
+// ★ 边界：这是**启动期快照**，不是运行期实时状态。服务之后崩掉仍走
+// `noteDead` → `TakeDeadNotices` 的 system 块路径（不在这里静默改写历史）。
+type mcpServerStatus struct {
+	Name  string `json:"name"`
+	Tools int    `json:"tools"`
+}
+
+type mcpFailureStatus struct {
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+type mcpHubStatus struct {
+	// Source：配置来自哪一级发现（explicit / workspace / global）。空 = 未发现配置。
+	Source string `json:"source,omitempty"`
+	// Config：实际读取的配置路径（显式路径不存在时也带上用户给的那个路径）。
+	Config string `json:"config,omitempty"`
+	// Services/Failed 恒为数组（不是 null）：GUI 不必区分"没有"和"字段缺失"。
+	Services []mcpServerStatus  `json:"services"`
+	Failed   []mcpFailureStatus `json:"failed"`
+	// Disabled：配置里 `"disabled": true` 的服务数（不计入 Services/Failed）。
+	Disabled int `json:"disabled"`
+	// Problem：配置层面的错误（解析失败 / 显式路径不存在）。服务启动失败走 Failed。
+	Problem string `json:"problem,omitempty"`
+}
+
+// hasEvidence：这份快照值不值得发给 GUI。
+//
+// ★ 无配置时一个字段都不发（否则每个没配 MCP 的会话都会多一个 "mcp" 字段，
+//   而 GUI 会显示一张 0 服务的卡）；发现过/尝试过配置（哪怕全部失败、全部禁用）
+//   就必须发——那正是用户需要确认的时刻。
+func (st mcpHubStatus) hasEvidence() bool {
+	return st.Source != "" || st.Config != "" || st.Problem != "" ||
+		len(st.Services) > 0 || len(st.Failed) > 0 || st.Disabled > 0
+}
+
 type mcpHub struct {
 	mu       sync.RWMutex
 	clients  map[string]*mcpClient
@@ -564,27 +607,59 @@ type mcpHub struct {
 	// dead：server -> 死因。★ 只记「自上次被取走以来」的，会话取走后发 system 块。
 	// 没有这一层，服务悄悄死掉的表现是「工具反复失败」，用户完全不知道发生了什么。
 	dead map[string]string
+	// status：启动期快照（见上方类型注释）。构造期写入，之后只读。
+	status mcpHubStatus
 }
+
+func newEmptyMCPHub(rootDir string) *mcpHub {
+	return &mcpHub{
+		clients: make(map[string]*mcpClient),
+		toolMap: make(map[string]mcpToolRef),
+		rootDir: rootDir,
+		dead:    make(map[string]string),
+		status: mcpHubStatus{
+			Services: []mcpServerStatus{},
+			Failed:   []mcpFailureStatus{},
+		},
+	}
+}
+
+const (
+	mcpConfigSourceExplicit  = "explicit"
+	mcpConfigSourceWorkspace = "workspace"
+	mcpConfigSourceGlobal    = "global"
+)
 
 // findMCPConfigFile：按三级优先级寻找配置文件：
 // 1. 显式指定参数；
 // 2. 当前工作区根目录下的 .ecdi/mcp.json 或 mcp.json；
 // 3. 全局应用配置目录下的 mcp.json。
 func findMCPConfigFile(explicitPath string, workspaceRoot string) string {
+	p, _ := findMCPConfigFileWithSource(explicitPath, workspaceRoot)
+	return p
+}
+
+// findMCPConfigFileWithSource：与 findMCPConfigFile 同一条发现链，额外返回
+// **哪一级命中**。产品面要回答的正是"你读的是我那个文件吗"，只给路径不够
+// （工作区 mcp.json 与全局同名文件长得一样）。
+//
+// ★ 显式路径不存在时返回 ("", "explicit")：调用方据此把"你以为开了 MCP"报出来，
+// 而不是退回下一级去读一个用户没指定的文件（静默换文件比不启用更糟）。
+func findMCPConfigFileWithSource(explicitPath string, workspaceRoot string) (path, source string) {
 	if explicitPath != "" {
 		if _, err := os.Stat(explicitPath); err == nil {
-			return explicitPath
+			return explicitPath, mcpConfigSourceExplicit
 		}
-		return ""
+		return "", mcpConfigSourceExplicit
 	}
 	if workspaceRoot != "" {
 		p1 := filepath.Join(workspaceRoot, ".ecdi", "mcp.json")
 		if _, err := os.Stat(p1); err == nil {
-			return p1
+			return p1, mcpConfigSourceWorkspace
 		}
 		p2 := filepath.Join(workspaceRoot, "mcp.json")
 		if _, err := os.Stat(p2); err == nil {
-			return p2
+			return p2, mcpConfigSourceWorkspace
 		}
 	}
 
@@ -592,15 +667,15 @@ func findMCPConfigFile(explicitPath string, workspaceRoot string) string {
 	if appData := os.Getenv("APPDATA"); appData != "" {
 		p := filepath.Join(appData, "ecdi-fake-harness", "mcp.json")
 		if _, err := os.Stat(p); err == nil {
-			return p
+			return p, mcpConfigSourceGlobal
 		}
 	} else if home, err := os.UserHomeDir(); err == nil && home != "" {
 		p := filepath.Join(home, ".config", "ecdi-fake-harness", "mcp.json")
 		if _, err := os.Stat(p); err == nil {
-			return p
+			return p, mcpConfigSourceGlobal
 		}
 	}
-	return ""
+	return "", ""
 }
 
 func loadMCPConfig(path string) (*mcpConfigFile, error) {
@@ -976,20 +1051,17 @@ func mcpToolNameHashed(server, tool string, forceHash bool) string {
 // 每次进程都不同（伤前缀缓存，也让 A/B 快照不可复现）；② 串行握手发生在
 // **hello 之前**的同步路径上，N 个服务最坏 N × 超时 —— GUI 首屏干等且无任何反馈。
 func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
-	hub := &mcpHub{
-		clients: make(map[string]*mcpClient),
-		toolMap: make(map[string]mcpToolRef),
-		rootDir: rootDir,
-		dead:    make(map[string]string),
-	}
+	hub := newEmptyMCPHub(rootDir)
 
 	if cfg == nil || len(cfg.MCPServers) == 0 {
 		return hub, nil
 	}
 
 	names := make([]string, 0, len(cfg.MCPServers))
+	disabled := 0
 	for n, c := range cfg.MCPServers {
 		if c.Disabled {
+			disabled++
 			continue
 		}
 		names = append(names, n)
@@ -1014,11 +1086,17 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 	}
 	wg.Wait()
 
-	// 注册按 names 的顺序做（并发只影响启动耗时，不影响工具表顺序）
+	// 注册按 names 的顺序做（并发只影响启动耗时，不影响工具表顺序）。
+	// ★ 状态快照同批填：失败服务**不能只是打一行 stderr**——GUI 看不到 stderr，
+	//   用户会以为"配置了但没生效"是没实现。失败的 name/error 进 Failed 随 hello 下发。
 	for i, sName := range names {
 		if outs[i].err != nil {
 			// 单个服务失败记录日志，不阻断宿主及其它服务
 			fmt.Fprintf(os.Stderr, "[mcp] 启动服务 %s 失败: %v\n", sName, outs[i].err)
+			hub.status.Failed = append(hub.status.Failed, mcpFailureStatus{
+				Name:  sName,
+				Error: outs[i].err.Error(),
+			})
 			continue
 		}
 		client := outs[i].client
@@ -1044,36 +1122,81 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 			hub.toolDefs = append(hub.toolDefs, def)
 		}
 	}
+	// ★ 服务行报的是**真正注册进工具表的**数量，不是服务端声明的数量：
+	//   撞名无法消解时后者会虚高，而 GUI 的"N 个工具"必须与模型工具表一致。
+	for _, sName := range names {
+		if _, ok := hub.clients[sName]; !ok {
+			continue
+		}
+		registered := 0
+		// 按 toolMap 反查：注册循环里再维护一张表也能做，但这里顺序无关、更不易错。
+		for _, ref := range hub.toolMap {
+			if ref.serverName == sName {
+				registered++
+			}
+		}
+		hub.status.Services = append(hub.status.Services, mcpServerStatus{
+			Name:  sName,
+			Tools: registered,
+		})
+	}
+	hub.status.Disabled = disabled
 
 	return hub, nil
 }
 
 // NewMCPHub：自动探测路径并初始化。如果无配置返回空 Hub。
+//
+// ★ 2026-11-06：配置层错误不再只返回 nil——返回的 hub 仍带 status.Problem，
+// 会话把它放进 hello.mcp 并把失败发成 system 块。否则"文件写错了"在界面上
+// 与"根本没配"完全一样（都只有一行 stderr），正是产品面可见性要补的洞。
 func NewMCPHub(explicitPath string, workspaceRoot string) (*mcpHub, error) {
-	cfgPath := findMCPConfigFile(explicitPath, workspaceRoot)
+	cfgPath, source := findMCPConfigFileWithSource(explicitPath, workspaceRoot)
 	if cfgPath == "" {
 		// ★ 显式给了路径却找不到 = 用户以为开了 MCP。静默吞掉是这条链上最容易
 		//   让人怀疑「是不是根本没实现」的失败方式，必须说出来。
+		hub := newEmptyMCPHub(workspaceRoot)
 		if explicitPath != "" {
-			fmt.Fprintf(os.Stderr, "[mcp] 警告: --mcp-config 指定的文件不存在：%s（本次不启用 MCP）\n", explicitPath)
+			problem := fmt.Sprintf("--mcp-config 指定的文件不存在：%s", explicitPath)
+			fmt.Fprintf(os.Stderr, "[mcp] 警告: %s（本次不启用 MCP）\n", problem)
+			hub.status.Source = source
+			hub.status.Config = explicitPath
+			hub.status.Problem = problem
 		}
-		return &mcpHub{
-			clients: make(map[string]*mcpClient),
-			toolMap: make(map[string]mcpToolRef),
-			rootDir: workspaceRoot,
-			dead:    make(map[string]string),
-		}, nil
+		return hub, nil
 	}
 	cfg, err := loadMCPConfig(cfgPath)
 	if err != nil {
-		return nil, err
+		hub := newEmptyMCPHub(workspaceRoot)
+		hub.status.Source = source
+		hub.status.Config = cfgPath
+		hub.status.Problem = err.Error()
+		return hub, err
 	}
 	hub, err := newMCPHubFromConfig(cfg, workspaceRoot)
 	if err != nil {
-		return nil, err
+		return hub, err
 	}
+	hub.status.Source = source
+	hub.status.Config = cfgPath
 	fmt.Fprintf(os.Stderr, "[mcp] 配置 %s：%d 个服务、%d 个工具\n", cfgPath, len(hub.clients), len(hub.toolDefs))
 	return hub, nil
+}
+
+// Status：启动期状态快照的副本。
+//
+// ★ 返回副本而不是指针：GUI/hello 组装是读方，不能再看见后续写入；同时把
+//   Services/Failed 复制成新切片，避免调用方 append 时改到 hub 内部容量。
+func (h *mcpHub) Status() mcpHubStatus {
+	if h == nil {
+		return mcpHubStatus{Services: []mcpServerStatus{}, Failed: []mcpFailureStatus{}}
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	st := h.status
+	st.Services = append([]mcpServerStatus{}, h.status.Services...)
+	st.Failed = append([]mcpFailureStatus{}, h.status.Failed...)
+	return st
 }
 
 func (h *mcpHub) ToolDefs() []toolDef {

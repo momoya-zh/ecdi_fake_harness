@@ -187,12 +187,16 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 	}
 
 	// ── MCP Host 初始化（发现并启动配置的服务，拉取工具列表）──
-	if mcpHub, err := NewMCPHub(mcpConfig, s.cwd); err == nil {
+	// ★ 2026-11-06：配置层错误也保留 hub（带 status.Problem）——产品面要靠它
+	//   把"配置坏了"与"根本没配"分开；只打 stderr 等于没发生（见 mcp.go Status）。
+	if mcpHub, err := NewMCPHub(mcpConfig, s.cwd); mcpHub != nil {
 		s.mcp = mcpHub
-		if len(s.mcp.ToolDefs()) > 0 {
+		if err != nil {
+			s.log("WARNING: mcp hub initialization failed: %v", err)
+		} else if len(s.mcp.ToolDefs()) > 0 {
 			s.log("mcp hub initialized: %d tools registered", len(s.mcp.ToolDefs()))
 		}
-	} else {
+	} else if err != nil {
 		s.log("WARNING: mcp hub initialization failed: %v", err)
 	}
 
@@ -259,11 +263,22 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 	if s.agents.on {
 		caps = append(caps, "agents")
 	}
-	if s.mcp != nil && len(s.mcp.ToolDefs()) > 0 {
-		caps = append(caps, "mcp")
+	// ★ mcp 状态快照（2026-11-06）：启动期一次性快照，随 hello 下发。
+	//   ★ caps.mcp 的含义不变：**已注册 ≥1 个外部工具**（GUI 据此知道工具表里有
+	//     外部工具）；而 hello.mcp 只要**发现/尝试过配置**就发——全失败/全禁用
+	//     时 caps 不声明，但产品面必须能说"你那个 mcp.json 我读了，坏在这里"。
+	var mcpStatus mcpHubStatus
+	if s.mcp != nil {
+		mcpStatus = s.mcp.Status()
+		if len(s.mcp.ToolDefs()) > 0 {
+			caps = append(caps, "mcp")
+		}
 	}
 	hello := map[string]any{"t": "hello", "protocol": 6, "core": "0.6.0",
 		"session": s.sessionID, "caps": caps}
+	if mcpStatus.hasEvidence() {
+		hello["mcp"] = mcpStatus
+	}
 	if s.ctxCapacity > 0 {
 		hello["context"] = s.ctxCapacity
 	}
@@ -272,6 +287,17 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 	}
 	s.emit(hello)
 	s.log("hello sent (seq=%d, session=%s); initial workspace: %s; model=%s", s.out.Seq()-1, s.sessionID, s.cwd, cfg.Model)
+
+	// ★ MCP 启动失败必须说出来（2026-11-06）：hello.mcp 是结构化状态，GUI 能显示
+	//   卡片/副标；但"失败"本身是一次事件，按本仓既有口径发 system 块
+	//   （与 emitMCPDeadNotices 同一处置）——用户模式默认界面也能看见，且进 journal。
+	//   ★ 成功不刷屏：状态在副标/卡里，不往转录里塞例行成功行。
+	if mcpStatus.Problem != "" {
+		s.emitNotice("[MCP] 配置错误："+mcpStatus.Problem, false)
+	}
+	for _, f := range mcpStatus.Failed {
+		s.emitNotice(fmt.Sprintf("[MCP] 服务 %s 启动失败：%s（本次未启用）", f.Name, f.Error), false)
+	}
 
 	// L3 记忆通知（§8.2 / §8.3）：
 	// 1. resume 且存在已加载记忆文件 ⇒ 发一条 kind:"system" 提示「记忆已更新」

@@ -1442,6 +1442,10 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     //     已登记为待办，不在本轮顺手改。
     BuildAgentCard(*insp, kInspRowH);
 
+    // ★★ 2026-11-06：右栏「MCP」卡（hello.mcp，协议 §3.1 可选字段）。
+    //   数据只来自 core；默认隐藏，有状态时由 RebuildMcpCard 显形。
+    BuildMcpCard(*insp, kInspRowH);
+
     {
         // ── ★★ L3（2026-10-28）：记忆卡片（docs/session-persistence-decisions.md §8）──
         // ★ 2026-11-02：pad12 + 标题17 + 8 + 列表50 + pad12 = 99 → 100

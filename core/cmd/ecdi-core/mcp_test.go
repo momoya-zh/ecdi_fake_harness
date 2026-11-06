@@ -422,6 +422,93 @@ func TestMCP_FindConfigFile(t *testing.T) {
 	if found := findMCPConfigFile(explicit, tmpDir); found != explicit {
 		t.Fatalf("expected explicit path %s, got %s", explicit, found)
 	}
+
+	// 5. ★ 2026-11-06：发现来源必须能区分（hello.mcp.source）
+	if p, src := findMCPConfigFileWithSource("", tmpDir); p != p3 || src != mcpConfigSourceWorkspace {
+		t.Fatalf("expected workspace source at %s, got %s (%s)", p3, p, src)
+	}
+	if p, src := findMCPConfigFileWithSource(explicit, tmpDir); p != explicit || src != mcpConfigSourceExplicit {
+		t.Fatalf("expected explicit source at %s, got %s (%s)", explicit, p, src)
+	}
+	if p, src := findMCPConfigFileWithSource(filepath.Join(tmpDir, "missing.json"), tmpDir); p != "" || src != mcpConfigSourceExplicit {
+		t.Fatalf("missing explicit path must report explicit source, got %q (%s)", p, src)
+	}
+}
+
+// TestMCP_HubStatus：产品面状态快照（hello.mcp 的数据源）。
+//
+// ★ 判据不是"能跑"而是"能解释"：好服务要带工具数、坏服务要带非空原因、
+// 禁用服务不能混进任何一边；否则 GUI 只能显示一个无法归因的 0。
+func TestMCP_HubStatus(t *testing.T) {
+	cfg := &mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{
+			"good": {
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
+				Env:     map[string]string{"GO_WANT_HELPER_MCP": "1"},
+			},
+			"broken": {Command: "ecdi-no-such-command-for-status-test"},
+			"off":    {Command: "unused", Disabled: true},
+		},
+	}
+
+	hub, err := newMCPHubFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig failed: %v", err)
+	}
+	defer hub.Close()
+
+	st := hub.Status()
+	if len(st.Services) != 1 || st.Services[0].Name != "good" || st.Services[0].Tools != 6 {
+		t.Fatalf("services 快照应为 good/6 工具，got %+v", st.Services)
+	}
+	if len(st.Failed) != 1 || st.Failed[0].Name != "broken" || st.Failed[0].Error == "" {
+		t.Fatalf("failed 快照应为 broken + 非空原因，got %+v", st.Failed)
+	}
+	if st.Disabled != 1 {
+		t.Fatalf("disabled 应为 1，got %d", st.Disabled)
+	}
+	if !st.hasEvidence() {
+		t.Fatalf("有配置/服务时 hasEvidence 必须为真：%+v", st)
+	}
+
+	// 负向：完全没配置时不得发 mcp 字段（否则每个会话都长出一张 0 服务卡）。
+	empty, err := newMCPHubFromConfig(nil, t.TempDir())
+	if err != nil {
+		t.Fatalf("nil config: %v", err)
+	}
+	if empty.Status().hasEvidence() {
+		t.Fatalf("无配置时 hasEvidence 必须为假：%+v", empty.Status())
+	}
+}
+
+// TestMCP_ConfigProblemVisible：配置层错误（显式路径不存在 / JSON 坏）必须
+// 留在 hub.status.Problem 里返回——会话靠它把"配置坏了"和"没配"分开。
+func TestMCP_ConfigProblemVisible(t *testing.T) {
+	ws := t.TempDir()
+	missing := filepath.Join(ws, "nope.json")
+
+	hub, err := NewMCPHub(missing, ws)
+	if err != nil {
+		t.Fatalf("缺文件不应返回 error（本次不启用，但状态要可见）：%v", err)
+	}
+	st := hub.Status()
+	if st.Problem == "" || st.Source != mcpConfigSourceExplicit || st.Config != missing {
+		t.Fatalf("缺文件状态不符：%+v", st)
+	}
+
+	badPath := filepath.Join(ws, "mcp.json")
+	if err := os.WriteFile(badPath, []byte(`{"mcpServers":`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	hub, err = NewMCPHub("", ws)
+	if err == nil || hub == nil {
+		t.Fatalf("坏 JSON 应返回 hub + error，got hub=%v err=%v", hub, err)
+	}
+	st = hub.Status()
+	if st.Problem == "" || st.Source != mcpConfigSourceWorkspace || st.Config != badPath {
+		t.Fatalf("坏 JSON 状态不符：%+v", st)
+	}
 }
 
 func TestMCP_HubLifecycleAndToolExecution(t *testing.T) {
@@ -824,6 +911,9 @@ func TestLoopE2E_MCPTool(t *testing.T) {
 				"env": {
 					"GO_WANT_HELPER_MCP": "1"
 				}
+			},
+			"broken": {
+				"command": "ecdi-no-such-mcp-server-for-test"
 			}
 		}
 	}`, mustJSON(os.Args[0]))
@@ -861,6 +951,44 @@ func TestLoopE2E_MCPTool(t *testing.T) {
 	if !hasMCP {
 		t.Fatalf("mcp cap missing in hello: %v", hello["caps"])
 	}
+
+	// 1b. ★ 2026-11-06：产品面状态（hello.mcp）——好服务带工具数、坏服务带原因、
+	//    来源/路径可核对。这是 GUI 副标/卡片/失败告警的唯一数据源。
+	st, ok := hello["mcp"].(map[string]any)
+	if !ok {
+		t.Fatalf("hello 应带 mcp 状态对象：%v", hello)
+	}
+	if st["source"] != "workspace" || st["config"] != mcpPath {
+		t.Fatalf("mcp 来源/路径不符：%v", st)
+	}
+	services, _ := st["services"].([]any)
+	if len(services) != 1 {
+		t.Fatalf("mcp.services 应只有 mock（broken 不算服务）：%v", st["services"])
+	}
+	svc, _ := services[0].(map[string]any)
+	if svc["name"] != "mock" || svc["tools"] != float64(6) {
+		t.Fatalf("mcp.services[0] 应为 mock/6：%v", svc)
+	}
+	failed, _ := st["failed"].([]any)
+	if len(failed) != 1 {
+		t.Fatalf("mcp.failed 应含 broken：%v", st["failed"])
+	}
+	fail, _ := failed[0].(map[string]any)
+	if fail["name"] != "broken" {
+		t.Fatalf("mcp.failed[0].name 应为 broken：%v", fail)
+	}
+	if msg, _ := fail["error"].(string); msg == "" {
+		t.Fatalf("mcp.failed[0].error 必须非空：%v", fail)
+	}
+
+	// 1c. 启动失败必须发 system 块（产品模式默认可见，且进 journal）。
+	waitFor(t, col, "[MCP] 启动失败块", func(m map[string]any) bool {
+		if m["t"] != "block_start" || m["kind"] != "system" {
+			return false
+		}
+		text, _ := m["text"].(string)
+		return strings.Contains(text, "服务 broken 启动失败")
+	})
 
 	// 2. 发 prompt
 	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"请调用 echo 服务"}`)

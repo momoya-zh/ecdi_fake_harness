@@ -344,6 +344,10 @@ struct CliOptions {
     //   工具行 + 标题/正文与模型一致」，负对照（demo）断「无 job 就不得出现后台
     //   字样」——见 ProbeJob.cpp。
     bool jobProbe = false;             // --job-probe：后台作业卡片判据
+    // ★★ 2026-11-06：MCP 产品面可见性（hello.mcp）。正向夹具断「副标/卡片/
+    //   失败 system 块与模型侧一致」，负对照（demo）断「没有 mcp 字段就一段都
+    //   不出现」——见 ProbeMcp.cpp。
+    bool mcpProbe = false;             // --mcp-probe：MCP 状态可见性判据
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
 
@@ -355,7 +359,7 @@ struct CliOptions {
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
                growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe ||
-               agentProbe || proposalProbe || jobProbe;
+               agentProbe || proposalProbe || jobProbe || mcpProbe;
     }
 };
 

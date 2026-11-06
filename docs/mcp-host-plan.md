@@ -1,7 +1,7 @@
 # MCP Host 接入方案与落地记录
 
 日期：2026-11-05。前置：`docs/positioning.md` §5（MCP 决策 A：harness 管理 MCP 配置）、L1 沙盒（`ed85206`）、后台长任务（`5f6e1f4`）。
-状态：**已落地并复核修订（2026-11-05 二版；同日三版补入参 schema 规约）**。
+状态：**已落地并复核修订（2026-11-05 二版；同日三版补入参 schema 规约；2026-11-06 四版放开 ask 提案卡、五版补产品面可见性）**。
 
 > ★ 二版说明：一版（外部实现）把功能跑通了，评审发现 8 处需要收口的地方，
 > 二版全部改完并补了判据。改动清单见 §六「修订记录」——本文正文描述的是
@@ -100,20 +100,22 @@
 
 | 模块 | 职责 | 状态 |
 |---|---|---|
-| `core/cmd/ecdi-core/mcp.go` | JSON-RPC 2.0 协议层、`mcpClient`（单 server 的 stdio 握手/调用）、`mcpHub`（多 server 注册、配置解析、工具发现与调度、死亡登记、**入参 schema 规约**） | ✅ |
+| `core/cmd/ecdi-core/mcp.go` | JSON-RPC 2.0 协议层、`mcpClient`（单 server 的 stdio 握手/调用）、`mcpHub`（多 server 注册、配置解析、工具发现与调度、死亡登记、**入参 schema 规约**、**启动期状态快照 `Status()`**） | ✅ |
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
-| `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、E2E | ✅ 12 案全绿 |
-| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **32 条断言**（含 ask 门与**提案卡 detail**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
+| `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、**启动状态/配置错误可见**、E2E | ✅ 14 案全绿 |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **37 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句（四版起用**真实工具名**）；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
-| `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理 | ✅ |
+| `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理；**`hello.mcp` + 启动失败 `system` 块** | ✅ 五版新增 |
 | `diff.go` | MCP 提案卡 `mcpAskDetail`（判别值 `"mcp"` + server/toolName/argsKv；理由与教训见 §二.8） | ✅ 四版同批放开 |
-| `docs/` + `README` | 决策、偏差、已知缺口 | ✅ 二版重写 |
+| `gui/src/AppMcp.cpp` | 会话头副标 `MCP N 个服务 / M 个工具`、检视栏「MCP」卡（来源/服务/失败/禁用）、失败行渲染 | ✅ 五版新增 |
+| `gui/src/ProbeMcp.cpp` | `--mcp-probe`：模型 `hello.mcp` ⇔ 副标/卡片/失败行的两路对齐 + 负对照 | ✅ 五版新增 |
+| `docs/` + `README` | 决策、偏差、已知缺口 | ✅ 二版重写；五版补可见性 |
 
-## 四、 验收读数（2026-11-05 二版 + 同日三版补丁，实测）
+## 四、 验收读数（2026-11-05 二版 + 同日三版补丁 + 2026-11-06 四/五版增补，实测）
 
-1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**12 案全绿**，
+1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**14 案全绿**，
    `-race -count=3` 无竞态报告。新增的判据都带**区分力**：
    - `TestMCP_ProcessTreeKilled`：孙进程心跳文件在 `hub.Close()` 后必须停止生长。
      ★ 做了变异验证——把整树句柄拿掉（只留 `Process.Kill`）这条**会红**
@@ -125,12 +127,17 @@
      不能被误删；外链 `$ref` 原样保留；原 `InputSchema` 不被改写。
    - `TestMCP_OutputClip`：超限必须带「中间省略」标注，未超限逐字不动；
    - `TestMCP_DeadServerNotice`：崩溃后必须**非空**说明，且死亡通告「只说一次」；
-   - `TestMCP_ToolsListPagination`：`nextCursor` 追到底，两页工具都在。
-2. **E2E 口径修正**：`TestLoopE2E_MCPTool` 原先断言 core 自己发的
-   `detail.tool/server/mcpTool` 三个字段——那是**把错误的契约认证成了绿的**。
-   现在断言的是 `ask` **没有** `detail`，并核对问句里带服务名与工具名。
+   - `TestMCP_ToolsListPagination`：`nextCursor` 追到底，两页工具都在；
+   - `TestMCP_HubStatus`（五版新增）：好服务带工具数、坏服务带非空原因、禁用不混进
+     Services/Failed；无配置时 `hasEvidence()` 为假（不得长出 0 服务卡）；
+   - `TestMCP_ConfigProblemVisible`（五版新增）：显式路径不存在 ⇒ hub 非 nil 且
+     `status.Problem` 非空（不静默退回下一级）；坏 JSON ⇒ 返回 hub + error，状态仍可见。
+2. **E2E 口径**：`TestLoopE2E_MCPTool` 四版起断言 `ask` **带** `detail`（判别值
+   `"mcp"`、server/toolName 真名、argsKv 与调用参数一致）；五版同批硬化：
+   配置里加一个必然失败的服务，断言 `hello.mcp.services` 为 mock/6、`failed` 含
+   `broken` 且 error 非空，并等到一条 `[MCP] 服务 broken 启动失败` 的 `system` 块。
 3. **回归门**：`go build ./...` OK · `go vet` 干净 · `GOOS=linux` / `GOOS=darwin/arm64`
-   交叉编译 OK · `protocol/validate.py` 17/17 · `tools/precommit-check.py` BOM 漂移 0。
+   交叉编译 OK · `protocol/validate.py` **18/18** · `tools/precommit-check.py` BOM 漂移 0。
 4. **全量单测**（`go test ./...`）连跑 **5 次全绿**。★ 顺带修掉了一条**既存 flaky**
    （`TestLoopE2E_BackgroundJob`，来源 `5f6e1f4`，与 MCP 无关）：它在 `bye` 之后断言
    echo 应以 `exited/0` 结束，而脚本第 3 轮发的正是 `job_kill` —— `job_output` 的语义是
@@ -138,9 +145,9 @@
    **不是产品缺陷，是测试自己前后矛盾**：断言要「正常退出」，脚本却在杀它。
    修法：第 3 轮改 `job_list`（同样是「控制工具不过 ask 门」的证据，`job_kill` 的语义由
    `jobs_test.go:297` 的 `toolKill` 单测覆盖）+ bye 之前先等 `job end`。
-5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版 2026-11-06 增补提案卡断言）**：不是只握手——
+5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版 2026-11-06 增补提案卡断言、五版同日增补 `hello.mcp` 状态）**：不是只握手——
    一次真实工具调用从模型请求穿到 server 再穿回来。真 `ecdi-core.exe` + 真 stdio server
-   （python）+ 脚本化 SSE 端点，**两臂 32 条断言全绿**：
+   （python）+ 脚本化 SSE 端点，**两臂 37 条断言全绿**：
    - **A 正常**：`hello protocol=6` 且 `caps` 增 `"mcp"`；服务端协商到 `2025-06-18`（只告警，
      见 §二.4）；`tools/list` 两页全追（2 个工具）；上交模型的压缩名是
      `mcp__smoke__git_status` 与 `mcp__smoke______`（中文名逐 rune 折 `_`，全部 ≤64 且落在
@@ -149,25 +156,30 @@
      `tools/call` 真执行（server 回执 `ok: {"short": true}`，证明参数穿过 JSON-RPC）；结果
      回模型、第二轮收尾回 `idle`；bye 退出码 0 且 server **无残留**（整树清退的第三个独立判据）。
    - **B 降级**：不存在的命令 + 正常服务 ⇒ 坏服务被点名（`启动服务 broken 失败`）、好服务
-     照常注册 2 个工具、`caps` 仍带 `mcp`、退出码 0。
+     照常注册 2 个工具、`caps` 仍带 `mcp`、退出码 0；五版起同臂断言
+     `hello.mcp.services` 含 smoke/2、`failed` 含 broken 且 error 非空，并等到一条
+     `[MCP] 服务 broken 启动失败` 的 `system` 块。
    - **边界（如实）**：模型端点是脚本化 SSE，不是真厂商端点；MCP server 是仓库自带 mock；
-     不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**（提案卡的 GUI 面由 `--proposal-probe`
-     夹具与 `validate.py` 覆盖）。读数落 `.scratch/mcp-smoke/`
+     不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**（提案卡由 `--proposal-probe`、MCP 状态由 `--mcp-probe` 的夹具覆盖）。读数落 `.scratch/mcp-smoke/`
      （`result.json` + `fake-llm.log`，gitignored），复跑只差一条 `go build`。
-   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==32`（钉死，少一条即红）、
+   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==37`（钉死，少一条即红）、
      `failed==0`、`rc==0`。缺二进制显式 **SKIP**（§2e 的 rebuild 已计过失败，不重复计数）；
      二进制比 `core/**/*.go` 旧按 **FAILED**（测旧代码比不测更糟）；超时按 FAILED（drive.py
-     自带 90s 看门狗，先清子进程再退出）。负对照实测（四版后复测）：拿掉 `server.py` ⇒
-   **13/32 green、15 failed、门变红**（含 `A/ask 带提案卡 detail`）；恢复后 32/32 回绿。
+     自带 90s 看门狗，先清子进程再退出）。负对照实测（五版后复测）：拿掉 `server.py` ⇒
+   **15/37 green、18 failed、门变红**（含 `A/hello.mcp 列出 smoke/2 工具且无失败`、
+   `B/hello.mcp 列出好服务与 broken 失败`、`A/无 MCP 失败 system 块`）；恢复后 37/37 回绿。
 ## 五、 明确的已知缺口（下一步的输入）
 
 | 缺什么 | 说明 |
 |---|---|
 | HTTP / Streamable HTTP 传输 | 只有 stdio 进程。远程或持久连接留作扩展（传输层现在写死在 `startAndInit` 里） |
-| 产品面可见性 | `positioning` §5.1 的图把「配置管理」画在 `harness_gui` 上，实现是 core 全包、GUI 零入口 ⇒ 用户写了 `mcp.json` 界面上没有任何确认（只有 stderr）。至少要有「MCP：N 个服务 / M 个工具」的只读展示 + 启动失败告警 |
 | 取消语义 | 取消只让我们不再等，server 侧调用照跑（没发 `notifications/cancelled`），而 GUI 已显示「已取消」 |
 | respawn | 崩掉不重启（刻意的，见 §二.7） |
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
+
+★ **产品面可见性已于 2026-11-06 闭合（五版，§八）**：`hello.mcp` 启动期状态 +
+会话头副标 + 检视栏「MCP」卡 + 失败 `system` 块 + `--mcp-probe` 正反对照。
+本表不再把它列为缺口。
 
 ★ 提案卡（GUI 侧）与问句工具名两项已于 2026-11-06 闭合（§二.8 四版）：`tool:"mcp"`
 判别值 + 渲染分支 core/GUI/协议/测试同批落地，问句经 `hub.Lookup` 用真实工具名。
@@ -210,3 +222,40 @@
 - **诚实边界**：展开是文本级深拷贝，同一 `$defs` 被多处引用时会被复制，请求体
   可能变大；当前**没有**节点/字节预算，指数级 `$ref` 图理论上可放大请求体。
   MCP 不是安全边界（§二.7），这条按已知边界记录，不假装它是沙盒。
+
+## 八、 五版（2026-11-06）：产品面可见性
+
+- **问题**：`positioning` §5.1 把「配置管理」画在 `harness_gui` 上，实现是 core 全包、
+  GUI 零入口 ⇒ 用户写了 `mcp.json` 界面上没有任何确认（只有 stderr）；服务启动失败
+  与「根本没配」在界面上完全一样。MCP 的 ask 提案卡与工具名已在四版闭合，本版补的
+  是**配置/启动状态**这最后一块产品面。
+- **数据通道**：`hello` 增可选 `mcp` 对象（§3.1 / 协议 §3.1）：
+  `source`（explicit/workspace/global）、`config`（实际路径）、`services:[{name,tools}]`、
+  `failed:[{name,error}]`、`disabled`、`problem`（配置层错误）。数组恒为数组、按服务名
+  升序；只要发现/尝试过配置就发（全失败/全禁用也发），完全没配置则不发。
+  ★ 与 `caps.mcp` **正交**：`caps.mcp` 仍只表示"已注册 ≥1 个工具"；失败时 caps 不声明，
+  但 `hello.mcp.failed` 必须让 GUI 能说清楚。
+- **失败告警**：`hello` 之后逐条发 `system` 块（与运行期 `TakeDeadNotices` 同形态）：
+  `[MCP] 服务 <name> 启动失败：<error>（本次未启用）`、`[MCP] 配置错误：<problem>`。
+  成功不刷屏——状态在副标/卡里。产品模式默认视图（用户模式）也能看到失败，且进 journal。
+- **GUI**：`AppMcp.cpp` 负责会话头副标 `MCP N 个服务 / M 个工具`（失败追加
+  `（K 个失败）`、禁用追加 `（K 个禁用）`、配置错误显示 `MCP 配置错误`）与检视栏
+  「MCP」卡（来源 / 服务行 / 红色失败行 / 禁用行）。**GUI 不扫 `mcp.json`、不猜服务名**，
+  `failed[].error` 原样透出。缺 `hello.mcp` 时副标与卡片整段不出现。
+- **判据**：
+  - core：`TestMCP_HubStatus`（好/坏/禁用三路 + 无配置不发）、
+    `TestMCP_ConfigProblemVisible`（显式路径不存在 / 坏 JSON 仍带 Problem）、
+    `TestLoopE2E_MCPTool`（`hello.mcp` 字段 + 失败 `system` 块）；
+  - 冒烟：37 条（A 增 `hello.mcp` 来源/服务/无失败块，B 增好服务+broken 失败与失败块）；
+  - GUI：`--mcp-probe`（`ProbeMcp.cpp`）——模型侧 `hello.mcp` 与副标/卡片行数/服务名/
+    失败名/`system` 行逐项对齐；夹具 `fixtures/mcp/status.jsonl`；
+    **负对照另跑一支**（demo 无 `mcp` 字段 ⇒ 卡片、副标 MCP 段、失败行全缺）。
+- **诚实边界**：
+  1. 这是**启动期快照**：运行期服务崩掉仍只走 `noteDead` → `system` 块，卡片不会把
+     已死服务改成红行（要实时状态得另开控制面消息，不在本期）。
+  2. MCP hub 在会话创建时按**初始工作区**初始化；切换工作区不会重新发现 `mcp.json`
+     （与工具表/记忆的既有边界同源，未在本期改动）。
+  3. 失败 `system` 块沿用 `system` 的弱化色（与死亡通告一致）；红色只在检视栏卡的
+     失败行与副标的「K 个失败」上。产品模式默认可见，但不靠颜色叫醒。
+  4. `--mcp-probe` 跑在开发者模式（任一探针即开发者模式）；用户模式走**同一个**
+     `McpStatusText()`，但「用户模式零探针」的既有缺口（README「还」不能做）未在本期闭合。

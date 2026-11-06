@@ -234,6 +234,17 @@ def arm_a(core, llm, port):
         if hello:
             check("A/hello.protocol == 6", hello.get("protocol") == 6, hello.get("protocol"))
             check("A/caps 含 mcp", "mcp" in (hello.get("caps") or []), hello.get("caps"))
+            # ★ 2026-11-06：产品面状态快照（GUI 副标/卡片的唯一数据源）。
+            mcp = hello.get("mcp")
+            check("A/hello.mcp 在场且来源为显式配置",
+                  isinstance(mcp, dict) and mcp.get("source") == "explicit"
+                  and str(mcp.get("config", "")).endswith("mcp.json"), mcp)
+            if isinstance(mcp, dict):
+                svcs = mcp.get("services") or []
+                fails = mcp.get("failed") or []
+                check("A/hello.mcp 列出 smoke/2 工具且无失败",
+                      svcs == [{"name": "smoke", "tools": 2}] and fails == [],
+                      {"services": svcs, "failed": fails})
         c.send({"t": "hello", "seq": 0})
         c.send({"t": "prompt", "seq": 1, "text": "请查看 git 状态", "client_id": "smoke-c1"})
 
@@ -292,6 +303,11 @@ def arm_a(core, llm, port):
     check("A/stderr: 1 个服务 2 个工具", "1 个服务、2 个工具" in err, err[:200])
     check("A/stderr: hub 注册 2 个工具", "mcp hub initialized: 2 tools registered" in err)
     check("A/stderr: 协商差异被说出来", "2025-06-18" in err and "协商" in err)
+    # ★ 成功路径不得往转录里塞失败行（失败块只在 Failed/Problem 非空时发）。
+    mcp_fail_blocks = [m for m in c.lines
+                       if m.get("t") == "block_start" and m.get("kind") == "system"
+                       and "[MCP]" in m.get("text", "")]
+    check("A/无 MCP 失败 system 块", not mcp_fail_blocks, len(mcp_fail_blocks))
 
     names = list(llm.mcp_names)
     check("A/上交给模型的 MCP 工具数 == 2", len(names) == 2, names)
@@ -309,6 +325,22 @@ def arm_b(core, port):
         check("B/坏服务不挡 hello", hello is not None)
         if hello:
             check("B/caps 仍含 mcp", "mcp" in (hello.get("caps") or []), hello.get("caps"))
+            mcp = hello.get("mcp")
+            svcs = (mcp or {}).get("services") or []
+            fails = (mcp or {}).get("failed") or []
+            check("B/hello.mcp 列出好服务与 broken 失败",
+                  isinstance(mcp, dict)
+                  and any(s.get("name") == "smoke" and s.get("tools") == 2 for s in svcs)
+                  and any(f.get("name") == "broken" and f.get("error") for f in fails),
+                  {"services": svcs, "failed": fails})
+            # ★ 失败同时进 hello.mcp（状态）与 system 块（事件）——后者不受
+            #   检视栏是否打开影响，产品模式默认视图也看得见。
+            block = wait_for(c, lambda m: m.get("t") == "block_start"
+                             and m.get("kind") == "system"
+                             and "[MCP]" in m.get("text", "")
+                             and "broken" in m.get("text", ""), 10)
+            check("B/失败 system 块可见", block is not None,
+                  (block or {}).get("text", "")[:160])
         c.send({"t": "hello", "seq": 0})
         time.sleep(0.5)
         c.send({"t": "bye", "seq": 1})

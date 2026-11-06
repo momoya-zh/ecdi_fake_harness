@@ -263,6 +263,10 @@ private:
         //     130px 给一张空卡。
         ECDI::Panel* inspAgentCard = nullptr;
         ECDI::Panel* agentList = nullptr;
+        // ★★ 2026-11-06：右栏「MCP」卡片（hello.mcp）。默认隐藏，有 MCP 状态时
+        //   显形；行内容由 RebuildMcpCard 从 core 快照重建。
+        ECDI::Panel* inspMcpCard = nullptr;
+        ECDI::Panel* mcpList = nullptr;
         // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip + 下拉浮窗。
         ECDI::Button* modelChip = nullptr;       // 顶栏：`提供商 › 模型 · N% ▾`
         ECDI::Panel* modelPopup = nullptr;       // 浮窗壳（挂 m_scroll，顶部下拉）
@@ -688,6 +692,27 @@ private:
         std::string skipReason;
     };
 
+    // ── ★★ 2026-11-06：MCP 启动期状态（hello.mcp，产品面可见性）──
+    //   core 是唯一权威：GUI 不扫 mcp.json、不猜服务名。字段与协议 §3.1 一一对应；
+    //   `has` 为 false ⇒ 本次会话没有 MCP 状态（不显示副标/卡片，不是"0 个服务"）。
+    struct McpServiceItem {
+        std::string name;
+        int tools = 0;
+    };
+    struct McpFailureItem {
+        std::string name;
+        std::string error;
+    };
+    struct McpStatus {
+        bool has = false;
+        std::string source;       // explicit / workspace / global
+        std::string config;       // 实际读取的配置路径
+        std::vector<McpServiceItem> services;
+        std::vector<McpFailureItem> failed;
+        int disabled = 0;
+        std::string problem;      // 配置层错误（解析失败 / 显式路径不存在）
+    };
+
     struct Session {
         // ── 消息源 / 反向通道 ──
         std::unique_ptr<MessageSource> source;    // 多态持有（Next/Send/IsLive）
@@ -846,6 +871,11 @@ private:
 
         // ── ★★ 2026-10-28：L3 记忆文件（从 hello.memories 提取）──
         std::vector<MemoryFileItem> memories;
+
+        // ── ★★ 2026-11-06：MCP 启动期状态（从 hello.mcp 提取）──
+        //   ★ 和 memories 同一纪律：信息**只来自 core**，GUI 不扫配置推断；
+        //     没有 `mcp` 字段 ⇒ has=false ⇒ 副标/卡片都不出现（不发 0 服务）。
+        McpStatus mcp;
     };
 
     // ── L1 会话持久化辅助 ──
@@ -1850,6 +1880,15 @@ private:
     //   在每次 `agent` 生命周期消息到达时重建列表（代理数是动态的）。
     void BuildAgentCard(ECDI::Panel& insp, int rowH);
     void RebuildAgentList();
+    // ★★ 2026-11-06：右栏「MCP」卡与副标（实现全在 `AppMcp.cpp`）。
+    //   状态来源只有 `hello.mcp`；无该字段 ⇒ `RebuildMcpCard` 隐藏卡片、
+    //   `McpStatusText` 返回空串（副标不拼 MCP 段）。
+    void BuildMcpCard(ECDI::Panel& insp, int rowH);
+    void RebuildMcpCard();
+    std::string McpStatusText() const;
+    // ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。判据与负对照见 ProbeMcp.cpp 头注。
+    void RunMcpProbe();
+    void AppendMcpProbeSummary(std::string& json);
     // 已 start 且未 end 的子代理数（顶栏胶囊的「N代理」与卡片的"进行中"同源）。
     size_t ActiveAgentCount() const;
     // 把转录滚到某个子代理的第一行（`agentId` 空 = 不做任何事）。

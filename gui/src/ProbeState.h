@@ -60,6 +60,10 @@ struct ProbeState {
     std::vector<JobProbeRec> jobProbeLog;
     bool jobProbeDone = false;
 
+    // ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。同步探针，一相。
+    std::vector<McpProbeRec> mcpProbeLog;
+    bool mcpProbeDone = false;
+
     int reasoningProbeStep = 0;
     std::chrono::steady_clock::time_point reasoningProbeNextAt;
     bool reasoningProbeDone = false;
