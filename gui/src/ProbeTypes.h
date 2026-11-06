@@ -508,3 +508,35 @@ struct McpProbeRec {
     bool matched = true;               // 元断言（见 ProbeMcp.cpp 头注）
     std::string note;
 };
+
+// ★★ 2026-11-06：开发者模式与用户模式分流判据（--mode-probe）。
+//   闭合 P4 Phase J 已知缺口（用户模式零探针覆盖）：
+//     · baseline-dev: 初始处于开发者模式，所有评估控件/胶囊/底栏/历史区全部可见，三按钮宽 28px
+//     · switch-user:  通过 Ctrl+Shift+D 切换至用户模式，评估控件全数隐藏，检视栏收起，三按钮宽 44px
+//     · dev-restored: 再次切换切回开发者模式，所有控件完全恢复（无单向残留，可逆性）
+//     · negative:     负对照（反向断言必红，证明断言有区分力）
+struct ModeProbeRec {
+    std::string phase;
+    bool devMode = false;
+    bool inspectorVisible = false;
+    bool sessChipVisible = false;
+    bool modeChipVisible = false;
+    bool rowChipVisible = false;
+    bool backendChipVisible = false;
+    bool statusBarVisible = false;
+    bool sessProgressVisible = false;
+    bool replayBarVisible = false;
+    bool historyHeaderVisible = false;
+    bool historyListVisible = false;
+    bool historyCountVisible = false;
+    bool inspProbeCardVisible = false;
+    std::string exportText;
+    int exportWidth = 0;
+    std::string inspectorText;
+    int inspectorWidth = 0;
+    std::string moreText;
+    int moreWidth = 0;
+    std::string devMenuText;
+    bool matched = true;
+    std::string note;
+};

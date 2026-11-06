@@ -387,6 +387,7 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::settingsProbe, &ProbeState::settingsProbeDone, &HarnessApp::RunSettingsProbe},
                 {&CliOptions::themeProbe, &ProbeState::themeProbeDone, &HarnessApp::RunThemeProbe},
                 {&CliOptions::historyProbe, &ProbeState::historyProbeDone, &HarnessApp::RunHistoryProbe},
+                {&CliOptions::modeProbe, &ProbeState::modeProbeDone, &HarnessApp::RunModeProbe},
             };
             for (const ProbeStep& step : kSettleSteps) {
                 if (m_options.*step.enabled && !(m_probeState.*step.done)) (this->*step.run)();

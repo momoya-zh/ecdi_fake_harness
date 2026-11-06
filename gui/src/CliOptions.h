@@ -350,8 +350,11 @@ struct CliOptions {
     bool mcpProbe = false;             // --mcp-probe：MCP 状态可见性判据
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
+    bool modeProbe = false;             // --mode-probe：开发者视图 ↔ 用户模式分流判据（P4 Phase J 缺口闭合）
+    bool anyProbeSeen = false;          // 命令行解析时任意探针命中（闭合手抄 flag 易遗漏的债务）
 
     [[nodiscard]] bool HasAnyProbe() const {
+        if (anyProbeSeen || modeProbe) return true;
         return cullProbe || scrollSweepStep > 0 || settingsProbe || jumpProbe ||
                keyProbe || emptyProbe || modelProbe || selectProbe || delProvProbe ||
                previewProbe || persistProbe || probeContrast || stateProbe || hitProbe ||

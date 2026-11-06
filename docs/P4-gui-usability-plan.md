@@ -212,17 +212,17 @@ m_devMode = m_options.devMode || !m_options.firstRun || m_options.HasAnyProbe();
 > 就 `SyncInputHeight()`，门对初值结构性不可见）。本轮的结论只能是：**常数是错的**（29 不是 36），
 > 高度不该依赖 `WM_SIZE` 这条旁路纠正。不主张"修掉了一个可见跳变"。
 
-**★ 已知缺口（不在本轮授权范围，明写出来）**：
-1. **用户模式零探针**——25 个探针全在开发者模式下跑，这次真正的产品面一行机器判据都没有。
-   最小补法：给 `--rebuild-probe` 或新 `--mode-probe` 加两相——① 用户模式下那几个句柄逐个
-   必须不可见；② 切回开发者模式后快照与基线一致（证明切换可逆、无残留隐藏）。
+**★ 已知缺口与闭合记录**：
+1. [已闭合 2026-11-06] **用户模式零探针**——原缺口：25 个探针全在开发者模式下跑，产品展示面无机器判据。
+   闭合方案：新增 `--mode-probe` 4 相机器判据（`baseline-dev`、`switch-user`、`dev-restored`、`negative` 负对照），
+   完整覆盖顶栏胶囊、底栏、侧栏回放项、检视栏探针卡、中栏按钮宽度与文案、菜单切换等全部 10+ 项状态及可逆性。
 2. 中栏头部 `titles` 在用户模式放宽到 **480**，与 3 个 44px 按钮共存时固定宽 = **676**；
    默认窗口中栏只有 **690**（`--resize-probe` 实测 `midW=690`）⇒ 只剩 14px。开「详情」
    （检视栏 230）后窗口 < **1106** 就溢出（`HorizontalLayout` 的 `remaining` 钳 0、固定宽子照排，
    按钮被挤出右边界）。建议回收 480 或让副标题自己省略。
-3. `CliOptions.h:281` 的 `HasAnyProbe()` **手抄 28 个 flag**：新探针忘登记 ⇒ 那个探针会跑在
-   用户模式下、读数对着一套不同的树，且没有任何东西会红。应收敛到 `main.cpp` 解析期一个
-   `anyProbeSeen`。
+3. [已闭合 2026-11-06] `CliOptions.h:281` 的 `HasAnyProbe()` **手抄 28 个 flag**：
+   闭合方案：在 `main.cpp` 参数解析循环尾部收敛为通配识别：凡匹配 `--*probe*` 参数自动置
+   `options.anyProbeSeen = true`，`HasAnyProbe()` 优先判定该标志，杜绝新增探针遗漏维护的债务。
 4. `PromptBar::SetHint` 无条件 `SetTextColor` ⇒ 每次 `RefreshHud` 多一次 `Invalidate`
    （`TextWidget::SetStyle` 内无条件失效；`Widget.cpp:431` 与 `AppStream.cpp:282` 都写着这条坑）。
    `GetTextColor()` 在，加一行同值守卫即可。

@@ -266,4 +266,8 @@ struct ProbeState {
     bool tableProbeDone = false;
     std::vector<CopyProbeRec> copyProbeLog;
     bool copyProbeDone = false;
+    std::vector<ModeProbeRec> modeProbeLog;
+    bool modeProbeDone = false;
+    int modeProbeStep = 0;
+    std::chrono::steady_clock::time_point modeProbeNextAt{};
 };

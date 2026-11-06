@@ -163,6 +163,9 @@ void HarnessApp::WriteSummary() {
     if (m_options.mcpProbe && !m_probeState.mcpProbeLog.empty()) {
         AppendMcpProbeSummary(json);
     }
+    if (m_options.modeProbe && !m_probeState.modeProbeLog.empty()) {
+        AppendModeProbeSummary(json);
+    }
     // ★★ Step 3 机读证据（2026-10-19）：ask 的**答案内容**是否进模型、是否上屏。
     //   判据（跑批脚本执行）：
     //     · baseline.matched == true（未答：answer 空、两钮都可点 —— 负对照⑥）

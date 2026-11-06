@@ -1890,6 +1890,9 @@ private:
     // ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。判据与负对照见 ProbeMcp.cpp 头注。
     void RunMcpProbe();
     void AppendMcpProbeSummary(std::string& json);
+    // ★★ 2026-11-06：开发者模式与用户模式分流判据（--mode-probe）。见 ProbeMode.cpp。
+    void RunModeProbe();
+    void AppendModeProbeSummary(std::string& json);
     // 已 start 且未 end 的子代理数（顶栏胶囊的「N代理」与卡片的"进行中"同源）。
     size_t ActiveAgentCount() const;
     // 把转录滚到某个子代理的第一行（`agentId` 空 = 不做任何事）。

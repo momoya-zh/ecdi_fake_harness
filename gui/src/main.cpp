@@ -152,6 +152,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.legacyPoll = true;      // ★ REQ-03 对照世界：每 tick 等 8ms（改动前形状）
         } else if (arg == L"--settings-probe") {
             options.settingsProbe = true;   // ★ P3.5：设置面板 + 凭据/配置/env 注入判据
+        } else if (arg == L"--mode-probe") {
+            options.modeProbe = true;       // ★ 2026-11-06：开发者视图 ↔ 用户模式分流判据
         } else if (arg == L"--config") {
             options.configPath = next();    // ★ P3.5：配置文件路径覆盖（探针/测试隔离）
             AppConfig::SetPathForTesting(options.configPath);
@@ -165,6 +167,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.devMode = true;         // ★ 强制进入开发者视图（无参启动下也可看评估 HUD）
         } else if (arg == L"--help" || arg == L"-h") {
             showUsage = true;
+        }
+        if (arg.rfind(L"--", 0) == 0 && arg.find(L"probe") != std::wstring::npos) {
+            options.anyProbeSeen = true;
         }
     }
     if (argv) LocalFree(argv);

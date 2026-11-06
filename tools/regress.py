@@ -224,6 +224,11 @@ EXTRA_PROBES = [
     #   正向：副标计数、检视栏卡行、失败 system 块三者都必须与模型侧一致；
     #   负向对照另跑一支（demo 无 mcp 字段 ⇒ 卡片/副标/失败行全缺）。
     ("--mcp-probe", "mcpProbe", MCP_STATUS, [], []),
+    # ★★ 2026-11-06：开发者视图 ↔ 用户模式分流判据（--mode-probe）。
+    #   闭合 P4 Phase J 遗留的已知硬缺口（用户模式零探针）。
+    #   正向断言 baseline-dev / switch-user / dev-restored 三相；
+    #   负对照断言 negative 相（反向断言必红，在 designed-red 中登记）。
+    ("--mode-probe", "modeProbe", DEMO, [], ["negative"]),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"
