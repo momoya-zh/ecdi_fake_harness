@@ -64,6 +64,10 @@ struct ProbeState {
     std::vector<McpProbeRec> mcpProbeLog;
     bool mcpProbeDone = false;
 
+    // ★★ 2026-11-06：回合级折叠（--fold-probe）。同步探针，一相。
+    std::vector<FoldProbeRec> foldProbeLog;
+    bool foldProbeDone = false;
+
     int reasoningProbeStep = 0;
     std::chrono::steady_clock::time_point reasoningProbeNextAt;
     bool reasoningProbeDone = false;

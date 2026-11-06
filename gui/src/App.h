@@ -472,7 +472,7 @@ private:
     //   ★ 与 `rows` 的**不变量**：两表**等长且同序**（`rows[i].timelineIdx == i`）。
     //     这条不变量可机检，构建期由 `AddRow` 保证，重建期由 `MaterializeRows` 保证。
     struct TimelineEntry {
-        enum class Kind { Block, Notice, Ask };
+        enum class Kind { Block, Notice, Ask, Fold };
         Kind kind = Kind::Block;
         // Block ⇒ 块 id（delta/block_end 回查）；Ask ⇒ 协议 ask 的 id（answer 回执用）；
         // Notice ⇒ 空（通知没有标识——它本来就不是协议对象）。
@@ -503,6 +503,32 @@ private:
         //   重建同构的**前提**：MaterializeOne 用同一份 BuildAskRow(entry, rec)
         //   重画——detail 若只活在控件里，换主题/切会话一次提案卡就退化成裸问句。
         AskDetail askDetail;
+        // ═══════════════════════════════════════════════════════════════════
+        // ★★ 2026-11-06：**回合级折叠**（回合 = 一条 user 行之后、下一条 user 行之前）。
+        //
+        //   需求原话：「read_file / grep 这类都是打印出来的……最后回答出来后能把前面的
+        //   这类都收起来，不然上下翻太费时间」。**单行**折叠早有（工具行默认收起），
+        //   缺的是**把一整段过程收成一条**——`realistic` 一个回合最多 9 行。
+        //
+        //   ★ 状态为什么必须放在这里（而不是只活在 `RowRec`）：与 `expanded` /
+        //     `answered` 同一条理由——重建只重放 `timeline`，状态只挂控件就等于
+        //     "换一次主题，整个回合又摊开了"。
+        //   ★ 为什么**不**把过程行从 `timeline` 里删掉：那样"折叠"会丢失内容，
+        //     而重建（切会话/换主题/探针）是要把同一份模型**逐条重画**的。折叠是
+        //     **可见性问题，不是存在性问题** ⇒ 条目全留着，只翻 `foldHidden`。
+        //   ★★ 摘要条落位：**插入**一条 `Kind::Fold` 条目的到 `user` 行之后
+        //     （`user` 行不变，"先看到这回合干了多少，再看到结论"）。
+        //   ★ 为什么插入是可接受的、而"删掉过程行"不可接受：插入会移动其后条目的
+        //     下标 ⇒ 必须**插入后立刻整表重建**，让 `rows[i].timelineIdx == i`
+        //     重新成立（`timeline` 只在 `RetagTurns` 里改序，其余路径一律只追加）。
+        //     "删掉过程行"则是丢内容：展开回来时条目已不存在，没法逐条重画。
+        //   ★ 为什么折叠/展开时条目数**不变**：摘要条在两种状态下都存在（展开时
+        //     它是"收起"的把手），所以切换只翻 `foldHidden`，不增删条目。
+        bool foldable = false;         // 属于回合过程（折叠时会被隐藏）
+        bool foldHidden = false;       // 当前因本回合折叠而隐藏
+        // 以下仅 `user` / `Kind::Fold` 条目使用：
+        bool turnCollapsed = true;     // user 条目：这个回合现在是折叠的
+        std::string foldSummary;       // Fold 条目：摘要条文案（算好的结果，不在渲染时现算）
     };
 
 
@@ -561,6 +587,15 @@ private:
         //   「是工具卡还是思维链」的二次判断。
         bool reasoning = false;
         bool ended = false;                       // 该块是否已 `block_end`（标题两态用）
+        // ★★ 2026-11-06：回合折叠的**视图侧**镜像。
+        //   `foldHidden` = 本行被所属回合折叠掉了（`Relayout` 跳过它，不占高度）。
+        //   `foldBar`    = 本行**就是**那条回合摘要条（`Kind::Fold`）。
+        //   ★ 为什么不直接读 `timeline[idx].foldHidden`：`SnapshotRows` 的纪律是
+        //     "只读 RowRec 上已有的东西"（见上方 answer 字段的长注释）——两侧都回查
+        //     模型会让 A==B 恒等，折叠这类"该可见的行没显示"的缺陷就再也测不出来了。
+        bool foldable = false;                    // 本行属于回合过程（可被折叠）
+        bool foldHidden = false;
+        bool foldBar = false;
         bool hasTable = false;                    // 富内容二期：是否包含 Markdown 表格
         std::vector<ECDI::Widget*> segments;      // 富内容段落/表格控件列表（非拥有）
         // ★★ 富内容二期第二轮（2026-11-01，T1+T2 裁决）：表格内部布局的**可重跑**元数据。
@@ -1011,6 +1046,32 @@ private:
     //     登记条目、自动应答）。重建期走本函数，**纯渲染、零副作用**——
     //     否则重建一次就等于把用户做过的决策重放一次。
     void MaterializeOne(size_t idx, const TimelineEntry& entry);
+    // ── ★★ 2026-11-06 回合级折叠 ─────────────────────────────────────────
+    // 把 `timeline` 重切成"回合"并算出每条过程行的 `foldable`/`foldHidden`，以及
+    // 摘要条（`Kind::Fold`）的位置。**唯一**写 `Kind::Fold` 条目的地方。
+    //   ★ 幂等、可从 `timeline` 完全重算 ⇒ 重建前后不会漂移（这是它敢写进模型的前提）。
+    //   ★ 只在 `state → idle` / 展开切换 / 回放收尾这几个时刻调用；**不**逐帧跑。
+    //   ★ 返回 `true` = 有可见变化（有条目改了 Kind 或 foldHidden），调用方据此
+    //     决定要不要付一次整表重建。`state:idle` 每回合都会到，重建不免费，
+    //     所以"没变化"必须能被区分出来（而不是由调用方再算一遍）。
+    bool RetagTurns();
+    // 把摘要条插到对应 `user` 行之后（`RetagTurns` 的唯一改序点）。
+    //   ★ 单列的理由：`timeline` 的下标是 `rows[i].timelineIdx` 的另一半，
+    //     "按下标改序"只能有一处实现。
+    bool ApplyTurnInserts(const std::vector<TimelineEntry>& inserts);
+    // `timeline[i]` 是不是一个回合的开头（user 行）。
+    bool IsUserEntry(const TimelineEntry& entry) const;
+    // 把 `timeline[*].foldHidden` 落到 `rows[*].foldHidden` + 控件可见性上。
+    //   ★ 单个同步点，两个调用者：`RebuildTranscriptView`（重建后）与 `ToggleTurn`
+    //     （点击后）。**不**放进 `Relayout`——那会让布局函数写模型，而 `Relayout`
+    //     也被 resize/换主题等"没有新模型"的路径调用。
+    void ApplyFoldVisibility();
+    // 一个回合的摘要文案（"› 已完成 · 12 步 · 3.4s"）。**纯函数**，可单测。
+    std::string TurnSummary(size_t begin, size_t end) const;
+    // 折叠/展开展开一个回合（点击摘要条与探针共用的**唯一**入口）。
+    void ToggleTurn(size_t foldIdx);
+    // 摘要条的控件构造（`Kind::Fold` 的渲染）。
+    std::unique_ptr<ECDI::Widget> BuildFoldRow(const TimelineEntry& entry, RowRec& rec);
     // 可折叠行的点击回调绑定（构建期与重建期共用；含「写回条目」这一步）。
     //   ★★ 2026-10-27：形参从 `(const Block&, RowRec&)` 收成 `(RowRec&)`——
     //     `Block` 那一版只被 `(void)` 掉，而权限门行没有 Block（来自
@@ -1367,6 +1428,8 @@ private:
     void AppendSidebarProbeSummary(std::string& json);   // ProbeSidebar.cpp
     void AppendAgentProbeSummary(std::string& json);     // ProbeAgents.cpp（v5）
     void AppendProposalProbeSummary(std::string& json);  // ProbeProposal.cpp（v5 提案卡）
+    void AppendMcpProbeSummary(std::string& json);       // ProbeMcp.cpp（2026-11-06）
+    void AppendFoldProbeSummary(std::string& json);      // ProbeFold.cpp（回合级折叠）
     void AppendJobProbeSummary(std::string& json);       // ProbeJob.cpp（v6 后台作业）
     void AppendAnswerProbeSummary(std::string& json);   // ProbeTranscript.cpp
     void AppendMenuProbeSummary(std::string& json);   // ProbeChrome.cpp
@@ -1893,7 +1956,6 @@ private:
     std::string McpStatusText() const;
     // ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。判据与负对照见 ProbeMcp.cpp 头注。
     void RunMcpProbe();
-    void AppendMcpProbeSummary(std::string& json);
     // ★★ 2026-11-06：开发者模式与用户模式分流判据（--mode-probe）。见 ProbeMode.cpp。
     void RunModeProbe();
     void AppendModeProbeSummary(std::string& json);
@@ -1907,6 +1969,11 @@ private:
     void RunProposalProbe();
     // ★★ 协议 v6（2026-11-05）：后台作业卡片。判据与负对照见 ProbeJob.cpp 头注。
     void RunJobProbe();
+    // ★★ 2026-11-06：回合级折叠判据（ProbeFold.cpp）。含展开↔折叠往返，
+    //   故会触发一次整表重建——只在探针调用，不在任何热路径上。
+    void RunFoldProbe();
+    // 侧栏/模型侧：当前可见的过程行条数（ProbeFold 往返判据用）。
+    size_t CountVisibleProcRows() const;
     // job 消息的唯一入口（RouteLastMessage 调）：更新 jobsByCall / jobCalls，
     // 再把状态写到对应工具行。**不发协议消息、不建行、不动 timeline**。
     void HandleJobMessage(const json::Value& msg);

@@ -348,6 +348,9 @@ struct CliOptions {
     //   失败 system 块与模型侧一致」，负对照（demo）断「没有 mcp 字段就一段都
     //   不出现」——见 ProbeMcp.cpp。
     bool mcpProbe = false;             // --mcp-probe：MCP 状态可见性判据
+    // ★★ 2026-11-06：回合级折叠（--fold-probe）。正臂证明"过程行真的从屏上消失
+    //   且摘要条在位"，负臂证明"过程行不足时不折"。详见 ProbeFold.cpp。
+    bool foldProbe = false;
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
     bool modeProbe = false;             // --mode-probe：开发者视图 ↔ 用户模式分流判据（P4 Phase J 缺口闭合）
@@ -362,7 +365,7 @@ struct CliOptions {
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
                growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe ||
-               agentProbe || proposalProbe || jobProbe || mcpProbe;
+               agentProbe || proposalProbe || jobProbe || mcpProbe || foldProbe;
     }
 };
 

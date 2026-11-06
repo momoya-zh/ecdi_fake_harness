@@ -193,6 +193,27 @@ void HarnessApp::Relayout() {
     //   （见下方 gutter 高度）。行数 O(n)，多一次比较不改变复杂度。
     for (size_t rowIdx = 0; rowIdx < m_sess->rows.size(); ++rowIdx) {
         RowRec& r = m_sess->rows[rowIdx];
+        // ★★ 2026-11-06（回合级折叠）：被折叠过程行**不参与排版**，`y` 也不推进。
+        //   ★ 为什么必须在这里跳过、而不是只靠 `SetVisible(false)`：`ListLayout`
+        //     会跳过不可见子控件（那是 list 模式那半边的全部理由），但 autosize
+        //     这条路是**本函数手算 y 的**——它根本不问布局器。不跳过就只是"看不见
+        //     但高度还在"，屏上留下一个与折叠内容等高的空洞（回放实测的最初形态）。
+        //   ★ 为什么同时还要 `SetVisible(false)`：命中测试/绘制/`Arrange` 在
+        //     list 模式由布局器负责，可见性必须由控件自己持有。
+        if (r.foldHidden) {
+            if (r.panel) {
+                r.panel->SetVisible(false);
+                // ★★ 2026-11-06（订正）：被折叠的行**仍然要横向定位**。
+                //   只 `continue` 会让面板停在建行期的默认 x=0 ⇒ 任何"测行的横移"
+                //   的读数都会读到一个假值：`--agent-probe` 的 `indentPx` 实测变成
+                //   0 − canvasX = **−18**（子代理行被折起来时），于是它的元断言
+                //   `indentPx == kAgentIndent` 无故变红，note 里却看不出是折叠引起的。
+                //   纵向 y 不参与（不可见、不占位），所以这里只下发横坐标；
+                //   `y` 照旧不推进。
+                r.panel->SetPosition(canvasX0 + r.indent, y);
+            }
+            continue;
+        }
         // ★★ 协议 v5（2026-11-04）：子代理行右移一档。**只改宽度与横坐标**——
         //   `y` 的累加、行高的求解路径一个字不动（缩进是一次减法，不是一层新布局）。
         //   ★ 这里刻意用**同名遮蔽**：`innerW0`/`canvasX0` 是整栏的，`innerW`/`canvasX`
@@ -202,6 +223,22 @@ void HarnessApp::Relayout() {
         const int innerW = std::max(160, innerW0 - r.indent);
         const int canvasX = canvasX0 + r.indent;
         int rowH = 0;
+        // ★★ 2026-11-06：回合摘要条 = 单行通栏标题，无折叠体、无换行。
+        //   高度与工具行"收起态"取同一个数（kHeaderH + 上下各 2），
+        //   因为它在同一个槽位上与那条工具行互斥出现。
+        if (r.foldBar) {
+            if (r.headerBtn) {
+                r.headerBtn->SetSize(std::max(80, innerW - 2 * kRowPadX), kHeaderH);
+                r.headerBtn->SetPosition(kRowPadX, 2);
+            }
+            rowH = 2 + kHeaderH + 2;
+            if (r.panel) {
+                r.panel->SetSize(innerW, rowH);
+                r.panel->SetPosition(canvasX, y);
+            }
+            y += rowH + kRowGap;
+            continue;
+        }
         // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
         if (r.tool || r.reasoning || r.ask) {
             const int bodyW = innerW - 2 * kRowPadX;

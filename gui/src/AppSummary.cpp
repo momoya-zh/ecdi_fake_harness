@@ -163,6 +163,10 @@ void HarnessApp::WriteSummary() {
     if (m_options.mcpProbe && !m_probeState.mcpProbeLog.empty()) {
         AppendMcpProbeSummary(json);
     }
+    // ★★ 2026-11-06：回合级折叠。判据与负对照见 ProbeFold.cpp 头注。
+    if (m_options.foldProbe && !m_probeState.foldProbeLog.empty()) {
+        AppendFoldProbeSummary(json);
+    }
     if (m_options.modeProbe && !m_probeState.modeProbeLog.empty()) {
         AppendModeProbeSummary(json);
     }

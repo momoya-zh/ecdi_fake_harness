@@ -699,6 +699,26 @@ void HarnessApp::MaterializeOne(size_t idx, const TimelineEntry& entry) {
             AddRow(std::move(panel), rec, std::string(), idx);
             return;
         }
+        case TimelineEntry::Kind::Fold: {
+            RowRec rec;
+            auto panel = BuildFoldRow(entry, rec);
+            AddRow(std::move(panel), rec, std::string(), idx);
+            if (m_sess->rows.empty()) return;
+            RowRec& stored = m_sess->rows.back();
+            stored.expanded = entry.expanded;
+            // ★ 点击绑走 `ToggleTurn`（**唯一**的回合展开/收起入口）——探针也从
+            //   这里造状态，不另写一份"翻标志 + 重排"。
+            //   ★★ 捕获**下标**、不捕获 `RowRec&`：`ToggleTurn` 内部会整表重建，
+            //     行的 `vector` 会重新分配 ⇒ 捕获引用就是一个悬空指针
+            //     （第一版就是这么崩的：EXIT 0xC0000005，回放一结束即崩）。
+            //     下标在重建前后含义不变（`timeline` 只有本特性会改序，且改序时
+            //     连行表一起重建）。
+            const size_t foldIdx = stored.timelineIdx;
+            if (stored.headerBtn) {
+                stored.headerBtn->SetOnClick([this, foldIdx] { ToggleTurn(foldIdx); });
+            }
+            return;
+        }
     }
 }
 
@@ -743,9 +763,267 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
         }
     }
     MaterializePendingPrompts();
+    // ★★ 2026-11-06：折叠可见性必须在 `Relayout` **之前**落地——`Relayout` 是
+    //   几何函数，它只读取 `rows[*].foldHidden`（跳过被折叠的行），不写它。
+    ApplyFoldVisibility();
 
     Relayout();
     if (m_scroll) m_scroll->SetContentOffset(0, keepScroll);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ★★ 2026-11-06：回合级折叠（"回答结束后把前面的 read_file / grep 收起来"）
+//
+//   需求：转录里 `read_file` / `grep` 这类过程行是一行行平铺打印的，等最终回答
+//   出来以后，用户要往下翻很久才能看到结论。要求是**回答一结束就把这一段过程收成一条**。
+//
+//   ★ 与既有的"单行折叠"（工具行默认收起）的关系：那条折叠只收**一行自己的正文**，
+//     标题还在屏上占一行。一个回合最多 9 行过程（`realistic` 实测），所以摊开后
+//     仍然要滚很久。本功能收的是**整段**：过程行全部隐藏，只留一条摘要。
+//
+//   ★★ 三个不可让步的约束（都来自本仓已踩过的坑）：
+//     ① **状态进模型**（`TimelineEntry`）。只挂 `RowRec` ⇒ 换主题/切会话一次，
+//        整个回合又摊开（同 `expanded` / `answered` 那条老坑）。
+//        ★ 而且状态挂在**那条 `user` 条目**上（`turnCollapsed`），不是摘要条上：
+//          摘要条每次 `RetagTurns` 都会被拆掉重建（见下），状态挂在会被重建的
+//          东西上就是 0c 的老坑原样复发。
+//     ② **摘要文案只算一次**并存进条目（`foldSummary`）。回合的成员会随新消息增长，
+//        若在渲染期现算，一段已经折起来的回合，副标题会在屏幕上自己变。
+//     ③ **摘要条在两种状态下都存在**（收起 `› `／展开 `▾ `）。第一版是"展开后
+//        摘要条消失"，结果是展开一个回合以后**没有任何把手能把它再收回去**——
+//        用户只能滚到下一轮。常驻一条是这条约束的唯一可行形状。
+//
+//   ★ 实现形状：**插入并常驻**（不是替换）。`RetagTurns` 先把上一轮的 `Kind::Fold`
+//     全部摘掉、重算每回合的过程集合，再给每个够格的回合**新建**一条摘要条目、
+//     由 `ApplyTurnInserts` 插到它的 `user` 行之后；过程行只翻 `foldHidden`。
+//     ★ 代价必须说清：插入会在 `state:idle` 让 `timeline.size()` **+1/回合**，
+//       于是 `--rebuild-probe` 的 `rebuildTimelineCount` 读数口径随之改变（那支
+//       守的是"重建不增删条目"）。本仓选择接受这个代价，因为"替换式"在约束 ③
+//       上无解；两边的张力记在这里，而不是假装不存在。
+//     ★ 不够两条过程行的回合**不折**：一条工具行本来就只剩一行标题，再加一条
+//       摘要条等于**多一行 + 多一次点击**，净亏。
+//     ★ 回合里有任何块还在流（`!b->ended`）就整轮不折：折了会把正在写的那一行
+//       藏掉，而「已完成 / 耗时」当场就是假话。
+// ═══════════════════════════════════════════════════════════════════════
+
+// 一个回合的成员判定：**只有** user 行开新回合，回合内的过程行是
+// tool_call / tool_result / reasoning / 中间 assistant。
+//   ★ 为什么不数 notice / ask：通知行是 GUI 自己的诊断输出，权限门是**用户的**
+//     决定交互——把它们收起来会让"我刚才点过什么"从屏上消失，而那不是"过程噪音"。
+bool HarnessApp::IsUserEntry(const TimelineEntry& e) const {
+    if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) return false;
+    const Block* b = m_sess->transcript.FindBlock(e.id);
+    return b && b->kind == "user";
+}
+
+// 一个回合的摘要文案。**纯函数**（只读参数区间内的模型），故可被探针单独调用。
+std::string HarnessApp::TurnSummary(size_t begin, size_t end) const {
+    size_t steps = 0;
+    long long firstTs = 0;
+    long long lastTs = 0;
+    for (size_t i = begin; i < end && i < m_sess->timeline.size(); ++i) {
+        const TimelineEntry& e = m_sess->timeline[i];
+        if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
+        const Block* b = m_sess->transcript.FindBlock(e.id);
+        if (!b || b->kind == "user") continue;
+        if (b->kind == "tool_call") ++steps;
+        // 耗时口径：块自己的信封 `ts`（core 作者时刻）。缺一个就不显示——不做
+        // "用现有最大的那个代替"（那是编造读数，同 `tokens` 的纪律）。
+        if (b->tsMs > 0) {
+            if (firstTs == 0 || b->tsMs < firstTs) firstTs = b->tsMs;
+            if (b->tsMs > lastTs) lastTs = b->tsMs;
+        }
+    }
+    std::string out = "\xE2\x80\xBA ";   // › U+203A（同 ToolTitle 的选择理由：两主题都有字形）
+    out += "已完成";
+    if (steps > 0) {
+        out += " \xC2\xB7 " + std::to_string(steps) + " \xE6\xAD\xA5";   // " 步"
+    }
+    if (firstTs > 0 && lastTs > firstTs) {
+        char buf[48];
+        const double secs = static_cast<double>(lastTs - firstTs) / 1000.0;
+        std::snprintf(buf, sizeof(buf), " \xC2\xB7 %.1fs", secs);
+        out += buf;
+    }
+    return out;
+}
+
+// 把 `timeline` 重切成回合并算出折叠态。**唯一**写 `Kind::Fold` 的地方。
+//   ★ 幂等：每次都从折叠态字段重新推 `foldHidden` 集合，绝不"在上一次结果上
+//     继续翻"——那样一次失败的调用会永久留下半折叠状态。
+//   ★ 无副作用的窗口很窄：本函数只改 `timeline` 的标志与一条条目的 kind，
+//     不碰 `rows`；调用方负责随后的 `RebuildTranscriptView`（行必须跟着重建，
+//     因为 `Kind` 变了 ⇒ 那一行要换成另一棵树）。
+bool HarnessApp::RetagTurns() {
+    if (!m_sess) return false;
+    auto& tl = m_sess->timeline;
+
+    // ① 先拆掉上一次算出来的摘要条（本函数是摘要条的**唯一**作者，所以
+    //    "先全拆、再全建"是最不会漂移的形状）。
+    //   ★ 折叠态 `turnCollapsed` 挂在 **user 条目**上，不在摘要条上——摘要条每次
+    //     重算都会被重建，状态挂在它上面就会在重算时丢（这正是 0c 的老坑：
+    //     状态挂在会被重建的东西上）。
+    for (size_t i = 0; i < tl.size();) {
+        if (tl[i].kind == TimelineEntry::Kind::Fold) {
+            tl.erase(tl.begin() + static_cast<std::ptrdiff_t>(i));
+        } else {
+            ++i;
+        }
+    }
+    for (TimelineEntry& e : tl) {
+        e.foldable = false;
+        e.foldHidden = false;
+    }
+
+    // ② 逐个回合重算。回合边界：user 行开新回合（与 `SyncTurnCopyButtons` 同口径）。
+    std::vector<TimelineEntry> inserts;   // (位置在 user 之后) → 摘要条
+    size_t i = 0;
+    while (i < tl.size()) {
+        if (!IsUserEntry(tl[i])) {
+            ++i;
+            continue;
+        }
+        const size_t userIdx = i;
+        const size_t begin = i + 1;
+        size_t end = begin;
+        while (end < tl.size() && !IsUserEntry(tl[end])) ++end;
+
+        // 过程行 = 工具/思维链 + 中间 assistant。
+        //   ★ 最后一条**已结束且非空**的 assistant 是结论，不收（判据与
+        //     `SyncTurnCopyButtons` 挑复制按钮那处同源——两份判据必然漂移，
+        //     漂移的表现是"复制按钮挂在一条已经收起来的行上"）。
+        size_t lastAssistant = static_cast<size_t>(-1);
+        bool anyStreaming = false;
+        for (size_t k = begin; k < end; ++k) {
+            const TimelineEntry& e = tl[k];
+            if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
+            const Block* b = m_sess->transcript.FindBlock(e.id);
+            if (!b) continue;
+            if (!b->ended) anyStreaming = true;
+            if (b->kind == "assistant" && b->ended && !b->text.empty()) lastAssistant = k;
+        }
+        // ★ 回合还在流式 ⇒ 不折。折了会把正在写的那一行藏起来，
+        //   而且摘要条的"已完成 / 耗时"在那一刻本来就是假的。
+        if (anyStreaming) {
+            i = end;
+            continue;
+        }
+
+        std::vector<size_t> proc;
+        for (size_t k = begin; k < end; ++k) {
+            if (k == lastAssistant) continue;   // 结论不折
+            const TimelineEntry& e = tl[k];
+            if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
+            const Block* b = m_sess->transcript.FindBlock(e.id);
+            if (!b || b->kind == "user") continue;
+            if (b->kind == "tool_call" || b->kind == "tool_result" ||
+                b->kind == "reasoning" || b->kind == "assistant") {
+                proc.push_back(k);
+            }
+        }
+
+        // 少于两条过程行不值得收——一条工具行本来就是收起态（只有标题一行），
+        // 再套一层摘要条只会**多**一行、多一次点击，比现状更差。
+        if (proc.size() < 2) {
+            i = end;
+            continue;
+        }
+
+        for (size_t k : proc) tl[k].foldable = true;
+
+        // ③ 摘要条**始终存在**（折叠时它是"展开"的把手，展开时它是"收起"的把手）。
+        //   ★ 为什么不让它在展开时消失：那样展开以后就没有任何入口再把它收起来
+        //     （用户要一路翻回回合开头去找），而"收起"恰恰是这个特性存在的理由。
+        //   ★ 文案里因此带箭头两态，与工具行标题同一套约定（`ReasoningTitle`）。
+        TimelineEntry foldRow;
+        foldRow.kind = TimelineEntry::Kind::Fold;
+        foldRow.foldSummary = (tl[userIdx].turnCollapsed ? "\xE2\x80\xBA " : "\xE2\x96\xBE ")
+                              + TurnSummary(begin, end);
+        inserts.push_back(foldRow);
+
+        // ④ 折叠时隐藏过程行；展开时全部可见。
+        if (tl[userIdx].turnCollapsed) {
+            for (size_t k : proc) tl[k].foldHidden = true;
+        }
+
+        i = end;
+    }
+
+    // ⑤ 把摘要条插进 `user` 之后（`ApplyTurnInserts` 负责按下标改序）。
+    //   ★ 插入会移动其后条目的下标 ⇒ 调用方**必须**紧跟着整表重建，
+    //     让 `rows[i].timelineIdx == i` 重新成立。
+    return ApplyTurnInserts(inserts);
+}
+
+// 把摘要条插到对应 `user` 行之后。**与 `RetagTurns` 配套的唯一插入点**。
+//   ★ 单列一个函数是为了让"按下标改序"这件事只有一处实现：`timeline` 的下标
+//     是 `rows[i].timelineIdx` 的另一半，两处各改一遍必然错位。
+bool HarnessApp::ApplyTurnInserts(const std::vector<TimelineEntry>& inserts) {
+    auto& tl = m_sess->timeline;
+    if (inserts.empty()) return false;
+    size_t insertIdx = 0;
+    for (size_t i = 0; i < tl.size() && insertIdx < inserts.size(); ++i) {
+        if (!IsUserEntry(tl[i])) continue;
+        // 这条 user 之后必须有过程行才该有摘要条——判据与 `RetagTurns` 同源：
+        // 摘要是"这个回合的过程行 >= 2"，此处用 `foldable` 反查（已由上面标好）。
+        bool hasProc = false;
+        for (size_t k = i + 1; k < tl.size(); ++k) {
+            if (IsUserEntry(tl[k])) break;
+            if (tl[k].foldable) { hasProc = true; break; }
+        }
+        if (!hasProc) continue;
+        tl.insert(tl.begin() + static_cast<std::ptrdiff_t>(i + 1), inserts[insertIdx]);
+        ++insertIdx;
+        ++i;   // 跳过刚插入的摘要条本身
+    }
+    return insertIdx > 0;
+}
+
+// 折叠/展开一个回合（点击摘要条与探针共用的**唯一**入口）。
+//   ★ `foldIdx` = 摘要条（`Kind::Fold`）在 `timeline` 里的下标。
+//   ★ 状态翻的是**摘要条前面那条 `user` 条目**上的 `turnCollapsed`——摘要条自己
+//     每次 `RetagTurns` 都会被拆掉重建，状态挂在它上面会在重算时丢（0c 的老坑：
+//     状态不能挂在会被重建的东西上）。
+void HarnessApp::ToggleTurn(size_t foldIdx) {
+    if (!m_sess || foldIdx >= m_sess->timeline.size()) return;
+    if (m_sess->timeline[foldIdx].kind != TimelineEntry::Kind::Fold) return;
+
+    // 往回找这条摘要条所属的回合（紧邻的上一条 `user` 条目）。
+    size_t owner = static_cast<size_t>(-1);
+    for (size_t k = foldIdx; k-- > 0;) {
+        if (IsUserEntry(m_sess->timeline[k])) {
+            owner = k;
+            break;
+        }
+    }
+    if (owner == static_cast<size_t>(-1)) return;
+
+    // ★ 翻的是**折叠态**，不是可见性。可见性（`foldHidden` / 控件 SetVisible）
+    //   一律由 `RetagTurns` + `ApplyFoldVisibility` 从折叠态重算——否则"翻标志 +
+    //   改控件"两处各记一份，重建一次就会互相覆盖（同 0c 的展开态缺陷）。
+    m_sess->timeline[owner].turnCollapsed = !m_sess->timeline[owner].turnCollapsed;
+    // ★ 先同步视图状态进模型：重建会 `rows.clear()`，没写回的展开态就丢了。
+    SyncRowViewState();
+    RetagTurns();              // 返回值故意忽略：展开/折叠**必然**改可见性
+    RebuildTranscriptView();   // 行表必须跟着重建（条目下标移动了）
+    m_relayoutPulse = 12;      // ~400ms：覆盖内容高度跳变
+    RequestRepaint();
+}
+
+// 把模型的折叠态落到视图上。**唯一的可见性同步点**。
+//   ★ 为什么单独一个函数、且**不**放进 `Relayout`：`Relayout` 也被 resize /
+//     换主题 / 侧栏开合这些"模型没变"的路径调用；在里面写模型/控件可见性，
+//     等于让几何函数变成状态作者（`ToggleRow` 那条注释同款纪律）。
+void HarnessApp::ApplyFoldVisibility() {
+    if (!m_sess) return;
+    for (RowRec& r : m_sess->rows) {
+        if (r.timelineIdx >= m_sess->timeline.size()) continue;
+        const TimelineEntry& e = m_sess->timeline[r.timelineIdx];
+        r.foldable = e.foldable;
+        r.foldHidden = e.foldHidden;
+        r.foldBar = (e.kind == TimelineEntry::Kind::Fold);
+        if (r.panel) r.panel->SetVisible(!e.foldHidden);
+    }
 }
 
 // ── ask 的结构化提案（协议 v5 §3.6 可选 detail，2026-11-05）────────
@@ -1225,6 +1503,43 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildNoticeRow(const std::string& text
     label->SetTextColor(color);
     label->SetFont(harness::SansFont(harness::kFontSmall));   // 统一中文 face（原先落 SimSun）
     panel->AddChild(std::move(label));
+    return panel;
+}
+
+// ── ★★ 2026-11-06：回合摘要条 ───────────────────────────────────────────
+// 一条摘要条取代了这个回合原本**第一条过程行**的位置：一行可点的标题，写着
+// "› 已完成 · 5 步 · 2.3s"。点击 = `ToggleTurn`（展开回整段）。
+//   ★ 为什么做成 `TipButton` 而不是 `Label`：它必须可点、有 hover/pressed 反馈。
+//     用 `Label` + 手写命中测试会变成第二个"可点控件"实现（本仓禁止）。
+//   ★ 为什么对齐方式跟工具行标题一样是 Left：摘要条与它取代的那条工具行标题
+//     在同一个槽位上下切换，两者左边界必须一致，否则一点开就"跳一下"。
+//   ★ 为什么不用 `CollapsiblePanel`：折叠行没有"正文"，展开是把**别的行**放出来，
+//     而不是把本行的 body 撑开。用 CollapsiblePanel 会让本行凭空多出一个空 body。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildFoldRow(const TimelineEntry& entry, RowRec& rec) {
+    auto panel = std::make_unique<ECDI::Panel>();
+    panel->SetStyle(ECDI::PanelStyleOverride{ .background = ECDI::Color(0, 0, 0, 0) });
+
+    const std::string text = entry.foldSummary.empty()
+                                 ? std::string("\xE2\x80\xBA \xE5\xB7\xB2\xE5\xAE\x8C\xE6\x88\x90")
+                                 : entry.foldSummary;
+    auto header = std::make_unique<uikit::TipButton>(
+        text, std::string("点击展开这一回合"),
+        [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+        [this](uikit::TipButton*) { HideTooltip(); });
+    rec.headerBtn = header.get();
+    header->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    header->SetFont(harness::SansFont(harness::kFontSmall));
+    // ★ 透明底 + 左对齐：摘要条与它取代的那条工具行标题同槽位上下切换，
+    //   底色或左边界一有差别，点开就会"跳一下"。
+    header->SetStyle(ECDI::ButtonStyleOverride{
+        .background = ECDI::Color(0, 0, 0, 0),
+        .border = ECDI::Color(0, 0, 0, 0),
+        .borderWidth = 0.0f,
+        .cornerRadius = 0.0f,
+        .pressedBackground = Pick(m_options.probeContrast, kToolHeaderPressed, kProbeBg),
+        .hoverBackground = Pick(m_options.probeContrast, kToolHeaderHover, kProbeBg),
+        .textAlignment = ECDI::TextAlignment::Left});
+    panel->AddChild(std::move(header));
     return panel;
 }
 

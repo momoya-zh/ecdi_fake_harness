@@ -224,6 +224,13 @@ EXTRA_PROBES = [
     #   正向：副标计数、检视栏卡行、失败 system 块三者都必须与模型侧一致；
     #   负向对照另跑一支（demo 无 mcp 字段 ⇒ 卡片/副标/失败行全缺）。
     ("--mcp-probe", "mcpProbe", MCP_STATUS, [], []),
+    # ★★ 2026-11-06：回合级折叠（回答结束后收起过程行）。
+    #   正向：realistic（32 回合、过程行密集）⇒ 必须至少折一个回合，且
+    #   模型侧 foldHidden 与视图侧不可见行逐项相等、摘要条文案含步数。
+    #   ★ 负向对照**另跑一支**（过程行不足两条的夹具 ⇒ folds 恒 0）：
+    #     正臂只证明"过程行够多时会折"，"无脑全折"在它上面同样绿。
+    #     见 `check_fold_probe_negative`。
+    ("--fold-probe", "foldProbe", REALISTIC, [], []),
     # ★★ 2026-11-06：开发者视图 ↔ 用户模式分流判据（--mode-probe）。
     #   闭合 P4 Phase J 遗留的已知硬缺口（用户模式零探针）。
     #   正向断言 baseline-dev / switch-user / dev-restored 三相；
@@ -753,6 +760,50 @@ def check_mcp_probe_negative():
     return (0 if ok else 1), detail
 
 
+def check_fold_probe_negative():
+    """`--fold-probe` 的负对照：过程行不足两条的夹具上，一行都不许折。
+
+    ★ 为什么必须单独跑一支：正臂只证明「过程行够多时会折」，
+      "无脑全折"（连只有一条工具行的回合、甚至没有过程行的回合都塞一条摘要条）
+      在它上面同样是绿的。只有"过程行不足时 folds 恒 0、且屏上一条摘要条都没有"
+      才能把这两者分开。
+    ★ 夹具用 `hostile/truncated-final-line.jsonl`：3 行、零过程行。
+      选它而不是 demo（1 回合 6 过程行）——demo 在阈值 2 之上，本来就该折，
+      拿它当负向会把"正确折叠"判成红。
+    ★ 判据比探针的 `matched` 更严：探针在 `folds == 0` 时只查
+      `foldHiddenCount == 0 && foldRows == 0`；这里额外钉住 `procRows == 0`
+      ——否则夹具哪天长出过程行，这一支会静默变成"真空成立"。
+    """
+    out = OUT / "_reg-fold-probe-negative.json"
+    out.unlink(missing_ok=True)
+    fixture = "protocol/fixtures/hostile/truncated-final-line.jsonl"
+    try:
+        r = subprocess.run([str(EXE), "--replay", str(ROOT / fixture), "--instant",
+                            "--theme", "light", "--fold-probe",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("--fold-probe (negative)", None, out)
+        return 1, "TIMEOUT"
+    record("--fold-probe (negative)", r.returncode, out)
+    if not out.exists():
+        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
+    d = json.loads(out.read_text(encoding="utf-8"))
+    rows = d.get("foldProbe") or []
+    if not rows:
+        return 1, "NO ROWS (key=foldProbe)"
+    rec = rows[0]
+    ok = (rec.get("matched") is True and rec.get("folds") == 0
+          and rec.get("procRows") == 0 and rec.get("foldHiddenCount") == 0
+          and rec.get("foldRows") == 0 and rec.get("summaryOk") == 0
+          and rec.get("rowsAfter") == rec.get("rowsBefore"))
+    detail = (f"folds={rec.get('folds')} procRows={rec.get('procRows')} "
+              f"foldHidden={rec.get('foldHiddenCount')} foldRows={rec.get('foldRows')} "
+              f"rows={rec.get('rowsBefore')}->{rec.get('rowsAfter')} "
+              f"matched={rec.get('matched')}")
+    return (0 if ok else 1), detail
+
+
 def check_agent_probe_cap_gate():
     """`--agent-probe` 的**门控**反面：core 发了 agent 消息却没声明 `caps.agents`。
 
@@ -1015,6 +1066,9 @@ def main():
     n, detail = check_mcp_probe_negative()
     fail += n
     print(f"  {'--mcp-probe':18s} {detail}  (negative/DEMO：无 mcp 字段就整段缺席)")
+    n, detail = check_fold_probe_negative()
+    fail += n
+    print(f"  {'--fold-probe':18s} {detail}  (negative：过程行不足就不折)")
 
     print("\n== 2c. REQ-03 异步投递 (live A/B) ==")
     core = ROOT / "core" / "bin" / "fake-core.exe"

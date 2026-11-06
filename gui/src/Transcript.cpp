@@ -1,5 +1,7 @@
 ﻿#include "Transcript.h"
 
+#include "Iso8601.h"
+
 #include <cstdio>
 
 bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
@@ -46,6 +48,16 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         // ★★ v5 §3.3：子代理归属（可选字段，缺省即根代理）。
         block.agentId = m_last.GetString("agent");
         block.parentId = m_last.GetString("parent");
+        // ★★ 2026-11-06：块的时刻（回合折叠的耗时副标）。
+        //   ★ 用信封上的 `ts`——它是 core 的作者时刻，正是"这个回合花了多久"要的口径。
+        //     拿 GUI 收到行的墙上时间会让回放/`--speed` 改变读数（那是评估量具，不是事实）。
+        //   ★ 解析失败/缺字段 ⇒ 保持 0 ⇒ 该块不参与耗时计算（见字段注释）。
+        {
+            int64_t ts = 0;
+            if (harness::iso8601::ParseIso8601Ms(m_last.GetString("ts"), ts)) {
+                block.tsMs = static_cast<long long>(ts);
+            }
+        }
         if (!block.agentId.empty()) {
             ++m_agentBlocks;
             // I12 的 GUI 侧记账：归属一个没 start 过的代理 ⇒ 计数（渲染照旧）。

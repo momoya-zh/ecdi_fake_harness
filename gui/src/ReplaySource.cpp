@@ -1,5 +1,7 @@
 ﻿#include "ReplaySource.h"
 
+#include "Iso8601.h"
+
 #include <cstdio>
 #include <cstdint>
 #include <fstream>
@@ -7,27 +9,10 @@
 
 namespace {
 
-// "YYYY-MM-DDTHH:MM:SS.mmmZ" → 自任意纪元的毫秒数（只用于求差，纪元选择任意）。
-// days_from_civil（Howard Hinnant 算法）——不依赖本地时区 API。
-int64_t DaysFromCivil(int64_t y, unsigned m, unsigned d) {
-    y -= m <= 2;
-    const int64_t era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = static_cast<unsigned>(y - era * 400);
-    const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1u;
-    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
-    return era * 146097 + static_cast<int64_t>(doe) - 719468;
-}
-
-bool ParseIso8601Ms(const std::string& text, int64_t& outMs) {
-    int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0, ms = 0;
-    if (std::sscanf(text.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d.%3dZ",
-                    &y, &mo, &d, &h, &mi, &s, &ms) != 7) {
-        return false;
-    }
-    const int64_t days = DaysFromCivil(y, static_cast<unsigned>(mo), static_cast<unsigned>(d));
-    outMs = ((days * 86400 + h * 3600 + mi * 60 + s) * 1000) + ms;
-    return true;
-}
+// ★★ 2026-11-06：`ParseIso8601Ms` / `DaysFromCivil` 已抽到 `Iso8601.h`——
+//   回合折叠（`AppTranscript.cpp` 的耗时副标）成了第二个消费者。留在这里会让
+//   同一算法长出两份，而两者的错误都只表现为"时间差偏了几秒/一天"，静默。
+using harness::iso8601::ParseIso8601Ms;
 
 // 从原始行里提取 "ts":"..." 的值（不做完整 JSON 解析——ts 只需要相对偏移）
 bool ExtractTs(const std::string& line, int64_t& outMs) {

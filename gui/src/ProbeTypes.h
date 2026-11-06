@@ -486,6 +486,38 @@ struct JobProbeRec {
     std::string note;
 };
 
+// ★★ 2026-11-06：回合级折叠（--fold-probe）。
+//   判据形态沿用 Proposal/Job 那两支的"模型侧 ⇔ 视图侧逐项对齐"，但这里多一条
+//   **负向对照**是本特性的核心：一个"什么都不折"的实现也能让"摘要条存在"为假，
+//   所以正臂必须证明**过程行真的从屏上消失了**，且消失的恰好是被折叠的那些。
+//
+//   正向（realistic / demo 等有多过程行的夹具）：
+//     ① folds >= 1                     —— 确实折了回合（不是全绿的空转）
+//     ② hiddenRows == foldHiddenCount  —— 模型说隐藏的，视图也隐藏（逐条对齐）
+//     ③ visibleProcRows == procRows - hiddenRows  —— 视图上还能看见的过程行数对得上
+//     ④ summaryOk                      —— 摘要条文案含「已完成」且步数 > 0
+//     ⑤ foldRows >= 1                  —— 屏上真有一条摘要条（不是把所有行都藏了）
+//     ⑥ rowsBefore == rowsAfter        —— 展开一次再折回来，行数**不变**
+//                                         （这条守的是"折叠不改变条目数"这条不变量）
+//     ⑦ expandRestores == folds        —— 展开后过程行全部回到可见
+//   负向（subagent 之类只有 0~1 条过程行的夹具）：
+//     folds == 0 且 hiddenRows == 0     —— 不该折的地方一行都不许折
+struct FoldProbeRec {
+    std::string phase = "settle";      // 同步探针，一相
+    size_t folds = 0;                  // 模型：Kind::Fold 条目数
+    size_t procRows = 0;               // 模型：可折叠过程行（foldable）条数
+    size_t foldHiddenCount = 0;        // 模型：foldHidden 条数
+    size_t hiddenRows = 0;             // 视图：foldHidden 且控件实际不可见
+    size_t visibleProcRows = 0;        // 视图：foldable 且可见
+    size_t foldRows = 0;               // 视图：摘要条行数
+    size_t summaryOk = 0;              // 视图：文案含「已完成」+ 步数
+    size_t rowsBefore = 0;             // 折叠态下的 rows.size()
+    size_t rowsAfter = 0;              // 展开→再折叠后的 rows.size()
+    size_t expandRestores = 0;         // 展开后可见过程行恢复的条数
+    bool matched = true;
+    std::string note;
+};
+
 // ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。
 //   两侧判据同一手法：模型侧读 `hello.mcp`（协议字段），视图侧读副标/卡片/
 //   失败 system 块的实际控件。正向夹具必须**同时**有成功服务与失败服务——

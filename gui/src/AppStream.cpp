@@ -380,6 +380,11 @@ void HarnessApp::OnReplayTick() {
                 // ★ 2026-11-06：MCP 产品面可见性。同步组——hello.mcp 在 settle
                 //   前已解析完，卡片/副标/失败行都是终态。
                 {&CliOptions::mcpProbe, &ProbeState::mcpProbeDone, &HarnessApp::RunMcpProbe},
+                // ★★ 2026-11-06：回合级折叠。同步组——折叠发生在 `state:idle`，
+                //   而回放收尾时夹具末尾就是 idle ⇒ settle 那一刻已是折叠态。
+                //   ★ 它必须排在所有"数行"的探针**之后**：本探针会做一次展开↔折叠
+                //     往返（两次整表重建），行指针/行表都会换代。
+                {&CliOptions::foldProbe, &ProbeState::foldProbeDone, &HarnessApp::RunFoldProbe},
                 {&CliOptions::delProvProbe, &ProbeState::delProvProbeDone, &HarnessApp::RunDelProvProbe},
                 {&CliOptions::previewProbe, &ProbeState::previewProbeDone, &HarnessApp::RunPreviewProbe},
                 {&CliOptions::persistProbe, &ProbeState::persistProbeDone, &HarnessApp::RunPersistProbe},
@@ -822,6 +827,22 @@ void HarnessApp::RouteLastMessage() {
             }
             MaybeStartWorkspaceSync();
             SendPendingModelSwitchIfIdle();   // ★ P3.6：排队的模型切换在 idle 兑现
+            // ★★ 2026-11-06（回合级折叠）：**回答结束**就是这里——core 报 idle，
+            //   这一回合的结论已经落地。此刻把过程行收成一条摘要。
+            //   ★ 为什么挂 `state:idle` 而不是 `block_end`：一个回合有多个 block，
+            //     `block_end` 逐个到；中途每个 `block_end` 都不是"回答完了"，提前折
+            //     会把还在跑的那一半藏起来（也把"已完成/耗时"变成假读数）。
+            //   ★ 为什么先 `RetagTurns` 再重建：模型重算完，行树必须跟着换
+            //     （`Kind::Fold` 所在的那一行是另一棵树，不能就地改）。
+            //   ★ 只在**回合边界**才重建：idle 会被多次上报（每轮结束都报），
+            //     `RetagTurns` 幂等但重建不免费；用它的返回值当闸门。
+            SyncRowViewState();   // 视图→模型：重建会清空 rows
+            if (RetagTurns()) {
+                RebuildTranscriptView();
+                m_relayoutPulse = 12;
+                FollowTailIfPinned();
+                RequestRepaint();
+            }
         }
         MaybeSendAutoPrompt();
         return;
