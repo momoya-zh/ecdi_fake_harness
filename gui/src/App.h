@@ -698,6 +698,7 @@ private:
     struct McpServiceItem {
         std::string name;
         int tools = 0;
+        std::string transport;   // stdio / http / sse（core 未给则空）
     };
     struct McpFailureItem {
         std::string name;

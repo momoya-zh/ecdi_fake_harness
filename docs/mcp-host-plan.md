@@ -26,23 +26,27 @@
    `tool_result` 块；协议保持 **v6**，不新增类型；GUI 转录渲染零改动。
    ★ `hello.caps` 增 `"mcp"`（只是能力声明，GUI 对未知 cap 宽容，见 `PROTOCOL` §3.1）。
 
-2. **零第三方依赖**：纯标准库（`os/exec`、`bufio`、`encoding/json`、`hash/fnv`、`sort`、`sync`）
-   实现 stdio JSON-RPC 2.0 客户端。
+2. **零第三方依赖**：纯标准库（`os/exec`、`bufio`、`encoding/json`、`hash/fnv`、`sort`、`sync`、
+   `net/http`）实现 stdio / Streamable HTTP / legacy HTTP+SSE 的 JSON-RPC 2.0 客户端。
 
-3. **传输层只做 stdio**；HTTP / Streamable HTTP 留作后续。
+3. **传输层（2026-11-06 六版更新）**：stdio（子进程）、Streamable HTTP（单端点 POST，
+   响应 JSON 或 SSE）、legacy HTTP+SSE（GET endpoint + POST + SSE 回执）。
+   配置：`command`（stdio）与 `url`（远程）二选一；`transport` 省略时按字段推断
+   （`url` ⇒ `http`），`transport:"sse"` 显式走 legacy。详见 §九。
 
-4. **★ 规范版本锚：刻意降到 `2024-11-05`（连接级 initialize），并把这个偏差写在这里。**
+4. **★ 规范版本锚：stdio/legacy 降到 `2024-11-05`，Streamable HTTP 用 `2025-06-18`（连接级
+   initialize 的最后一版），两者都把这个偏差写在这里。**
    `positioning.md` §5.3 记的锚是 **`2026-07-28`**（无状态、逐请求能力协商、**不再是连接级
-   `initialize` 会话**）。实现选了旧版握手，理由是**存量 server 兼容**：市面上的 stdio server
+   `initialize` 会话**）。实现选了旧版握手，理由是**存量 server 兼容**：市面上的 server
    绝大多数仍实现 `initialize` + `notifications/initialized` 这一版；新版无状态模型要等 server
    侧普及。代价与边界：
-   - 两版在 `tools/list` / `tools/call` 上形状相同，功能面不受影响；
+   - 各版在 `tools/list` / `tools/call` 上形状相同，功能面不受影响；
    - 服务端可以在 `initialize` 回执里挑一个**不同**的 `protocolVersion`（规范允许）。客户端
      **不中断**、但会往 stderr 打一行协商差异 —— 静默继续会让语义差异永远无人知晓（与 I4
      的「缺口显式提示」同一口径）；
-   - 将来切到无状态模型时，改的是 `startAndInit` 的握手序列，不是调用面。
-   ★ 这条偏差一版是**没写**的（一版把「2024-11-05 是行业标准协议」当依据），属于与自家文档
-   正面冲突；二版按「要么按锚走、要么把降级理由写下来」补上。
+   - Streamable HTTP 用 2025-06-18 而不是 2024-11-05：后者没有这个传输（只有 legacy
+     HTTP+SSE），用旧版本号会让现代 server 直接 400；
+   - 将来切到无状态模型时，改的是 `startAndInit` 的握手序列与 `ProtocolVersion`，不是调用面。
 
 5. **命名空间与 provider 字符集（★ 二版新增，这条不改会打死整轮请求）**
    - 工具名对外统一为 `mcp__<server>__<tool>`，避免与内置 9 件套冲突；
@@ -100,22 +104,25 @@
 
 | 模块 | 职责 | 状态 |
 |---|---|---|
-| `core/cmd/ecdi-core/mcp.go` | JSON-RPC 2.0 协议层、`mcpClient`（单 server 的 stdio 握手/调用）、`mcpHub`（多 server 注册、配置解析、工具发现与调度、死亡登记、**入参 schema 规约**、**启动期状态快照 `Status()`**） | ✅ |
+| `core/cmd/ecdi-core/mcp.go` | JSON-RPC 2.0 协议语义（`mcpClient`：initialize / tools/list / tools/call）、`mcpHub`（多 server 注册、配置解析、工具发现与调度、死亡登记、**入参 schema 规约**、**启动期状态快照 `Status()`**） | ✅ |
+| `core/cmd/ecdi-core/mcp_transport.go` | 传输接口 `mcpTransport`（Start/Do/Close/Done/ProtocolVersion）与构造分派 | ✅ 六版新增 |
+| `core/cmd/ecdi-core/mcp_stdio.go` | stdio 传输：子进程、stdin/stdout、pending、整树清退（从 `mcpClient` 原样搬入） | ✅ 六版拆分 |
+| `core/cmd/ecdi-core/mcp_http.go` | Streamable HTTP（POST + JSON/SSE 响应、session/版本头、DELETE）与 legacy HTTP+SSE（GET endpoint + POST + SSE 回执） | ✅ 六版新增 |
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
-| `core/cmd/ecdi-core/mcp_test.go` | 单测：mock server、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、**启动状态/配置错误可见**、E2E | ✅ 14 案全绿 |
-| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + 真 stdio server + 脚本化 SSE，两臂 **37 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
+| `core/cmd/ecdi-core/mcp_test.go` + `mcp_http_test.go` | 单测：mock server（stdio + httptest HTTP/SSE）、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、**启动状态/配置错误可见**、**HTTP 头/SSE/会话/重定向/E2E** | ✅ 22 案全绿 |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + stdio server + HTTP/SSE server + 脚本化 SSE，四臂 **64 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、**Streamable/legacy 传输与头**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句（四版起用**真实工具名**）；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
 | `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理；**`hello.mcp` + 启动失败 `system` 块** | ✅ 五版新增 |
 | `diff.go` | MCP 提案卡 `mcpAskDetail`（判别值 `"mcp"` + server/toolName/argsKv；理由与教训见 §二.8） | ✅ 四版同批放开 |
-| `gui/src/AppMcp.cpp` | 会话头副标 `MCP N 个服务 / M 个工具`、检视栏「MCP」卡（来源/服务/失败/禁用）、失败行渲染 | ✅ 五版新增 |
+| `gui/src/AppMcp.cpp` | 会话头副标 `MCP N 个服务 / M 个工具`、检视栏「MCP」卡（来源/服务/失败/禁用/远程传输标识）、失败行渲染 | ✅ 五版新增；六版加 transport |
 | `gui/src/ProbeMcp.cpp` | `--mcp-probe`：模型 `hello.mcp` ⇔ 副标/卡片/失败行的两路对齐 + 负对照 | ✅ 五版新增 |
-| `docs/` + `README` | 决策、偏差、已知缺口 | ✅ 二版重写；五版补可见性 |
+| `docs/` + `README` | 决策、偏差、已知缺口 | ✅ 二版重写；五版补可见性；六版补 HTTP/SSE |
 
 ## 四、 验收读数（2026-11-05 二版 + 同日三版补丁 + 2026-11-06 四/五版增补，实测）
 
-1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**14 案全绿**，
+1. **单元与 E2E**（`go test -run 'TestMCP_|TestLoopE2E_MCPTool'`）：**22 案全绿**，
    `-race -count=3` 无竞态报告。新增的判据都带**区分力**：
    - `TestMCP_ProcessTreeKilled`：孙进程心跳文件在 `hub.Close()` 后必须停止生长。
      ★ 做了变异验证——把整树句柄拿掉（只留 `Process.Kill`）这条**会红**
@@ -132,10 +139,24 @@
      Services/Failed；无配置时 `hasEvidence()` 为假（不得长出 0 服务卡）；
    - `TestMCP_ConfigProblemVisible`（五版新增）：显式路径不存在 ⇒ hub 非 nil 且
      `status.Problem` 非空（不静默退回下一级）；坏 JSON ⇒ 返回 hub + error，状态仍可见。
+   - `TestMCP_HTTPStreamableJSON`（六版新增）：JSON 回执 + `Mcp-Session-Id` /
+     `MCP-Protocol-Version` 逐请求回带 + `Close` 发 DELETE；
+   - `TestMCP_HTTPStreamableSSE`（六版新增）：POST 返回 SSE（keepalive / notification /
+     网络分片）仍能按 id 找到回执；
+   - `TestMCP_HTTPAuthError` / `TestMCP_HTTPRedirectRejected`（六版新增）：
+     Authorization 到达服务端；401/302 显式失败且错误文本不泄 token；
+   - `TestMCP_LegacySSE`（六版新增）：GET endpoint → POST `/messages` → SSE 回执；
+     断言 initialize 也走 POST、版本为 2024-11-05；
+   - `TestMCP_HTTPStartFailureStatus`（六版新增）：连接拒绝 / `command+url` 坏配置
+     必须进 `Failed`，不得留空服务；
+   - `TestMCP_TransportKindValidation` / `TestScanSSE`（六版新增）：配置互斥、scheme、
+     headers/env 归类；SSE 的 CRLF / 注释 / 多行 data / 无尾空行。
 2. **E2E 口径**：`TestLoopE2E_MCPTool` 四版起断言 `ask` **带** `detail`（判别值
    `"mcp"`、server/toolName 真名、argsKv 与调用参数一致）；五版同批硬化：
    配置里加一个必然失败的服务，断言 `hello.mcp.services` 为 mock/6、`failed` 含
    `broken` 且 error 非空，并等到一条 `[MCP] 服务 broken 启动失败` 的 `system` 块。
+   六版新增 `TestLoopE2E_MCPToolHTTP`：Streamable HTTP 走完整循环
+   （`hello.mcp.services[].transport == "http"` → ask 提案卡 → 真实 HTTP 调用 → idle）。
 3. **回归门**：`go build ./...` OK · `go vet` 干净 · `GOOS=linux` / `GOOS=darwin/arm64`
    交叉编译 OK · `protocol/validate.py` **18/18** · `tools/precommit-check.py` BOM 漂移 0。
 4. **全量单测**（`go test ./...`）连跑 **5 次全绿**。★ 顺带修掉了一条**既存 flaky**
@@ -145,9 +166,9 @@
    **不是产品缺陷，是测试自己前后矛盾**：断言要「正常退出」，脚本却在杀它。
    修法：第 3 轮改 `job_list`（同样是「控制工具不过 ask 门」的证据，`job_kill` 的语义由
    `jobs_test.go:297` 的 `toolKill` 单测覆盖）+ bye 之前先等 `job end`。
-5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版 2026-11-06 增补提案卡断言、五版同日增补 `hello.mcp` 状态）**：不是只握手——
+5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版增补提案卡、五版增补 `hello.mcp`、六版增补 HTTP/SSE）**：不是只握手——
    一次真实工具调用从模型请求穿到 server 再穿回来。真 `ecdi-core.exe` + 真 stdio server
-   （python）+ 脚本化 SSE 端点，**两臂 37 条断言全绿**：
+   + 真 HTTP/SSE server（python）+ 脚本化 SSE 端点，**四臂 71 条断言全绿**：
    - **A 正常**：`hello protocol=6` 且 `caps` 增 `"mcp"`；服务端协商到 `2025-06-18`（只告警，
      见 §二.4）；`tools/list` 两页全追（2 个工具）；上交模型的压缩名是
      `mcp__smoke__git_status` 与 `mcp__smoke______`（中文名逐 rune 折 `_`，全部 ≤64 且落在
@@ -162,20 +183,32 @@
    - **边界（如实）**：模型端点是脚本化 SSE，不是真厂商端点；MCP server 是仓库自带 mock；
      不起 GUI ⇒ **GUI 渲染不在本套覆盖范围内**（提案卡由 `--proposal-probe`、MCP 状态由 `--mcp-probe` 的夹具覆盖）。读数落 `.scratch/mcp-smoke/`
      （`result.json` + `fake-llm.log`，gitignored），复跑只差一条 `go build`。
-   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==37`（钉死，少一条即红）、
+   - **C Streamable HTTP**：`POST /mcp`；server 严格校验 `Mcp-Session-Id` 与
+     `MCP-Protocol-Version`（错一个就 400）⇒ `hello.mcp.services[].transport=="http"`、
+     ask 提案卡（server/remote、toolName/git.status）、`tools/call` 真实走 SSE 回执
+     （`ok: {"short": true}`）、第二轮 idle；`Close` 必须发 DELETE（server 计数）。
+   - **D legacy HTTP+SSE**：`GET /sse` 取 `endpoint`，initialize 也走 `POST /messages`，
+     回执从 SSE 流回来；`hello.mcp...transport=="sse"`；ask/结果/idle 同 C。
+   - **E HTTP 不可达**：连接被拒 ⇒ `caps` 不含 mcp、`hello.mcp.failed` 非空、
+     一条 `[MCP] 服务 remote 启动失败` system 块，退出码 0（失败不挡会话）。
+   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==71`（钉死，少一条即红）、
      `failed==0`、`rc==0`。缺二进制显式 **SKIP**（§2e 的 rebuild 已计过失败，不重复计数）；
      二进制比 `core/**/*.go` 旧按 **FAILED**（测旧代码比不测更糟）；超时按 FAILED（drive.py
-     自带 90s 看门狗，先清子进程再退出）。负对照实测（五版后复测）：拿掉 `server.py` ⇒
-   **15/37 green、18 failed、门变红**（含 `A/hello.mcp 列出 smoke/2 工具且无失败`、
-   `B/hello.mcp 列出好服务与 broken 失败`、`A/无 MCP 失败 system 块`）；恢复后 37/37 回绿。
+     自带 90s 看门狗，先清子进程再退出）。负对照实测：拿掉 `server.py` ⇒ **A/B 红、C/D/E
+     仍绿**（HTTP 臂不依赖 stdio）——这正是「四臂各自独立」的证据；HTTP 失败路径由常驻
+     的 E 臂覆盖。
 ## 五、 明确的已知缺口（下一步的输入）
 
 | 缺什么 | 说明 |
 |---|---|
-| HTTP / Streamable HTTP 传输 | 只有 stdio 进程。远程或持久连接留作扩展（传输层现在写死在 `startAndInit` 里） |
 | 取消语义 | 取消只让我们不再等，server 侧调用照跑（没发 `notifications/cancelled`），而 GUI 已显示「已取消」 |
-| respawn | 崩掉不重启（刻意的，见 §二.7） |
+| respawn | 崩掉不重启（刻意的，见 §二.7）；HTTP 传输没有进程，天然不适用 |
+| HTTP 服务端通知流 | Streamable HTTP 只实现了「请求-响应」方向；GET 上的服务端主动通知、legacy 的重连/`Last-Event-ID` 不在本期（§九边界） |
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
+
+★ **HTTP/SSE 传输已于 2026-11-06 闭合（六版，§九）**：Streamable HTTP + legacy
+HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 标识、四臂冒烟。
+本表不再把它列为缺口。
 
 ★ **产品面可见性已于 2026-11-06 闭合（五版，§八）**：`hello.mcp` 启动期状态 +
 会话头副标 + 检视栏「MCP」卡 + 失败 `system` 块 + `--mcp-probe` 正反对照。
@@ -246,7 +279,8 @@
   - core：`TestMCP_HubStatus`（好/坏/禁用三路 + 无配置不发）、
     `TestMCP_ConfigProblemVisible`（显式路径不存在 / 坏 JSON 仍带 Problem）、
     `TestLoopE2E_MCPTool`（`hello.mcp` 字段 + 失败 `system` 块）；
-  - 冒烟：37 条（A 增 `hello.mcp` 来源/服务/无失败块，B 增好服务+broken 失败与失败块）；
+  - 冒烟：71 条（A/B 为 stdio；C/D 为 HTTP/SSE；E 为 HTTP 不可达失败臂；均含
+  `hello.mcp` 与传输标识断言）；
   - GUI：`--mcp-probe`（`ProbeMcp.cpp`）——模型侧 `hello.mcp` 与副标/卡片行数/服务名/
     失败名/`system` 行逐项对齐；夹具 `fixtures/mcp/status.jsonl`；
     **负对照另跑一支**（demo 无 `mcp` 字段 ⇒ 卡片、副标 MCP 段、失败行全缺）。
@@ -259,3 +293,56 @@
      失败行与副标的「K 个失败」上。产品模式默认可见，但不靠颜色叫醒。
   4. `--mcp-probe` 跑在开发者模式（任一探针即开发者模式）；用户模式走**同一个**
      `McpStatusText()`，但「用户模式零探针」的既有缺口（README「还」不能做）未在本期闭合。
+
+## 九、 六版（2026-11-06）：HTTP / SSE 传输
+
+- **动机**：此前传输写死在 `startAndInit`（`exec.Command` + stdin/stdout），只能连本地
+  子进程。远程 MCP server（托管端点、内网服务）接不进来；`docs/positioning.md` §5.3
+  的传输清单里本来就有 Streamable HTTP。
+- **配置契约**：
+  ```json
+  {
+    "mcpServers": {
+      "local":  {"command": "npx", "args": ["-y", "…"]},
+      "remote": {"url": "https://mcp.example.com/mcp",
+                 "headers": {"Authorization": "Bearer …"}},
+      "legacy": {"url": "https://mcp.example.com/sse", "transport": "sse"}
+    }
+  }
+  ```
+  - `command`（stdio）与 `url`（远程）**二选一**；`args/env` 只属于 stdio，`headers`
+    只属于远程。混写报错并进 `hello.mcp.failed`，不半启动。
+  - `transport` 省略时：有 `url` ⇒ `http`（Streamable），有 `command` ⇒ `stdio`；
+    `transport:"sse"` 显式走 legacy HTTP+SSE。
+  - URL 只接受 `http/https`；非 loopback 的明文 `http://` 打 warning（不拦截：用户可能
+    连内网/本机），TLS 默认校验，无 `--insecure`。
+- **架构**：`mcpTransport`（Start / Do / Close / Done / ProtocolVersion）+ 三个实现：
+  - `mcp_stdio.go`：从旧 `mcpClient` 原样搬入，行为逐位不变（既有 MCP 测试即判据）；
+  - Streamable HTTP：单端点 POST；`application/json` 或 `text/event-stream` 响应；
+    initialize 回执里的 `Mcp-Session-Id` 后续回带；非 initialize 请求带
+    `MCP-Protocol-Version`；通知期望 2xx，`Close` best-effort `DELETE`；
+  - legacy HTTP+SSE：GET `/sse` 等 `endpoint` 事件 → POST 消息 → 回执从 SSE 流回来；
+    `initialize` 也走 POST；不重连。
+- **版本**：stdio/legacy 用 `2024-11-05`；Streamable HTTP 用 `2025-06-18`（有连接级
+  initialize 的最后一版）。`2026-07-28` 无状态模型仍**未采用**——存量 server 兼容优先，
+  迁移点是 `startAndInit` 的握手序列，不是调用面（§二.4）。
+- **安全/生命周期**：
+  - 不跟随重定向（`CheckRedirect` 返回 `ErrUseLastResponse`）⇒ Authorization 不跨 host；
+  - headers 的值不进日志、不进 `hello.mcp`；HTTP 错误只带状态码 + 512B 截断 body；
+  - 单 SSE 事件 4MB、非流式 JSON 16MB 上限；工具输出仍按 24KB 截断；
+  - `Done` 关闭 = 传输死（stdio 进程退出 / SSE 断流 / Close）；HTTP 请求失败不自动
+    标死（避免一次瞬时 5xx 永久禁用服务）；
+  - HTTP 没有进程，不适用整树清退/respawn；`Close` 取消在途请求 + 关闭 idle 连接。
+- **可见性**：`hello.mcp.services[].transport`（`stdio`/`http`/`sse`）；检视栏远程行显示
+  `name · http · N 工具`，stdio 行文案不变；协议 §3.1 只增字段。
+- **判据**：`mcp_http_test.go` 覆盖 JSON/SSE 响应、session/版本头、auth、302 拒绝、
+  连接拒绝进 Failed、配置互斥、legacy POST/SSE、SSE 解析边界；E2E
+  `TestLoopE2E_MCPToolHTTP` 走完整 ask→call→idle；冒烟四臂 71 条（C Streamable、
+  D legacy、E 不可达，A/B 仍覆盖 stdio）。
+- **诚实边界（本期不做）**：
+  1. 不实现 GET 上的服务端主动通知流、legacy 重连/`Last-Event-ID`；tools-only 场景
+     不受影响，但 sampling/roots 类反向能力在 HTTP 下不可用（stdio 仍回 -32601）。
+  2. 不实现 OAuth/动态客户端注册；`headers` 由用户静态配置。
+  3. 不实现 `2026-07-28` 的逐请求能力协商；`initialize` 仍保留。
+  4. legacy 的 `endpoint` 事件 URL 不做白名单校验（配置即信任；MCP 不是安全边界）。
+  5. 非 loopback 的 `http://` 只警告；需要强制 HTTPS 时应在部署侧做，不在客户端硬拦。

@@ -120,10 +120,17 @@ void HarnessApp::RebuildMcpCard() {
     if (!m.problem.empty()) {
         addRow("✗ 配置错误", kErrorDark);
     }
-    // ③ 每个启动成功的服务：名字 · 工具数。
+    // ③ 每个启动成功的服务：名字 · [传输 ·] 工具数。
+    //   ★ stdio 是老路径，行文案保持不变；远程服务把 http/sse 标出来，用户才
+    //     分得清"我配的是本地进程还是远端端点"。
     for (const auto& svc : m.services) {
         char buf[200];
-        std::snprintf(buf, sizeof(buf), "%s · %d 工具", svc.name.c_str(), svc.tools);
+        if (!svc.transport.empty() && svc.transport != "stdio") {
+            std::snprintf(buf, sizeof(buf), "%s · %s · %d 工具",
+                          svc.name.c_str(), svc.transport.c_str(), svc.tools);
+        } else {
+            std::snprintf(buf, sizeof(buf), "%s · %d 工具", svc.name.c_str(), svc.tools);
+        }
         addRow(buf, kDarkInk);
     }
     // ④ 启动失败的服务：红色 + 结论；原因在 core 的 system 块（不在这里编）。

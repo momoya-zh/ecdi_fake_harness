@@ -39,7 +39,7 @@
 | `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
 | `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
 | `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · **variant-c 落地对照**（`variant-c-ecdi-mapping.md`）· GUI 原型（单文件 HTML） |
-| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 37 断言，两臂，已进 `regress.py` §2f） |
+| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 71 断言，四臂含 Streamable HTTP 与 legacy SSE，已进 `regress.py` §2f） |
 
 ## 协议要点
 
@@ -167,10 +167,14 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 （主历史只落一条结论摘要）；用量单独记账（见协议要点 v5 条）。决策与授权模型详见
 `docs/P3-real-core-spec.md` §4.4.2。
 
-★ **MCP Host（stdio，2026-11-05）**：core 是 MCP **host**——按配置拉起 MCP server 子进程、
-握手、`tools/list`（分页追到底）、把外部工具以 `mcp__<srv>__<tool>` 注册进模型工具表。
+★ **MCP Host（stdio + HTTP/SSE，2026-11-05 / 2026-11-06）**：core 是 MCP **host**——按配置拉起
+MCP server 子进程或连远程端点、握手、`tools/list`（分页追到底）、把外部工具以
+`mcp__<srv>__<tool>` 注册进模型工具表。
 配置三级发现：`--mcp-config=<path>` → `<workspace>/.ecdi/mcp.json` 或 `<workspace>/mcp.json`
-→ `%APPDATA%\ecdi-fake-harness\mcp.json`；格式 `{"mcpServers":{"<name>":{"command","args","env","disabled"}}}`。
+→ `%APPDATA%\ecdi-fake-harness\mcp.json`；格式 `{"mcpServers":{"<name>":{…}}}`：
+本地 `{"command","args","env","disabled"}`，远程 `{"url","headers","transport","disabled"}`
+（`transport` 省略按 `url` ⇒ `http`；`"sse"` 走 legacy HTTP+SSE）。`command` 与 `url`
+二选一，混写显式失败而不是半启动。
 纪律：外部工具**默认全过 ask 门**（可在 `--allow-tools` 里按全名逐个豁免）、输出上限 24KB
 （超出头尾各半并标注）、`hello.caps` 增 `"mcp"`、子代理**拿不到**外部工具、会话退出**整树清退**
 （Windows Job Object / POSIX 进程组）、崩溃时发一条 `system` 块而不是只让工具反复失败。
@@ -179,14 +183,19 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 ★ 入参 schema 先规约再上交：递归删 `$schema`、本地 `$ref` 从 `$defs` / `definitions`
 就地展开后删容器；递归引用降级为 `{}` 并告警——部分端点对这些元关键字不宽容，
 失败同样是**整轮 400**。规则与诚实边界见 `docs/mcp-host-plan.md` §二.9 / §七。
-决策、偏差（规范锚 `2024-11-05` vs `positioning` §5.3 的 `2026-07-28`）与已知缺口见
-`docs/mcp-host-plan.md`。
+决策、偏差（规范锚：stdio/legacy 用 `2024-11-05`、Streamable HTTP 用 `2025-06-18`，
+均不同于 `positioning` §5.3 的 `2026-07-28`）与已知缺口见
+`docs/mcp-host-plan.md`（HTTP/SSE 边界见 §九）。
 ★ **产品面可见性（2026-11-06）**：`hello` 增可选 `mcp` 启动期状态（配置来源/路径、
 每个服务的工具数、失败服务与原因、禁用数、配置层错误）。会话头副标显示
 `MCP N 个服务 / M 个工具`（失败追加「K 个失败」），检视栏新增只读「MCP」卡；
 启动失败/配置错误另发 `[MCP] …` `system` 块。GUI 不扫 `mcp.json`，状态只来自 core。
-★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 脚本化
-SSE 端点，两臂 **37 条断言**（含 ask 门、提案卡 detail、`hello.mcp` 状态与失败块、参数穿越、bye 后无残留）；读数与边界见方案 §四.5；已接进 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
+每个服务带 `transport`（`stdio`/`http`/`sse`），检视栏远程行显示 `<name> · http · N 工具`，
+stdio 行文案不变——用户才分得清「配的是本地进程还是远端端点」。
+★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 真
+HTTP/SSE server + 脚本化 SSE 端点，四臂 **71 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
+状态与传输标识、参数穿越、bye 后无残留、HTTP 不可达降级）；读数与边界见方案 §四.5；已接进
+`regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
 
 **④c 无参数启动**（P3.5，2026-10-24）
 
@@ -445,7 +454,7 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 | 缺什么 | 状态 |
 |---|---|
 | ★ **长会话上下文管理（截断/摘要）** | 现每轮全量携带历史 messages，长交互或大文件读取容易超出模型 context window 限制 |
-| ★ **MCP HTTP/SSE 传输** | 当前已实现 stdio 进程传输；远程或持久 HTTP/SSE 传输留作后续扩展 |
+| **MCP HTTP 的服务端通知流** | Streamable HTTP 只做了「请求-响应」方向；GET 上的主动通知、legacy 重连 / `Last-Event-ID`、OAuth 动态注册均未做（方案 §九「诚实边界」） |
 | ★ **用户模式的机器判据** | **零覆盖**。26 个探针全部跑在开发者模式下（那是刻意的：分流必须对既有基线零扰动），于是 P4 Phase J 新增的产品面——无参启动那一侧——一个断言都没有。最小补法：两相加进 `--rebuild-probe` 或新开 `--mode-probe`（用户模式下指定句柄逐个必须不可见 / 切回开发者后快照与基线一致）。方案 §12「已知缺口」 |
 | **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
@@ -472,10 +481,12 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
    复用 L1 的 Job Object 句柄；它同时是"可用 agent"的下一块短板。
 2. **P4 Phase I：路径可点 + 只读预览**——产品侧最后一块半成品（A–H 已落地，G 只到尖峰）。
 3. ~~**MCP host**~~ **已落地（2026-11-05）**：stdio 传输 + 整树清退 + ask 门 + 24KB 输出上限，
-   见 `docs/mcp-host-plan.md`。**剩下的一件**：HTTP/SSE 传输。~~产品面可见性~~ **已落地（2026-11-06）**：
+   见 `docs/mcp-host-plan.md`。~~产品面可见性~~ **已落地（2026-11-06）**：
    `hello.mcp` + 会话头副标 + 检视栏「MCP」卡 + 启动失败 `system` 块 + `--mcp-probe` 正反对照。
    ~~GUI 侧提案卡~~ **已落地（2026-11-06）**：`detail.tool:"mcp"` 判别值 +
    渲染分支 core/GUI/协议/测试同批放开（server/toolName/argsKv，问句同批改真实工具名）。
+   ~~HTTP/SSE 传输~~ **已落地（2026-11-06）**：Streamable HTTP（`2025-06-18`）+ legacy
+   HTTP+SSE（`transport:"sse"`）+ `url/headers` 配置 + 状态里的传输标识，四臂冒烟 71 条。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 

@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -43,6 +44,9 @@ SMOKE = ROOT / ".scratch" / "mcp-smoke"
 SERVER = Path(__file__).resolve().parent / "server.py"
 LOG = SMOKE / "fake-llm.log"
 RESULT = SMOKE / "result.json"
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import http_server  # noqa: E402  （同目录的远程传输冒烟 server）
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -214,7 +218,7 @@ def server_procs():
     return [l for l in ps.stdout.splitlines() if str(SERVER) in l and "drive.py" not in l]
 
 
-def write_configs():
+def write_configs(base_url="", dead_url=""):
     SMOKE.mkdir(parents=True, exist_ok=True)
     good = {"mcpServers": {"smoke": {"command": sys.executable, "args": [str(SERVER)]}}}
     mixed = {"mcpServers": {
@@ -223,6 +227,14 @@ def write_configs():
     }}
     (SMOKE / "mcp.json").write_text(json.dumps(good, ensure_ascii=False), encoding="utf-8")
     (SMOKE / "mixed.json").write_text(json.dumps(mixed, ensure_ascii=False), encoding="utf-8")
+    if base_url:
+        remote = {"mcpServers": {"remote": {"url": base_url + "/mcp"}}}
+        legacy = {"mcpServers": {"legacy": {"url": base_url + "/sse", "transport": "sse"}}}
+        (SMOKE / "http.json").write_text(json.dumps(remote, ensure_ascii=False), encoding="utf-8")
+        (SMOKE / "legacy.json").write_text(json.dumps(legacy, ensure_ascii=False), encoding="utf-8")
+    if dead_url:
+        dead = {"mcpServers": {"remote": {"url": dead_url + "/mcp"}}}
+        (SMOKE / "http-dead.json").write_text(json.dumps(dead, ensure_ascii=False), encoding="utf-8")
     return SMOKE / "mcp.json", SMOKE / "mixed.json"
 
 
@@ -243,7 +255,7 @@ def arm_a(core, llm, port):
                 svcs = mcp.get("services") or []
                 fails = mcp.get("failed") or []
                 check("A/hello.mcp 列出 smoke/2 工具且无失败",
-                      svcs == [{"name": "smoke", "tools": 2}] and fails == [],
+                      svcs == [{"name": "smoke", "tools": 2, "transport": "stdio"}] and fails == [],
                       {"services": svcs, "failed": fails})
         c.send({"t": "hello", "seq": 0})
         c.send({"t": "prompt", "seq": 1, "text": "请查看 git 状态", "client_id": "smoke-c1"})
@@ -355,6 +367,141 @@ def arm_b(core, port):
     check("B/好服务仍然注册（1 个服务、2 个工具）", "1 个服务、2 个工具" in err, err[:200])
 
 
+def arm_c(core, llm, port, base_url, http_state):
+    """Streamable HTTP：POST /mcp；header 由本地 server 严格校验。"""
+    c = CoreProc(core, SMOKE / "http.json", "http://127.0.0.1:%d/v1" % port, "s-smoke-http")
+    try:
+        hello = wait_for(c, lambda m: m.get("t") == "hello", 10)
+        check("C/hello 到达", hello is not None)
+        if hello:
+            check("C/caps 含 mcp", "mcp" in (hello.get("caps") or []), hello.get("caps"))
+            mcp = hello.get("mcp")
+            svcs = (mcp or {}).get("services") or []
+            check("C/hello.mcp 标注 http 传输",
+                  isinstance(mcp, dict)
+                  and any(s.get("name") == "remote" and s.get("tools") == 2
+                          and s.get("transport") == "http" for s in svcs),
+                  {"services": svcs})
+        c.send({"t": "hello", "seq": 0})
+        c.send({"t": "prompt", "seq": 1, "text": "请查看远程 git 状态", "client_id": "smoke-c1"})
+
+        ask = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        check("C/ask 门被触发（远程工具默认过门）", ask is not None)
+        if ask:
+            q = ask.get("question", "")
+            check("C/问句带服务与真实工具名", "MCP 工具" in q and "remote" in q and "git.status" in q, q)
+            det = ask.get("detail")
+            check("C/ask 带提案卡 detail",
+                  isinstance(det, dict) and det.get("tool") == "mcp"
+                  and det.get("server") == "remote" and det.get("toolName") == "git.status", det)
+            c.send({"t": "answer", "seq": 2, "id": ask.get("id"), "choice": "allow"})
+
+        tc = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_call", 15)
+        check("C/tool_call 指向远程 MCP 工具",
+              tc is not None and tc.get("name", "").startswith("mcp__remote__"),
+              tc.get("name") if tc else None)
+        tr = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        check("C/tool_result 块出现", tr is not None)
+        delta = wait_for(c, lambda m: m.get("t") == "delta" and m.get("id") == (tr or {}).get("id"), 10)
+        txt = (delta or {}).get("text", "")
+        check("C/结果来自 HTTP server（ok: 前缀）", txt.startswith("ok:"), txt[:120])
+        idle = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("C/第二轮收尾回到 idle", idle is not None)
+
+        c.send({"t": "bye", "seq": 3})
+        bye = wait_for(c, lambda m: m.get("t") == "bye", 10)
+        check("C/bye 回执", bye is not None)
+        code = c.p.wait(timeout=10)
+        check("C/退出码 0", code == 0, code)
+    finally:
+        c.kill_tree()
+    err = "\n".join(c.stderr)
+    check("C/stderr: 1 个服务 2 个工具", "1 个服务、2 个工具" in err, err[:200])
+    # server 端的 header 校验就是客户端是否合规的判据：任何一条不满足都会 400。
+    check("C/session 头全程合规", not http_state.session_errors, http_state.session_errors[:3])
+    check("C/protocol-version 头全程合规", not http_state.protocol_errors, http_state.protocol_errors[:3])
+    check("C/Close 发 DELETE 终止会话", http_state.deletes > 0, http_state.deletes)
+
+
+def arm_d(core, llm, port, base_url, http_state):
+    """legacy HTTP+SSE：GET /sse 取 endpoint，POST /messages，回执走 SSE。"""
+    c = CoreProc(core, SMOKE / "legacy.json", "http://127.0.0.1:%d/v1" % port, "s-smoke-sse")
+    try:
+        hello = wait_for(c, lambda m: m.get("t") == "hello", 10)
+        check("D/hello 到达", hello is not None)
+        if hello:
+            svcs = (hello.get("mcp") or {}).get("services") or []
+            check("D/hello.mcp 标注 sse 传输",
+                  any(s.get("name") == "legacy" and s.get("tools") == 2
+                      and s.get("transport") == "sse" for s in svcs),
+                  {"services": svcs})
+        c.send({"t": "hello", "seq": 0})
+        c.send({"t": "prompt", "seq": 1, "text": "请查看 legacy git 状态", "client_id": "smoke-d1"})
+
+        ask = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        check("D/ask 门被触发", ask is not None)
+        if ask:
+            det = ask.get("detail")
+            check("D/ask 带提案卡 detail",
+                  isinstance(det, dict) and det.get("server") == "legacy"
+                  and det.get("toolName") == "git.status", det)
+            c.send({"t": "answer", "seq": 2, "id": ask.get("id"), "choice": "allow"})
+
+        tr = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        check("D/tool_result 块出现", tr is not None)
+        delta = wait_for(c, lambda m: m.get("t") == "delta" and m.get("id") == (tr or {}).get("id"), 10)
+        txt = (delta or {}).get("text", "")
+        check("D/结果来自 SSE 回执（ok: 前缀）", txt.startswith("ok:"), txt[:120])
+        idle = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("D/第二轮收尾回到 idle", idle is not None)
+
+        c.send({"t": "bye", "seq": 3})
+        bye = wait_for(c, lambda m: m.get("t") == "bye", 10)
+        check("D/bye 回执", bye is not None)
+        code = c.p.wait(timeout=10)
+        check("D/退出码 0", code == 0, code)
+    finally:
+        c.kill_tree()
+    err = "\n".join(c.stderr)
+    check("D/stderr: 1 个服务 2 个工具", "1 个服务、2 个工具" in err, err[:200])
+    # legacy 的所有 JSON-RPC 消息都必须走 POST /messages（含 initialize）。
+    posted = [r for r in http_state.requests if r[0] == "/messages"]
+    check("D/initialize 走 POST /messages",
+          any(r[3].get("method") == "initialize" for r in posted), len(posted))
+
+
+def arm_e(core, port, dead_url):
+    """HTTP 不可达：失败必须进 hello.mcp + system 块，而不是静默空服务。"""
+    c = CoreProc(core, SMOKE / "http-dead.json", "http://127.0.0.1:%d/v1" % port, "s-smoke-http-dead")
+    try:
+        hello = wait_for(c, lambda m: m.get("t") == "hello", 10)
+        check("E/hello 到达（不可达服务不应挡住会话）", hello is not None)
+        if hello:
+            check("E/不可达服务不进 caps", "mcp" not in (hello.get("caps") or []), hello.get("caps"))
+            mcp = hello.get("mcp")
+            fails = (mcp or {}).get("failed") or []
+            check("E/hello.mcp 记录远程失败",
+                  isinstance(mcp, dict)
+                  and any(f.get("name") == "remote" and f.get("error") for f in fails),
+                  {"failed": fails})
+            block = wait_for(c, lambda m: m.get("t") == "block_start"
+                             and m.get("kind") == "system"
+                             and "[MCP]" in m.get("text", "")
+                             and "remote" in m.get("text", ""), 10)
+            check("E/失败 system 块可见", block is not None,
+                  (block or {}).get("text", "")[:160])
+        c.send({"t": "hello", "seq": 0})
+        c.send({"t": "bye", "seq": 1})
+        bye = wait_for(c, lambda m: m.get("t") == "bye", 10)
+        check("E/bye 回执", bye is not None)
+        code = c.p.wait(timeout=10)
+        check("E/退出码 0", code == 0, code)
+    finally:
+        c.kill_tree()
+    err = "\n".join(c.stderr)
+    check("E/stderr 点名不可达服务", "启动服务 remote 失败" in err, err[:240])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", default=str(ROOT / "core" / "bin" / "ecdi-core.exe"))
@@ -364,7 +511,14 @@ def main():
     if not core.exists():
         print("SKIP: core 二进制不存在：%s\n先跑：cd core && go build -o bin/ecdi-core.exe ./cmd/ecdi-core" % core)
         return 2
-    write_configs()
+    http_srv, http_state, http_base = http_server.start()
+    # 一个"刚关掉"的本地端口：保证连接被拒，而不是依赖某个固定端口空闲。
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    dead_port = sock.getsockname()[1]
+    sock.close()
+    dead_url = "http://127.0.0.1:%d" % dead_port
+    write_configs(http_base, dead_url)
     if LOG.exists():
         LOG.unlink()
     RESULT.unlink(missing_ok=True)
@@ -380,8 +534,12 @@ def main():
     try:
         arm_a(core, llm, port)
         arm_b(core, port)
+        arm_c(core, llm, port, http_base, http_state)
+        arm_d(core, llm, port, http_base, http_state)
+        arm_e(core, port, dead_url)
     finally:
         srv.shutdown()
+        http_srv.shutdown()
         timer.cancel()
     summary = {"passed": sum(1 for c in CHECKS if c["ok"]), "failed": len(FAILS), "fails": FAILS,
                "core": str(core), "checks": CHECKS}

@@ -499,6 +499,8 @@ struct McpProbeRec {
     bool cardVisible = false;          // 视图：MCP 卡是否显形
     size_t cardRows = 0;               // 视图：卡片列表行数
     size_t serviceRows = 0;            // 视图：含每个服务名的行数（应 == modelServices）
+    size_t transportRows = 0;          // 视图：远程服务行里带 transport 字样的行数（应 == 远程服务数）
+    size_t modelRemote = 0;            // 模型：transport 非 stdio 的服务数（六版）
     size_t failureRows = 0;            // 视图：含每个失败服务名的行数（应 == modelFailed）
     size_t renderedMcpNotices = 0;     // 视图：屏上含 "[MCP]" 的 system 行（失败/配置错误）
     bool subtitleHasMcp = false;       // 视图：会话头副标含 "MCP"

@@ -10,16 +10,14 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -56,10 +54,74 @@ const (
 // ── MCP 配置文件结构 ─────────────────────────────────────────────
 
 type mcpServerConfig struct {
-	Command  string            `json:"command"`
-	Args     []string          `json:"args"`
-	Env      map[string]string `json:"env,omitempty"`
-	Disabled bool              `json:"disabled,omitempty"`
+	// stdio：拉起子进程。
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	// 远程：Streamable HTTP（默认）/ legacy HTTP+SSE（transport:"sse"）。
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Transport string            `json:"transport,omitempty"` // stdio | http | sse（省略按 command/url 推断）
+	Disabled  bool              `json:"disabled,omitempty"`
+}
+
+// transportKind：归一化传输类型，并把「配置自相矛盾」挡在启动之前。
+//
+// ★ 为什么在这里校验而不是等到 newMCPClient：一个坏配置必须变成 Failed 里的
+//   一条**可读原因**（GUI 的失败卡/system 块），而不是一个空服务或一次半启动。
+// ★ `url` 与 `command` 互斥；`headers` 只属于远程，`env/args` 只属于 stdio。
+//   两类字段混写通常是用户从别的客户端抄配置抄串了，静默取其一比报错更糟。
+func (c mcpServerConfig) transportKind() (string, error) {
+	command := strings.TrimSpace(c.Command)
+	rawURL := strings.TrimSpace(c.URL)
+	kind := strings.ToLower(strings.TrimSpace(c.Transport))
+
+	if command != "" && rawURL != "" {
+		return "", errors.New("command 与 url 只能二选一（stdio 与远程是两种传输）")
+	}
+	if command == "" && rawURL == "" {
+		return "", errors.New("缺少 command（stdio）或 url（远程）")
+	}
+	if kind == "" {
+		if rawURL != "" {
+			kind = "http"
+		} else {
+			kind = "stdio"
+		}
+	}
+
+	switch kind {
+	case "stdio":
+		if command == "" {
+			return "", errors.New("transport=stdio 需要 command")
+		}
+		if rawURL != "" {
+			return "", errors.New("transport=stdio 不能同时给 url")
+		}
+		if len(c.Headers) > 0 {
+			return "", errors.New("headers 只用于远程传输（stdio 请用 env）")
+		}
+	case "http", "sse":
+		if rawURL == "" {
+			return "", fmt.Errorf("transport=%s 需要 url", kind)
+		}
+		if command != "" || len(c.Args) > 0 || len(c.Env) > 0 {
+			return "", fmt.Errorf("transport=%s 不能同时给 command/args/env", kind)
+		}
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return "", fmt.Errorf("url 解析失败: %w", err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return "", fmt.Errorf("url 只支持 http/https，got %q", u.Scheme)
+		}
+		if u.Host == "" {
+			return "", errors.New("url 缺少 host")
+		}
+	default:
+		return "", fmt.Errorf("未知 transport %q（支持 stdio / http / sse）", c.Transport)
+	}
+	return kind, nil
 }
 
 type mcpConfigFile struct {
@@ -139,103 +201,53 @@ type mcpCallToolResult struct {
 type mcpClient struct {
 	name string
 	cfg  mcpServerConfig
-	cmd  *exec.Cmd
-
-	// mu 只保护 pending 与 stdin 字段。★ **不覆盖阻塞写**：Close 要拿这把锁才能
-	// 关 stdin，若一次 64KB 以上的写正卡在「不读 stdin 的服务端」上并占着锁，
-	// 退出路径就会与它互等。写由 wmu 单独串行化（见 writeLine）。
-	mu      sync.Mutex
-	wmu     sync.Mutex
-	stdin   io.WriteCloser
-	reqID   atomic.Int64
-	pending map[string]chan jsonrpcResponse
-	closed  atomic.Bool
-	done    chan struct{}
-	// doneOnce：Close 与 readLoop 都会关闭 done（进程自己退出 vs 我们关它），
-	// 两处各自 `select{case <-done: default: close(done)}` 是**无互斥**的，
-	// 撞在一起就 "close of closed channel" panic ⇒ 收口到 once。
-	doneOnce sync.Once
-	// killTree：整树清退（Windows = Job Object 关句柄即整树；POSIX = 杀 -pgid）。
-	// nil = 纳管失败已降级，只能杀直系子进程。
-	killTree func()
-	tools    []mcpTool
+	// transport：stdio / Streamable HTTP / legacy HTTP+SSE 的共同面。
+	// ★ JSON-RPC 方法语义（initialize / tools/list / tools/call）留在 client，
+	//   传输只负责「把一条消息送出去、把对应回执拿回来、关闭时清场」。
+	transport mcpTransport
+	reqID     atomic.Int64
+	closed    atomic.Bool
+	tools     []mcpTool
 }
 
 func newMCPClient(name string, cfg mcpServerConfig) *mcpClient {
-	return &mcpClient{
-		name:    name,
-		cfg:     cfg,
-		pending: make(map[string]chan jsonrpcResponse),
-		done:    make(chan struct{}),
-	}
+	return &mcpClient{name: name, cfg: cfg}
 }
 
-func (c *mcpClient) closeDone() { c.doneOnce.Do(func() { close(c.done) }) }
-
-// isDead：进程已退出（readLoop 收到 EOF 或 Close 走过）。
+// isDead：传输层已关闭/断流（进程退出、SSE 流断、Close 走过）。
 func (c *mcpClient) isDead() bool {
+	if c == nil || c.transport == nil {
+		return true
+	}
 	select {
-	case <-c.done:
+	case <-c.transport.Done():
 		return true
 	default:
 		return false
 	}
 }
 
-// startAndInit：拉起子进程、建立 stdio 读写循环、完成 initialize 握手并列出工具。
+// startAndInit：建立传输（stdio 子进程 / Streamable HTTP / legacy SSE），
+// 完成 initialize 握手并列出工具。
+//
+// ★ 传输差异全部收在 mcpTransport 后面；这里只剩**协议语义**：握手、版本协商、
+//   initialized 通知、tools/list 分页。2026-11-06 引入 HTTP/SSE 时特意没有在
+//   本函数里堆 `if cfg.URL != ""`——那会把进程清退与 HTTP 会话搅在一起。
 func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
-	cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
-	if rootDir != "" {
-		cmd.Dir = rootDir
-	}
-
-	// 环境变量：继承但剔除密钥，再追加配置中的私有 env
-	env := childEnv()
-	for k, v := range c.cfg.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
-	cmd.Env = env
-
-	stdin, err := cmd.StdinPipe()
+	tr, err := newMCPTransport(c.name, c.cfg, rootDir)
 	if err != nil {
-		return fmt.Errorf("打开 stdin 失败: %w", err)
+		return err
 	}
-	c.stdin = stdin
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return fmt.Errorf("打开 stdout 失败: %w", err)
+	c.transport = tr
+	if err := tr.Start(ctx); err != nil {
+		c.Close()
+		return err
 	}
-
-	// stderr 透传到 core 的 stderr，每行带服务名前缀（多服务时才知道是谁在叫）
-	stderrW := &prefixWriter{prefix: "[mcp:" + c.name + "] ", w: os.Stderr}
-	cmd.Stderr = stderrW
-
-	// 启动：优先「挂起 → 挂进作业 → 恢复」把整棵树纳管（mcp_proc_*.go）。
-	// ★ 纳管失败**只降级并告警**，不 fail-closed：MCP 不是安全边界
-	//   （positioning §5.2「harness 只做配置 + 展示 + 转发」），这里要的是
-	//   孤儿清理，不是沙盒。降级后我们只能杀直系子进程（npx 的 node 孙进程会活）。
-	// ★ `started` 区分两件事：「进程起来了但没纳管上」（降级）vs「进程根本没起来」
-	//   （直接失败）—— 混成一句会让「找不到可执行文件」被报成「整树纳管失败」。
-	killTree, started, containErr := mcpStartContained(cmd)
-	switch {
-	case containErr == nil:
-		c.killTree = killTree
-	case !started:
-		_ = stdin.Close()
-		return containErr
-	default:
-		fmt.Fprintf(stderrW, "整树纳管失败，降级为只杀直系子进程：%v\n", containErr)
-	}
-	c.cmd = cmd
-
-	// 启动读取协程
-	go c.readLoop(stdout)
 
 	// 1. 发送 initialize
+	clientVersion := tr.ProtocolVersion()
 	initParams := mcpInitializeParams{
-		ProtocolVersion: mcpProtocolVersion,
+		ProtocolVersion: clientVersion,
 		Capabilities:    map[string]any{},
 		ClientInfo: mcpClientInfo{
 			Name:    "ecdi-core",
@@ -255,17 +267,17 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 	}
 
 	// ★ 版本协商要**说出来**：服务端可以挑一个不同的 protocolVersion（规范允许），
-	//   而我们只按 2024-11-05 的连接级语义实现。静默继续会让「2026 版无状态语义」
+	//   而我们按传输各自的连接级语义实现。静默继续会让「2026 版无状态语义」
 	//   与「连接级会话」的差异永远无人知晓——本仓对 I4 那类「缺了什么」的处置是
-	//   显式提示，这里同一口径。不中断：tools/list 与 tools/call 在两版里是同一形状。
-	if v := initRes.ProtocolVersion; v != "" && v != mcpProtocolVersion {
-		fmt.Fprintf(stderrW, "服务端协商到 protocolVersion=%s（本客户端按 %s 语义实现，差异见 docs/mcp-host-plan.md §二.3）\n",
-			v, mcpProtocolVersion)
+	//   显式提示，这里同一口径。不中断：tools/list 与 tools/call 在各版里形状相同。
+	if v := initRes.ProtocolVersion; v != "" && v != clientVersion {
+		mcpLogf(c.name, "服务端协商到 protocolVersion=%s（本传输按 %s 语义实现，差异见 docs/mcp-host-plan.md §二.3）",
+			v, clientVersion)
 	}
 
 	// 2. 发送 notifications/initialized
 	// ★ 错误只能吞：通知没有回执，连接已断的话下一步 tools/list 会失败并报到那里。
-	_ = c.sendNotification("notifications/initialized", map[string]any{})
+	_ = c.sendNotification(ctx, "notifications/initialized", map[string]any{})
 
 	// 3. 拉取 tools/list——**追到底**：规范允许分页（nextCursor），只取第一页
 	//    等于静默丢工具（模型看不见就不可能调用，且没有任何提示）。
@@ -297,132 +309,20 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 	return nil
 }
 
-func (c *mcpClient) readLoop(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	// 允许单行长至 4MB（某些数据工具返回大 JSON）
-	const maxLine = 4 * 1024 * 1024
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, maxLine)
-
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var resp jsonrpcResponse
-		if err := json.Unmarshal(line, &resp); err != nil {
-			// 非 JSON-RPC 消息行（服务端往 stdout 打日志），忽略
-			continue
-		}
-		if resp.Method != "" {
-			// ★ 这是**服务端发来的请求**（sampling / roots / elicitation 之类），
-			//   不是回执。我们声明了空 capabilities，正常不该出现；但静默丢弃会让
-			//   对方挂等一个永不到来的答复 ⇒ 明确回 -32601，别让它卡住。
-			if resp.ID != nil {
-				c.replyError(resp.ID, -32601, "method not supported: "+resp.Method)
-			}
-			continue
-		}
-		if resp.ID == nil {
-			// 通知或空 ID 响应，跳过
-			continue
-		}
-
-		idKey := fmt.Sprint(resp.ID)
-		c.mu.Lock()
-		ch, ok := c.pending[idKey]
-		if ok {
-			delete(c.pending, idKey)
-		}
-		c.mu.Unlock()
-
-		if ok && ch != nil {
-			ch <- resp
-		}
-	}
-
-	// 管道断开
-	c.mu.Lock()
-	for idKey, ch := range c.pending {
-		delete(c.pending, idKey)
-		close(ch)
-	}
-	c.mu.Unlock()
-
-	c.closeDone()
-}
-
-// replyError：给**服务端发来的请求**回一个 JSON-RPC error（我们只做 -32601）。
-func (c *mcpClient) replyError(id any, code int, msg string) {
-	data, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      id,
-		"error":   jsonrpcError{Code: code, Message: msg},
-	})
-	if err != nil {
-		return
-	}
-	_ = c.writeLine(append(data, '\n'))
-}
-
 func (c *mcpClient) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.closed.Load() {
 		return nil, errors.New("MCP 客户端已关闭")
 	}
-
-	id := c.reqID.Add(1)
-	idKey := strconv.FormatInt(id, 10)
-	ch := make(chan jsonrpcResponse, 1)
-
-	c.mu.Lock()
-	c.pending[idKey] = ch
-	c.mu.Unlock()
-
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
-		ID:      id,
+		ID:      c.reqID.Add(1),
 		Method:  method,
 		Params:  params,
 	}
-
-	data, err := json.Marshal(req)
-	if err != nil {
-		c.mu.Lock()
-		delete(c.pending, idKey)
-		c.mu.Unlock()
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
-	}
-	data = append(data, '\n')
-
-	if err := c.writeLine(data); err != nil {
-		c.mu.Lock()
-		delete(c.pending, idKey)
-		c.mu.Unlock()
-		return nil, fmt.Errorf("写入 stdin 失败: %w", err)
-	}
-
-	select {
-	case resp, ok := <-ch:
-		if !ok {
-			return nil, errors.New("连接断开")
-		}
-		if resp.Error != nil {
-			return nil, fmt.Errorf("RPC 错误 [%d]: %s", resp.Error.Code, resp.Error.Message)
-		}
-		return resp.Result, nil
-
-	case <-ctx.Done():
-		c.mu.Lock()
-		delete(c.pending, idKey)
-		c.mu.Unlock()
-		return nil, ctx.Err()
-
-	case <-c.done:
-		return nil, errors.New("MCP 服务进程已退出")
-	}
+	return c.transport.Do(ctx, req)
 }
 
-func (c *mcpClient) sendNotification(method string, params any) error {
+func (c *mcpClient) sendNotification(ctx context.Context, method string, params any) error {
 	if c.closed.Load() {
 		return errors.New("MCP 客户端已关闭")
 	}
@@ -431,28 +331,7 @@ func (c *mcpClient) sendNotification(method string, params any) error {
 		Method:  method,
 		Params:  params,
 	}
-	data, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	return c.writeLine(append(data, '\n'))
-}
-
-// writeLine：把一行 JSON 写进 stdin。
-//
-// ★ 写**不持** `c.mu`：`Close()` 要拿那把锁才能关 stdin，若一次阻塞写（服务端
-//   不读 stdin、管道 64KB 写满）占着锁，退出路径就与它互等 —— 会话退不掉。
-//   串行化改由 wmu 负责；stdin 字段本身仍由 mu 保护（取完就放）。
-func (c *mcpClient) writeLine(data []byte) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	c.mu.Lock()
-	w := c.stdin
-	c.mu.Unlock()
-	if w == nil {
-		return errors.New("stdin 未就绪")
-	}
-	_, err := w.Write(data)
+	_, err := c.transport.Do(ctx, req)
 	return err
 }
 
@@ -511,40 +390,12 @@ func (c *mcpClient) callTool(ctx context.Context, origToolName string, args map[
 func clipMCPOutput(s string) string { return trimOutputTo(s, mcpOutLimit) }
 
 func (c *mcpClient) Close() {
-	if c.closed.Swap(true) {
+	if c == nil || c.closed.Swap(true) {
 		return
 	}
-
-	c.mu.Lock()
-	if c.stdin != nil {
-		_ = c.stdin.Close()
+	if c.transport != nil {
+		c.transport.Close()
 	}
-	c.mu.Unlock()
-
-	if c.cmd != nil && c.cmd.Process != nil {
-		// 优雅退出给 300ms 宽限期，否则整树强杀
-		done := make(chan struct{})
-		go func() {
-			_ = c.cmd.Wait()
-			close(done)
-		}()
-		select {
-		case <-done:
-		case <-time.After(300 * time.Millisecond):
-			if c.killTree != nil {
-				c.killTree()
-			}
-			_ = c.cmd.Process.Kill()
-		}
-	}
-
-	// 整树清退无条件再来一次：Windows 那边 `killTree` = 关 Job 句柄（KILL_ON_JOB_CLOSE），
-	// 句柄不关就是每会话泄一个内核对象；POSIX 那边关组是幂等的（组空了返回 ESRCH）。
-	if c.killTree != nil {
-		c.killTree()
-	}
-
-	c.closeDone()
 }
 
 // ── MCP Hub（多服务聚合调度中心）─────────────────────────────────
@@ -565,8 +416,9 @@ type mcpToolRef struct {
 // ★ 边界：这是**启动期快照**，不是运行期实时状态。服务之后崩掉仍走
 // `noteDead` → `TakeDeadNotices` 的 system 块路径（不在这里静默改写历史）。
 type mcpServerStatus struct {
-	Name  string `json:"name"`
-	Tools int    `json:"tools"`
+	Name      string `json:"name"`
+	Tools     int    `json:"tools"`
+	Transport string `json:"transport,omitempty"` // stdio / http / sse（GUI 用来区分远程）
 }
 
 type mcpFailureStatus struct {
@@ -1135,9 +987,11 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 				registered++
 			}
 		}
+		kind, _ := cfg.MCPServers[sName].transportKind()
 		hub.status.Services = append(hub.status.Services, mcpServerStatus{
-			Name:  sName,
-			Tools: registered,
+			Name:      sName,
+			Tools:     registered,
+			Transport: kind,
 		})
 	}
 	hub.status.Disabled = disabled

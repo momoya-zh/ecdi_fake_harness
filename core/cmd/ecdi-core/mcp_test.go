@@ -459,8 +459,9 @@ func TestMCP_HubStatus(t *testing.T) {
 	defer hub.Close()
 
 	st := hub.Status()
-	if len(st.Services) != 1 || st.Services[0].Name != "good" || st.Services[0].Tools != 6 {
-		t.Fatalf("services 快照应为 good/6 工具，got %+v", st.Services)
+	if len(st.Services) != 1 || st.Services[0].Name != "good" || st.Services[0].Tools != 6 ||
+		st.Services[0].Transport != "stdio" {
+		t.Fatalf("services 快照应为 good/6/stdio，got %+v", st.Services)
 	}
 	if len(st.Failed) != 1 || st.Failed[0].Name != "broken" || st.Failed[0].Error == "" {
 		t.Fatalf("failed 快照应为 broken + 非空原因，got %+v", st.Failed)
@@ -966,8 +967,8 @@ func TestLoopE2E_MCPTool(t *testing.T) {
 		t.Fatalf("mcp.services 应只有 mock（broken 不算服务）：%v", st["services"])
 	}
 	svc, _ := services[0].(map[string]any)
-	if svc["name"] != "mock" || svc["tools"] != float64(6) {
-		t.Fatalf("mcp.services[0] 应为 mock/6：%v", svc)
+	if svc["name"] != "mock" || svc["tools"] != float64(6) || svc["transport"] != "stdio" {
+		t.Fatalf("mcp.services[0] 应为 mock/6/stdio：%v", svc)
 	}
 	failed, _ := st["failed"].([]any)
 	if len(failed) != 1 {

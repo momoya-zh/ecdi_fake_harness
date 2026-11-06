@@ -40,7 +40,7 @@ OUT = ROOT / ".scratch"
 #   冒烟逻辑本身在 tools/mcp-smoke/ 里，不复制一份到门内。
 MCP_SMOKE = ROOT / "tools" / "mcp-smoke" / "drive.py"
 MCP_RESULT = OUT / "mcp-smoke" / "result.json"
-MCP_SMOKE_CHECKS = 37  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail 4 断言，2026-11-06；32→37：hello.mcp 状态与失败块 5 断言，同日）
+MCP_SMOKE_CHECKS = 71  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail；32→37：hello.mcp；37→64：HTTP/SSE 两臂；64→71：HTTP 不可达失败臂，均 2026-11-06）
 
 # ============================================================
 # ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹
@@ -130,8 +130,8 @@ PROPOSAL = "protocol/fixtures/proposal/write-edit-run-asks.jsonl"
 # ★★ 协议 v6（2026-11-05）：后台作业正向夹具（run_command background → job start/
 #   output/end → job_output/job_kill 两条控制工具链）。
 JOB = "protocol/fixtures/jobs/background-task.jsonl"
-# ★★ 2026-11-06：MCP 产品面可见性正向夹具（hello.mcp：2 个正常服务 + 1 个失败
-#   + 1 个禁用；hello 之后跟一条失败 system 块）。
+# ★★ 2026-11-06：MCP 产品面可见性正向夹具（hello.mcp：3 个正常服务（含 1 个
+#   `transport:"http"` 远程）+ 1 个失败 + 1 个禁用；hello 之后跟一条失败 system 块）。
 MCP_STATUS = "protocol/fixtures/mcp/status.jsonl"
 # ★★ 门控反面（2026-11-04）：发 agent 消息但 hello.caps **不含** agents
 #   ⇒ 内容照旧渲染，代理卡**不得**出现（协议 §3.1）。
@@ -739,9 +739,11 @@ def check_mcp_probe_negative():
     ok = (rec.get("matched") is True and rec.get("modelHas") is False
           and rec.get("cardVisible") is False and rec.get("cardRows") == 0
           and rec.get("subtitleHasMcp") is False
+          and rec.get("transportRows") == 0 and rec.get("modelRemote") == 0
           and rec.get("renderedMcpNotices") == 0)
     detail = (f"modelHas={rec.get('modelHas')} cardVisible={rec.get('cardVisible')} "
               f"cardRows={rec.get('cardRows')} subtitleHasMcp={rec.get('subtitleHasMcp')} "
+              f"transportRows={rec.get('transportRows')} "
               f"notices={rec.get('renderedMcpNotices')} matched={rec.get('matched')}")
     return (0 if ok else 1), detail
 

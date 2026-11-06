@@ -10,6 +10,9 @@
 //      否则"（K 个失败）"与红行永远走不到）。
 //   ② 卡片行数 == 模型推导的期望行数（配置来源/问题/服务/失败/禁用/空态）。
 //   ③ 每个服务名与每个失败服务名各在卡片里出现**一次**。
+//      ★ 六版新增：远程服务（`transport != "stdio"`）的行必须逐字形如
+//        `<name> · <transport> · <N> 工具` —— 只查「行里有 http/sse 字样」
+//        会让「所有行都写死 http」的实现假绿。
 //   ④ 会话头副标含 `McpStatusText()` 的逐字结果；没有 mcp 字段时不得出现 "MCP"。
 //   ⑤ 屏上 `[MCP]` system 行数 == 失败数 + (配置错误 ? 1 : 0)。
 //   ⑥ 负向（demo）：没有 mcp 字段 ⇒ 卡片不可见、0 行、副标无 MCP、0 条 MCP 行。
@@ -47,7 +50,10 @@ void HarnessApp::RunMcpProbe() {
     rec.modelHas = m.has;
     rec.modelServices = m.services.size();
     rec.modelFailed = m.failed.size();
-    for (const auto& svc : m.services) rec.modelTools += static_cast<size_t>(svc.tools);
+    for (const auto& svc : m.services) {
+        rec.modelTools += static_cast<size_t>(svc.tools);
+        if (!svc.transport.empty() && svc.transport != "stdio") ++rec.modelRemote;
+    }
 
     // 视图侧：卡片
     rec.cardVisible = m_hud.inspMcpCard && m_hud.inspMcpCard->IsVisible();
@@ -60,6 +66,14 @@ void HarnessApp::RunMcpProbe() {
             for (const auto& svc : m.services) {
                 if (!svc.name.empty() && text.rfind(svc.name + " · ", 0) == 0) {
                     ++rec.serviceRows;
+                    // ★ 六版：远程服务的行里必须**逐字**含它自己的 transport。
+                    //   只查「行里有没有 http/sse 字样」会让「所有行都写死 http」
+                    //   的实现假绿——所以按服务逐个比对。
+                    const bool remote = !svc.transport.empty() && svc.transport != "stdio";
+                    if (remote &&
+                        text.rfind(svc.name + " · " + svc.transport + " · ", 0) == 0) {
+                        ++rec.transportRows;
+                    }
                     break;
                 }
             }
@@ -97,6 +111,7 @@ void HarnessApp::RunMcpProbe() {
         rec.matched = rec.modelServices > 0 && rec.modelFailed > 0 &&
                       rec.cardVisible && rec.cardRows == expectedRows &&
                       rec.serviceRows == rec.modelServices &&
+                      rec.transportRows == rec.modelRemote &&
                       rec.failureRows == rec.modelFailed &&
                       rec.subtitleHasMcp && rec.subtitleMatched &&
                       rec.renderedMcpNotices == expectedNotices;
@@ -107,13 +122,15 @@ void HarnessApp::RunMcpProbe() {
     }
 
     if (!rec.matched) {
-        char note[320];
+        char note[480];
         std::snprintf(note, sizeof(note),
                       "has=%d services=%zu failed=%zu tools=%zu card=%d rows=%zu/%zu "
-                      "svcRows=%zu failRows=%zu notices=%zu/%zu subHasMcp=%d subMatched=%d",
+                      "svcRows=%zu remoteRows=%zu/%zu failRows=%zu notices=%zu/%zu "
+                      "subHasMcp=%d subMatched=%d",
                       rec.modelHas ? 1 : 0, rec.modelServices, rec.modelFailed, rec.modelTools,
                       rec.cardVisible ? 1 : 0, rec.cardRows, expectedRows,
-                      rec.serviceRows, rec.failureRows, rec.renderedMcpNotices, expectedNotices,
+                      rec.serviceRows, rec.transportRows, rec.modelRemote,
+                      rec.failureRows, rec.renderedMcpNotices, expectedNotices,
                       rec.subtitleHasMcp ? 1 : 0, rec.subtitleMatched ? 1 : 0);
         rec.note = note;
     }
@@ -127,16 +144,19 @@ void HarnessApp::AppendMcpProbeSummary(std::string& json) {
     for (size_t i = 0; i < m_probeState.mcpProbeLog.size(); ++i) {
         const McpProbeRec& r = m_probeState.mcpProbeLog[i];
         json += (i ? ", " : "");
-        char b[768];
+        char b[896];
         std::snprintf(b, sizeof(b),
                       "{\"phase\": \"%s\", \"modelHas\": %s, \"modelServices\": %zu, "
-                      "\"modelFailed\": %zu, \"modelTools\": %zu, \"cardVisible\": %s, "
-                      "\"cardRows\": %zu, \"serviceRows\": %zu, \"failureRows\": %zu, "
+                      "\"modelFailed\": %zu, \"modelTools\": %zu, \"modelRemote\": %zu, "
+                      "\"cardVisible\": %s, \"cardRows\": %zu, \"serviceRows\": %zu, "
+                      "\"transportRows\": %zu, \"failureRows\": %zu, "
                       "\"renderedMcpNotices\": %zu, \"subtitleHasMcp\": %s, "
                       "\"subtitleMatched\": %s, \"matched\": %s, \"note\": \"%s\"}",
                       r.phase.c_str(), r.modelHas ? "true" : "false", r.modelServices,
-                      r.modelFailed, r.modelTools, r.cardVisible ? "true" : "false",
-                      r.cardRows, r.serviceRows, r.failureRows, r.renderedMcpNotices,
+                      r.modelFailed, r.modelTools, r.modelRemote,
+                      r.cardVisible ? "true" : "false",
+                      r.cardRows, r.serviceRows, r.transportRows, r.failureRows,
+                      r.renderedMcpNotices,
                       r.subtitleHasMcp ? "true" : "false",
                       r.subtitleMatched ? "true" : "false",
                       r.matched ? "true" : "false", r.note.c_str());

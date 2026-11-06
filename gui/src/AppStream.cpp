@@ -779,6 +779,7 @@ void HarnessApp::RouteLastMessage() {
                     if (!item.IsObject()) continue;
                     McpServiceItem s;
                     s.name = item.GetString("name");
+                    s.transport = item.GetString("transport");
                     if (const json::Value* n = item.Find("tools"); n && n->IsNumber()) {
                         s.tools = static_cast<int>(n->number);
                     }
