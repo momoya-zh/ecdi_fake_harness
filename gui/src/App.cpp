@@ -225,9 +225,7 @@ HarnessApp::HarnessApp(CliOptions options)
     //   · 用户模式（`m_devMode == false`）：默认收起右侧检视栏（`m_inspectorVisible = false`），
     //     隐藏评估胶囊、底栏、渲染探针卡与测试夹具历史区。
     m_devMode = m_options.devMode || !m_options.firstRun || m_options.HasAnyProbe();
-    if (!m_devMode) {
-        m_inspectorVisible = false;
-    }
+    m_inspectorVisible = m_devMode ? m_devInspectorVisible : m_userInspectorVisible;
     // ★★ P4 H：配置**无条件**先加载一次——此前只在 firstRun 直连路径里 Load，
     //   回放/--replay 模式的 providers 恒空（模型浮窗/右栏只读卡全 "—"）。
     //   失败只记日志：文件不存在 = 干净首启（TryAutoConnectFromConfig 语义不变）。
@@ -394,6 +392,12 @@ void HarnessApp::ApplyInspectorVisibility() {
 void HarnessApp::ToggleInspector() {
     if (!m_hud.inspector) return;
     m_inspectorVisible = !m_inspectorVisible;
+    // ★★ 缺口 5 闭合：当前模式下的手动开关状态同步回对应模式的偏好槽位
+    if (m_devMode) {
+        m_devInspectorVisible = m_inspectorVisible;
+    } else {
+        m_userInspectorVisible = m_inspectorVisible;
+    }
     // ★★ 2026-10-27：中栏视口随检视栏显隐变宽/窄 230（这是**该**变的：滚动条、
     //   中栏边界必须贴到窗口右边缘，见实测反馈「收起后边框停在原位」）。
     //   ★ 版心（行宽）随之走 max-width 模型：**未封顶时真的会变**（wrapW 变 ⇒

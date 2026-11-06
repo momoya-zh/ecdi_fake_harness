@@ -835,8 +835,8 @@ void HarnessApp::SyncHeadTitlesWidth() {
 void HarnessApp::SetDevMode(bool dev) {
     if (m_devMode == dev) return;
     m_devMode = dev;
-    // 切换到用户模式时默认收起检视栏；切换到开发者模式时默认展开检视栏。
-    m_inspectorVisible = dev;
+    // ★★ 缺口 5 闭合：按目标模式恢复其独立记忆的检视栏偏好，而非无条件覆盖成 dev。
+    m_inspectorVisible = dev ? m_devInspectorVisible : m_userInspectorVisible;
     // ★★ 2026-10-27：显隐改走唯一落地口（模型态与控件永远同进同退）。
     //   排版宽不放这里管——那是 `TranscriptLayoutWidth()` 的账，Relayout 会跟着算。
     ApplyInspectorVisibility();

@@ -235,7 +235,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 
 | 探针 | 读什么 |
 |---|---|
-| `--mode-probe` | 用户模式 vs 开发者模式切换与可逆性（**P4 Phase J 缺口闭合**：4 相覆盖 baseline-dev / switch-user / dev-restored / negative，断言顶栏胶囊、26px底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸与文案、视图切换菜单项及负对照区分力） |
+| `--mode-probe` | 用户模式 vs 开发者模式切换、可逆性与偏好记忆（**P4 Phase J 缺口闭合**：5 相覆盖 baseline-dev / switch-user / dev-restored / negative / inspector-memory，断言顶栏胶囊、26px底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆及负对照区分力） |
 | `--cull-probe` | 命令分类 / 帧时 / 测量成本 |
 | `--state-probe` | 回读按钮使能位（REQ-04） |
 | `--hit-probe` | 命中门控受控对照（REQ-04 **边界**：禁用 ⇒ 点击不达） |

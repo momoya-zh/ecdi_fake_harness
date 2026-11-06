@@ -1465,6 +1465,10 @@ private:
     ECDI::Widget* m_caption = nullptr;             // 非拥有
     std::vector<PendingPromptView> m_pendingPromptViews; // 当前活动会话的 UI-only 气泡视图
     bool m_inspectorVisible = true;
+    // ★★ 缺口 5 闭合：两套模式各自独立记忆检视栏可见性偏好，
+    //   避免 SetDevMode 无条件覆盖用户在对应视图下的手动开关。
+    bool m_devInspectorVisible = true;
+    bool m_userInspectorVisible = false;
     // ★★ 2026-10-26（按模式分流）：开发者视图开关（模型侧状态，重建后按它恢复）。
     //   · true  = 开发者模式（`--replay` / `--core` / 任一探针 / `--dev` 启动时的默认）；
     //   · false = 用户模式（无参启动时的默认：收起评估噪音，展示人类友好文案）。

@@ -229,8 +229,52 @@ void HarnessApp::RunModeProbe() {
             }
             m_probeState.modeProbeLog.push_back(std::move(rec));
 
-            // 恢复回开发者模式
+            // 转入第 4 相：验证缺口 5 闭合（检视栏偏好跨模式独立记忆）
+            m_probeState.modeProbeStep = 4;
+            m_probeState.modeProbeNextAt = now + std::chrono::milliseconds(50);
+            return;
+        }
+        case 4: {
+            // 4. inspector-memory: 闭合缺口 5 机器判据
+            // (a) 在用户模式下手动打开检视栏（点击“详情”）
+            SetDevMode(false);
+            if (!m_inspectorVisible) {
+                ToggleInspector(); // 展开用户模式检视栏
+            }
+            const bool userToggledOpen = m_inspectorVisible;
+
+            // (b) 切到开发者模式，并手动收起检视栏
             SetDevMode(true);
+            if (m_inspectorVisible) {
+                ToggleInspector(); // 收起开发者模式检视栏
+            }
+            const bool devToggledClosed = !m_inspectorVisible;
+
+            // (c) 切回用户模式，断言检视栏依然是展开的（未被开发者模式的收起或默认值抹杀）
+            SetDevMode(false);
+            const bool userRestoredOpen = m_inspectorVisible;
+
+            // (d) 切回开发者模式，断言检视栏依然是收起的（未被默认展开抹杀）
+            SetDevMode(true);
+            const bool devRestoredClosed = !m_inspectorVisible;
+
+            ModeProbeRec rec = snap("inspector-memory");
+            bool ok = userToggledOpen && devToggledClosed && userRestoredOpen && devRestoredClosed;
+            rec.matched = ok;
+            if (!ok) {
+                rec.note = "FAIL: inspector visibility memory failed across mode switches";
+            } else {
+                rec.note = "ok: dev/user inspector preferences remembered independently";
+            }
+            m_probeState.modeProbeLog.push_back(std::move(rec));
+
+            // 复原默认偏好
+            m_devInspectorVisible = true;
+            m_userInspectorVisible = false;
+            m_inspectorVisible = true;
+            ApplyInspectorVisibility();
+            SetDevMode(true);
+
             m_probeState.modeProbeDone = true;
             if (m_application) {
                 m_application->Exit();

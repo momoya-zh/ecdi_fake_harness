@@ -214,19 +214,19 @@ m_devMode = m_options.devMode || !m_options.firstRun || m_options.HasAnyProbe();
 
 **★ 已知缺口与闭合记录**：
 1. [已闭合 2026-11-06] **用户模式零探针**——原缺口：25 个探针全在开发者模式下跑，产品展示面无机器判据。
-   闭合方案：新增 `--mode-probe` 4 相机器判据（`baseline-dev`、`switch-user`、`dev-restored`、`negative` 负对照），
+   闭合方案：新增 `--mode-probe` 5 相机器判据（`baseline-dev`、`switch-user`、`dev-restored`、`negative` 负对照、`inspector-memory` 独立偏好），
    完整覆盖顶栏胶囊、底栏、侧栏回放项、检视栏探针卡、中栏按钮宽度与文案、菜单切换等全部 10+ 项状态及可逆性。
-2. 中栏头部 `titles` 在用户模式放宽到 **480**，与 3 个 44px 按钮共存时固定宽 = **676**；
-   默认窗口中栏只有 **690**（`--resize-probe` 实测 `midW=690`）⇒ 只剩 14px。开「详情」
-   （检视栏 230）后窗口 < **1106** 就溢出（`HorizontalLayout` 的 `remaining` 钳 0、固定宽子照排，
-   按钮被挤出右边界）。建议回收 480 或让副标题自己省略。
+2. [已闭合 2026-10-27 / 确认 2026-11-06] **中栏头部 `titles` 溢出防御**——原缺口：用户模式下三按钮 44px 与 titles 480 共存时，开检视栏在窄视口下溢出。
+   闭合方案：`AppHud.cpp` 中通过唯一收口 `SyncHeadTitlesWidth()` 实现动态剩余宽分配（`headW - reserved`，上限 480，下限 120 兜底不裁按钮），
+   并在模式切换、resize、侧栏切换及检视栏显隐切换全链路同步。
 3. [已闭合 2026-11-06] `CliOptions.h:281` 的 `HasAnyProbe()` **手抄 28 个 flag**：
    闭合方案：在 `main.cpp` 参数解析循环尾部收敛为通配识别：凡匹配 `--*probe*` 参数自动置
    `options.anyProbeSeen = true`，`HasAnyProbe()` 优先判定该标志，杜绝新增探针遗漏维护的债务。
-4. `PromptBar::SetHint` 无条件 `SetTextColor` ⇒ 每次 `RefreshHud` 多一次 `Invalidate`
-   （`TextWidget::SetStyle` 内无条件失效；`Widget.cpp:431` 与 `AppStream.cpp:282` 都写着这条坑）。
-   `GetTextColor()` 在，加一行同值守卫即可。
-5. `SetDevMode` 里 `m_inspectorVisible = dev` 会覆盖用户手动的检视栏开关。
+4. [已闭合 2026-11-06] `PromptBar::SetHint` 无条件 `SetTextColor` 导致每 tick 重绘失效：
+   闭合方案：在 `PromptBar::SetHint` 中加入 `if (m_hint->GetTextColor() != color)` 同值守卫，彻底消除 `RefreshHud` 带来的无效重绘。
+5. [已闭合 2026-11-06] `SetDevMode` 覆盖用户手动检视栏开关：
+   闭合方案：`HarnessApp` 引入 `m_devInspectorVisible` 与 `m_userInspectorVisible` 分模式双槽记忆模型，
+   在 `ToggleInspector()` 中将手动开关写回当前模式偏好槽位，在 `SetDevMode()` 中仅恢复目标模式记忆偏好，并在 `--mode-probe` 第 5 相（`inspector-memory`）中做机器判据闭环验证。
 
 ## 13. 建议时间线（一晚，按额度收口）
 

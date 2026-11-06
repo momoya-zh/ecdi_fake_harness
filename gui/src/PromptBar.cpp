@@ -400,7 +400,11 @@ void PromptBar::SetHint(const std::string& text, const ECDI::Color& color) {
     if (m_hint->GetText() != text) {
         m_hint->SetText(text);
     }
-    m_hint->SetTextColor(color);
+    // ★★ 缺口 4 闭合：SetTextColor 底层调 SetStyle，会无条件 Invalidate；
+    //   加同值守卫避免 RefreshHud 每 tick 触发无谓重绘。
+    if (m_hint->GetTextColor() != color) {
+        m_hint->SetTextColor(color);
+    }
 }
 
 int PromptBar::MaxInputHeight() {
