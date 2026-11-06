@@ -35,13 +35,58 @@ func sandboxProbeAlive(pid int) bool {
 	return code == 259 // STILL_ACTIVE
 }
 
+// sandboxProbeErrDetail：把探针脚本自己写下的失败原因接进 Go 侧断言。
+// ★ 为什么需要这一步：脚本内的启动失败发生在 ShellExecuteEx 层，默认只会变成
+//   宿主的错误弹窗 + 一份空输出。于是在测试输出里「脚本根本没起来」与「起来了
+//   但没被杀掉」长得一模一样——而后者正是这条用例要防的假绿。脚本把原因写进
+//   bg.err，这里读出来附在断言后面，两种失败才分得开。
+func sandboxProbeErrDetail(dir string) string {
+	b, err := os.ReadFile(filepath.Join(dir, "bg.err"))
+	if err != nil {
+		return ""
+	}
+	return "；脚本报告：" + strings.TrimSpace(string(b))
+}
+
 func TestSandbox_BackgroundChildKilledOnJobClose(t *testing.T) {
 	dir := t.TempDir()
 	ps := filepath.Join(dir, "bg.ps1")
-	script := "$psi = New-Object System.Diagnostics.ProcessStartInfo\n" +
+	// ★ 这两条属性必须显式钉住，别依赖宿主默认值：
+	//   UseShellExecute=true：让孙进程**不继承** powershell 的 stdio 管道（ShellExecuteEx
+	//     路径）。若为 false，孙进程会持有同一个管道写端，于是 Go 侧 cmd.Wait() 要等
+	//     未读完的 I/O，sandboxWaitDelay 到点后报 `exec: WaitDelay expired before I/O
+	//     complete`——用例变成假红。实测（沙箱内，每臂 8 轮）：true 8/8 通过；false 0/8；
+	//     false + RedirectStandard* 0/8。PowerShell 5.1 默认 true，pwsh 7 默认 false，
+	//     所以这里写死不随宿主漂移。
+	//   ErrorDialog=false：ShellExecuteEx 层的失败否则只弹宿主对话框、输出为空，测试
+	//     侧看不见原因（见 sandboxProbeErrDetail）。
+	// ★ 脚本体保持**纯 ASCII**：PS 5.1 把无 BOM 的 .ps1 按本地 ANSI(GBK) 解码，UTF-8
+	//   中文能否存活取决于字节边界（奇数尾巴会吞掉紧跟的 ASCII 引号 ⇒ ParserError），
+	//   是掷骰子而不是「含中文就挂」。错误文本因此改用 WriteAllText + UTF8 无 BOM 写盘：
+	//   5.1 的 Set-Content 写 ANSI，Go 读回来是乱码。
+	script := "$ErrorActionPreference = 'Stop'\n" +
+		"function Write-Err([string]$m) {\n" +
+		"  if (-not $m) { $m = 'unknown' }\n" +
+		"  [System.IO.File]::WriteAllText((Join-Path $PWD 'bg.err'), $m, (New-Object System.Text.UTF8Encoding($false)))\n" +
+		"}\n" +
+		"$psi = New-Object System.Diagnostics.ProcessStartInfo\n" +
 		"$psi.FileName = 'cmd.exe'\n" +
 		"$psi.Arguments = '/c ping -n 30 127.0.0.1 >nul'\n" +
-		"$p = [System.Diagnostics.Process]::Start($psi)\n" +
+		"$psi.UseShellExecute = $true\n" +
+		"$psi.ErrorDialog = $false\n" +
+		"try {\n" +
+		"  $p = [System.Diagnostics.Process]::Start($psi)\n" +
+		"} catch {\n" +
+		"  $inner = ''\n" +
+		"  if ($_.Exception.InnerException) { $inner = $_.Exception.InnerException.Message }\n" +
+		"  Write-Err ('start failed, hresult=0x{0:X8}, type={1}, msg={2}; inner={3}' -f $_.Exception.HResult, $_.Exception.GetType().Name, $_.Exception.Message, $inner)\n" +
+		"  exit 3\n" +
+		"}\n" +
+		"Start-Sleep -Milliseconds 300\n" +
+		"if ($p.HasExited) {\n" +
+		"  Write-Err ('child exited immediately, code=' + $p.ExitCode)\n" +
+		"  exit 4\n" +
+		"}\n" +
 		"$p.Id | Set-Content -Path bg.pid\n"
 	if err := os.WriteFile(ps, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
@@ -52,12 +97,12 @@ func TestSandbox_BackgroundChildKilledOnJobClose(t *testing.T) {
 	res := runCommandInSandbox(ctx,
 		"powershell -NoProfile -ExecutionPolicy Bypass -File "+ps, dir, 20, defaultSandboxConfig())
 	if !res.OK {
-		t.Fatalf("启动后台子进程失败：%v", res.Output)
+		t.Fatalf("启动后台子进程失败：%v%s", res.Output, sandboxProbeErrDetail(dir))
 	}
 
 	b, err := os.ReadFile(filepath.Join(dir, "bg.pid"))
 	if err != nil {
-		t.Fatalf("脚本未写出 pid：%v", err)
+		t.Fatalf("脚本未写出 pid：%v%s", err, sandboxProbeErrDetail(dir))
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil {

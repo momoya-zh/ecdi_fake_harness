@@ -60,7 +60,19 @@
 - **整树强杀**：超时 0.5s 的 `powershell Start-Sleep` 在 0.50s 内退出；`Process.Start` /
   `Start-Process` / `start /b` 派生的孙进程在作业终止后全部退出（`GetExitCodeProcess` 判活）。
 - **命令退出后的后台进程**：PowerShell 启动 `ping -n 30` 后立即退出，工具返回时作业句柄关闭，
-  孙进程随 `KILL_ON_JOB_CLOSE` 被杀（新单测守住）。
+  孙进程随 `KILL_ON_JOB_CLOSE` 被杀（新单测守住）。★ 该案的脚本**显式钉住两条属性**，不靠宿主
+  默认值：`UseShellExecute = $true` 让孙进程不继承 powershell 的 stdio 管道（`$false` 时 Go 侧
+  `cmd.Wait()` 会为未读完 I/O 等到 `sandboxWaitDelay`，报 `exec: WaitDelay expired before I/O
+  complete`，变成假红；沙箱内实测每臂 8 轮：`$true` 8/8 通过，`$false` 0/8，`$false` + 重定向
+  0/8。PS 5.1 默认 `true`、pwsh 7 默认 `false`，故写死）；`ErrorDialog = $false` 让
+  ShellExecuteEx 层失败不再只弹宿主对话框。★ 失败**可观测**：脚本把原因写入 `bg.err`（`exit 3`
+  = 启动失败并带 `hresult`/异常类型/文本/内部异常，`exit 4` = 子进程立刻退出即活性自证），Go 侧
+  `sandboxProbeErrDetail` 把它接进 `t.Fatalf`，于是「根本没起来」与「起来了没被杀」不再长得
+  一样（后者正是本案要防的假绿）。两条路径实测：① `start failed, hresult=0x80131501, …`
+  ② `child exited immediately, code=7`。★ 脚本体保持**纯 ASCII**：PS 5.1 把无 BOM 的 `.ps1`
+  按本地 ANSI(GBK) 解码，UTF-8 中文能否存活取决于字节边界（奇数尾巴会吞掉紧随的 ASCII 引号
+  ⇒ ParserError），故错误文本用 `[IO.File]::WriteAllText` + UTF8 无 BOM 写盘——5.1 的
+  `Set-Content` 写 ANSI，Go 读回来是乱码。
 - **内存上限**：256MB 作业里 `New-Object byte[] 512MB` ⇒ `OutOfMemoryException`（新单测守住）。
 - **进程上限**：cap=4 时连发 10 个 `Start-Process` 只成功 4 个（复核用临时探针，未进单测）。
 - **真实负载**：默认配置下沙盒内 `go build ./...` 通过；GOCACHE/GOMODCACHE 可读写。
