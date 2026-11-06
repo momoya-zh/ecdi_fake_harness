@@ -521,3 +521,54 @@ func TestLoopE2E_MCPToolHTTP(t *testing.T) {
 		t.Fatal("session did not exit after bye")
 	}
 }
+
+// TestMCP_HTTPCancelNotifiesServer：远程传输的取消也要真的发出去（2026-11-06 七版）。
+// ★ 两种传输都必须过：Streamable 的取消是一条通知 POST；legacy 走 messages 端点。
+func TestMCP_HTTPCancelNotifiesServer(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  func(base string) mcpServerConfig
+	}{
+		{"streamable", func(base string) mcpServerConfig { return mcpServerConfig{URL: base + "/mcp"} }},
+		{"legacy-sse", func(base string) mcpServerConfig {
+			return mcpServerConfig{URL: base + "/sse", Transport: "sse"}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &mcpHTTPTestState{}
+			var url string
+			if tc.name == "streamable" {
+				url = newStreamableTestServer(t, st).URL
+			} else {
+				url = newLegacySSETestServer(t, st).URL
+			}
+			c := startHTTPClient(t, tc.cfg(url))
+
+			callCtx, callCancel := context.WithCancel(context.Background())
+			callCancel()
+			res, err := c.callTool(callCtx, "echo", map[string]any{"msg": "x"})
+			if err != nil {
+				t.Fatalf("callTool 不该返回 error（取消是可解释结果）：%v", err)
+			}
+			if res.OK || !strings.Contains(res.Output, "已向 MCP 服务发送取消通知") {
+				t.Fatalf("取消结果文本不符：%+v", res)
+			}
+
+			var got *mcpHTTPRecord
+			recs := st.snapshot()
+			for i := range recs {
+				if recs[i].Body.Method == "notifications/cancelled" {
+					got = &recs[i]
+				}
+			}
+			if got == nil {
+				t.Fatalf("%s 未发出 notifications/cancelled", tc.name)
+			}
+			params, _ := got.Body.Params.(map[string]any)
+			if params == nil || params["requestId"] == nil {
+				t.Fatalf("取消通知必须带 requestId：%v", got.Body.Params)
+			}
+		})
+	}
+}

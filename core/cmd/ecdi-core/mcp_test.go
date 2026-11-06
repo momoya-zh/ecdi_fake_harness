@@ -60,6 +60,19 @@ func TestHelperMCPMock(t *testing.T) {
 		case "notifications/initialized":
 			// 通知无响应
 
+		case "notifications/cancelled":
+			// ★ 取消通知要落盘才可断言「我们真的发了」（不是只在客户端日志里说发了）。
+			// 服务端此刻可能还在执行上一个 tools/call（sleep_tool），所以本行会在
+			// 结果回执之后才被读到——测试按「等文件出现」而不是「立即读到」。
+			if p := os.Getenv("GO_MOCK_MCP_CANCEL_LOG"); p != "" {
+				b, _ := json.Marshal(req.Params)
+				f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if err == nil {
+					_, _ = f.Write(append(b, '\n'))
+					_ = f.Close()
+				}
+			}
+
 		case "tools/list":
 			// 分页分支（GO_MOCK_MCP_PAGINATE=1）：规范允许 nextCursor，客户端必须追到底
 			var lp struct {
@@ -120,6 +133,19 @@ func TestHelperMCPMock(t *testing.T) {
 					InputSchema: nil,
 				},
 			}
+			// ★ 只在环境白名单测试里出现：默认工具数（6）是若干既有断言的基线，
+			//   为一个用例把计数全改一遍只会让「工具表变了」这件事失去信号。
+			if os.Getenv("GO_MOCK_MCP_ENV_PROBE") == "1" {
+				tools = append(tools, mcpTool{
+					Name:        "env_probe",
+					Description: "Return one environment variable",
+					InputSchema: map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"name": map[string]any{"type": "string"}},
+						"required":   []string{"name"},
+					},
+				})
+			}
 			sendResp(req.ID, mcpToolsListResult{Tools: tools}, nil)
 
 		case "tools/call":
@@ -129,6 +155,16 @@ func TestHelperMCPMock(t *testing.T) {
 			}
 			pBytes, _ := json.Marshal(req.Params)
 			_ = json.Unmarshal(pBytes, &params)
+
+			// 调用开始落盘：E2E 用它判断「exec 真的进去了」再发 cancel，
+			// 否则取消可能落在 exec 之前（那测的是另一条路径）。
+			if p := os.Getenv("GO_MOCK_MCP_CALL_LOG"); p != "" {
+				f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if err == nil {
+					_, _ = f.WriteString(params.Name + "\n")
+					_ = f.Close()
+				}
+			}
 
 			switch params.Name {
 			case "echo":
@@ -171,6 +207,11 @@ func TestHelperMCPMock(t *testing.T) {
 				_ = child.Start()
 				sendResp(req.ID, mcpCallToolResult{
 					Content: []mcpContentItem{{Type: "text", Text: "spawned"}},
+				}, nil)
+			case "env_probe":
+				name, _ := params.Arguments["name"].(string)
+				sendResp(req.ID, mcpCallToolResult{
+					Content: []mcpContentItem{{Type: "text", Text: os.Getenv(name)}},
 				}, nil)
 			default:
 				sendResp(req.ID, nil, &jsonrpcError{Code: -32601, Message: "Method not found"})
@@ -614,6 +655,9 @@ func TestMCP_TimeoutAndCrash(t *testing.T) {
 	if resTimeout.OK {
 		t.Fatalf("expected timeout error, but got OK")
 	}
+	if !strings.Contains(resTimeout.Output, "超时") {
+		t.Fatalf("超时结果必须说清是超时：%s", resTimeout.Output)
+	}
 
 	// 2. 测试进程崩溃
 	resCrash, handledCrash := hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
@@ -624,10 +668,10 @@ func TestMCP_TimeoutAndCrash(t *testing.T) {
 		t.Fatalf("expected crash error, but got OK")
 	}
 
-	// 3. 崩溃后再次调用应当优雅返回错误而非死锁
+	// 3. 崩溃后再次调用：默认开启按需重启 ⇒ 应当活过来（2026-11-06 七版）
 	resAfterCrash, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "hi"})
-	if resAfterCrash.OK {
-		t.Fatalf("expected fail after crash")
+	if !resAfterCrash.OK {
+		t.Fatalf("崩溃后应按需重启并成功，got %+v", resAfterCrash)
 	}
 }
 
@@ -819,10 +863,12 @@ func TestMCP_OutputClip(t *testing.T) {
 // TestMCP_DeadServerNotice：服务崩掉不能只体现在「工具反复失败」上——
 // hub 必须登记一次，会话取走后清空（同一次死亡只说一次）。
 func TestMCP_DeadServerNotice(t *testing.T) {
+	// 关掉重启：这条测的是「彻底放弃时怎么说明白」的旧路径。
+	withMCPOptions(t, mcpRuntimeOptions{EnvMode: mcpEnvInherit, Respawn: false})
 	hub := newTestHub(t)
 	defer hub.Close()
 
-	if notes := hub.TakeDeadNotices(); len(notes) != 0 {
+	if notes := hub.TakeNotices(); len(notes) != 0 {
 		t.Fatalf("一开始不该有死亡通告：%v", notes)
 	}
 
@@ -840,12 +886,234 @@ func TestMCP_DeadServerNotice(t *testing.T) {
 		t.Fatalf("崩溃后必须给出非空说明（空输出会让模型以为参数写错了）")
 	}
 
-	notes := hub.TakeDeadNotices()
-	if len(notes) != 1 || !strings.Contains(notes[0], "mock") {
+	if !strings.Contains(res2.Output, "本会话不会自动重启它") {
+		t.Fatalf("关掉重启时必须说清楚不重启：%s", res2.Output)
+	}
+
+	notes := hub.TakeNotices()
+	if len(notes) != 1 || !strings.Contains(notes[0].Text, "mock") {
 		t.Fatalf("应有且仅有一条 mock 的死亡通告：%v", notes)
 	}
-	if again := hub.TakeDeadNotices(); len(again) != 0 {
+	if notes[0].OK {
+		t.Fatalf("死亡通告的 ok 必须是 false：%v", notes[0])
+	}
+	if again := hub.TakeNotices(); len(again) != 0 {
 		t.Fatalf("取走后必须清空（同一次死亡只说一次）：%v", again)
+	}
+}
+
+// ── 七版（2026-11-06）：env minimal / 取消语义 / 按需重启 ────────────
+
+// TestMCP_EnvFilter：白名单本身的行为。纯函数断言，不起进程。
+func TestMCP_EnvFilter(t *testing.T) {
+	t.Setenv("MCP_SMOKE_SECRET_TOKEN", "leak-me")
+	t.Setenv("ECDI_CORE_KEY", "sk-core")
+
+	inherit := envMap(mcpChildEnv(false))
+	if inherit["mcp_smoke_secret_token"] != "leak-me" {
+		t.Fatalf("inherit 模式应继承普通环境变量（这是既有口径）：%v", inherit["mcp_smoke_secret_token"])
+	}
+	if _, ok := inherit["ecdi_core_key"]; ok {
+		t.Fatalf("inherit 模式仍必须剔除 ECDI_*_KEY（既有纪律）")
+	}
+
+	minimal := envMap(mcpChildEnv(true))
+	if _, ok := minimal["mcp_smoke_secret_token"]; ok {
+		t.Fatalf("minimal 模式不得继承白名单外的变量")
+	}
+	if _, ok := minimal["ecdi_core_key"]; ok {
+		t.Fatalf("minimal 模式不得继承密钥")
+	}
+	if minimal["path"] == "" {
+		t.Fatalf("minimal 模式必须保留 PATH（否则 node/python server 起不来）")
+	}
+}
+
+// TestMCP_MinimalEnvChild：真子进程视角的白名单——配置 env 是显式增量，必须保留。
+func TestMCP_MinimalEnvChild(t *testing.T) {
+	withMCPOptions(t, mcpRuntimeOptions{EnvMode: mcpEnvMinimal, Respawn: true})
+	t.Setenv("MCP_SMOKE_SECRET_TOKEN", "leak-me")
+	t.Setenv("ECDI_CORE_KEY", "sk-core")
+
+	hub := newTestHubWithEnv(t, map[string]string{
+		"GO_MOCK_MCP_ENV_PROBE": "1",
+		"MCP_CONF_VISIBLE":      "yes",
+	})
+	defer hub.Close()
+
+	probe := func(name string) string {
+		t.Helper()
+		res, handled := hub.CallTool(context.Background(), "mcp__mock__env_probe", map[string]any{"name": name})
+		if !handled || !res.OK {
+			t.Fatalf("env_probe(%s) 失败：handled=%v res=%+v", name, handled, res)
+		}
+		return res.Output
+	}
+
+	if got := probe("MCP_SMOKE_SECRET_TOKEN"); got != "" {
+		t.Fatalf("minimal 模式泄漏了普通环境变量：%q", got)
+	}
+	if got := probe("ECDI_CORE_KEY"); got != "" {
+		t.Fatalf("minimal 模式泄漏了 core 密钥：%q", got)
+	}
+	if got := probe("MCP_CONF_VISIBLE"); got != "yes" {
+		t.Fatalf("配置里的 env 是显式增量，必须保留；got %q", got)
+	}
+	if got := probe("PATH"); strings.TrimSpace(got) == "" {
+		t.Fatalf("PATH 必须保留（否则 server 起不来）")
+	}
+}
+
+// TestMCP_CancelNotifiesServer：取消不能只是「我们不等了」——必须真发
+// notifications/cancelled（落盘在 mock 侧），并且结果文本如实说明送没送到。
+func TestMCP_CancelNotifiesServer(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "cancelled.log")
+	hub := newTestHubWithEnv(t, map[string]string{"GO_MOCK_MCP_CANCEL_LOG": logPath})
+	defer hub.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	res, handled := hub.CallTool(ctx, "mcp__mock__sleep_tool", map[string]any{})
+	if !handled || res.OK {
+		t.Fatalf("超时调用应被处理且失败：handled=%v res=%+v", handled, res)
+	}
+	if !strings.Contains(res.Output, "取消通知") || !strings.Contains(res.Output, "超时") {
+		t.Fatalf("结果文本必须说清超时与取消通知：%s", res.Output)
+	}
+
+	// mock 正卡在 sleep_tool 里，通知要等它回到读循环才被看到。
+	deadline := time.Now().Add(5 * time.Second)
+	var raw []byte
+	for time.Now().Before(deadline) {
+		raw, _ = os.ReadFile(logPath)
+		if len(bytes.TrimSpace(raw)) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		t.Fatalf("mock 未收到 notifications/cancelled（取消只停了我们自己）")
+	}
+	var params map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &params); err != nil {
+		t.Fatalf("取消通知不是 JSON：%v (%q)", err, raw)
+	}
+	if params["reason"] != "调用超时" {
+		t.Fatalf("reason 不符：%v", params["reason"])
+	}
+	if _, ok := params["requestId"]; !ok {
+		t.Fatalf("取消通知必须带原请求 id：%v", params)
+	}
+
+	// 取消 ≠ 断连：服务进程还在，后续调用照常。
+	res2, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "alive"})
+	if !res2.OK || res2.Output != "echo: alive" {
+		t.Fatalf("取消后连接应仍可用：%+v", res2)
+	}
+}
+
+// TestMCP_CancelText：四种组合的人话（送没送到 × 取消/超时），一个都不能含糊。
+func TestMCP_CancelText(t *testing.T) {
+	cases := []struct {
+		err      *mcpCanceledError
+		want     string
+		notWant  string
+	}{
+		{&mcpCanceledError{Reason: context.Canceled, Notified: true}, "已向 MCP 服务发送取消通知", "未能送达"},
+		{&mcpCanceledError{Reason: context.Canceled, Notified: false}, "未能送达", "已向 MCP 服务发送"},
+		{&mcpCanceledError{Reason: context.DeadlineExceeded, Notified: true}, "调用超时", "用户取消"},
+		{&mcpCanceledError{Reason: context.DeadlineExceeded, Notified: false}, "调用超时", "已向 MCP 服务发送"},
+	}
+	for i, c := range cases {
+		got := c.err.toolText()
+		if !strings.Contains(got, c.want) || strings.Contains(got, c.notWant) {
+			t.Fatalf("case %d: got %q（应含 %q，不应含 %q）", i, got, c.want, c.notWant)
+		}
+	}
+}
+
+// TestMCP_RespawnAfterCrash：崩溃后的下一次调用应把服务拉起来，工具表重注册
+// 且**不重复**（naive append 会让 provider 收到两份同名定义 ⇒ 整轮 400）。
+func TestMCP_RespawnAfterCrash(t *testing.T) {
+	withMCPOptions(t, mcpRuntimeOptions{EnvMode: mcpEnvInherit, Respawn: true})
+	hub := newTestHub(t)
+	defer hub.Close()
+
+	res, handled := hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
+	if !handled || res.OK {
+		t.Fatalf("crash_tool 应失败：handled=%v res=%+v", handled, res)
+	}
+
+	res2, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "revived"})
+	if !res2.OK || res2.Output != "echo: revived" {
+		t.Fatalf("重启后调用应成功：%+v", res2)
+	}
+
+	notes := hub.TakeNotices()
+	if len(notes) != 1 || !notes[0].OK || !strings.Contains(notes[0].Text, "已自动重启") {
+		t.Fatalf("应有一条「已自动重启」的人向通告：%+v", notes)
+	}
+
+	defs := hub.ToolDefs()
+	if len(defs) != 6 {
+		t.Fatalf("重启后工具数应仍为 6（重复注册会让 provider 400）：%d", len(defs))
+	}
+	seen := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		if seen[d.Name] {
+			t.Fatalf("工具定义重复：%s", d.Name)
+		}
+		seen[d.Name] = true
+	}
+}
+
+// TestMCP_RespawnDisabled：关掉开关时退回旧行为（明确说不重启）。
+func TestMCP_RespawnDisabled(t *testing.T) {
+	withMCPOptions(t, mcpRuntimeOptions{EnvMode: mcpEnvInherit, Respawn: false})
+	hub := newTestHub(t)
+	defer hub.Close()
+
+	hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
+	res, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "hi"})
+	if res.OK {
+		t.Fatalf("关掉重启后调用不该成功：%+v", res)
+	}
+	if !strings.Contains(res.Output, "不会自动重启") {
+		t.Fatalf("必须说清楚不重启：%s", res.Output)
+	}
+	if notes := hub.TakeNotices(); len(notes) != 1 || notes[0].OK {
+		t.Fatalf("应有一条失败通告：%+v", notes)
+	}
+}
+
+// TestMCP_RespawnCap：崩→起→崩不是无界的。到上限后放弃并说明白。
+func TestMCP_RespawnCap(t *testing.T) {
+	withMCPOptions(t, mcpRuntimeOptions{EnvMode: mcpEnvInherit, Respawn: true})
+	hub := newTestHub(t)
+	defer hub.Close()
+
+	for i := 0; i < mcpRespawnMax; i++ {
+		hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
+		res, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "again"})
+		if !res.OK {
+			t.Fatalf("第 %d 次重启应成功：%+v", i+1, res)
+		}
+	}
+	hub.CallTool(context.Background(), "mcp__mock__crash_tool", map[string]any{})
+	res, _ := hub.CallTool(context.Background(), "mcp__mock__echo", map[string]any{"msg": "nope"})
+	if res.OK {
+		t.Fatalf("超过上限后不该成功：%+v", res)
+	}
+	if !strings.Contains(res.Output, "上限") {
+		t.Fatalf("超上限必须说清原因：%s", res.Output)
+	}
+	notes := hub.TakeNotices()
+	if len(notes) == 0 {
+		t.Fatalf("超上限必须有通告")
+	}
+	last := notes[len(notes)-1]
+	if last.OK || !strings.Contains(last.Text, "不再尝试") {
+		t.Fatalf("最后一条通告应说明放弃重启：%+v", notes)
 	}
 }
 
@@ -880,12 +1148,23 @@ func TestMCP_ToolsListPagination(t *testing.T) {
 // newTestHub：拉起一个 mock MCP 服务（单测公共夹具）。
 func newTestHub(t *testing.T) *mcpHub {
 	t.Helper()
+	return newTestHubWithEnv(t, nil)
+}
+
+// newTestHubWithEnv：同上，外加子进程配置里的私有 env（GO_* 开关 / 落盘路径）。
+// ★ 走配置 env 而不是 t.Setenv：那正是「用户显式给的增量」在真实链路上的形态。
+func newTestHubWithEnv(t *testing.T, extra map[string]string) *mcpHub {
+	t.Helper()
+	env := map[string]string{"GO_WANT_HELPER_MCP": "1"}
+	for k, v := range extra {
+		env[k] = v
+	}
 	cfg := &mcpConfigFile{
 		MCPServers: map[string]mcpServerConfig{
 			"mock": {
 				Command: os.Args[0],
 				Args:    []string{"-test.run=TestHelperMCPMock", "--"},
-				Env:     map[string]string{"GO_WANT_HELPER_MCP": "1"},
+				Env:     env,
 			},
 		},
 	}
@@ -894,6 +1173,24 @@ func newTestHub(t *testing.T) *mcpHub {
 		t.Fatalf("newMCPHubFromConfig failed: %v", err)
 	}
 	return hub
+}
+
+// withMCPOptions：临时改运行期开关（env minimal / respawn），测完还原。
+func withMCPOptions(t *testing.T, o mcpRuntimeOptions) {
+	t.Helper()
+	old := getMCPOptions()
+	setMCPOptions(o)
+	t.Cleanup(func() { setMCPOptions(old) })
+}
+
+func envMap(env []string) map[string]string {
+	out := make(map[string]string, len(env))
+	for _, kv := range env {
+		if eq := strings.Index(kv, "="); eq >= 0 {
+			out[strings.ToLower(kv[:eq])] = kv[eq+1:]
+		}
+	}
+	return out
 }
 
 // 发现配置 → 拉起 Server → caps 声明 → LLM 生成 MCP tool_call → ask 门及 detail 提案卡
@@ -1041,6 +1338,95 @@ func TestLoopE2E_MCPTool(t *testing.T) {
 	})
 
 	// 8. 收尾
+	sendLine(lines, stc, `{"t":"bye"}`)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not exit after bye")
+	}
+}
+
+// waitFileContains：等一个由**子进程**写的文件出现内容（跨进程的判据）。
+func waitFileContains(t *testing.T, path, want string, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(path); err == nil && strings.Contains(string(b), want) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(path)
+	t.Fatalf("%s 在 %s 内未出现 %q（现有内容 %q）", path, d, want, b)
+}
+
+// TestLoopE2E_MCPCancelHonest：用户在 MCP 调用中途按停止。
+// 判据三件：① tool_result 说清「已通知服务端」；② tool_call 收尾写「已取消」；
+// ③ 服务端**真的**收到了 notifications/cancelled（跨进程落盘，不是客户端自说自话）。
+func TestLoopE2E_MCPCancelHonest(t *testing.T) {
+	ws := t.TempDir()
+	callLog := filepath.Join(t.TempDir(), "calls.log")
+	cancelLog := filepath.Join(t.TempDir(), "cancelled.log")
+	mcpPath := filepath.Join(ws, "mcp.json")
+	mcpCfg := fmt.Sprintf(`{
+		"mcpServers": {
+			"mock": {
+				"command": %s,
+				"args": ["-test.run=TestHelperMCPMock", "--"],
+				"env": {
+					"GO_WANT_HELPER_MCP": "1",
+					"GO_MOCK_MCP_CALL_LOG": %s,
+					"GO_MOCK_MCP_CANCEL_LOG": %s
+				}
+			}
+		}
+	}`, mustJSON(os.Args[0]), mustJSON(callLog), mustJSON(cancelLog))
+	if err := os.WriteFile(mcpPath, []byte(mcpCfg), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var recorded [][]byte
+	scripts := []sseScript{
+		{ // 只有一轮：取消后本轮不会再请求模型
+			chunks: []string{
+				deltaChunk("", "启动一个长任务。", ""),
+				deltaChunk("", "", `[{"index":0,"id":"call-mcp-cancel","function":{"name":"mcp__mock__sleep_tool","arguments":"{}"}}]`),
+			},
+		},
+	}
+	srv := newScriptedServer(t, "test-key-123", scripts, &recorded)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "", ws)
+	done := runSession(s)
+
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":6,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"p1","text":"跑个长任务"}`)
+	ask := waitFor(t, col, "ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"allow"}`, mustJSON(ask["id"])))
+
+	// ★ 等**服务端**确实收到调用再按停止：否则取消可能落在 exec 之前，
+	//   测到的就只是「没执行」，而不是「执行中被取消」。
+	waitFileContains(t, callLog, "sleep_tool", 5*time.Second)
+	sendLine(lines, stc, `{"t":"cancel"}`)
+
+	waitFor(t, col, "tool_result 诚实文本", func(m map[string]any) bool {
+		text, _ := m["text"].(string)
+		return m["t"] == "delta" && strings.Contains(text, "用户取消") && strings.Contains(text, "已向 MCP 服务发送取消通知")
+	})
+	waitFor(t, col, "tool_call summary=已取消", func(m map[string]any) bool {
+		return m["t"] == "block_end" && m["summary"] == "已取消"
+	})
+	waitFor(t, col, "state cancelled", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "cancelled"
+	})
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+
+	waitFileContains(t, cancelLog, `"reason":"用户取消"`, 5*time.Second)
+
 	sendLine(lines, stc, `{"t":"bye"}`)
 	select {
 	case <-done:

@@ -177,7 +177,8 @@ MCP server 子进程或连远程端点、握手、`tools/list`（分页追到底
 二选一，混写显式失败而不是半启动。
 纪律：外部工具**默认全过 ask 门**（可在 `--allow-tools` 里按全名逐个豁免）、输出上限 24KB
 （超出头尾各半并标注）、`hello.caps` 增 `"mcp"`、子代理**拿不到**外部工具、会话退出**整树清退**
-（Windows Job Object / POSIX 进程组）、崩溃时发一条 `system` 块而不是只让工具反复失败。
+（Windows Job Object / POSIX 进程组）、崩溃时发一条 `system` 块；stdio 服务在下一次调用前
+**按需重启**（每会话每服务上限 3 次，`--mcp-respawn=false` 退回「崩掉就是崩掉」）。
 ★ 工具名会被压进 provider 的 `function.name` 空间（`[A-Za-z0-9_-]`、≤64、超长带哈希）
 ——MCP 规范不管这条，OpenAI 兼容端点管；不压就是**整轮 400**。
 ★ 入参 schema 先规约再上交：递归删 `$schema`、本地 `$ref` 从 `$defs` / `definitions`
@@ -192,9 +193,15 @@ MCP server 子进程或连远程端点、握手、`tools/list`（分页追到底
 启动失败/配置错误另发 `[MCP] …` `system` 块。GUI 不扫 `mcp.json`，状态只来自 core。
 每个服务带 `transport`（`stdio`/`http`/`sse`），检视栏远程行显示 `<name> · http · N 工具`，
 stdio 行文案不变——用户才分得清「配的是本地进程还是远端端点」。
+★ **运行期语义（2026-11-06）**：`--mcp-env=minimal` 让 stdio server 只拿白名单环境
+（默认 `inherit`：全量继承但剔除 `ECDI_*_KEY`）；调用被取消/超时会真发
+`notifications/cancelled`（stdio 写 stdin、HTTP 发通知 POST），tool_result 按「送没送到」
+如实措辞——GUI 的「已取消」不再替服务端打包票；崩溃的 stdio 服务在**下一次调用前**
+按需重启（最多 3 次），重启成功/失败各发一条 `system` 块。规则与诚实边界见方案 §十。
 ★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 真
-HTTP/SSE server + 脚本化 SSE 端点，四臂 **71 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
-状态与传输标识、参数穿越、bye 后无残留、HTTP 不可达降级）；读数与边界见方案 §四.5；已接进
+HTTP/SSE server + 脚本化 SSE 端点，五臂 **83 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
+状态与传输标识、参数穿越、bye 后无残留、HTTP 不可达降级，以及 F 臂的
+`--mcp-env=minimal` 不泄漏与崩溃后按需重启）；读数与边界见方案 §四.5 / §十；已接进
 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
 
 **④c 无参数启动**（P3.5，2026-10-24）
@@ -445,8 +452,9 @@ Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶
 ask **提案卡**（write/edit 审批前看 unified diff、run/task 看完整作用域）·
 run_command 默认 **L1 沙盒**（Job Object 整树强杀 / 内存≤1GB / 进程≤32 / 特权剥离，提案卡两行展示边界）·
 后台长任务（协议 v6 `job`，job_id / 增量回读 / 取消 / GBK 控制台转码）·
-MCP Host（stdio JSON-RPC 2.0，工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 ·
-24KB 输出上限 · 整树清退 · 崩溃显式提示 · **启动状态副标/检视栏卡/失败告警**）·
+MCP Host（stdio JSON-RPC 2.0 + HTTP/SSE，工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 ·
+24KB 输出上限 · 整树清退 · 崩溃显式提示与**按需重启** · 取消通知 `notifications/cancelled` ·
+`--mcp-env=minimal` 白名单 · **启动状态副标/检视栏卡/失败告警**）·
 I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 
 ### **还**不能做什么（★ 这是下一步的输入）
@@ -455,6 +463,7 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 |---|---|
 | ★ **长会话上下文管理（截断/摘要）** | 现每轮全量携带历史 messages，长交互或大文件读取容易超出模型 context window 限制 |
 | **MCP HTTP 的服务端通知流** | Streamable HTTP 只做了「请求-响应」方向；GET 上的主动通知、legacy 重连 / `Last-Event-ID`、OAuth 动态注册均未做（方案 §九「诚实边界」） |
+| **MCP 单次调用超时** | 仍无 per-call 墙钟上限：卡死的 server 调用只能靠用户点停止（取消会发 `notifications/cancelled`）；要不要「超时即杀服务」还没定，见方案 §十.4 |
 | ★ **用户模式的机器判据** | **零覆盖**。26 个探针全部跑在开发者模式下（那是刻意的：分流必须对既有基线零扰动），于是 P4 Phase J 新增的产品面——无参启动那一侧——一个断言都没有。最小补法：两相加进 `--rebuild-probe` 或新开 `--mode-probe`（用户模式下指定句柄逐个必须不可见 / 切回开发者后快照与基线一致）。方案 §12「已知缺口」 |
 | **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
@@ -486,7 +495,9 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
    ~~GUI 侧提案卡~~ **已落地（2026-11-06）**：`detail.tool:"mcp"` 判别值 +
    渲染分支 core/GUI/协议/测试同批放开（server/toolName/argsKv，问句同批改真实工具名）。
    ~~HTTP/SSE 传输~~ **已落地（2026-11-06）**：Streamable HTTP（`2025-06-18`）+ legacy
-   HTTP+SSE（`transport:"sse"`）+ `url/headers` 配置 + 状态里的传输标识，四臂冒烟 71 条。
+   HTTP+SSE（`transport:"sse"`）+ `url/headers` 配置 + 状态里的传输标识。
+   ~~运行期语义~~ **已落地（2026-11-06）**：`--mcp-env=minimal`、崩溃后按需重启（上限 3 次）、
+   取消时真发 `notifications/cancelled`；五臂冒烟 **83 条**。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 

@@ -248,6 +248,18 @@ func (t *streamableHTTPTransport) Do(ctx context.Context, req jsonrpcRequest) (j
 	}
 }
 
+// Cancel：Streamable HTTP 用一条通知 POST 告知服务端（规范允许；回 202 即算送达）。
+// ★ 用 t.ctx 派生而不是原请求 ctx：原 ctx 此刻已经 canceled，拿它发任何东西都发不出去。
+func (t *streamableHTTPTransport) Cancel(requestID any, reason string) error {
+	if t.closed.Load() {
+		return errors.New("MCP HTTP 传输已关闭")
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, mcpCancelNotifyTimeout)
+	defer cancel()
+	_, err := t.Do(ctx, mcpCancelledRequest(requestID, reason))
+	return err
+}
+
 func (t *streamableHTTPTransport) finishResponse(msg jsonrpcResponse, wantID, method string) (json.RawMessage, error) {
 	if msg.ID == nil || fmt.Sprint(msg.ID) != wantID {
 		return nil, fmt.Errorf("回执 id 不匹配（期望 %s，got %v）", wantID, msg.ID)
@@ -580,6 +592,20 @@ func (t *sseHTTPTransport) Do(ctx context.Context, req jsonrpcRequest) (json.Raw
 	case <-t.done:
 		return nil, errors.New("SSE 连接已结束")
 	}
+}
+
+// Cancel：legacy SSE 走 messages 端点的通知 POST（与其它通知同一条路径）。
+func (t *sseHTTPTransport) Cancel(requestID any, reason string) error {
+	if t.closed.Load() {
+		return errors.New("MCP SSE 传输已关闭")
+	}
+	data, err := json.Marshal(mcpCancelledRequest(requestID, reason))
+	if err != nil {
+		return fmt.Errorf("序列化取消通知失败: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, mcpCancelNotifyTimeout)
+	defer cancel()
+	return t.post(ctx, data)
 }
 
 func (t *sseHTTPTransport) Close() {

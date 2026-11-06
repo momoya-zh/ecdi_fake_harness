@@ -309,17 +309,66 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 	return nil
 }
 
+// mcpCanceledError：调用因 ctx 结束而中止（用户取消 / 超时），并记录
+// 「取消通知有没有真的送出去」。★ 这不是内部细节：UI 上写「已取消」而
+// 服务端还在跑，是**撒谎**；送没送出去决定给用户看哪一句（mcp-host-plan §五）。
+type mcpCanceledError struct {
+	Reason   error // context.Canceled / context.DeadlineExceeded
+	Notified bool  // notifications/cancelled 是否送出
+}
+
+func (e *mcpCanceledError) Error() string {
+	return fmt.Sprintf("MCP 调用中止（%v，取消通知已送达=%v）", e.Reason, e.Notified)
+}
+
+func (e *mcpCanceledError) Unwrap() error { return e.Reason }
+
+// toolText：写进 tool_result 的人话（模型与 GUI 看同一份，§4.4）。
+func (e *mcpCanceledError) toolText() string {
+	timedOut := errors.Is(e.Reason, context.DeadlineExceeded)
+	switch {
+	case timedOut && e.Notified:
+		return "（调用超时：已向 MCP 服务发送取消通知；服务端可能仍在执行，迟到的结果会被丢弃）"
+	case timedOut:
+		return "（调用超时：取消通知未能送达 MCP 服务，该调用可能仍在服务端执行）"
+	case e.Notified:
+		return "（用户取消：已向 MCP 服务发送取消通知；服务端可能仍在执行，迟到的结果会被丢弃）"
+	default:
+		return "（用户取消：取消通知未能送达 MCP 服务，该调用可能仍在服务端执行）"
+	}
+}
+
 func (c *mcpClient) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	if c.closed.Load() {
 		return nil, errors.New("MCP 客户端已关闭")
 	}
+	id := c.reqID.Add(1)
 	req := jsonrpcRequest{
 		JSONRPC: "2.0",
-		ID:      c.reqID.Add(1),
+		ID:      id,
 		Method:  method,
 		Params:  params,
 	}
-	return c.transport.Do(ctx, req)
+	raw, err := c.transport.Do(ctx, req)
+	if err != nil {
+		// ★ ctx 已结束 = 我们主动不等了。按 MCP §Cancellation 告诉服务端别做了，
+		//   并把「通知是否送达」带回调用方——否则 UI 只能笼统写「已取消」。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			ce := &mcpCanceledError{Reason: ctxErr}
+			reason := "用户取消"
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				reason = "调用超时"
+			}
+			if cerr := c.transport.Cancel(id, reason); cerr != nil {
+				mcpLogf(c.name, "取消通知未送达：%v", cerr)
+			} else {
+				ce.Notified = true
+			}
+			return nil, ce
+		}
+		return nil, err
+	}
+	return raw, nil
 }
 
 func (c *mcpClient) sendNotification(ctx context.Context, method string, params any) error {
@@ -342,6 +391,11 @@ func (c *mcpClient) callTool(ctx context.Context, origToolName string, args map[
 	}
 	raw, err := c.sendRequest(ctx, "tools/call", params)
 	if err != nil {
+		// 取消/超时走诚实文本：GUI 的「已取消」只在取消通知确实送出时才是全话。
+		var ce *mcpCanceledError
+		if errors.As(err, &ce) {
+			return toolResult{OK: false, Output: ce.toolText()}, nil
+		}
 		return toolResult{
 			OK:     false,
 			Output: fmt.Sprintf("MCP 工具调用错误: %v", err),
@@ -413,8 +467,8 @@ type mcpToolRef struct {
 // 确认，启动失败也只有 stderr。把「读了哪个文件、起了哪些服务、各自几个工具、
 // 谁失败了、禁用了几个」做成快照随 hello 下发，GUI 才能显示而不靠猜。
 //
-// ★ 边界：这是**启动期快照**，不是运行期实时状态。服务之后崩掉仍走
-// `noteDead` → `TakeDeadNotices` 的 system 块路径（不在这里静默改写历史）。
+// ★ 边界：这是**启动期快照**，不是运行期实时状态。服务之后崩掉/被重启仍走
+// `noteDead` / `noteNotice` → `TakeNotices` 的 system 块路径（不在这里静默改写历史）。
 type mcpServerStatus struct {
 	Name      string `json:"name"`
 	Tools     int    `json:"tools"`
@@ -450,25 +504,47 @@ func (st mcpHubStatus) hasEvidence() bool {
 		len(st.Services) > 0 || len(st.Failed) > 0 || st.Disabled > 0
 }
 
+// mcpNotice：运行期事件（重启成功/失败），会话取走后发 system 块。
+// ★ 与 dead 分开：dead 是「已死且这次没人救回来」，notices 是「发生了什么」。
+// OK 只影响块的 ok 字段——GUI 用同一套 system 行渲染，不加新 kind。
+type mcpNotice struct {
+	Text string
+	OK   bool
+}
+
 type mcpHub struct {
 	mu       sync.RWMutex
 	clients  map[string]*mcpClient
 	toolMap  map[string]mcpToolRef // mcp__<server>__<tool> -> ref
 	toolDefs []toolDef
 	rootDir  string
+	// serverCfg：启动配置快照。respawn 要用它重新拉起同一个服务（client.cfg 也行，
+	// 但客户端会被换掉；配置属于 hub，不该随客户端生命周期消失）。
+	serverCfg map[string]mcpServerConfig
 	// dead：server -> 死因。★ 只记「自上次被取走以来」的，会话取走后发 system 块。
 	// 没有这一层，服务悄悄死掉的表现是「工具反复失败」，用户完全不知道发生了什么。
 	dead map[string]string
+	// respawn：server -> 已尝试重启次数（成功与失败都计）。到 mcpRespawnMax 放弃。
+	respawn map[string]int
+	// notices：待发的运行期事件（见 mcpNotice）。
+	notices []mcpNotice
+	// respawnMu：串行化按需重启。★ 不能拿 mu 做进程 I/O——startAndInit 最长 5s，
+	// 握着写锁会让 ToolDefs/Lookup 陪等，而它们正是下一轮请求的前置。
+	respawnMu sync.Mutex
+	// closed：会话退出后禁止重启（否则 bye 之后还能拉起新子进程）。
+	closed atomic.Bool
 	// status：启动期快照（见上方类型注释）。构造期写入，之后只读。
 	status mcpHubStatus
 }
 
 func newEmptyMCPHub(rootDir string) *mcpHub {
 	return &mcpHub{
-		clients: make(map[string]*mcpClient),
-		toolMap: make(map[string]mcpToolRef),
-		rootDir: rootDir,
-		dead:    make(map[string]string),
+		clients:   make(map[string]*mcpClient),
+		toolMap:   make(map[string]mcpToolRef),
+		serverCfg: make(map[string]mcpServerConfig),
+		rootDir:   rootDir,
+		dead:      make(map[string]string),
+		respawn:   make(map[string]int),
 		status: mcpHubStatus{
 			Services: []mcpServerStatus{},
 			Failed:   []mcpFailureStatus{},
@@ -897,6 +973,60 @@ func mcpToolNameHashed(server, tool string, forceHash bool) string {
 	return "mcp__" + s + "__" + t + suffix
 }
 
+// registerClientLocked：把一个 client 的工具注册进 toolMap/toolDefs。
+// 调用方持 mu 写锁。返回成功注册数（撞名无法消解的不计）。
+//
+// ★ 启动与 respawn 共用这一份：两处各写一遍撞名消解，迟早会分叉——
+//   respawn 漏掉消解就会在 toolDefs 里留两份同名定义，provider 整轮 400。
+// ★ 顺序：respawn 后该服务的定义追加到末尾（不插回原位）。只发生一次，
+//   比「记住原下标再插入」简单可靠；代价是前缀缓存失效一次，可接受。
+func (h *mcpHub) registerClientLocked(server string, client *mcpClient) int {
+	registered := 0
+	for _, t := range client.tools {
+		defName, def := mcpToolToDef(server, t)
+		if prev, dup := h.toolMap[defName]; dup {
+			// sanitize 后撞名（`git.status` 与 `git-status`）或服务端自己重复声明：
+			// **不能**静默覆盖——toolDefs 里会留两份同名定义，provider 照样 400。
+			fmt.Fprintf(os.Stderr, "[mcp] 工具名冲突 %s（%s/%s 与 %s/%s），后者改用哈希形\n",
+				defName, server, t.Name, prev.serverName, prev.origName)
+			defName, def = mcpToolDefWithHash(server, t)
+			if _, still := h.toolMap[defName]; still {
+				fmt.Fprintf(os.Stderr, "[mcp] 冲突无法消解，跳过工具 %s/%s\n", server, t.Name)
+				continue
+			}
+		}
+		h.toolMap[defName] = mcpToolRef{
+			serverName: server,
+			origName:   t.Name,
+			desc:       t.Description,
+		}
+		h.toolDefs = append(h.toolDefs, def)
+		registered++
+	}
+	return registered
+}
+
+// unregisterServerLocked：摘掉某服务的全部工具（respawn 前调用）。调用方持写锁。
+func (h *mcpHub) unregisterServerLocked(server string) {
+	removed := make(map[string]bool)
+	for name, ref := range h.toolMap {
+		if ref.serverName == server {
+			removed[name] = true
+			delete(h.toolMap, name)
+		}
+	}
+	if len(removed) == 0 {
+		return
+	}
+	kept := h.toolDefs[:0]
+	for _, def := range h.toolDefs {
+		if !removed[def.Name] {
+			kept = append(kept, def)
+		}
+	}
+	h.toolDefs = kept
+}
+
 // newMCPHubFromConfig：从配置对象构造并启动 Hub。
 //
 // ★ 排序 + 并发（2026-11-05 评审后改）：① map 遍历顺序不定会让 toolDefs 顺序
@@ -953,26 +1083,8 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 		}
 		client := outs[i].client
 		hub.clients[sName] = client
-		for _, t := range client.tools {
-			defName, def := mcpToolToDef(sName, t)
-			if prev, dup := hub.toolMap[defName]; dup {
-				// sanitize 后撞名（`git.status` 与 `git-status`）或服务端自己重复声明：
-				// **不能**静默覆盖——toolDefs 里会留两份同名定义，provider 照样 400。
-				fmt.Fprintf(os.Stderr, "[mcp] 工具名冲突 %s（%s/%s 与 %s/%s），后者改用哈希形\n",
-					defName, sName, t.Name, prev.serverName, prev.origName)
-				defName, def = mcpToolDefWithHash(sName, t)
-				if _, still := hub.toolMap[defName]; still {
-					fmt.Fprintf(os.Stderr, "[mcp] 冲突无法消解，跳过工具 %s/%s\n", sName, t.Name)
-					continue
-				}
-			}
-			hub.toolMap[defName] = mcpToolRef{
-				serverName: sName,
-				origName:   t.Name,
-				desc:       t.Description,
-			}
-			hub.toolDefs = append(hub.toolDefs, def)
-		}
+		hub.serverCfg[sName] = cfg.MCPServers[sName]
+		hub.registerClientLocked(sName, client)
 	}
 	// ★ 服务行报的是**真正注册进工具表的**数量，不是服务端声明的数量：
 	//   撞名无法消解时后者会虚高，而 GUI 的"N 个工具"必须与模型工具表一致。
@@ -1106,12 +1218,16 @@ func (h *mcpHub) CallTool(ctx context.Context, name string, args map[string]any)
 		}, true
 	}
 	if client.isDead() {
-		// 进程已退出但我们没有 respawn：明说，别让模型以为是自己参数写错了。
-		h.noteDead(ref.serverName, "进程已退出")
-		return toolResult{
-			OK:     false,
-			Output: fmt.Sprintf("MCP 服务 %s 已退出，工具 %s 不可用（本会话不会自动重启它）", ref.serverName, ref.origName),
-		}, true
+		// ★ 只在**调用之前**发现已死才重启；绝不在调用失败后自动重试——
+		//   工具可能有副作用，重试等于替用户再执行一次没授权过的动作。
+		if revived, why := h.respawnServer(ctx, ref.serverName); revived != nil {
+			client = revived
+		} else {
+			return toolResult{
+				OK:     false,
+				Output: fmt.Sprintf("MCP 服务 %s 已退出，工具 %s 不可用（%s）", ref.serverName, ref.origName, why),
+			}, true
+		}
 	}
 
 	res, err := client.callTool(ctx, ref.origName, args)
@@ -1122,9 +1238,115 @@ func (h *mcpHub) CallTool(ctx context.Context, name string, args map[string]any)
 		}, true
 	}
 	if client.isDead() {
+		// 调用期间崩的：本轮结果已丢，不重试；登记一次，下次调用再重启。
 		h.noteDead(ref.serverName, "进程在调用期间退出")
 	}
 	return res, true
+}
+
+// respawnServer：按需重启一个已死的 stdio 服务。返回可用客户端；失败返回 nil + 人话原因。
+//
+// 设计取舍：
+//   - **只按需**（工具调用发现已死才重启）：启动期失败的服务不进工具表，
+//     永远不会走到这里；也不存在「后台无限循环重启」。
+//   - **有上限**（mcpRespawnMax）：崩→起→崩的循环最多 3 次，然后明说放弃。
+//   - **只 stdio**：HTTP 没有进程可拉起；远端断了就等下次调用按普通 HTTP 错误处理
+//     （与既有约定一致：一次瞬时 5xx 不能把服务永久标死）。
+//   - 不持 h.mu 做进程 I/O（见 respawnMu 注释）；换 client 与换工具表在同一把写锁里完成。
+func (h *mcpHub) respawnServer(ctx context.Context, server string) (*mcpClient, string) {
+	if h == nil {
+		return nil, "hub 不存在"
+	}
+	opts := getMCPOptions()
+
+	h.mu.RLock()
+	cfg, hasCfg := h.serverCfg[server]
+	attempts := h.respawn[server]
+	closed := h.closed.Load()
+	h.mu.RUnlock()
+
+	if !hasCfg {
+		return nil, "没有该服务的配置，无法重启"
+	}
+	if kind, err := cfg.transportKind(); err != nil || kind != "stdio" {
+		// 远程传输没有进程可拉起；断流就等下次调用按普通 HTTP 错误处理。
+		h.noteDead(server, "连接已断开")
+		return nil, "远程传输不支持自动重启"
+	}
+	if !opts.Respawn {
+		h.noteDead(server, "进程已退出")
+		return nil, "本会话不会自动重启它"
+	}
+	if closed {
+		return nil, "会话正在退出"
+	}
+	if attempts >= mcpRespawnMax {
+		h.noteDead(server, "自动重启已达上限")
+		return nil, fmt.Sprintf("本会话已重启 %d 次，达到上限", attempts)
+	}
+
+	// 串行化：并发调用（目前只有串行工具循环，但不把正确性押在调用方）只重启一次。
+	h.respawnMu.Lock()
+	defer h.respawnMu.Unlock()
+
+	// 双检：等锁期间别的调用可能已经重启成功。
+	h.mu.RLock()
+	cur := h.clients[server]
+	attempts = h.respawn[server]
+	h.mu.RUnlock()
+	if cur != nil && !cur.isDead() {
+		return cur, ""
+	}
+	if attempts >= mcpRespawnMax {
+		h.noteDead(server, "自动重启已达上限")
+		return nil, fmt.Sprintf("本会话已重启 %d 次，达到上限", attempts)
+	}
+
+	// 用调用方的 ctx 派生：用户取消时重启立刻中止（startAndInit 失败路径会清进程），
+	// 而不是让「按了停止」再等 5s 握手。
+	initCtx, cancel := context.WithTimeout(ctx, mcpInitTimeoutS*time.Second)
+	defer cancel()
+	client := newMCPClient(server, cfg)
+	if err := client.startAndInit(initCtx, h.rootDir); err != nil {
+		client.Close()
+		h.mu.Lock()
+		h.respawn[server] = attempts + 1
+		h.mu.Unlock()
+		if ctx.Err() != nil {
+			return nil, "用户取消，本次不重启"
+		}
+		newCount := attempts + 1
+		text := fmt.Sprintf("[MCP 服务 %s 自动重启失败（第 %d/%d 次）：%v", server, newCount, mcpRespawnMax, err)
+		if newCount >= mcpRespawnMax {
+			text += "；本会话不再尝试重启]"
+			h.noteDead(server, "自动重启失败且已达上限")
+		} else {
+			text += "；下次调用会再试]"
+		}
+		h.noteNotice(text, false)
+		return nil, fmt.Sprintf("自动重启失败（第 %d/%d 次）：%v", newCount, mcpRespawnMax, err)
+	}
+
+	h.mu.Lock()
+	if h.closed.Load() {
+		h.mu.Unlock()
+		client.Close()
+		return nil, "会话正在退出"
+	}
+	h.clients[server] = client
+	h.unregisterServerLocked(server)
+	count := h.registerClientLocked(server, client)
+	h.respawn[server] = attempts + 1
+	delete(h.dead, server)
+	h.mu.Unlock()
+
+	// 旧客户端已经死了，但句柄（Job Object 等）要关：不关就是每会话泄一个内核对象。
+	if cur != nil {
+		cur.Close()
+	}
+	h.noteNotice(fmt.Sprintf("[MCP 服务 %s 已自动重启（第 %d/%d 次）：%d 个工具已重新注册]",
+		server, attempts+1, mcpRespawnMax, count), true)
+	return client, ""
 }
 
 // noteDead：登记「某服务死了」。同名只记第一次（死因以首次为准）。
@@ -1142,28 +1364,60 @@ func (h *mcpHub) noteDead(server, reason string) {
 	}
 }
 
-// TakeDeadNotices：取走「自上次取走以来新死掉的服务」的人向说明（取过即清）。
+// noteNotice：登记一条运行期事件（重启成功/失败），等会话取走发 system 块。
+func (h *mcpHub) noteNotice(text string, ok bool) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notices = append(h.notices, mcpNotice{Text: text, OK: ok})
+}
+
+// TakeNotices：取走「自上次取走以来」的运行期事件（取过即清）。
 //
 // ★ 为什么要有：服务崩掉之后 `close(done)`，所有后续调用都返回错误字符串，
 //
 //	但那是**模型**看得到的；界面上除了「工具反复失败」什么都没有。本仓对
 //	「发生了什么但没人说」的既有处置是发一条 system 块（上下文压缩失败就是
 //	这么做的），这里同一口径。会话在每次工具调用收尾时调用一次。
-func (h *mcpHub) TakeDeadNotices() []string {
+//
+// 排序：事件按发生顺序在前；死亡通告按服务名排序在后（一次死亡只说一次）。
+func (h *mcpHub) TakeNotices() []mcpNotice {
 	if h == nil {
 		return nil
 	}
+	opts := getMCPOptions()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if len(h.dead) == 0 {
+	if len(h.notices) == 0 && len(h.dead) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(h.dead))
-	for name, why := range h.dead {
-		out = append(out, fmt.Sprintf("[MCP 服务 %s 已退出：%s；它的工具自本轮起不可用]", name, why))
+	out := append([]mcpNotice{}, h.notices...)
+	h.notices = nil
+	names := make([]string, 0, len(h.dead))
+	for name := range h.dead {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		why := h.dead[name]
+		label := "已退出"
+		if kind, err := h.serverCfg[name].transportKind(); err == nil && kind != "stdio" {
+			label = "不可用" // 远程传输没有进程，说「退出」是假的
+		}
+		text := fmt.Sprintf("[MCP 服务 %s %s：%s", name, label, why)
+		switch {
+		case !opts.Respawn:
+			text += "；本会话不会自动重启它"
+		case h.respawn[name] >= mcpRespawnMax:
+			text += fmt.Sprintf("；自动重启已达上限（%d 次），本会话不再尝试", mcpRespawnMax)
+		default:
+			text += "；下次调用将尝试自动重启"
+		}
+		out = append(out, mcpNotice{Text: text + "]"})
 	}
 	h.dead = make(map[string]string)
-	sort.Strings(out)
 	return out
 }
 
@@ -1171,6 +1425,7 @@ func (h *mcpHub) Close() {
 	if h == nil {
 		return
 	}
+	h.closed.Store(true)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, client := range h.clients {
@@ -1179,6 +1434,8 @@ func (h *mcpHub) Close() {
 	h.clients = make(map[string]*mcpClient)
 	h.toolMap = make(map[string]mcpToolRef)
 	h.toolDefs = nil
+	h.notices = nil
+	h.dead = make(map[string]string)
 }
 
 // ── stderr 行前缀 ───────────────────────────────────────────────

@@ -78,10 +78,13 @@ def check(name, ok, detail=""):
 
 # ── 脚本化 OpenAI 兼容端点（第 1 轮发 tool_call，第 2 轮收尾）────────
 class FakeLLM:
-    def __init__(self):
+    def __init__(self, script=None):
         self.mcp_names = []
         self.round = 0
         self.lock = threading.Lock()
+        # script：[(压缩后的工具全名, 参数对象), …] 按轮次依次发出；
+        # 给 None = 既有两轮剧本（A/C/D 臂共用同一实例，行为逐字节不变）。
+        self.script = script
 
     def handler(self):
         outer = self
@@ -108,7 +111,21 @@ class FakeLLM:
                 self.end_headers()
                 out = []
                 has_tool_msg = any(m.get("role") == "tool" for m in body.get("messages", []))
-                if not has_tool_msg:
+                if outer.script is not None:
+                    # 脚本化：一轮一个调用，跑完再收尾（F 臂用）。
+                    idx = rnd - 1
+                    if idx < len(outer.script):
+                        name, targs = outer.script[idx]
+                        out.append(chunk({"role": "assistant", "content": "步骤 %d。" % (idx + 1)}))
+                        out.append("data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{
+                            "index": 0, "id": "call-f-%d" % idx,
+                            "function": {"name": name, "arguments": json.dumps(targs)}}]}}],
+                            "usage": {"prompt_tokens": 50, "completion_tokens": 10}}) + "\n\n")
+                    else:
+                        out.append(chunk({"role": "assistant", "content": "脚本化流程结束。"}))
+                        out.append("data: " + json.dumps({"choices": [], "usage": {
+                            "prompt_tokens": 70, "completion_tokens": 12}}) + "\n\n")
+                elif not has_tool_msg:
                     # 目标工具名从 core **真正上交**的 toolDefs 里取，不猜压缩结果
                     tools = body.get("tools") or []
                     mcp = [t["function"]["name"] for t in tools
@@ -139,16 +156,19 @@ def chunk(delta):
 
 # ── core 管道驱动 ────────────────────────────────────────────────
 class CoreProc:
-    def __init__(self, core, cfg, url, session):
+    def __init__(self, core, cfg, url, session, extra_args=None, extra_env=None):
         self.lines = []
         self.stderr = []
         self.q = []
         self.qc = threading.Condition()
+        env = dict(os.environ)
+        env.update(extra_env or {})
         self.p = subprocess.Popen(
             [str(core), "--base-url", url, "--model", "smoke", "--key", "smoke-key",
              "--mcp-config", str(cfg), "--workspace", str(SMOKE), "--session", session,
-             "--context", "160000"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(SMOKE))
+             "--context", "160000"] + list(extra_args or []),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=str(SMOKE), env=env)
         threading.Thread(target=self._read_out, daemon=True).start()
         threading.Thread(target=self._read_err, daemon=True).start()
         PROCS.append(self)
@@ -235,6 +255,12 @@ def write_configs(base_url="", dead_url=""):
     if dead_url:
         dead = {"mcpServers": {"remote": {"url": dead_url + "/mcp"}}}
         (SMOKE / "http-dead.json").write_text(json.dumps(dead, ensure_ascii=False), encoding="utf-8")
+    # F 臂：测试专用工具（崩溃 / 环境回读）+ minimal 环境。
+    runtime = {"mcpServers": {"smoke": {
+        "command": sys.executable, "args": [str(SERVER)],
+        "env": {"SMOKE_EXTRA_TOOLS": "1"},
+    }}}
+    (SMOKE / "runtime.json").write_text(json.dumps(runtime, ensure_ascii=False), encoding="utf-8")
     return SMOKE / "mcp.json", SMOKE / "mixed.json"
 
 
@@ -502,6 +528,80 @@ def arm_e(core, port, dead_url):
     check("E/stderr 点名不可达服务", "启动服务 remote 失败" in err, err[:240])
 
 
+def arm_f(core, port):
+    """运行期语义：--mcp-env=minimal + 崩溃后按需重启（七版，2026-11-06）。
+
+    同一个真 stdio server 上串起两件事：
+      1) dev.crash 让进程真死 ⇒ tool_result 失败 + system 块预告「下次调用会重启」；
+      2) 下一次调用 dev.env ⇒ core 先重启服务（system 块「已自动重启」），
+         且 minimal 模式下父进程的普通环境变量**读不到**（回包 "env:<>"）。
+    """
+    c = CoreProc(core, SMOKE / "runtime.json", "http://127.0.0.1:%d/v1" % port, "s-smoke-runtime",
+                 extra_args=["--mcp-env=minimal"],
+                 extra_env={"SMOKE_LEAK": "must-not-reach-server"})
+    try:
+        hello = wait_for(c, lambda m: m.get("t") == "hello", 10)
+        check("F/hello 到达", hello is not None)
+        if hello:
+            svcs = (hello.get("mcp") or {}).get("services") or []
+            check("F/hello.mcp 报 smoke/4 工具（2 常规 + 2 测试专用）",
+                  any(s.get("name") == "smoke" and s.get("tools") == 4
+                      and s.get("transport") == "stdio" for s in svcs), {"services": svcs})
+        c.send({"t": "hello", "seq": 0})
+        c.send({"t": "prompt", "seq": 1, "text": "跑两步：先崩一个，再读环境", "client_id": "smoke-f1"})
+
+        # ── 第 1 轮：dev.crash ─────────────────────────────────────────
+        ask1 = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        check("F/第一次 ask 是崩溃工具",
+              ask1 is not None and "dev.crash" in ask1.get("question", ""),
+              (ask1 or {}).get("question", "")[:160])
+        if ask1:
+            c.send({"t": "answer", "seq": 2, "id": ask1.get("id"), "choice": "allow"})
+
+        tr1 = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        end1 = wait_for(c, lambda m: m.get("t") == "block_end" and m.get("id") == (tr1 or {}).get("id"), 10)
+        check("F/崩溃调用 tool_result ok=false", tr1 is not None and (end1 or {}).get("ok") is False,
+              {"tr": bool(tr1), "end": end1})
+
+        death = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "system"
+                         and "已退出" in m.get("text", ""), 10)
+        check("F/崩溃有 system 块且预告重启",
+              death is not None and "重启" in death.get("text", ""),
+              (death or {}).get("text", "")[:200])
+
+        # ── 第 2 轮：dev.env（先重启，再回读环境）────────────────────
+        ask2 = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        check("F/第二次 ask 是环境回读",
+              ask2 is not None and "dev.env" in ask2.get("question", ""),
+              (ask2 or {}).get("question", "")[:160])
+        if ask2:
+            c.send({"t": "answer", "seq": 3, "id": ask2.get("id"), "choice": "allow"})
+
+        tr2 = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        d2 = wait_for(c, lambda m: m.get("t") == "delta" and m.get("id") == (tr2 or {}).get("id"), 10)
+        txt = (d2 or {}).get("text", "")
+        check("F/minimal 模式不泄漏普通环境变量（回包 env:<>）", txt == "env:<>", txt[:120])
+
+        restart = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "system"
+                           and "已自动重启" in m.get("text", ""), 10)
+        check("F/重启有 system 块（第 1/3 次）",
+              restart is not None and "第 1/3 次" in restart.get("text", ""),
+              (restart or {}).get("text", "")[:200])
+
+        idle = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("F/收尾回到 idle", idle is not None)
+
+        c.send({"t": "bye", "seq": 4})
+        bye = wait_for(c, lambda m: m.get("t") == "bye", 10)
+        check("F/bye 回执", bye is not None)
+        code = c.p.wait(timeout=10)
+        check("F/退出码 0", code == 0, code)
+    finally:
+        c.kill_tree()
+    err = "\n".join(c.stderr)
+    check("F/stderr: 1 个服务 4 个工具", "1 个服务、4 个工具" in err, err[:240])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", default=str(ROOT / "core" / "bin" / "ecdi-core.exe"))
@@ -530,6 +630,15 @@ def main():
     srv = ThreadingHTTPServer(("127.0.0.1", 0), llm.handler())
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    # F 臂要自己的剧本（崩溃 → 环境回读 → 收尾），单独一个端点，
+    # 免得把 A/C/D 共用的两轮剧本改成状态机。
+    llm_f = FakeLLM(script=[
+        ("mcp__smoke__dev_crash", {}),
+        ("mcp__smoke__dev_env", {"name": "SMOKE_LEAK"}),
+    ])
+    srv_f = ThreadingHTTPServer(("127.0.0.1", 0), llm_f.handler())
+    port_f = srv_f.server_address[1]
+    threading.Thread(target=srv_f.serve_forever, daemon=True).start()
     print("core=%s  mtime=%s" % (core, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(core.stat().st_mtime))))
     try:
         arm_a(core, llm, port)
@@ -537,8 +646,10 @@ def main():
         arm_c(core, llm, port, http_base, http_state)
         arm_d(core, llm, port, http_base, http_state)
         arm_e(core, port, dead_url)
+        arm_f(core, port_f)
     finally:
         srv.shutdown()
+        srv_f.shutdown()
         http_srv.shutdown()
         timer.cancel()
     summary = {"passed": sum(1 for c in CHECKS if c["ok"]), "failed": len(FAILS), "fails": FAILS,

@@ -72,6 +72,8 @@ func main() {
 	sandboxMaxProcs := flag.Int("sandbox-max-procs", 32, "L1 沙盒作业最大活跃进程数（防 fork 炸弹）")
 	sandboxDropPrivs := flag.Bool("sandbox-drop-privs", true, "是否通过受限令牌剥离管理员/调试高危特权")
 	mcpConfig := flag.String("mcp-config", "", "MCP 配置文件路径（缺省在工作区或全局配置目录自动发现）")
+	mcpEnv := flag.String("mcp-env", mcpEnvInherit, "MCP stdio 子进程环境：inherit（继承并剔除密钥，默认）| minimal（只留白名单）")
+	mcpRespawn := flag.Bool("mcp-respawn", true, "MCP stdio 服务崩溃后按需自动重启（每会话每服务上限 3 次）")
 	flag.Parse()
 
 	setSandboxConfig(SandboxConfig{
@@ -80,6 +82,13 @@ func main() {
 		MaxProcesses:   *sandboxMaxProcs,
 		DropPrivileges: *sandboxDropPrivs,
 	})
+	// MCP 运行期开关：坏值拒绝启动（静默回落会让「我明明写了 minimal」变成谎言）。
+	envMode, err := normalizeMCPEnvMode(*mcpEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ecdi-core] %v\n", err)
+		os.Exit(2)
+	}
+	setMCPOptions(mcpRuntimeOptions{EnvMode: envMode, Respawn: *mcpRespawn})
 
 	// 密钥：参数优先，环境变量兜底；都空 = 拒绝启动（stderr 说明）。
 	secret := *key

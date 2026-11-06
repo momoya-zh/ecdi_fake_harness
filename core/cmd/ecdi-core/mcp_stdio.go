@@ -65,8 +65,9 @@ func (t *stdioTransport) Start(_ context.Context) error {
 		cmd.Dir = t.rootDir
 	}
 
-	// 环境变量：继承但剔除密钥，再追加配置中的私有 env
-	env := childEnv()
+	// 环境变量：inherit = 继承但剔除密钥；minimal = 只留白名单（--mcp-env）。
+	// 两种模式之后都追加配置里的私有 env（用户显式授权的增量）。
+	env := mcpChildEnv(getMCPOptions().EnvMode == mcpEnvMinimal)
 	for k, v := range t.cfg.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))
 	}
@@ -159,6 +160,37 @@ func (t *stdioTransport) Do(ctx context.Context, req jsonrpcRequest) (json.RawMe
 
 	case <-t.done:
 		return nil, errors.New("MCP 服务进程已退出")
+	}
+}
+
+// Cancel：把 notifications/cancelled 写进 stdin（尽力而为）。
+//
+// ★ 写必须**有界**：writeLine 会等 wmu（可能排在一次卡死的阻塞写后面），
+//   而取消路径恰恰是用户等不下去的时刻。这里用 goroutine + 超时兜住，
+//   超时只是「没送出去」，不能反过来把取消本身挂住。
+// ★ 不发就**不假称发了**：返回错误，由 mcpClient 决定给用户看哪一句。
+func (t *stdioTransport) Cancel(requestID any, reason string) error {
+	if t.closed.Load() {
+		return errors.New("MCP stdio 传输已关闭")
+	}
+	data, err := json.Marshal(mcpCancelledRequest(requestID, reason))
+	if err != nil {
+		return fmt.Errorf("序列化取消通知失败: %w", err)
+	}
+	data = append(data, '\n')
+
+	done := make(chan error, 1)
+	go func() { done <- t.writeLine(data) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("写入取消通知失败: %w", err)
+		}
+		return nil
+	case <-time.After(mcpCancelNotifyTimeout):
+		return errors.New("写入取消通知超时（服务端可能没在读 stdin）")
+	case <-t.done:
+		return errors.New("MCP 服务进程已退出")
 	}
 }
 

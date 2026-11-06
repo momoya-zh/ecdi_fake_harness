@@ -290,7 +290,7 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 
 	// ★ MCP 启动失败必须说出来（2026-11-06）：hello.mcp 是结构化状态，GUI 能显示
 	//   卡片/副标；但"失败"本身是一次事件，按本仓既有口径发 system 块
-	//   （与 emitMCPDeadNotices 同一处置）——用户模式默认界面也能看见，且进 journal。
+	//   （与 emitMCPNotices 同一处置）——用户模式默认界面也能看见，且进 journal。
 	//   ★ 成功不刷屏：状态在副标/卡里，不往转录里塞例行成功行。
 	if mcpStatus.Problem != "" {
 		s.emitNotice("[MCP] 配置错误："+mcpStatus.Problem, false)
@@ -926,9 +926,10 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	}
 	s.emit(map[string]any{"t": "block_end", "id": callID, "ok": res.OK, "summary": summary})
 
-	// MCP 服务死掉要**说出来**：一条 system 块（与「上下文压缩失败」同一处置）。
-	// 不说的话，用户看到的是「工具反复失败」，而真相是子进程没了、本会话不会重启它。
-	s.emitMCPDeadNotices()
+	// MCP 运行期事件要**说出来**：服务退出 / 自动重启成功或失败，各一条 system 块
+	// （与「上下文压缩失败」同一处置）。不说的话，用户看到的是「工具反复失败」，
+	// 而真相可能是子进程没了、这一次已经悄悄换了一个新的。
+	s.emitMCPNotices()
 
 	// 结果回模型（GUI 渲染与模型输入同一份文本，§4.4）
 	s.history = append(s.history, chatMessage{Role: "tool",
@@ -954,17 +955,19 @@ func (s *session) execTool(ctx context.Context, name string, args map[string]any
 	return executeToolWithJobs(name, args, s.cwd, s.jobs, callID)
 }
 
-// emitMCPDeadNotices：把「MCP 服务已退出」发成一条 system 块。
-// 取走即清（hub 侧幂等），所以同一次死亡只说一次。发不出去（nil hub）就什么都不做。
-func (s *session) emitMCPDeadNotices() {
+// emitMCPNotices：把 MCP 运行期事件（服务退出 / 自动重启成功或失败）发成
+// system 块。取走即清（hub 侧幂等），所以同一次事件只说一次；nil hub 什么都不做。
+//
+// ★ ok = 事件的**结果**：重启成功是 true（GUI 用同一套 system 行渲染，不加新 kind）。
+func (s *session) emitMCPNotices() {
 	if s.mcp == nil {
 		return
 	}
-	for _, note := range s.mcp.TakeDeadNotices() {
+	for _, note := range s.mcp.TakeNotices() {
 		nid := s.nextBlockID()
-		s.emit(map[string]any{"t": "block_start", "id": nid, "kind": "system", "text": note})
-		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": false})
-		s.log("mcp: %s", note)
+		s.emit(map[string]any{"t": "block_start", "id": nid, "kind": "system", "text": note.Text})
+		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": note.OK})
+		s.log("mcp: %s", note.Text)
 	}
 }
 

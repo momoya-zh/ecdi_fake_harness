@@ -69,9 +69,10 @@
      句柄无条件关闭（不关就是每会话泄一个内核对象）。**纳管失败只降级 + 告警，不 fail-closed**
      —— MCP 不是安全边界（§5.2「harness 只做配置 + 展示 + 转发」），这里要的是孤儿清理，不是沙盒。
    - **敏感环境变量剔除**：`childEnv()` 剔 `ECDI_*_KEY`（同 `tools.go` 纪律）。
-     ★ 已知取舍：除此之外是**全量继承**用户环境（`OPENAI_API_KEY` / `GITHUB_TOKEN` 也能被 server
-     读到）。与 `run_command` 同一口径；但 MCP server 是第三方包、无人值守、可反复调用，
-     风险面不同。真要收紧应做成显式开关（`--mcp-env=minimal`），不在本期。
+     ★ 已知取舍：除此之外**默认仍是全量继承**用户环境（`OPENAI_API_KEY` / `GITHUB_TOKEN` 也能被
+     server 读到）。与 `run_command` 同一口径；但 MCP server 是第三方包、无人值守、可反复调用，
+     风险面不同。★ **七版（2026-11-06）已给显式开关**：`--mcp-env=minimal` 只给白名单
+     （PATH/SystemRoot/TEMP/HOME/APPDATA 等），默认 `inherit` 保持既有行为——见 §十。
    - **默认逐次过 ask 门**：MCP 工具不在 `--allow-tools` 默认值里；可显式精确豁免单个
      `mcp__<srv>__<tool>`。
    - **子代理隔离**：深度 ≥1 的子代理**根本没拿到** MCP 工具（`toolDefsFor(false,1)`），
@@ -81,7 +82,10 @@
    - **崩溃要说出来**（★ 二版新增）：服务进程退出后工具仍在表里，调用会返回明确错误文本；
      并且 hub 登记一次，会话在下一次工具收尾时发一条 `system` 块（「MCP 服务 X 已退出，
      本会话不会自动重启它」）。一版只有模型看得到错误字符串，界面上什么都看不到。
-   - **不做 respawn**：崩掉就是崩掉，本会话不自动重启（避免「重启—再崩」循环刷屏）。
+   - **respawn（七版修订，2026-11-06）**：二版刻意「崩掉就是崩掉」，本会话不自动重启
+    （避免「重启—再崩」循环刷屏）。七版改为**按需、有上限**的重启：只在**调用之前**
+    发现服务已死时重启（绝不在调用失败后自动重试——工具可能有副作用），每服务每会话
+    上限 3 次，`--mcp-respawn=false` 可退回旧行为。理由与边界见 §十。
 
 8. **ask 的提案卡：MCP 工具自 2026-11-06 起带 `detail`（★ 四版：与 GUI 同批放开；二版撤销记录保留）**
    `ask.detail.tool` 在协议 §3.6 里是**判别式**，GUI 按它 switch，未知值只落一行「（提案类型 X）」。
@@ -166,9 +170,9 @@
    **不是产品缺陷，是测试自己前后矛盾**：断言要「正常退出」，脚本却在杀它。
    修法：第 3 轮改 `job_list`（同样是「控制工具不过 ask 门」的证据，`job_kill` 的语义由
    `jobs_test.go:297` 的 `toolKill` 单测覆盖）+ bye 之前先等 `job end`。
-5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版增补提案卡、五版增补 `hello.mcp`、六版增补 HTTP/SSE）**：不是只握手——
+5. **真链路（调用级）冒烟（2026-11-05 21:00，`tools/mcp-smoke/drive.py`；四版增补提案卡、五版增补 `hello.mcp`、六版增补 HTTP/SSE、七版增补 F 臂）**：不是只握手——
    一次真实工具调用从模型请求穿到 server 再穿回来。真 `ecdi-core.exe` + 真 stdio server
-   + 真 HTTP/SSE server（python）+ 脚本化 SSE 端点，**四臂 71 条断言全绿**：
+   + 真 HTTP/SSE server（python）+ 脚本化 SSE 端点，**五臂 83 条断言全绿**：
    - **A 正常**：`hello protocol=6` 且 `caps` 增 `"mcp"`；服务端协商到 `2025-06-18`（只告警，
      见 §二.4）；`tools/list` 两页全追（2 个工具）；上交模型的压缩名是
      `mcp__smoke__git_status` 与 `mcp__smoke______`（中文名逐 rune 折 `_`，全部 ≤64 且落在
@@ -191,18 +195,20 @@
      回执从 SSE 流回来；`hello.mcp...transport=="sse"`；ask/结果/idle 同 C。
    - **E HTTP 不可达**：连接被拒 ⇒ `caps` 不含 mcp、`hello.mcp.failed` 非空、
      一条 `[MCP] 服务 remote 启动失败` system 块，退出码 0（失败不挡会话）。
-   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==71`（钉死，少一条即红）、
+   - **F 运行期（七版）**：`--mcp-env=minimal` + 脚本化三步（`dev.crash` → `dev.env` → 收尾）。
+     崩溃调用 `tool_result ok=false`、system 块预告「下次调用将尝试自动重启」；
+     第二次调用前服务被拉起（system 块「第 1/3 次」），`dev.env` 回包 **`env:<>`**
+     （父进程的 `SMOKE_LEAK` 没进子进程，minimal 生效）；退出码 0。
+   - **回归门**：`tools/regress.py` §2f 已接线——判据是 `passed==83`（钉死，少一条即红）、
      `failed==0`、`rc==0`。缺二进制显式 **SKIP**（§2e 的 rebuild 已计过失败，不重复计数）；
      二进制比 `core/**/*.go` 旧按 **FAILED**（测旧代码比不测更糟）；超时按 FAILED（drive.py
-     自带 90s 看门狗，先清子进程再退出）。负对照实测：拿掉 `server.py` ⇒ **A/B 红、C/D/E
-     仍绿**（HTTP 臂不依赖 stdio）——这正是「四臂各自独立」的证据；HTTP 失败路径由常驻
-     的 E 臂覆盖。
+     自带 90s 看门狗，先清子进程再退出）。负对照实测：拿掉 `server.py` ⇒ **A/B/F 红、
+     C/D/E 仍绿**（HTTP 臂不依赖 stdio；F 用的是同一个真 stdio server，因此也依赖它）
+     ——这正是「各臂独立」的证据；HTTP 失败路径由常驻的 E 臂覆盖。
 ## 五、 明确的已知缺口（下一步的输入）
 
 | 缺什么 | 说明 |
 |---|---|
-| 取消语义 | 取消只让我们不再等，server 侧调用照跑（没发 `notifications/cancelled`），而 GUI 已显示「已取消」 |
-| respawn | 崩掉不重启（刻意的，见 §二.7）；HTTP 传输没有进程，天然不适用 |
 | HTTP 服务端通知流 | Streamable HTTP 只实现了「请求-响应」方向；GET 上的服务端主动通知、legacy 的重连/`Last-Event-ID` 不在本期（§九边界） |
 | 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
 
@@ -216,6 +222,11 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
 
 ★ 提案卡（GUI 侧）与问句工具名两项已于 2026-11-06 闭合（§二.8 四版）：`tool:"mcp"`
 判别值 + 渲染分支 core/GUI/协议/测试同批落地，问句经 `hub.Lookup` 用真实工具名。
+
+★ **取消语义与 respawn 已于 2026-11-06 闭合（七版，§十）**：取消会真发
+`notifications/cancelled`（三种传输）并把「送没送到」写进 tool_result；stdio 服务
+崩溃后按需重启（每会话每服务上限 3 次，`--mcp-respawn=false` 退回旧行为）。
+本表不再把这两项列为缺口。
 
 
 ★ 入参 schema 的 `$schema` / `$defs` 已不再“原样透传”：三版补入规约（§二.9 / §七），
@@ -268,7 +279,7 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
   升序；只要发现/尝试过配置就发（全失败/全禁用也发），完全没配置则不发。
   ★ 与 `caps.mcp` **正交**：`caps.mcp` 仍只表示"已注册 ≥1 个工具"；失败时 caps 不声明，
   但 `hello.mcp.failed` 必须让 GUI 能说清楚。
-- **失败告警**：`hello` 之后逐条发 `system` 块（与运行期 `TakeDeadNotices` 同形态）：
+- **失败告警**：`hello` 之后逐条发 `system` 块（与运行期 `TakeNotices` 同形态）：
   `[MCP] 服务 <name> 启动失败：<error>（本次未启用）`、`[MCP] 配置错误：<problem>`。
   成功不刷屏——状态在副标/卡里。产品模式默认视图（用户模式）也能看到失败，且进 journal。
 - **GUI**：`AppMcp.cpp` 负责会话头副标 `MCP N 个服务 / M 个工具`（失败追加
@@ -279,8 +290,8 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
   - core：`TestMCP_HubStatus`（好/坏/禁用三路 + 无配置不发）、
     `TestMCP_ConfigProblemVisible`（显式路径不存在 / 坏 JSON 仍带 Problem）、
     `TestLoopE2E_MCPTool`（`hello.mcp` 字段 + 失败 `system` 块）；
-  - 冒烟：71 条（A/B 为 stdio；C/D 为 HTTP/SSE；E 为 HTTP 不可达失败臂；均含
-  `hello.mcp` 与传输标识断言）；
+  - 冒烟：83 条（A/B 为 stdio；C/D 为 HTTP/SSE；E 为 HTTP 不可达失败臂；F 为运行期
+  env minimal + 按需重启；均含 `hello.mcp` 与传输标识断言）；
   - GUI：`--mcp-probe`（`ProbeMcp.cpp`）——模型侧 `hello.mcp` 与副标/卡片行数/服务名/
     失败名/`system` 行逐项对齐；夹具 `fixtures/mcp/status.jsonl`；
     **负对照另跑一支**（demo 无 `mcp` 字段 ⇒ 卡片、副标 MCP 段、失败行全缺）。
@@ -337,8 +348,8 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
   `name · http · N 工具`，stdio 行文案不变；协议 §3.1 只增字段。
 - **判据**：`mcp_http_test.go` 覆盖 JSON/SSE 响应、session/版本头、auth、302 拒绝、
   连接拒绝进 Failed、配置互斥、legacy POST/SSE、SSE 解析边界；E2E
-  `TestLoopE2E_MCPToolHTTP` 走完整 ask→call→idle；冒烟四臂 71 条（C Streamable、
-  D legacy、E 不可达，A/B 仍覆盖 stdio）。
+  `TestLoopE2E_MCPToolHTTP` 走完整 ask→call→idle；冒烟五臂 83 条（C Streamable、
+  D legacy、E 不可达，A/B 仍覆盖 stdio，F 为七版运行期臂）。
 - **诚实边界（本期不做）**：
   1. 不实现 GET 上的服务端主动通知流、legacy 重连/`Last-Event-ID`；tools-only 场景
      不受影响，但 sampling/roots 类反向能力在 HTTP 下不可用（stdio 仍回 -32601）。
@@ -346,3 +357,78 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
   3. 不实现 `2026-07-28` 的逐请求能力协商；`initialize` 仍保留。
   4. legacy 的 `endpoint` 事件 URL 不做白名单校验（配置即信任；MCP 不是安全边界）。
   5. 非 loopback 的 `http://` 只警告；需要强制 HTTPS 时应在部署侧做，不在客户端硬拦。
+
+## 十、 七版（2026-11-06）：运行期语义 —— env minimal / 按需重启 / 取消通知
+
+本批**不动线协议、不动 GUI**：wire 一个字节没改，GUI 侧复用既有 `system` 块与
+tool_result 行；全部改动在 core（`mcp_runtime.go` / `mcp.go` / `mcp_stdio.go` /
+`mcp_http.go` / `session.go`）。这三点都是二~六版明确记账、留到现在的缺口（§五）。
+
+### 1. 环境白名单：`--mcp-env=minimal`
+
+- **动机**（二版 §二.6 原话）：默认全量继承意味着 `OPENAI_API_KEY` / `GITHUB_TOKEN`
+  等「与 MCP 无关的凭据」也能被第三方 server 读到；MCP server 无人值守、可反复调用，
+  风险面与一次用户主动批准的 `run_command` 不同。
+- **口径**（`mcp_runtime.go` `mcpMinimalEnvAllow`）：只放「起得来」必需的——
+  Windows 侧 `SystemRoot`/`PATH`/`PATHEXT`/`COMSPEC`/`TEMP`/`APPDATA`/`LOCALAPPDATA`/
+  `USERPROFILE`/`ProgramFiles` 系/`PSModulePath`，POSIX 侧 `PATH`/`HOME`/`TMPDIR`/`XDG_*`，
+  两边都留 `LANG`/`LC_*`/`TZ`。**代理变量刻意不放行**（URL 常嵌账号密码）；需要就在
+  `mcp.json` 的 `env` 里逐项显式给。
+- **默认 `inherit`**：保持旧行为（全量继承 + 剔除 `ECDI_*_KEY`，同 `tools.go`）——
+  「默认不变」是本项目对既有路径的纪律，收紧是**用户显式选择**。
+- **配置 `env` 是增量**：两种模式都在过滤之后追加，那是用户显式授权的，不归白名单管。
+- **判据**：`TestMCP_EnvFilter`（纯函数：普通变量→inherit 有 / minimal 无；密钥两边都无；
+  PATH 两边都在）+ `TestMCP_MinimalEnvChild`（真子进程 `env_probe` 读回：密钥空、
+  配置 env 在、PATH 在）。
+- **诚实边界**：白名单只保证常见 node/python/uv server 起得来，不是通用最小化；
+  某个 server 需要别的变量时由用户补在配置里（漏了会在启动失败里显形，不会静默）。
+
+### 2. 按需重启：`--mcp-respawn`（默认开，每服务每会话上限 3 次）
+
+- **语义**：只在**调用之前**发现传输已死时重启，然后执行本次调用；
+  调用**执行中**崩掉的不自动重试——工具可能有副作用，重试等于替用户再执行一次。
+- **为什么改掉「永不重启」**（二版 §二.7）：崩掉一次就整会话废掉一个服务，代价太大；
+  而「重启—再崩」刷屏可以用**上限**挡住，不需要用「永不重启」挡住。
+- **上限**：`mcpRespawnMax = 3`；失败也计数（含握手失败），到顶后明说放弃。
+  命中上限时不再尝试，避免每轮对话都白等 5s 握手。
+- **工具表**：重启后走**同一份** `registerClientLocked`（撞名消解不分叉），先摘掉该服务
+  旧定义再注册新的；定义追加到 `toolDefs` 末尾（前缀缓存失效一次，可接受）。
+- **并发**：`respawnMu` 串行化；不持 `h.mu` 做进程 I/O（握手最长 5s）；换客户端与换
+  工具表在同一把写锁内完成。`Close()` 置 `closed` 后拒绝重启。
+- **只 stdio**：HTTP 没有进程可拉起（远端失败仍按普通 HTTP 错误处理，不标死）。
+  启动期就失败的服务不进工具表，`CallTool` 永远走不到，因此不会「反复重试启动」。
+- **通告**：重启成功发 `system` 块（`ok=true`：「已自动重启（第 N/3 次）：M 个工具已重新
+  注册」）；失败发 `ok=false` 并说明第几次、下次还试不试；彻底放弃时随死亡通告给出原因。
+  协议不加新 `kind`——既有 system 行就是为「发生了什么但没人说」准备的。
+- **判据**：`TestMCP_RespawnAfterCrash`（重启后调用成功、工具定义不重复）、
+  `TestMCP_RespawnDisabled`（`--mcp-respawn=false` 退回旧行为且说明白）、
+  `TestMCP_RespawnCap`（4 次崩溃后放弃，最后一条通告含「不再尝试」）。
+
+### 3. 取消通知：`notifications/cancelled`
+
+- **问题**（§五 原话）：取消只让我们不再等，server 侧调用照跑，而 GUI 已显示「已取消」。
+- **改法**：`mcpClient.sendRequest` 在 `ctx` 结束时（用户取消或超时）用**原请求 id**
+  发 `notifications/cancelled`，`reason` 区分「用户取消」/「调用超时」；
+  投递预算 `mcpCancelNotifyTimeout = 2s`，失败只记日志，**绝不拖住取消本身**。
+- **传输**：三种各按本义投递——stdio 写一行 stdin（goroutine + 超时兜住可能卡死的写）；
+  Streamable HTTP 用 `t.ctx` 派生 2s 上下文发一条通知 POST（原 ctx 已 canceled，拿它发
+  什么都发不出去）；legacy SSE 走 `messages` 端点。
+- **人话**：tool_result 按「用户取消/超时 × 通知送到/没送到」四组合各写一句
+  （`mcpCanceledError.toolText`）：送到说「已向 MCP 服务发送取消通知；服务端可能仍在执行，
+  迟到的结果会被丢弃」，没送到说「取消通知未能送达，该调用可能仍在服务端执行」。
+  tool_call 的 `summary` 仍是「已取消」（既有 GUI 断言不动）。
+- **连接不关**：取消 ≠ 断连；迟到回执按 id 找不到 pending 后丢弃，同一 client 继续可用。
+- **判据**：`TestMCP_CancelNotifiesServer`（stdio：mock 落盘收到 `notifications/cancelled`，
+  `reason`/`requestId` 逐项，取消后同连接还能调用）、
+  `TestMCP_HTTPCancelNotifiesServer`（Streamable 与 legacy 两传输都发出通知 POST）、
+  `TestMCP_CancelText`（四组合文本）、`TestLoopE2E_MCPCancelHonest`（GUI 侧看到诚实文本 +
+  `summary=已取消` + `state cancelled→idle`，且 mock 真收到通知）。
+- **诚实边界**：规范是 SHOULD，服务端可以不遵守；我们只说「已发送」，不说「已停止」。
+
+### 4. 本版明确不做
+
+- **per-call 超时**：MCP 调用仍无单次墙钟上限，取消是用户手动的逃生门（下一批候选；
+  需要先定「超时该不该杀服务」——杀会丢掉同连接上的后续调用）。
+- **后台/主动重启**：没有调用就不重启；不做崩溃计数持久化（每会话重置）。
+- **GUI 运行期状态刷新**：`hello.mcp.services[].tools` 仍是**启动期快照**；重启后若服务
+  端工具集变了，副标/卡片上的数字不会跟着变（转录里的 system 通告才是真值）。

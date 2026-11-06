@@ -50,6 +50,8 @@ __pycache__/
 # 2026-10-25：同一决定适用于本仓当前使用的记忆目录 `.workbuddy-ai/`
 #   （`MEMORY.md` + 当日日志，性质与 `.workbuddy/` 完全相同）。
 .workbuddy-ai/
+# 2026-11-06：AI 编辑器的计划草稿目录（`.zcode/plans/*.md`），同属工作笔记。
+.zcode/
 
 # ===== 临时 / 诊断 =====
 .scratch/

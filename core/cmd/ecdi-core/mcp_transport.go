@@ -7,6 +7,9 @@
 //
 // ★ 接口只做三件事：Start / Do（请求或通知）/ Close；`Done` 供 hub 判死，
 //   `ProtocolVersion` 供 initialize 与版本协商。JSON-RPC 方法语义仍在 mcpClient。
+//
+// ★ 2026-11-06 增 Cancel：取消语义的**传输半边**（stdio 写一行 stdin / HTTP 发
+//   一个 POST）。语义半边（什么时候发、发完怎么如实告诉用户）在 mcpClient。
 package main
 
 import (
@@ -20,9 +23,22 @@ type mcpTransport interface {
 	Start(ctx context.Context) error
 	// Do：ID 非 nil = 请求，等回执；ID 为 nil = 通知，不等回执。
 	Do(ctx context.Context, req jsonrpcRequest) (json.RawMessage, error)
+	// Cancel：尽力发 notifications/cancelled（MCP §Cancellation）。
+	// 返回 nil = 已送出（不保证服务端照做）；错误 = 没送出去，调用方必须如实说。
+	Cancel(requestID any, reason string) error
 	Close()
 	Done() <-chan struct{}
 	ProtocolVersion() string
+}
+
+// mcpCancelledRequest：notifications/cancelled 的消息体（三种传输共用）。
+// ★ requestId 必须是**原请求的 JSON-RPC id**（规范要求），不是工具名。
+func mcpCancelledRequest(requestID any, reason string) jsonrpcRequest {
+	params := map[string]any{"requestId": requestID}
+	if reason != "" {
+		params["reason"] = reason
+	}
+	return jsonrpcRequest{JSONRPC: "2.0", Method: "notifications/cancelled", Params: params}
 }
 
 func newMCPTransport(name string, cfg mcpServerConfig, rootDir string) (mcpTransport, error) {
