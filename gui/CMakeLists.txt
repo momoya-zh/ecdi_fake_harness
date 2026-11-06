@@ -113,3 +113,25 @@ if(MINGW)
     target_compile_options(harness_gui PRIVATE -municode)
     target_link_options(harness_gui PRIVATE -municode -static)
 endif()
+
+# ★ 2026-11-06（合规补漏）：第三方许可声明必须**跟着二进制走**。
+#   FTL §2 第二项要求二进制再分发在「分发文档」中给出 based-in-part 声明——
+#   只在仓库里留一份 md 不算数：exe 一拷走，声明就丢了。⇒ 两个落点：
+#     ① POST_BUILD 复制到 exe 同目录（本机构建、手动拷 exe 时天然带着）；
+#     ② install(FILES) 落到安装根（将来打安装包时带着）。
+#   ★ 声明正文 + FTL / LICENSE 全文都在仓根 `THIRD-PARTY-NOTICES.md`（**入库资产**，
+#     不在 `third_party/` 忽略范围内）；换 ECDI 库或升 FreeType 时须同步改它的 §2/§3。
+#   ★ 路径用绝对源路径 + `$<TARGET_FILE_DIR>`：多配置生成器（VS）下也按配置落到正确目录。
+set(HARNESS_THIRD_PARTY_NOTICE "${CMAKE_CURRENT_SOURCE_DIR}/../THIRD-PARTY-NOTICES.md")
+if(NOT EXISTS "${HARNESS_THIRD_PARTY_NOTICE}")
+    message(FATAL_ERROR
+        "Missing THIRD-PARTY-NOTICES.md at '${HARNESS_THIRD_PARTY_NOTICE}'. "
+        "Binary redistribution of FreeType requires it (FTL §2).")
+endif()
+add_custom_command(TARGET harness_gui POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${HARNESS_THIRD_PARTY_NOTICE}"
+            "$<TARGET_FILE_DIR:harness_gui>/THIRD-PARTY-NOTICES.md"
+    COMMENT "Copying THIRD-PARTY-NOTICES.md next to harness_gui.exe (FTL §2)"
+    VERBATIM)
+install(FILES "${HARNESS_THIRD_PARTY_NOTICE}" DESTINATION .)
