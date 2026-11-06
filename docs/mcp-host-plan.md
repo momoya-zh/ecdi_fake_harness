@@ -451,3 +451,22 @@ tool_result 行；全部改动在 core（`mcp_runtime.go` / `mcp.go` / `mcp_stdi
   - `TestMCP_CallTimeout_ConfigOverride`：服务级 `timeout: 0.15` 精确覆盖全局 60s 默认值；
   - `TestMCP_CallTimeout_ConfigDisableZero`：服务级 `timeout: 0` 显式禁用超时限制；
   - `tools/mcp-smoke/drive.py` 83 条断言全绿（真二进制真链路，不派生 Go mock 子进程）。
+- **判据（九版补充，见 §十二）**：冒烟 F 臂原先偶发 82/83，根因是传输层死亡通告存在
+  竞态窗口，九版已修并补 `TestTransport_*ClosesDoneFirst` 两案钉死。
+
+## 十二、 九版（2026-11-06）：修「服务进程消失」时死亡通告的竞态窗口
+
+- **现象**：`tools/mcp-smoke/drive.py` 的 F 臂（崩溃后应有 system 块并预告重启）偶发失败，
+  实测约 1/38 次。失败时那条 system 块**根本没发出**，不是文案写错。
+- **根因**：`readLoop`（stdio）与 `readStream`（legacy SSE）在管道/流断开时，**先**排空
+  `pending` 等者（关通道），**再** `closeDone()`。夹在中间的窗口里，等者拿到的是普通
+  错误（`"连接断开"` / `"SSE 连接断开"`），而此刻 `CallTool` 里的
+  `client.isDead()`（= `<-transport.Done()` 可读）仍为 false ⇒ 不进 `noteDead` ⇒
+  用户看到「工具莫名失败」却没有 system 块。这违反本仓「发生了就得说出来」的既有处置
+  （与上下文压缩失败同口径）。
+- **改动**：两处都把 `closeDone()` 提到排空 `pending` **之前**（语义：先宣布死亡，再唤醒
+  等者）。Streamable HTTP 不涉及——它在 POST 内同步读回执，没有 pending 表。
+- **判据**：新增 `TestTransport_BrokenPipeClosesDoneFirst` 与
+  `TestTransport_SSEBrokenStreamClosesDoneFirst`。两案各放 128 个等者、跑 8 轮，要求
+  **全部**「醒来时 `Done()` 已关」：修复前 6/6 次全红（确定性复现，不靠调度运气），
+  修复后 6/6 次全绿，`-race -count=2` 干净。冒烟修复后连跑 12 次 83/83。

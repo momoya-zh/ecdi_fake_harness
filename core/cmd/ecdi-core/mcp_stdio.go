@@ -238,15 +238,18 @@ func (t *stdioTransport) readLoop(r io.Reader) {
 		}
 	}
 
-	// 管道断开
+	// 管道断开：**先**关 done，**再**排空 pending。
+	// ★ 顺序不能反：等者被释放后第一件事就是读 isDead()。若此刻 done 还没关，
+	//   它看到的是普通「连接断开」而不是「服务已死」⇒ 死亡通告漏发，用户只看到
+	//   工具莫名失败。真实现象：`tools/mcp-smoke` 的 F 臂偶发 82/83。
+	t.closeDone()
+
 	t.mu.Lock()
 	for idKey, ch := range t.pending {
 		delete(t.pending, idKey)
 		close(ch)
 	}
 	t.mu.Unlock()
-
-	t.closeDone()
 }
 
 // replyError：给**服务端发来的请求**回一个 JSON-RPC error（我们只做 -32601）。

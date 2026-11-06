@@ -471,8 +471,10 @@ func (t *sseHTTPTransport) readStream(body io.Reader, endpointCh chan<- *url.URL
 		default:
 		}
 	}
-	t.failPending()
+	// ★ 与 stdio 同口径：先关 done 再排空 pending，否则等者看到的是普通错误
+	//   而 isDead() 仍为 false ⇒ 死亡通告漏发。
 	t.closeDone()
+	t.failPending()
 	_ = body
 }
 

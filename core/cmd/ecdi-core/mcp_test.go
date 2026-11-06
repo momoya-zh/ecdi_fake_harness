@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -899,6 +900,86 @@ func TestMCP_DeadServerNotice(t *testing.T) {
 	}
 	if again := hub.TakeNotices(); len(again) != 0 {
 		t.Fatalf("取走后必须清空（同一次死亡只说一次）：%v", again)
+	}
+}
+
+// TestTransport_BrokenPipeClosesDoneFirst：管道断开时，**等者被唤醒之前** `Done()`
+// 必须已经关闭。
+//
+// ★ 为什么这条判据重要：`CallTool` 只在 `client.isDead()`（= `<-transport.Done()`
+// 可读）时才 `noteDead`。若 readLoop 先释放 pending 等者、再关闭 done，那么等者拿到
+// 的是普通错误 `"连接断开"`，而此刻 `isDead()` 还是 false ⇒ 死亡通告漏发，用户看到
+// 的是「工具莫名失败」而没有任何 system 块。真实现象：`tools/mcp-smoke` 的 F 臂
+// （崩溃后应有 system 块）偶发 82/83。
+//
+// ★ 为什么放 N 个等者：这个窗口只有几微秒，单个等者能否撞上取决于调度（实测
+// 2/5 概率）。放多个等者并要求**全部**满足，就把「有没有修对」变成确定性判据：
+// 修好之后 closeDone 在排空之前，N 个等者必然全见 done 已关；没修则至少有一个
+// 撞进窗口。
+func TestTransport_BrokenPipeClosesDoneFirst(t *testing.T) {
+	const n = 128
+	for i := 0; i < 8; i++ {
+		tr := newStdioTransport("t", mcpServerConfig{}, "")
+		woke := make([]chan bool, n)
+		for j := 0; j < n; j++ {
+			ch := make(chan jsonrpcResponse, 1)
+			tr.pending[fmt.Sprint(j)] = ch
+			woke[j] = make(chan bool, 1)
+			go func(ch chan jsonrpcResponse, out chan bool) {
+				<-ch // 等者：请求被「断开」释放
+				select {
+				case <-tr.Done():
+					out <- true
+				default:
+					out <- false
+				}
+			}(ch, woke[j])
+		}
+
+		tr.readLoop(strings.NewReader("")) // 立刻 EOF，模拟服务端进程消失
+
+		for j := 0; j < n; j++ {
+			if ok := <-woke[j]; !ok {
+				t.Fatalf("第 %d 轮（等者 %d/%d）：等者先于 Done() 被唤醒 ⇒ "+
+					"CallTool 会看到 isDead()=false，死亡通告漏发", i, j, n)
+			}
+		}
+	}
+}
+
+// TestTransport_SSEBrokenStreamClosesDoneFirst：legacy SSE 的同一判据。
+func TestTransport_SSEBrokenStreamClosesDoneFirst(t *testing.T) {
+	const n = 128
+	for i := 0; i < 8; i++ {
+		tr := &sseHTTPTransport{
+			name:    "t",
+			pending: make(map[string]chan jsonrpcResponse),
+			done:    make(chan struct{}),
+		}
+		woke := make([]chan bool, n)
+		for j := 0; j < n; j++ {
+			ch := make(chan jsonrpcResponse, 1)
+			tr.pending[fmt.Sprint(j)] = ch
+			woke[j] = make(chan bool, 1)
+			go func(ch chan jsonrpcResponse, out chan bool) {
+				<-ch
+				select {
+				case <-tr.Done():
+					out <- true
+				default:
+					out <- false
+				}
+			}(ch, woke[j])
+		}
+
+		tr.readStream(strings.NewReader(""), make(chan *url.URL, 1), make(chan error, 1))
+
+		for j := 0; j < n; j++ {
+			if ok := <-woke[j]; !ok {
+				t.Fatalf("第 %d 轮（等者 %d/%d）：SSE 等者先于 Done() 被唤醒 ⇒ 死亡通告漏发",
+					i, j, n)
+			}
+		}
 	}
 }
 
