@@ -236,6 +236,14 @@ bool HarnessApp::LoadUiState(Session& s) {
     return true;
 }
 
+// ★★ 2026-11-07：sidecar 写盘门槛的**唯一**判定（完整理由见 App.h 声明处）。
+//   两处消费者：`ToggleRow`（展开态）与 `MarkAnswered`（权限门答案）。
+bool HarnessApp::CanSaveUiState() const {
+    if (!m_sess) return false;
+    return m_sess->originKind == "replay-history" || m_sess->originKind == "journal" ||
+           (m_sess->originKind == "live" && m_sess->journalPromoted);
+}
+
 void HarnessApp::SaveUiState(const Session& s) {
     const std::filesystem::path path = UiStatePath(s);
     if (path.empty()) return;

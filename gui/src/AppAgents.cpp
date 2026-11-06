@@ -71,7 +71,10 @@ void HarnessApp::BuildAgentCard(ECDI::Panel& insp, int rowH) {
 
     auto list = std::make_unique<ECDI::Panel>();
     m_hud.agentList = list.get();
-    list->SetSize(190, rowH);
+    // ★ 176 = 卡宽 200 − 左右各 12 内边距：列表容器与行按钮都必须收在版心内。
+    //   此前 190 ⇒ 右缘 12+190=202，越过卡片右边界（~x=199），不透明底把
+    //   1px 描边盖掉一截（实测「代理卡选项遮住右边框」）。
+    list->SetSize(176, rowH);
     list->SetLayout(std::make_unique<ECDI::VerticalLayout>(kAgentRowGap, false, 0));
     card->AddChild(std::move(list));
 
@@ -123,7 +126,9 @@ void HarnessApp::RebuildAgentList() {
     auto makeRow = [this, kRowH](const std::string& text, const ECDI::Color& ink,
                                  const std::string& agentId) {
         auto btn = std::make_unique<ECDI::Button>(text);
-        btn->SetSize(190, kRowH);
+        // ★ 176：见 BuildAgentCard 里列表容器的算式。行按钮带**不透明**底
+        //   （kContentBg），超宽一点都会把卡片描边压在底下——176 收在版心内。
+        btn->SetSize(176, kRowH);
         btn->SetFont(harness::SansFont(12.0f));
         btn->SetTextColor(ink);
         // ★ 背景 = 卡片底色 ⇒ 看起来是"一行字"，不是一颗按钮；但点击面仍在
@@ -183,7 +188,7 @@ void HarnessApp::RebuildAgentList() {
     const int listH = rows * kRowH + (rows - 1) * kAgentRowGap;
     // 算式同建卡处：pad12 + 标题 17 + 间距 8 + 列表 + pad12
     m_hud.inspAgentCard->SetSize(200, 49 + listH);
-    m_hud.agentList->SetSize(190, listH);
+    m_hud.agentList->SetSize(176, listH);
     m_hud.inspAgentCard->Arrange();
     if (m_hud.inspector) m_hud.inspector->Arrange();
     RequestRepaint();

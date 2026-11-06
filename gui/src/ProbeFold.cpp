@@ -3,8 +3,8 @@
 // ------------------------------------------------------------
 // 需求原话："read_file、grep 这类都是打印出来的……最后回答出来后能把前面的
 //   这类都收起来，不然上下翻太费时间了。" ⇒ 回答结束（`state:idle`）时，
-//   本回合的过程行（tool_call/tool_result/reasoning/中间 assistant）收成一条摘要，
-//   user 消息与最终回答保持可见。
+//   本回合的过程行（tool_call/tool_result/reasoning/中间 assistant，2026-11-07 起
+//   含**已答**的权限门）收成一条摘要，user 消息与最终回答保持可见。
 //
 // 为什么这个特性需要自己的判据：
 //   折叠是**纯视图上的减法**——协议层一个字节都没变。`blocks/deltas/messages/seq`
@@ -32,11 +32,12 @@
 //   ⑦ `expandRestores > 0`
 //        —— 展开以后过程行**确实回来了**（不是只会藏、不会放）。
 //   ⑧ 负向：`folds == 0` 且 `foldHiddenCount == 0`
-//        —— 过程行不足两条的夹具（`subagent`：1 回合 11 块但过程行稀疏）上，
-//          一行都不许折。没有这条，"无脑全折"在正臂上是绿的。
+//        —— 无回合可折的夹具上，一行都不许折。没有这条，"无脑全折"在正臂上是绿的。
 //
-// 跑批（tools/regress.py）：正臂用 realistic（32 回合，过程行密集），
-//   负臂用 subagent（过程行不足）。两臂都要求 `violations == 0`。
+// 跑批（tools/regress.py）：正臂用 realistic（32 回合，过程行密集），负臂用
+//   hostile/truncated-final-line.jsonl（末行截断、无 user 行 ⇒ 无回合可切，folds 恒 0）。
+//   两臂都要求 `violations == 0`。（2026-11-07 订正：负臂不是 subagent——
+//   parallel-two-agents 有 1 回合 10 条过程行，本就够格折叠，当不了负臂。）
 // ============================================================
 
 #include "App.h"

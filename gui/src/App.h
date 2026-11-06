@@ -882,10 +882,14 @@ private:
         //     live / 启动时的 replay / 从磁盘点开的历史 replay 三种会话，
         //     而它们的 `source` 长得一样（都是 Source 指针）⇒ 无法区分。
         //   ★ `originKind` 取值：`"live"` / `"replay"`（启动时 `--replay`）/
-        //     `"replay-history"`（Step 5 点开的历史）/ `"new"`（回放模式下新建的空会话）。
+        //     `"replay-history"`（Step 5 点开的历史）/ `"journal"`（L2 持久化：
+        //     启动恢复 + 侧栏点开的 journal 会话）/ `"new"`（回放模式下新建的空会话）。
         //     空串 = 未分类（理论上不该出现；探针会把它当失败报出来）。
-        //   ★ `originPath` 是**磁盘路径**，只有 replay 类有值：它同时是
-        //     sidecar 状态文件的定位依据（见 `UiStatePath()`）。
+        //   ★ `originPath` 是**磁盘路径**：replay 类指向夹具/历史文件，journal 指向
+        //     journal 文件，**转正后的 live 也指向 journal 文件**（PromoteSessionJournal
+        //     赋值，2026-11-07）——它是 sidecar 状态文件的定位依据（见 `UiStatePath()`）。
+        //     未转正的 live 仍是建会话时赋的 corePath 伪路径（AppSession.cpp），仅
+        //     导出头的「# 来源」文本会带它；此时 sidecar 门槛（CanSaveUiState）关闭。
         //   ★ 为什么不用 `replay != nullptr` 判来源：空的新建会话
         //     `replay == nullptr` 且 `source == nullptr`，但历史会话两者都非空——
         //     这确实分得开，可分不出"启动时 --replay"与"点开的历史"，
@@ -1381,6 +1385,15 @@ private:
     //   不是转录内容。缺失 ⇒ 返回 false，调用方必须如实提示"此会话没有决策记录"。
     bool LoadUiState(Session& s);
     void SaveUiState(const Session& s);
+    // ★★ 2026-11-07：sidecar **写盘门槛的唯一判定**（ToggleRow / MarkAnswered 共用）。
+    //   · `replay-history` / `journal`：原有语义（点开的历史、启动恢复的 journal）。
+    //   · `live && journalPromoted`（新增）：journal 转正的续聊会话。此前 live 一律
+    //     被挡 ⇒ 答过的权限门重启后回到"允许/拒绝"两钮的未答样式（丢结论）。
+    //     转正时 originPath 已指向 journal ⇒ sidecar 落到恢复读点收敛的同一文件。
+    //   · `replay`（--replay 跑批基线）与**未转正** live（originPath 还是 corePath
+    //     伪路径、journal 尚不存在）明确排除；`new` 空会话无 originPath，
+    //     `SaveUiState` 自然 no-op。
+    bool CanSaveUiState() const;
     // 把 sidecar 写进模型之后，还要把同一批状态写进**当前视图行**——
     //   `RebuildTranscriptView` 的第一步是 `SyncRowViewState`（视图→模型），
     //   若视图行还全是 false，它会立刻把刚读进来的展开态/已答态覆盖掉。

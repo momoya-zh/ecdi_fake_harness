@@ -591,8 +591,8 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
         }
     }
     m_relayoutPulse = 12;   // ~400ms：覆盖 200ms 折叠动画
-    // ★★ Step 5：展开态也进 sidecar（同样是"只对历史会话"，理由同 MarkAnswered）。
-    if (m_sess && (m_sess->originKind == "replay-history" || m_sess->originKind == "journal")) SaveUiState(*m_sess);
+    // ★★ Step 5：展开态也进 sidecar（门槛见 `CanSaveUiState`；理由同 MarkAnswered）。
+    if (CanSaveUiState()) SaveUiState(*m_sess);
     Relayout();             // 立即重排一次（settle 后定时器路径不再经过 Relayout）
     RequestRepaint();
 }
@@ -807,9 +807,13 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
 // ═══════════════════════════════════════════════════════════════════════
 
 // 一个回合的成员判定：**只有** user 行开新回合，回合内的过程行是
-// tool_call / tool_result / reasoning / 中间 assistant。
-//   ★ 为什么不数 notice / ask：通知行是 GUI 自己的诊断输出，权限门是**用户的**
-//     决定交互——把它们收起来会让"我刚才点过什么"从屏上消失，而那不是"过程噪音"。
+// tool_call / tool_result / reasoning / 中间 assistant，外加**已答**的权限门。
+//   ★★ 2026-11-07 用户裁决（翻案）：已答的权限门是历史事实，与 tool_result 同属
+//     "这一回合发生过什么"，随回合一起收起；展开后结论（● 已允许/已拒绝）由模型
+//     `answered/answer/answerAt` 经 `ApplyAnsweredLook` 原样还原，不丢审计信息。
+//     **pending** 的门仍绝不收起——那是待决交互，藏起来等于把决策 UI 藏掉
+//     （由 `RetagTurns` 的 anyStreaming 一挡）。
+//   ★ notice 仍不收：通知行是 GUI 自己的诊断输出，不是回合的过程。
 bool HarnessApp::IsUserEntry(const TimelineEntry& e) const {
     if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) return false;
     const Block* b = m_sess->transcript.FindBlock(e.id);
@@ -817,12 +821,19 @@ bool HarnessApp::IsUserEntry(const TimelineEntry& e) const {
 }
 
 // 一个回合的摘要文案。**纯函数**（只读参数区间内的模型），故可被探针单独调用。
+//   ★ 不带箭头：状态箭头（›/▾）由**唯一**调用方 `RetagTurns` 按折叠态拼——
+//     此前本函数内部也拼一个 "› "，和调用方的前缀叠成「› › 已完成」（实测双箭头）。
 std::string HarnessApp::TurnSummary(size_t begin, size_t end) const {
     size_t steps = 0;
+    size_t asks = 0;   // 已答授权数（2026-11-07：已答权限门随回合折叠，摘要如实报数）
     long long firstTs = 0;
     long long lastTs = 0;
     for (size_t i = begin; i < end && i < m_sess->timeline.size(); ++i) {
         const TimelineEntry& e = m_sess->timeline[i];
+        if (e.kind == TimelineEntry::Kind::Ask) {
+            if (!e.answer.empty()) ++asks;   // pending 的门不进摘要（它根本不该出现在已折回合里）
+            continue;
+        }
         if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
         const Block* b = m_sess->transcript.FindBlock(e.id);
         if (!b || b->kind == "user") continue;
@@ -834,10 +845,12 @@ std::string HarnessApp::TurnSummary(size_t begin, size_t end) const {
             if (b->tsMs > lastTs) lastTs = b->tsMs;
         }
     }
-    std::string out = "\xE2\x80\xBA ";   // › U+203A（同 ToolTitle 的选择理由：两主题都有字形）
-    out += "已完成";
+    std::string out = "已完成";
     if (steps > 0) {
         out += " \xC2\xB7 " + std::to_string(steps) + " \xE6\xAD\xA5";   // " 步"
+    }
+    if (asks > 0) {
+        out += " \xC2\xB7 " + std::to_string(asks) + " \xE6\x8E\x88\xE6\x9D\x83";   // " 授权"
     }
     if (firstTs > 0 && lastTs > firstTs) {
         char buf[48];
@@ -851,12 +864,28 @@ std::string HarnessApp::TurnSummary(size_t begin, size_t end) const {
 // 把 `timeline` 重切成回合并算出折叠态。**唯一**写 `Kind::Fold` 的地方。
 //   ★ 幂等：每次都从折叠态字段重新推 `foldHidden` 集合，绝不"在上一次结果上
 //     继续翻"——那样一次失败的调用会永久留下半折叠状态。
-//   ★ 无副作用的窗口很窄：本函数只改 `timeline` 的标志与一条条目的 kind，
-//     不碰 `rows`；调用方负责随后的 `RebuildTranscriptView`（行必须跟着重建，
-//     因为 `Kind` 变了 ⇒ 那一行要换成另一棵树）。
+//   ★ 无副作用的窗口很窄：本函数只改 `timeline` 的标志与摘要条条目，
+//     不碰 `rows`；真插入了摘要条（下标移动）时调用方必须跟着整表重建。
+//   ★★ 2026-11-07 订正返回值语义：从「`insertIdx > 0`」（只要有任一合格回合就
+//     true ⇒ 每个 `state:idle` 都整表重建——展开/收起卡顿的放大器）收成
+//     **真变化**：与调用前快照逐条比对，摘要条集合、`foldable`/`foldHidden`
+//     标志、摘要文案全等 ⇒ false ⇒ 调用方免付重建。快照在 ① 的 erase 之前取。
 bool HarnessApp::RetagTurns() {
     if (!m_sess) return false;
     auto& tl = m_sess->timeline;
+
+    // ⓪ 变化快照（本函数会写的全部字段）。
+    struct FoldDerived {
+        TimelineEntry::Kind kind;
+        bool foldable;
+        bool foldHidden;
+        std::string summary;
+    };
+    std::vector<FoldDerived> before;
+    before.reserve(tl.size());
+    for (const TimelineEntry& e : tl) {
+        before.push_back({e.kind, e.foldable, e.foldHidden, e.foldSummary});
+    }
 
     // ① 先拆掉上一次算出来的摘要条（本函数是摘要条的**唯一**作者，所以
     //    "先全拆、再全建"是最不会漂移的形状）。
@@ -896,13 +925,21 @@ bool HarnessApp::RetagTurns() {
         bool anyStreaming = false;
         for (size_t k = begin; k < end; ++k) {
             const TimelineEntry& e = tl[k];
+            // ★★ 2026-11-07：pending 权限门在场 ⇒ 回合仍活跃。权限门的决策 UI
+            //   （完整问句 + 允许/拒绝两钮）绝不能被收起来；且"等待授权"时用户
+            //   点旧回合的摘要条也会走到这里（`ToggleTurn` 经 `RetagTurns` 重算），
+            //   必须把含待决门的这一回合整体挡住。
+            if (e.kind == TimelineEntry::Kind::Ask && !e.answered) {
+                anyStreaming = true;
+                break;
+            }
             if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
             const Block* b = m_sess->transcript.FindBlock(e.id);
             if (!b) continue;
             if (!b->ended) anyStreaming = true;
             if (b->kind == "assistant" && b->ended && !b->text.empty()) lastAssistant = k;
         }
-        // ★ 回合还在流式 ⇒ 不折。折了会把正在写的那一行藏起来，
+        // ★ 回合还在流式（或有待决权限门）⇒ 不折。折了会把正在写的那一行藏起来，
         //   而且摘要条的"已完成 / 耗时"在那一刻本来就是假的。
         if (anyStreaming) {
             i = end;
@@ -913,6 +950,13 @@ bool HarnessApp::RetagTurns() {
         for (size_t k = begin; k < end; ++k) {
             if (k == lastAssistant) continue;   // 结论不折
             const TimelineEntry& e = tl[k];
+            // ★★ 2026-11-07（用户裁决）：**已答**的权限门随回合一起收起。走到这里
+            //   的 ask 必然已答（pending 已在上面 anyStreaming 一挡）；展开后结论由
+            //   `answered/answer/answerAt` 经 `ApplyAnsweredLook` 原样还原，不丢审计。
+            if (e.kind == TimelineEntry::Kind::Ask) {
+                if (!e.answer.empty()) proc.push_back(k);
+                continue;
+            }
             if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
             const Block* b = m_sess->transcript.FindBlock(e.id);
             if (!b || b->kind == "user") continue;
@@ -950,9 +994,23 @@ bool HarnessApp::RetagTurns() {
     }
 
     // ⑤ 把摘要条插进 `user` 之后（`ApplyTurnInserts` 负责按下标改序）。
-    //   ★ 插入会移动其后条目的下标 ⇒ 调用方**必须**紧跟着整表重建，
-    //     让 `rows[i].timelineIdx == i` 重新成立。
-    return ApplyTurnInserts(inserts);
+    //   ★ 插入会移动其后条目的下标 ⇒ 一旦真插了（摘要条集合变了），调用方
+    //     **必须**紧跟着整表重建，让 `rows[i].timelineIdx == i` 重新成立。
+    ApplyTurnInserts(inserts);
+
+    // ⑥ 与 ⓪ 的快照逐条比对：全等 ⇒ 本调用在模型上零变化 ⇒ false（调用方的
+    //   `state:idle` 闸门据此免付整表重建）。`foldSummary` 是纯函数重算的 ⇒
+    //   未变的回合逐字节相同，不会误报。
+    if (tl.size() != before.size()) return true;
+    for (size_t i = 0; i < tl.size(); ++i) {
+        const TimelineEntry& e = tl[i];
+        const FoldDerived& b = before[i];
+        if (e.kind != b.kind || e.foldable != b.foldable ||
+            e.foldHidden != b.foldHidden || e.foldSummary != b.summary) {
+            return true;
+        }
+    }
+    return false;
 }
 
 // 把摘要条插到对应 `user` 行之后。**与 `RetagTurns` 配套的唯一插入点**。
@@ -984,6 +1042,12 @@ bool HarnessApp::ApplyTurnInserts(const std::vector<TimelineEntry>& inserts) {
 //   ★ 状态翻的是**摘要条前面那条 `user` 条目**上的 `turnCollapsed`——摘要条自己
 //     每次 `RetagTurns` 都会被拆掉重建，状态挂在它上面会在重算时丢（0c 的老坑：
 //     状态不能挂在会被重建的东西上）。
+//   ★★ 2026-11-07：**快路径，不重建**。点击时摘要条已在 ⇒ `RetagTurns` 重算只翻
+//     `foldHidden` / `foldSummary`，条目集合与下标不动 ⇒ `ApplyFoldVisibility`
+//     （App.h 注释本就预设它是本函数的调用者）+ 重贴摘要条文案即可收场。
+//     此前每次点击都 `RebuildTranscriptView`：新建全部行控件 ⇒ ECDI 文本测量
+//     缓存（C28-5 / C29-10，挂在控件实例上）全灭 ⇒ 全文档重测——这正是
+//     "展开/收起卡顿"与当年长文本卡顿同代价形状的根因。
 void HarnessApp::ToggleTurn(size_t foldIdx) {
     if (!m_sess || foldIdx >= m_sess->timeline.size()) return;
     if (m_sess->timeline[foldIdx].kind != TimelineEntry::Kind::Fold) return;
@@ -1002,11 +1066,38 @@ void HarnessApp::ToggleTurn(size_t foldIdx) {
     //   一律由 `RetagTurns` + `ApplyFoldVisibility` 从折叠态重算——否则"翻标志 +
     //   改控件"两处各记一份，重建一次就会互相覆盖（同 0c 的展开态缺陷）。
     m_sess->timeline[owner].turnCollapsed = !m_sess->timeline[owner].turnCollapsed;
-    // ★ 先同步视图状态进模型：重建会 `rows.clear()`，没写回的展开态就丢了。
-    SyncRowViewState();
-    RetagTurns();              // 返回值故意忽略：展开/折叠**必然**改可见性
-    RebuildTranscriptView();   // 行表必须跟着重建（条目下标移动了）
-    m_relayoutPulse = 12;      // ~400ms：覆盖内容高度跳变
+
+    // ★ 结构稳定性判据：`timeline` 上只有 `Kind::Fold` 条目会被 ① erase / ⑤ insert，
+    //   其余条目绝不动位 ⇒ 只要**摘要条的位置序列**重算前后一致，所有下标
+    //   （`rows[i].timelineIdx`、按钮回调捕获的 `foldIdx`）就都仍然成立，快路径合法。
+    std::vector<size_t> slotsBefore;
+    for (size_t k = 0; k < m_sess->timeline.size(); ++k) {
+        if (m_sess->timeline[k].kind == TimelineEntry::Kind::Fold) slotsBefore.push_back(k);
+    }
+    RetagTurns();   // 返回值（可见性变没变）不用：点击必然翻可见性
+    std::vector<size_t> slotsAfter;
+    for (size_t k = 0; k < m_sess->timeline.size(); ++k) {
+        if (m_sess->timeline[k].kind == TimelineEntry::Kind::Fold) slotsAfter.push_back(k);
+    }
+    if (slotsBefore != slotsAfter) {
+        // 兜底（正常流到不了）：重算移动了摘要条 ⇒ 下标失效，只有整表重建能让
+        // `rows[i].timelineIdx == i` 重新成立。慢，但正确性优先于快。
+        RebuildTranscriptView();
+        m_relayoutPulse = 12;
+        RequestRepaint();
+        return;
+    }
+
+    ApplyFoldVisibility();   // 唯一可见性同步点：`foldHidden` → 控件 SetVisible
+    // 摘要条文案重贴：箭头 ›⇄▾ 由 `RetagTurns` 重算进 `foldSummary`（单一真相源
+    // 在模型，控件只是投影）。未变的条重贴同文，代价是单行 SetText。
+    for (RowRec& r : m_sess->rows) {
+        if (r.foldBar && r.headerBtn && r.timelineIdx < m_sess->timeline.size()) {
+            r.headerBtn->SetText(m_sess->timeline[r.timelineIdx].foldSummary);
+        }
+    }
+    m_relayoutPulse = 12;   // ~400ms：覆盖内容高度跳变
+    Relayout();             // 立即重排（同 ToggleRow：settle 后定时器路径不经过 Relayout）
     RequestRepaint();
 }
 
@@ -1446,9 +1537,9 @@ void HarnessApp::MarkAnswered(RowRec& rec, const std::string& choice) {
     }
     m_sess->askHist.emplace_back(choice, asked);
     if (m_sess->askHist.size() > 16) m_sess->askHist.pop_front();
-    // ★★ Step 5：把结论落到 sidecar（**只有历史打开的会话**才写——启动时 `--replay`
-    //   的会话是跑批基线，写它等于让"再跑一次"与"第一次跑"不同）。
-    if (m_sess && (m_sess->originKind == "replay-history" || m_sess->originKind == "journal")) SaveUiState(*m_sess);
+    // ★★ Step 5：把结论落到 sidecar（门槛见 `CanSaveUiState`——`--replay` 跑批基线
+    //   仍排除，写它等于让"再跑一次"与"第一次跑"不同；live 转正会话 2026-11-07 放开）。
+    if (CanSaveUiState()) SaveUiState(*m_sess);
     m_hudDirty = true;
     AddNoticeRow("[answer] " + choice, kDarkMuted);
     RequestRepaint();

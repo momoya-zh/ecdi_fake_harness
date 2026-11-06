@@ -1155,6 +1155,11 @@ void HarnessApp::PromoteSessionJournal(Session& session, const std::string& prom
     }
     session.prePromotionLines.clear();
     session.journalPromoted = true;
+    // ★★ 2026-11-07：originPath 指向 journal 文件。它是 sidecar（`.ui.json`）的
+    //   定位依据（`UiStatePath`）——不指过去，live 会话的 originPath 就一直是
+    //   建会话时赋的 corePath 伪路径，权限门答案永远落不到重启恢复时
+    //   `LoadUiState` 会去读的那个文件（`.ecdi/sessions/<id>.jsonl.ui.json`）。
+    session.originPath = journalPath;
 
     // 6. 更新 meta 的 sizeBytes
     session.meta.sizeBytes = session.journal->BytesWritten();
