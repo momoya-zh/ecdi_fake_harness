@@ -5,6 +5,7 @@
 一个进程同时提供两种传输，供 drive.py 的 HTTP 臂使用：
   · POST /mcp      —— Streamable HTTP（initialize 用 2025-06-18；tools/call 走 SSE 响应）
   · GET  /sse      —— legacy HTTP+SSE（endpoint 事件 + /messages POST + SSE 回执）
+  · GET  /mcp      —— Streamable 的服务端主动通知流（2025-06-18；推 tools/list_changed）
   · DELETE /mcp    —— Streamable 的会话终止（204）
 
 ★ 它会**校验**客户端必须带对的头（session / protocol version），错了回 400：
@@ -13,6 +14,7 @@
 import json
 import queue
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -21,6 +23,11 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {"short": {"type": "boolean"}}}},
     {"name": "读取文件", "description": "读一个文件", "inputSchema": {"type": "object"}},
 ]
+
+# ★ 2026-11-07（G 臂）：tools/list_changed 重拉后的「新工具表」——通知推送前
+#   tools/list 返回 TOOLS，推送后返回 TOOLS + EXTRA（drive 据此断言重拉真兑现）。
+EXTRA_TOOL = {"name": "cloud.ping", "description": "Ping the cloud",
+              "inputSchema": {"type": "object"}}
 
 STREAMABLE_SESSION = "smoke-http-session-1"
 
@@ -36,14 +43,28 @@ class State:
         self.legacy_ready = threading.Event()
         self.protocol_errors = []
         self.session_errors = []
+        # ── G 臂（2026-11-07）：通知流与断流自愈 ──────────────────
+        # ★ notify_push_enabled 默认关：C/D 臂的状态必须与六版行为逐位一致
+        #   （GET /mcp 只挂心跳、不推通知）——一个 server 实例服务多个臂时，
+        #   任何无条件的状态翻转都会跨臂泄漏（实测：C 的 tools 2→3、D 2→4）。
+        self.notify_push_enabled = False
+        self.first_list_done = threading.Event()  # 首次 tools/list 完成（推送时序锚）
+        self.list_changed_sent = False            # GET 流上推过 tools/list_changed
+        self.notify_stream_opens = 0              # GET /mcp 次数
+        self.last_notify_lei = None               # 最后一次 GET /mcp 的 Last-Event-ID
+        self.tools_list_calls = 0                 # tools/list 被调用次数（首拉+重拉）
+        self.sse_gets = 0                         # GET /sse 次数
+        self.sse_last_lei = None                  # 最后一次 GET /sse 的 Last-Event-ID
+        self.sse_drop_armed = False               # True ⇒ 下一「首次」legacy 连接发完通知就断
+        self.sse_drop_consumed = False
 
     def record(self, path, method, headers, body):
         with self.lock:
             self.requests.append((path, method, dict(headers), body))
 
 
-def rpc_result(req):
-    """返回 (result, error) —— 只实现冒烟需要的四个方法。"""
+def rpc_result(req, state=None):
+    """返回 (result, error) —— 只实现冒烟需要的方法。state 非 None 时提供 G 臂语义。"""
     method = req.get("method")
     if method == "initialize":
         # legacy 调用方会把版本改写成 2024-11-05
@@ -51,7 +72,15 @@ def rpc_result(req):
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "smoke-http", "version": "0.1"}}, None
     if method == "tools/list":
-        return {"tools": TOOLS}, None
+        if state is not None:
+            with state.lock:
+                state.tools_list_calls += 1
+                changed = state.list_changed_sent
+            state.first_list_done.set()
+        else:
+            changed = False
+        # 通知推送后工具表多一项（drive 据此断言「重拉真兑现」）。
+        return {"tools": TOOLS + ([EXTRA_TOOL] if changed else [])}, None
     if method == "tools/call":
         args = (req.get("params") or {}).get("arguments") or {}
         return {"content": [{"type": "text", "text": "ok: " + json.dumps(args)}]}, None
@@ -112,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        result, error = rpc_result(req)
+        result, error = rpc_result(req, self.state)
         if method == "tools/call":
             payload = json.dumps(rpc_response(req, result, error), ensure_ascii=False)
             body = ("event: message\n"
@@ -140,16 +169,63 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.wfile.flush()
 
-    # ── legacy HTTP+SSE ──────────────────────────────────────
-    def _legacy_sse(self):
+    # ── Streamable HTTP 的服务端主动通知流（2025-06-18，G 臂）──────────
+    def _streamable_get(self):
+        with self.state.lock:
+            self.state.notify_stream_opens += 1
+            self.state.last_notify_lei = self.headers.get("Last-Event-ID") or None
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
+        self.end_headers()
+        if self.state.notify_push_enabled:
+            # ★ 先等首次 tools/list 完成再推 list_changed——否则推送与首拉竞速，
+            #   drive 的「首拉 2 个工具」前提不稳。推完后 tools/list 升级为 3 项。
+            self.state.first_list_done.wait(timeout=5)
+            try:
+                self.wfile.write(b"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n")
+                self.wfile.flush()
+                with self.state.lock:
+                    self.state.list_changed_sent = True
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+        # 保持打开（1s 心跳）；客户端断开（会话结束）⇒ 写失败退出。
+        while True:
+            time.sleep(1)
+            try:
+                self.wfile.write(b": ping\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+
+    # ── legacy HTTP+SSE ──────────────────────────────────────
+    def _legacy_sse(self):
+        with self.state.lock:
+            self.state.sse_gets += 1
+            self.state.sse_last_lei = self.headers.get("Last-Event-ID") or None
+            drop_this = self.state.sse_drop_armed and not self.state.sse_drop_consumed
+            if drop_this:
+                self.state.sse_drop_consumed = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         self.wfile.write(b"event: endpoint\ndata: /messages\n\n")
         self.wfile.flush()
         self.state.legacy_ready.set()
+        if drop_this:
+            # G 臂断流场景：推一条带 id 的通知，然后**真正断开**——客户端必须
+            # 带 Last-Event-ID: g1 重连（drive 断言），会话不得判死。
+            # ★ close_connection 必须显式：HTTP/1.1 keep-alive 下 handler return
+            #   只会回到「读下一条请求」循环，客户端还挂着流等事件 ⇒ 双方对峙，
+            #   客户端永远看不到 EOF（实测：重连永不触发、判据全假红）。
+            try:
+                self.wfile.write(b"id: g1\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            self.close_connection = True
+            return
         q = self.state.legacy_queue
         while True:
             try:
@@ -178,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if req.get("id") is None:
             return
-        result, error = rpc_result(req)
+        result, error = rpc_result(req, self.state)
         if req.get("method") == "initialize":
             result["protocolVersion"] = "2024-11-05"
         payload = json.dumps(rpc_response(req, result, error), ensure_ascii=False).encode("utf-8")
@@ -195,6 +271,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/sse":
             self._legacy_sse()
+        elif self.path == "/mcp":
+            self._streamable_get()
         else:
             self.send_error(405)
 

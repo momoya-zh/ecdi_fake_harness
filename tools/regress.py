@@ -40,7 +40,7 @@ OUT = ROOT / ".scratch"
 #   冒烟逻辑本身在 tools/mcp-smoke/ 里，不复制一份到门内。
 MCP_SMOKE = ROOT / "tools" / "mcp-smoke" / "drive.py"
 MCP_RESULT = OUT / "mcp-smoke" / "result.json"
-MCP_SMOKE_CHECKS = 83  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail；32→37：hello.mcp；37→64：HTTP/SSE 两臂；64→71：HTTP 不可达失败臂；71→83：F 臂 env minimal + 按需重启，均 2026-11-06）
+MCP_SMOKE_CHECKS = 101  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail；32→37：hello.mcp；37→64：HTTP/SSE 两臂；64→71：HTTP 不可达失败臂；71→83：F 臂 env minimal + 按需重启，均 2026-11-06；83→101：G 臂通知流——tools/list_changed 重拉兑现 11 条 + legacy 断流 Last-Event-ID 重连自愈 7 条，2026-11-07）
 
 # ============================================================
 # ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹

@@ -442,19 +442,24 @@ func TestMCP_TransportKindValidation(t *testing.T) {
 	}
 }
 
-// TestScanSSE：CRLF / 注释 / 多行 data / 无尾空行。
+// TestScanSSE：CRLF / 注释 / 多行 data / 无尾空行；id 字段透传（Last-Event-ID 的前提）。
 func TestScanSSE(t *testing.T) {
-	input := ": comment\r\nevent: message\r\ndata: {\"a\":\r\ndata: 1}\r\n\r\n" +
+	input := ": comment\r\nevent: message\r\nid: 42\r\ndata: {\"a\":\r\ndata: 1}\r\n\r\n" +
 		"data: tail"
 	var events []string
-	if err := scanSSE(strings.NewReader(input), func(event, data string) error {
+	var ids []string
+	if err := scanSSE(strings.NewReader(input), func(event, data, id string) error {
 		events = append(events, event+":"+data)
+		ids = append(ids, id)
 		return nil
 	}); err != nil {
 		t.Fatalf("scanSSE: %v", err)
 	}
 	if len(events) != 2 || events[0] != "message:{\"a\":\n1}" || events[1] != "message:tail" {
 		t.Fatalf("events = %#v", events)
+	}
+	if ids[0] != "42" || ids[1] != "" {
+		t.Fatalf("ids = %#v（id 字段须透传、无 id 事件须为空串）", ids)
 	}
 }
 
@@ -570,5 +575,359 @@ func TestMCP_HTTPCancelNotifiesServer(t *testing.T) {
 				t.Fatalf("取消通知必须带 requestId：%v", got.Body.Params)
 			}
 		})
+	}
+}
+
+// ── 2026-11-07：服务端主动通知流（§五/§九「GET 主动通知 / legacy 重连」闭合）──
+
+// waitSignal：等一个信号或超时（测试里到处都是「等通知/等重连」）。
+func waitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("等 %s 超时", what)
+	}
+}
+
+// TestMCP_HTTPStreamableGETNotifications：initialize 后客户端开 GET 通知流；
+// 服务端推通知（含带 id 的事件）→ notifyFn 收到；流被服务端断开 → 客户端必须
+// 带 Last-Event-ID 重连（服务端侧断言请求头）。
+func TestMCP_HTTPStreamableGETNotifications(t *testing.T) {
+	var mu sync.Mutex
+	gets := 0
+	lastLEI := ""
+	gotReconnect := make(chan struct{}, 1)
+	notifyClosed := make(chan struct{})
+	var closeNotifyOnce sync.Once
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			mu.Lock()
+			gets++
+			n := gets
+			lei := r.Header.Get("Last-Event-ID")
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			f, _ := w.(http.Flusher)
+			if n == 1 {
+				// 推两条通知（第一条带 id: n1），等客户端确认收到后断流——
+				// 触发带 Last-Event-ID 的重连。
+				fmt.Fprint(w, "event: message\nid: n1\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\"}}\n\n")
+				fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n")
+				if f != nil {
+					f.Flush()
+				}
+				<-notifyClosed
+				return
+			}
+			if lei != "n1" {
+				t.Errorf("重连 GET 的 Last-Event-ID = %q，期望 n1", lei)
+			} else {
+				mu.Lock()
+				lastLEI = lei
+				mu.Unlock()
+				select {
+				case gotReconnect <- struct{}{}:
+				default:
+				}
+			}
+			<-r.Context().Done() // 第二条流保持打开
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			var req jsonrpcRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			if req.Method == "initialize" {
+				w.Header().Set("Mcp-Session-Id", "sess-9")
+			}
+			result := map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+			if req.Method == "tools/list" {
+				result = map[string]any{"tools": []map[string]any{
+					{"name": "a", "description": "A", "inputSchema": map[string]any{"type": "object"}},
+				}}
+			}
+			writeJSONRPC(w, req.ID, result, nil)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := newMCPClient("remote", mcpServerConfig{URL: srv.URL + "/mcp"})
+	var got []string
+	var gmu sync.Mutex
+	c.notifyFn = func(method string, _ json.RawMessage) {
+		gmu.Lock()
+		got = append(got, method)
+		gmu.Unlock()
+		if method == "notifications/tools/list_changed" {
+			closeNotifyOnce.Do(func() { close(notifyClosed) })
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.startAndInit(ctx, t.TempDir()); err != nil {
+		t.Fatalf("startAndInit: %v", err)
+	}
+	t.Cleanup(c.Close)
+
+	waitSignal(t, gotReconnect, "带 Last-Event-ID 的重连 GET")
+	gmu.Lock()
+	defer gmu.Unlock()
+	if len(got) != 2 || got[0] != "notifications/message" || got[1] != "notifications/tools/list_changed" {
+		t.Fatalf("notifyFn 收到 %#v，期望两条通知按序", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastLEI != "n1" {
+		t.Fatalf("重连头未断言到位：lastLEI=%q", lastLEI)
+	}
+}
+
+// TestMCP_HTTPStreamableGET405：服务端对 GET 回 405 ⇒ 通知流永久停止（不重试
+// 风暴），且 POST 主通道完全不受影响。
+func TestMCP_HTTPStreamableGET405(t *testing.T) {
+	var mu sync.Mutex
+	gets := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			mu.Lock()
+			gets++
+			mu.Unlock()
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var req jsonrpcRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if req.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "sess-5")
+		}
+		result := map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+		if req.Method == "tools/list" {
+			result = map[string]any{"tools": []map[string]any{
+				{"name": "a", "description": "A", "inputSchema": map[string]any{"type": "object"}},
+			}}
+		}
+		writeJSONRPC(w, req.ID, result, nil)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := startHTTPClient(t, mcpServerConfig{URL: srv.URL + "/mcp"})
+	time.Sleep(400 * time.Millisecond) // 给 notifyStreamLoop 足够时间走完 405 停止路径
+	mu.Lock()
+	if gets != 1 {
+		mu.Unlock()
+		t.Fatalf("GET 次数 = %d，期望 1（405 后不得重试）", gets)
+	}
+	mu.Unlock()
+	// POST 主通道照常：重拉工具表成功。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.listAllTools(ctx); err != nil {
+		t.Fatalf("listAllTools: %v", err)
+	}
+	if len(c.tools) != 1 {
+		t.Fatalf("tools = %d，期望 1", len(c.tools))
+	}
+}
+
+// TestMCP_SSEReconnectLastEventID：legacy SSE 流被服务端断开 ⇒ 客户端带
+// Last-Event-ID 重连并继续工作（在途会话自愈，不判死）。
+func TestMCP_SSEReconnectLastEventID(t *testing.T) {
+	var mu sync.Mutex
+	gets := 0
+	lastLEI := ""
+	drop := make(chan struct{})
+	msgCh := make(chan []byte, 16)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/sse", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gets++
+		n := gets
+		lei := r.Header.Get("Last-Event-ID")
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		f, _ := w.(http.Flusher)
+		fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+		if f != nil {
+			f.Flush()
+		}
+		if n == 1 {
+			fmt.Fprint(w, "id: 7\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\n\n")
+			if f != nil {
+				f.Flush()
+			}
+			// ★ 流 1 也要投递 POST 回执——legacy 语义里 initialize/tools/list 的
+			// 响应走这条 SSE 流；只推通知不转发的第一版让握手等不到回执而超时，
+			// 且 handler 挂死在 <-drop 上堵住 srv.Close（cleanup 连锁挂起）。
+			for {
+				select {
+				case msg := <-msgCh:
+					fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+					if f != nil {
+						f.Flush()
+					}
+				case <-drop: // 测试放行后断流 ⇒ 触发重连
+					return
+				case <-r.Context().Done():
+					return
+				}
+			}
+		}
+		if lei != "7" {
+			t.Errorf("重连 GET 的 Last-Event-ID = %q，期望 7", lei)
+		} else {
+			mu.Lock()
+			lastLEI = lei
+			mu.Unlock()
+		}
+		for {
+			select {
+			case msg := <-msgCh:
+				fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg)
+				if f != nil {
+					f.Flush()
+				}
+			case <-r.Context().Done():
+				return
+			}
+		}
+	})
+	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req jsonrpcRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		if req.ID == nil {
+			return
+		}
+		result := map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}}
+		if req.Method == "tools/list" {
+			result = map[string]any{"tools": []map[string]any{
+				{"name": "a", "description": "A", "inputSchema": map[string]any{"type": "object"}},
+			}}
+		}
+		raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+		msgCh <- raw
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := startHTTPClient(t, mcpServerConfig{URL: srv.URL + "/sse", Transport: "sse"})
+	if len(c.tools) != 1 {
+		t.Fatalf("首连 tools = %d，期望 1", len(c.tools))
+	}
+	// 断流 ⇒ 重连（1s 退避）⇒ 新流上继续工作。
+	close(drop)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.listAllTools(ctx); err != nil {
+		t.Fatalf("重连后 listAllTools: %v（会话应自愈而非判死）", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastLEI != "7" {
+		t.Fatalf("重连头未断言到位：lastLEI=%q", lastLEI)
+	}
+}
+
+// TestMCP_HubToolsListChanged：全链——GET 通知流收到 tools/list_changed ⇒
+// hub 重拉 tools/list ⇒ toolDefs 出现新工具（模型侧可见，无需重启会话）。
+func TestMCP_HubToolsListChanged(t *testing.T) {
+	var mu sync.Mutex
+	listCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			f, _ := w.(http.Flusher)
+			time.Sleep(50 * time.Millisecond) // 等客户端进入 scanSSE
+			fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n")
+			if f != nil {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			var req jsonrpcRequest
+			if err := json.Unmarshal(body, &req); err != nil {
+				http.Error(w, "bad json", http.StatusBadRequest)
+				return
+			}
+			if req.Method == "initialize" {
+				w.Header().Set("Mcp-Session-Id", "sess-7")
+			}
+			result := map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}}
+			if req.Method == "tools/list" {
+				mu.Lock()
+				listCalls++
+				n := listCalls
+				mu.Unlock()
+				tools := []map[string]any{
+					{"name": "a", "description": "A", "inputSchema": map[string]any{"type": "object"}},
+				}
+				if n >= 2 { // list_changed 之后：工具表多了一项
+					tools = append(tools, map[string]any{
+						"name": "extra", "description": "E", "inputSchema": map[string]any{"type": "object"}})
+				}
+				result = map[string]any{"tools": tools}
+			}
+			writeJSONRPC(w, req.ID, result, nil)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	hub, err := newMCPHubFromConfig(&mcpConfigFile{
+		MCPServers: map[string]mcpServerConfig{"srv": {URL: srv.URL + "/mcp"}},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("newMCPHubFromConfig: %v", err)
+	}
+	t.Cleanup(hub.Close)
+
+	// 首拉只有 1 个工具；list_changed 到达并重拉后必须变成 2。
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		hub.mu.RLock()
+		defs := len(hub.toolDefs)
+		hub.mu.RUnlock()
+		if defs == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			hub.mu.RLock()
+			names := fmt.Sprintf("%v", hub.toolDefs)
+			hub.mu.RUnlock()
+			t.Fatalf("5s 内 toolDefs 未到 2（重拉未兑现）：defs=%d %s", defs, names)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
+	have := map[string]bool{}
+	for _, d := range hub.toolDefs {
+		have[d.Name] = true
+	}
+	if !have["mcp__srv__a"] || !have["mcp__srv__extra"] {
+		t.Fatalf("toolDefs 缺项：%v", have)
 	}
 }

@@ -157,9 +157,12 @@ type jsonrpcRequest struct {
 type jsonrpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"` // 非空 = 服务端发来的**请求**（不是回执）
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *jsonrpcError   `json:"error,omitempty"`
+	Method  string          `json:"method,omitempty"` // 非空 = 服务端发来的**请求或通知**（不是回执）
+	// Params：服务端**通知/请求**的参数（notifications/tools/list_changed、
+	// notifications/progress…）。回执没有这个字段；2026-11-07 起通知不再被丢弃。
+	Params json.RawMessage `json:"params,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  *jsonrpcError   `json:"error,omitempty"`
 }
 
 type jsonrpcError struct {
@@ -225,6 +228,9 @@ type mcpClient struct {
 	reqID     atomic.Int64
 	closed    atomic.Bool
 	tools     []mcpTool
+	// notifyFn：服务端主动通知的落点（hub 在构造后、startAndInit 前注入）。
+	// nil = 通知照旧丢弃（与 2026-11-07 之前的行为一致）。
+	notifyFn func(method string, params json.RawMessage)
 }
 
 func newMCPClient(name string, cfg mcpServerConfig) *mcpClient {
@@ -256,6 +262,11 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 		return err
 	}
 	c.transport = tr
+	// ★ 服务端主动通知（stdio 行内 / SSE message / GET 通知流）不再丢弃：
+	//   hub 在构造 client 时注入 notifyFn；nil = 保持旧行为（测试/未接 hub 时）。
+	if c.notifyFn != nil {
+		tr.SetNotifyHandler(c.notifyFn)
+	}
 	if err := tr.Start(ctx); err != nil {
 		c.Close()
 		return err
@@ -296,8 +307,21 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 	// ★ 错误只能吞：通知没有回执，连接已断的话下一步 tools/list 会失败并报到那里。
 	_ = c.sendNotification(ctx, "notifications/initialized", map[string]any{})
 
-	// 3. 拉取 tools/list——**追到底**：规范允许分页（nextCursor），只取第一页
-	//    等于静默丢工具（模型看不见就不可能调用，且没有任何提示）。
+	// 3. 拉取 tools/list（分页追到底；失败关连接由本函数负责）。
+	if err := c.listAllTools(ctx); err != nil {
+		c.Close()
+		return err
+	}
+
+	return nil
+}
+
+// listAllTools：tools/list 分页追到底，结果写入 c.tools。
+// ★ 追到底的理由（原 startAndInit 内联注释，2026-11-07 抽出复用）：规范允许分页，
+//   只取第一页等于静默丢工具（模型看不见就不可能调用，且没有任何提示）。
+//   ★ 错误时**不关**连接——调用方决定（握手路径关，tools/list_changed 重拉路径
+//   保留连接只报失败）。
+func (c *mcpClient) listAllTools(ctx context.Context) error {
 	var allTools []mcpTool
 	cursor := ""
 	for page := 0; page < 32; page++ {
@@ -307,12 +331,10 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 		}
 		listRaw, err := c.sendRequest(ctx, "tools/list", params)
 		if err != nil {
-			c.Close()
 			return fmt.Errorf("拉取 tools/list 失败: %w", err)
 		}
 		var listRes mcpToolsListResult
 		if err := json.Unmarshal(listRaw, &listRes); err != nil {
-			c.Close()
 			return fmt.Errorf("解析 tools/list 回执失败: %w", err)
 		}
 		allTools = append(allTools, listRes.Tools...)
@@ -322,7 +344,6 @@ func (c *mcpClient) startAndInit(ctx context.Context, rootDir string) error {
 		cursor = listRes.NextCursor
 	}
 	c.tools = allTools
-
 	return nil
 }
 
@@ -533,6 +554,12 @@ type mcpNotice struct {
 	Text string
 	OK   bool
 }
+
+const (
+	// mcpRefreshToolsTimeout：notifications/tools/list_changed 触发的工具表重拉预算。
+	// 比单次调用超时宽（分页追到底），比会话生命周期短。
+	mcpRefreshToolsTimeout = 30 * time.Second
+)
 
 type mcpHub struct {
 	mu       sync.RWMutex
@@ -1118,6 +1145,9 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 		go func(i int, sName string) {
 			defer wg.Done()
 			client := newMCPClient(sName, cfg.MCPServers[sName])
+			// ★ 服务端主动通知的落点（tools/list_changed 重拉等）——构造后、
+			//   startAndInit 前注入；respawn 路径同款。
+			client.notifyFn = hub.onServerNotify(sName)
 			ctx, cancel := context.WithTimeout(context.Background(), mcpInitTimeoutS*time.Second)
 			defer cancel()
 			outs[i] = initOut{client: client, err: client.startAndInit(ctx, rootDir)}
@@ -1380,6 +1410,7 @@ func (h *mcpHub) respawnServer(ctx context.Context, server string) (*mcpClient, 
 	initCtx, cancel := context.WithTimeout(ctx, mcpInitTimeoutS*time.Second)
 	defer cancel()
 	client := newMCPClient(server, cfg)
+	client.notifyFn = h.onServerNotify(server)   // 与初启路径同一落点
 	if err := client.startAndInit(initCtx, h.rootDir); err != nil {
 		client.Close()
 		h.mu.Lock()
@@ -1420,6 +1451,60 @@ func (h *mcpHub) respawnServer(ctx context.Context, server string) (*mcpClient, 
 	h.noteNotice(fmt.Sprintf("[MCP 服务 %s 已自动重启（第 %d/%d 次）：%d 个工具已重新注册]",
 		server, attempts+1, mcpRespawnMax, count), true)
 	return client, ""
+}
+
+// onServerNotify：某服务主动通知的落点（三种传输共用；hub 构造 client 时注入）。
+//   notifications/tools/list_changed ⇒ 重拉该服务工具表（异步、串行于 respawn）；
+//   其余 ⇒ 记 stderr（通知无回执，这里一切 best-effort；params 不进日志——
+//   notifications/message 可能带任意内容，不信任也不透传）。
+func (h *mcpHub) onServerNotify(server string) func(string, json.RawMessage) {
+	return func(method string, params json.RawMessage) {
+		if h == nil {
+			return
+		}
+		if method == "notifications/tools/list_changed" {
+			go h.refreshServerTools(server)
+			return
+		}
+		mcpLogf(server, "服务端通知 %s（已记录，无动作）", method)
+	}
+}
+
+// refreshServerTools：notifications/tools/list_changed 的兑现——重拉该服务的
+// tools/list 并重注册。复用 respawn 的两把锁：respawnMu 串行化（不与重启赛跑）、
+// mu 写锁只包注册表换血。失败保留旧工具表并如实记日志——「通知到了但没兑现」
+// 必须可见，静默失败比不改更糟。★ hello.mcp 是启动期快照（§八边界），本刷新
+// 只影响模型侧工具表，副标/检视栏卡不跟手——那是已登记的独立边界。
+func (h *mcpHub) refreshServerTools(server string) {
+	if h == nil || h.closed.Load() {
+		return
+	}
+	h.respawnMu.Lock()
+	defer h.respawnMu.Unlock()
+
+	h.mu.RLock()
+	client := h.clients[server]
+	h.mu.RUnlock()
+	if client == nil || client.isDead() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mcpRefreshToolsTimeout)
+	defer cancel()
+	if err := client.listAllTools(ctx); err != nil {
+		mcpLogf(server, "notifications/tools/list_changed 重拉失败（保留旧工具表）：%v", err)
+		return
+	}
+
+	h.mu.Lock()
+	if h.closed.Load() {
+		h.mu.Unlock()
+		return
+	}
+	h.unregisterServerLocked(server)
+	count := h.registerClientLocked(server, client)
+	h.mu.Unlock()
+	mcpLogf(server, "notifications/tools/list_changed → 工具表已更新（%d 个工具）", count)
 }
 
 // noteDead：登记「某服务死了」。同名只记第一次（死因以首次为准）。

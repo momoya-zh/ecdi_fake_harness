@@ -5,7 +5,7 @@
 # 覆盖 Go 单测证明不了的那一段：真子进程握手 / 真分页 tools/list /
 # 真 function.name 压缩 / 真 ask 门 / 真 tools/call 往返 / bye 后整树清空。
 #
-# 六个臂（A–F）：
+# 七个臂（A–G）：
 #   A（正常，mcp.json 由本脚本生成）：
 #       1 个服务 / 2 个工具（跨两页）→ 模型发起 mcp__smoke__git_status
 #       → ask（带提案卡 detail，2026-11-06 起）→ allow → 真调用 → tool_result 回模型 → 收尾 idle
@@ -15,6 +15,10 @@
 #       真 HTTP 端点 + 脚本化 SSE 回执，断言 hello.mcp 的 transport 标识与 DELETE 收尾
 #   E（HTTP 不可达）：连接被拒 ⇒ 不注册工具、hello.mcp.failed 非空、退出码 0
 #   F（运行期，七版）：--mcp-env=minimal 不泄漏 + 崩溃后按需重启
+#   G（通知流，八版 2026-11-07）：
+#       ① GET /mcp 通知流推 tools/list_changed ⇒ hub 重拉 ⇒ 新工具 cloud.ping 可调
+#         （重拉前该调用必失败 ⇒ 行为级判据「通知真兑现」）；
+#       ② legacy SSE 被服务端断流 ⇒ 客户端带 Last-Event-ID 重连 ⇒ 会话自愈不判死
 #
 # 判据纪律（与 regress.py 同口径）：
 #   * 不靠目视：每条断言都机读，失败即退出码 1，明细落 result.json。
@@ -606,6 +610,105 @@ def arm_f(core, port):
     check("F/stderr: 1 个服务 4 个工具", "1 个服务、4 个工具" in err, err[:240])
 
 
+def arm_g(core, port, base_url, http_state):
+    """服务端主动通知流（2026-11-07 八版）——用**独立 server 实例**（状态不与 C/D 混）：
+    ① Streamable：GET /mcp 通知流推 tools/list_changed ⇒ hub 重拉 ⇒ 新工具
+       cloud.ping 可调——重拉前该调用必失败，所以「调得通」是行为级判据，
+       不是「stderr 里有行」的弱判据；
+    ② legacy：服务端主动断流 ⇒ 客户端带 Last-Event-ID 重连 ⇒ 会话自愈不判死
+       （用默认剧本：调本就注册的 git 工具——②证明的是「断流后照常」，不是新工具）。
+    """
+    # ── ① Streamable + tools/list_changed ────────────────────────
+    # ★ 用**自己的** base_url 写自己的 config——write_configs 写的是 C/D 的
+    #   1 号 server；第一版没换 config，G 的 core 连的仍是 1 号（推送/断流
+    #   全落空，判据全假红）。
+    g_http = {"mcpServers": {"remote": {"url": base_url + "/mcp"}}}
+    g_legacy = {"mcpServers": {"legacy": {"url": base_url + "/sse", "transport": "sse"}}}
+    (SMOKE / "http-g.json").write_text(json.dumps(g_http, ensure_ascii=False), encoding="utf-8")
+    (SMOKE / "legacy-g.json").write_text(json.dumps(g_legacy, ensure_ascii=False), encoding="utf-8")
+    http_state.notify_push_enabled = True   # 只在 G 臂的独立实例上开推送
+    c = CoreProc(core, SMOKE / "http-g.json", "http://127.0.0.1:%d/v1" % port, "s-smoke-notify")
+    try:
+        hello = wait_for(c, lambda m: m.get("t") == "hello", 10)
+        check("G①/hello 到达", hello is not None)
+        c.send({"t": "hello", "seq": 0})
+        # 等重拉落地（服务端 tools/list 第二次被调）再发 prompt——否则新工具可能
+        # 还没注册完，调用失败会把「竞速」误判成「通知没兑现」。
+        end = time.time() + 10
+        while time.time() < end:
+            with http_state.lock:
+                if http_state.tools_list_calls >= 2:
+                    break
+            time.sleep(0.1)
+        with http_state.lock:
+            lists = http_state.tools_list_calls
+            opens = http_state.notify_stream_opens
+            sent = http_state.list_changed_sent
+        if lists < 2:
+            # 重拉没兑现 ⇒ 把 core 的通知流日志抖出来（诊断面，不参与判据）。
+            dbg = [l for l in c.stderr if "DBG" in l or "通知" in l or "重连" in l]
+            print("G①-DIAG: 重拉未兑现，core 通知流日志：%s" % (dbg[:8] or ["(无)"]))
+        check("G①/GET 通知流已打开", opens >= 1, opens)
+        check("G①/list_changed 已推送", sent, opens)
+        check("G①/tools/list 首拉+重拉 ≥2 次", lists >= 2, lists)
+        c.send({"t": "prompt", "seq": 1, "text": "调一下新工具", "client_id": "smoke-g1"})
+        ask = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        check("G①/新工具过 ask 门（重拉后模型侧可见）", ask is not None)
+        if ask:
+            check("G①/问句指向新工具", "cloud.ping" in ask.get("question", ""),
+                  ask.get("question", "")[:120])
+            c.send({"t": "answer", "seq": 2, "id": ask.get("id"), "choice": "allow"})
+        tr = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        check("G①/tool_result 块出现", tr is not None)
+        delta = wait_for(c, lambda m: m.get("t") == "delta" and m.get("id") == (tr or {}).get("id"), 10)
+        check("G①/新工具真调通（ok: 前缀）", ((delta or {}).get("text", "")).startswith("ok:"),
+              (delta or {}).get("text", "")[:80])
+        idle = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("G①/收尾 idle", idle is not None)
+        c.send({"t": "bye", "seq": 3})
+        bye = wait_for(c, lambda m: m.get("t") == "bye", 10)
+        check("G①/bye 回执", bye is not None)
+        code = c.p.wait(timeout=10)
+        check("G①/退出码 0", code == 0, code)
+    finally:
+        c.kill_tree()
+
+    # ── ② legacy 断流自愈 ────────────────────────────────────────
+    with http_state.lock:
+        http_state.sse_drop_armed = True
+    llm_g2 = FakeLLM()   # 默认剧本：调本就注册的 git 工具（②只证自愈，不证新工具）
+    srv_g2 = ThreadingHTTPServer(("127.0.0.1", 0), llm_g2.handler())
+    port_g2 = srv_g2.server_address[1]
+    threading.Thread(target=srv_g2.serve_forever, daemon=True).start()
+    c2 = CoreProc(core, SMOKE / "legacy-g.json", "http://127.0.0.1:%d/v1" % port_g2, "s-smoke-sse-reconnect")
+    try:
+        hello = wait_for(c2, lambda m: m.get("t") == "hello", 15)
+        check("G②/hello 到达（断流后自愈）", hello is not None)
+        c2.send({"t": "hello", "seq": 0})
+        c2.send({"t": "prompt", "seq": 1, "text": "请查看 git 状态", "client_id": "smoke-g2"})
+        ask = wait_for(c2, lambda m: m.get("t") == "ask", 20)
+        if ask:
+            c2.send({"t": "answer", "seq": 2, "id": ask.get("id"), "choice": "allow"})
+        tr = wait_for(c2, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        check("G②/重连后调用照常", tr is not None)
+        idle = wait_for(c2, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("G②/收尾 idle", idle is not None)
+        c2.send({"t": "bye", "seq": 3})
+        bye = wait_for(c2, lambda m: m.get("t") == "bye", 10)
+        code = c2.p.wait(timeout=10)
+        check("G②/退出码 0", bye is not None and code == 0, code)
+    finally:
+        c2.kill_tree()
+        srv_g2.shutdown()
+    err2 = "\n".join(c2.stderr)
+    check("G②/stderr 记录重连（Last-Event-ID）", "重连" in err2 and "Last-Event-ID" in err2, err2[:240])
+    with http_state.lock:
+        gets = http_state.sse_gets
+        lei = http_state.sse_last_lei
+    check("G②/SSE 至少两条连接（断流+重连）", gets >= 2, gets)
+    check("G②/重连带 Last-Event-ID: g1", lei == "g1", lei)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", default=str(ROOT / "core" / "bin" / "ecdi-core.exe"))
@@ -616,6 +719,9 @@ def main():
         print("SKIP: core 二进制不存在：%s\n先跑：cd core && go build -o bin/ecdi-core.exe ./cmd/ecdi-core" % core)
         return 2
     http_srv, http_state, http_base = http_server.start()
+    # G 臂的**独立** server 实例：通知推送/断流状态绝不与 C/D 混
+    # （实测教训：共享状态时 C 的 hello.mcp 工具数被 G 的推送污染 2→3）。
+    http_srv_g, http_state_g, http_base_g = http_server.start()
     # 一个"刚关掉"的本地端口：保证连接被拒，而不是依赖某个固定端口空闲。
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -643,6 +749,11 @@ def main():
     srv_f = ThreadingHTTPServer(("127.0.0.1", 0), llm_f.handler())
     port_f = srv_f.server_address[1]
     threading.Thread(target=srv_f.serve_forever, daemon=True).start()
+    # G 臂要自己的剧本（调通知流重拉出来的新工具），同 F 臂分端点。
+    llm_g = FakeLLM(script=[("mcp__remote__cloud_ping", {})])
+    srv_g = ThreadingHTTPServer(("127.0.0.1", 0), llm_g.handler())
+    port_g = srv_g.server_address[1]
+    threading.Thread(target=srv_g.serve_forever, daemon=True).start()
     print("core=%s  mtime=%s" % (core, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(core.stat().st_mtime))))
     try:
         arm_a(core, llm, port)
@@ -651,10 +762,13 @@ def main():
         arm_d(core, llm, port, http_base, http_state)
         arm_e(core, port, dead_url)
         arm_f(core, port_f)
+        arm_g(core, port_g, http_base_g, http_state_g)
     finally:
         srv.shutdown()
         srv_f.shutdown()
+        srv_g.shutdown()
         http_srv.shutdown()
+        http_srv_g.shutdown()
         timer.cancel()
     summary = {"passed": sum(1 for c in CHECKS if c["ok"]), "failed": len(FAILS), "fails": FAILS,
                "core": str(core), "checks": CHECKS}

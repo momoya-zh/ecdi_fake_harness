@@ -391,7 +391,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（155 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（156 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -477,7 +477,7 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 | 缺什么 | 状态 |
 |---|---|
 | ~~★ **长会话上下文管理（截断/摘要）**~~ **已落地（2026-10-28）** | Stage 1 旧工具载荷折叠（无 LLM）/ Stage 2 LLM 摘要 / Stage 3 确定性兜底（`summaryMaxRunes=2000` · `summaryInputRatio=0.60`，`core/cmd/ecdi-core/session.go:48`）；`context.jsonl` 留 `compact` 记录；`--fail-summarize` 注入失败路径。方案与验收：`docs/session-persistence-decisions.md` §7 |
-| **MCP HTTP 的服务端通知流** | Streamable HTTP 只做了「请求-响应」方向；GET 上的主动通知、legacy 重连 / `Last-Event-ID`、OAuth 动态注册均未做（方案 §九「诚实边界」） |
+| ~~**MCP HTTP 的服务端通知流**~~ **已落地（2026-11-07）** | Streamable HTTP 的 GET 通知流（`notifications/*` → hub 分发；405=不支持即停；断流带 `Last-Event-ID` 退避重连）+ `tools/list_changed` 真兑现（重拉工具表，新工具免重启可调）+ legacy SSE 断流自愈（重连 5 次耗尽才判死）+ stdio 通知同口径。`scanSSE` 透传 `id`。判据：Go 5 用例 + 冒烟 G 臂 18 条（83→101）。**仍未做**：OAuth 动态注册；`notifications/progress` 的 token 往返与 GUI 进度面（真 MCP server 跑几十秒的「卡住感」要靠它，另批） |
 | ~~**MCP 单次调用超时**~~ **已落地（2026-11-06）** | `--mcp-timeout`（默认 60s；0 不限）+ 服务级 `mcp.json` `"timeout": <sec>`；超时真发取消通知——送达则保留连接复用，未送达（stdio 僵死）才清退并触发按需 respawn。规则与诚实边界见方案 §十一 |
 | ~~★ **用户模式的机器判据**~~ **已落地（2026-11-06）** | `--mode-probe` 五相进门（`baseline-dev` / `switch-user` / `dev-restored` / `negative` 负对照 / `inspector-memory`）：顶栏胶囊、26px 底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆，负对照带确认过的牙。闭合记录：`docs/P4-gui-usability-plan.md` §12 |
 | ~~**转录可选中：只到尖峰**~~ **已落地（2026-11-07）** | **订正：这行的「user/system 未铺」本身是漂移**——user/system/error/markdown 段落在 G 之后的批次里已 TextBox 化，真正的缺口只有 tool 行。本批铺完：`--selectable-rows` 下 tool_call/tool_result 折叠体换只读 TextBox（mono/wrap 同形，header 保持折叠钮，作业增量 SetText 路径不受只读影响），探针新增 `tool-select-and-copy` 相（ToggleRow 展开 → Ctrl+A/C → 剪贴板 == 体部全文，变异体实测会红）。**reasoning 折叠体刻意不进**（思维链默认折叠、复制场景弱）。默认关不变 ⇒ 基线路径零变化（REALISTIC A/B：invalidations 29=29 逐位同） |

@@ -29,6 +29,10 @@ type mcpTransport interface {
 	Close()
 	Done() <-chan struct{}
 	ProtocolVersion() string
+	// SetNotifyHandler：服务端**主动**通知的落点（2026-11-07：三种传输都接——
+	//   stdio 行内通知 / legacy SSE message / Streamable HTTP 的 GET 通知流）。
+	//   必须在 Start 前设置；nil = 通知照旧丢弃。method 恒非空；params 可为 nil。
+	SetNotifyHandler(fn func(method string, params json.RawMessage))
 }
 
 // mcpCancelledRequest：notifications/cancelled 的消息体（三种传输共用）。

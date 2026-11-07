@@ -211,7 +211,31 @@
 
 | 缺什么 | 说明 |
 |---|---|
-| HTTP 服务端通知流 | Streamable HTTP 只实现了「请求-响应」方向；GET 上的服务端主动通知、legacy 的重连/`Last-Event-ID` 不在本期（§九边界） |
+| （无——见下方各闭合注记；最新的开放边界见 §九修订） |
+
+★ **HTTP 服务端通知流已于 2026-11-07 闭合（八版，§五/§九）**：
+  · **Streamable HTTP 的 GET 通知流**——initialize 成功后客户端对同一端点 GET
+  （`Accept: text/event-stream`）打开服务端→客户端流；收到 `notifications/*` 交给
+  hub（`SetNotifyHandler`，三种传输同一落点），服务端反向请求照旧回 -32601；
+  服务端回 **405 = 不提供** ⇒ 永久停止（只说一次）；流断开带 **Last-Event-ID**
+  指数退避重连（1s→30s 封顶，无界直到关闭——通知流死不伤 POST 主通道）。
+  · **`notifications/tools/list_changed` 真兑现**：hub 重拉该服务 `tools/list`
+  （复用 respawn 的 `respawnMu` 串行 + `unregister/registerClientLocked` 换血），
+  新工具**无需重启会话即可调用**；失败保留旧表并记日志。hello.mcp 仍是启动期
+  快照（§八边界不变，副标/卡片不跟手是另一条已登记边界）。
+  · **legacy SSE 断流自愈**：断流不再直接判死——带 Last-Event-ID 重连
+  （`mcpSSERetryMax=5` 次指数退避），重连耗尽才 `closeDone + failPending`
+  （死亡通告顺序纪律不变）；`scanSSE` 透传 SSE `id` 字段。
+  · **stdio 同口径**：行内通知不再丢弃，同一 `notifyFn` 分发。
+  · 判据：Go 侧 5 用例（GET 流+Last-Event-ID 重连 / 405 停止 / SSE 重连自愈 /
+  hub 重拉全链 / scanSSE id 透传）+ 冒烟 **G 臂 18 条**（83→101：重拉兑现以
+  「新工具调得通」为行为级判据 + legacy 断流重连自愈）。
+  · **调试实录（防再犯）**：冒烟首红三连——①共享 server 状态被 G 臂的推送污染
+  C/D 的工具数（修：G 臂独立实例 + 推送显式开关）；②arm_g 没换 config，core 连的
+  仍是 1 号 server（判据全假红）；③legacy keep-alive 下 handler return 不关连接，
+  客户端永远看不到 EOF（修：`close_connection=True`）。core 侧一条真 bug：
+  重构把**握手 ctx** 喂给了 GET 请求（5s 一到流就断，D 臂回执陪葬）——旧注释
+  「流本身用 t.ctx」是拿血换的，重构必须读注释。
 
 ★ **单测密闭性已于 2026-11-07 闭合**：发现链拆出纯核心
 `findMCPConfigFileIn(explicit, workspace, appData, home)`——目录来源全部由参数给出，

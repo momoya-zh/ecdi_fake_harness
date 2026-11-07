@@ -129,6 +129,22 @@ type streamableHTTPTransport struct {
 	// sessionID / protocolVersion：initialize 回执后才有；后续请求要回带。
 	sessionID       string
 	protocolVersion string
+	// ★ 2026-11-07：服务端主动通知（GET 通知流）。
+	//   notifyFn 在 Start 前设置；notifyOnce 保证 initialize 成功后只启一次流；
+	//   lastEventID 供断流重连回带；notify405 记「服务端明确不支持」。
+	notifyFn    func(method string, params json.RawMessage)
+	notifyOnce  sync.Once
+	lastEventID string
+}
+
+func (t *streamableHTTPTransport) SetNotifyHandler(fn func(method string, params json.RawMessage)) {
+	t.notifyFn = fn
+}
+
+func (t *streamableHTTPTransport) getLastEventID() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastEventID
 }
 
 func newStreamableHTTPTransport(name string, cfg mcpServerConfig) (*streamableHTTPTransport, error) {
@@ -230,22 +246,31 @@ func (t *streamableHTTPTransport) Do(ctx context.Context, req jsonrpcRequest) (j
 	}
 
 	ct := resp.Header.Get("Content-Type")
+	var result json.RawMessage
+	var doErr error
 	switch {
 	case strings.Contains(ct, "text/event-stream"):
-		return t.readSSEResponse(rctx, resp.Body, fmt.Sprint(req.ID), req.Method)
+		result, doErr = t.readSSEResponse(rctx, resp.Body, fmt.Sprint(req.ID), req.Method)
 	case strings.Contains(ct, "application/json") || ct == "":
-		raw, err := readLimitedBody(resp.Body, mcpHTTPBodyMax)
-		if err != nil {
-			return nil, err
+		var raw []byte
+		if raw, doErr = readLimitedBody(resp.Body, mcpHTTPBodyMax); doErr == nil {
+			var msg jsonrpcResponse
+			if doErr = json.Unmarshal(raw, &msg); doErr != nil {
+				doErr = fmt.Errorf("解析 JSON 回执失败: %w", doErr)
+			} else {
+				result, doErr = t.finishResponse(msg, fmt.Sprint(req.ID), req.Method)
+			}
 		}
-		var msg jsonrpcResponse
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			return nil, fmt.Errorf("解析 JSON 回执失败: %w", err)
-		}
-		return t.finishResponse(msg, fmt.Sprint(req.ID), req.Method)
 	default:
-		return nil, fmt.Errorf("不支持的响应 Content-Type %q", ct)
+		doErr = fmt.Errorf("不支持的响应 Content-Type %q", ct)
 	}
+	// ★ initialize 成功 ⇒ 打开服务端主动通知流（2025-06-18：客户端可 GET 同一
+	//   端点接收服务端请求/通知）。只启一次；405 = 服务端不提供，循环内自行停。
+	//   流的死活不影响 POST 主通道（Done() 不由这里驱动）。
+	if doErr == nil && req.Method == "initialize" {
+		t.notifyOnce.Do(func() { go t.notifyStreamLoop() })
+	}
+	return result, doErr
 }
 
 // Cancel：Streamable HTTP 用一条通知 POST 告知服务端（规范允许；回 202 即算送达）。
@@ -284,7 +309,7 @@ func (t *streamableHTTPTransport) finishResponse(msg jsonrpcResponse, wantID, me
 func (t *streamableHTTPTransport) readSSEResponse(ctx context.Context, body io.Reader, wantID, method string) (json.RawMessage, error) {
 	var result json.RawMessage
 	var rpcErr error
-	err := scanSSE(body, func(_ string, data string) error {
+	err := scanSSE(body, func(_ string, data string, _ string) error {
 		var msg jsonrpcResponse
 		if err := json.Unmarshal([]byte(data), &msg); err != nil {
 			return nil // 非 JSON-RPC 事件（keepalive/日志）忽略
@@ -322,6 +347,143 @@ func (t *streamableHTTPTransport) readSSEResponse(ctx context.Context, body io.R
 		return nil, rpcErr
 	}
 	return nil, errors.New("SSE 流在回执前结束")
+}
+
+// ── 服务端主动通知流（2026-11-07，§五/§九「GET 主动通知」闭合）──────────
+// 2025-06-18 规范：POST 之外，客户端可对同一端点 GET（Accept: text/event-stream）
+// 打开一条服务端→客户端流，接收服务端请求与通知；服务端可回 405 表示不提供。
+// 流断开时客户端带 Last-Event-ID 重连（服务端据此重放缺口，是否重放由服务端定）。
+
+var errNotifyUnsupported = errors.New("server does not offer a GET notification stream")
+
+const (
+	// mcpNotifyRetryBase/Max：通知流重连退避（指数，封顶 30s）。★ 无界重试直到
+	// 关闭是刻意的：通知流的死活**不影响** POST 主通道的判死（Done() 不由这里
+	// 驱动），服务端临时不支持 GET 时 POST 照常可用。
+	mcpNotifyRetryBase = 1 * time.Second
+	mcpNotifyRetryMax  = 30 * time.Second
+)
+
+// notifyStreamLoop：GET 通知流的守护循环。405 = 服务端不支持 ⇒ 永久停止（只说
+// 一次，不刷屏）；其余失败 ⇒ 指数退避重连（Last-Event-ID 回带）。
+func (t *streamableHTTPTransport) notifyStreamLoop() {
+	backoff := mcpNotifyRetryBase
+	for {
+		if t.closed.Load() || t.ctx.Err() != nil {
+			return
+		}
+		err := t.notifyStreamOnce()
+		if t.closed.Load() || t.ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errNotifyUnsupported) {
+			mcpLogf(t.name, "GET 通知流不被支持（HTTP 405）——本服务无服务端主动通知，不再尝试")
+			return
+		}
+		mcpLogf(t.name, "通知流断开（%v），%v 后重连（Last-Event-ID=%q）", err, backoff, t.getLastEventID())
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < mcpNotifyRetryMax {
+			backoff *= 2
+		}
+	}
+}
+
+// notifyStreamOnce：开一次 GET 流并消费到断。
+func (t *streamableHTTPTransport) notifyStreamOnce() error {
+	req, err := http.NewRequestWithContext(t.ctx, http.MethodGet, t.endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	applyCommonHeaders(req, t.cfg, false)
+	req.Header.Set("Accept", "text/event-stream")
+	t.mu.Lock()
+	if t.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", t.sessionID)
+	}
+	if t.protocolVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", t.protocolVersion)
+	}
+	lastID := t.lastEventID
+	t.mu.Unlock()
+	if lastID != "" {
+		req.Header.Set("Last-Event-ID", lastID)
+	}
+	resp, err := t.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		t.mu.Lock()
+		t.sessionID = sid
+		t.mu.Unlock()
+	}
+	if resp.StatusCode == http.StatusMethodNotAllowed {
+		return errNotifyUnsupported
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return httpStatusError(resp)
+	}
+	return scanSSE(resp.Body, func(_ string, data, id string) error {
+		if id != "" {
+			t.mu.Lock()
+			t.lastEventID = id
+			t.mu.Unlock()
+		}
+		var msg jsonrpcResponse
+		if json.Unmarshal([]byte(data), &msg) != nil {
+			return nil // 非 JSON-RPC 事件（keepalive/日志）忽略
+		}
+		if msg.Method == "" {
+			return nil // GET 流上不该有回执；出现也与我们无关（按 id 对不上），忽略
+		}
+		if msg.ID != nil {
+			// 服务端反向请求（sampling/roots）：声明空 capabilities 正常不该有；
+			// 与 stdio/legacy 同口径回 -32601，别让对方挂等。
+			go t.replyError(msg.ID, -32601, "method not supported: "+msg.Method)
+			return nil
+		}
+		if t.notifyFn != nil {
+			t.notifyFn(msg.Method, msg.Params)
+		}
+		return nil
+	})
+}
+
+// replyError：对服务端反向请求回一条 JSON-RPC 错误（原始字节 POST）。response
+// 对象没有 method 字段，走 Do 不合适；与 legacy 侧 replyError 同语义。
+func (t *streamableHTTPTransport) replyError(id any, code int, message string) {
+	data, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"error":   jsonrpcError{Code: code, Message: message},
+	})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint.String(), bytes.NewReader(data))
+	if err != nil {
+		return
+	}
+	applyCommonHeaders(req, t.cfg, true)
+	t.mu.Lock()
+	if t.sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", t.sessionID)
+	}
+	if t.protocolVersion != "" {
+		req.Header.Set("MCP-Protocol-Version", t.protocolVersion)
+	}
+	t.mu.Unlock()
+	if resp, err := t.client.Do(req); err == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		_ = resp.Body.Close()
+	}
 }
 
 func (t *streamableHTTPTransport) Close() {
@@ -374,6 +536,25 @@ type sseHTTPTransport struct {
 	mu      sync.Mutex
 	endpoint *url.URL
 	pending  map[string]chan jsonrpcResponse
+	// ★ 2026-11-07：通知落点 + 断流自愈。lastEventID 供重连回带；streamEnd 是
+	//   当前读流 goroutine 的终态通道（每次 connect 重建），supervise 据此决定
+	//   重连或判死。
+	notifyFn    func(method string, params json.RawMessage)
+	lastEventID string
+	streamEnd   chan error
+	// retryWait：重连退避注入点（仅测试用；nil = 生产指数退避 1/2/4/8/16s）。
+	// 真实退避会让「重连耗尽判死」的顺序测试跑 31s，必须可归零。
+	retryWait func(attempt int) time.Duration
+}
+
+func (t *sseHTTPTransport) SetNotifyHandler(fn func(method string, params json.RawMessage)) {
+	t.notifyFn = fn
+}
+
+func (t *sseHTTPTransport) getLastEventID() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastEventID
 }
 
 func newSSEHTTPTransport(name string, cfg mcpServerConfig) (*sseHTTPTransport, error) {
@@ -403,14 +584,36 @@ func (t *sseHTTPTransport) closeDone()              { t.once.Do(func() { close(t
 
 // Start：GET SSE 流，等第一个 `endpoint` 事件（规范要求客户端先拿到 POST 地址）。
 // ★ 流本身用 t.ctx（会话生命周期），不用握手 ctx——否则 5s 握手预算一过流就断。
+// ★ 2026-11-07：断流不再直接判死——supervise 带 Last-Event-ID 重连
+//   （mcpSSERetryMax 次指数退避），瞬时抖动自愈；重连耗尽才判死。
 func (t *sseHTTPTransport) Start(ctx context.Context) error {
 	warnPlainHTTP(t.name, t.base)
+	if err := t.connect(ctx, ""); err != nil {
+		return err
+	}
+	go t.supervise()
+	return nil
+}
+
+// connect：打开 SSE 流并同步等 endpoint 事件（lastID 非空 = 重连，回带
+// Last-Event-ID）。读流 goroutine 的终态写进 t.streamEnd，supervise 据此决定
+// 重连或判死——本函数只对「握手期」（endpoint 事件前）的失败负责。
+//
+// ★ 请求必须挂在 **t.ctx（会话生命周期）** 上，参数 ctx 只是握手预算：旧代码
+//   注释原话「流本身用 t.ctx，不用握手 ctx——否则 5s 握手预算一过流就断」。
+//   2026-11-07 重构第一版把握手 ctx 直接喂给了请求 ⇒ 5s 一到流就断、工具调用
+//   回执随流陪葬（冒烟 D 臂 tool_result 全灭、栈里 `SSE 流断开（context
+//   canceled）` 的根因）。预算只约束下面的 endpoint 等待。
+func (t *sseHTTPTransport) connect(ctx context.Context, lastID string) error {
 	req, err := http.NewRequestWithContext(t.ctx, http.MethodGet, t.base.String(), nil)
 	if err != nil {
 		return err
 	}
 	applyCommonHeaders(req, t.cfg, false)
 	req.Header.Set("Accept", "text/event-stream")
+	if lastID != "" {
+		req.Header.Set("Last-Event-ID", lastID)
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("打开 SSE 流失败: %w", err)
@@ -423,11 +626,13 @@ func (t *sseHTTPTransport) Start(ctx context.Context) error {
 		_ = resp.Body.Close()
 		return fmt.Errorf("SSE endpoint 返回 Content-Type %q（期望 text/event-stream）", ct)
 	}
+	t.mu.Lock()
 	t.body = resp.Body
+	t.streamEnd = make(chan error, 1)
+	t.mu.Unlock()
 
 	endpointCh := make(chan *url.URL, 1)
-	errCh := make(chan error, 1)
-	go t.readStream(resp.Body, endpointCh, errCh)
+	go t.readStream(resp.Body, endpointCh, t.streamEnd)
 
 	select {
 	case u := <-endpointCh:
@@ -435,7 +640,7 @@ func (t *sseHTTPTransport) Start(ctx context.Context) error {
 		t.endpoint = u
 		t.mu.Unlock()
 		return nil
-	case err := <-errCh:
+	case err := <-t.streamEnd:
 		_ = resp.Body.Close()
 		return err
 	case <-ctx.Done():
@@ -447,9 +652,70 @@ func (t *sseHTTPTransport) Start(ctx context.Context) error {
 	}
 }
 
-func (t *sseHTTPTransport) readStream(body io.Reader, endpointCh chan<- *url.URL, errCh chan<- error) {
+// backoff：第 attempt 次重连前的等待。retryWait 非 nil（测试注入）时以其为准。
+func (t *sseHTTPTransport) backoff(attempt int) time.Duration {
+	if t.retryWait != nil {
+		return t.retryWait(attempt)
+	}
+	return time.Duration(1<<uint(attempt-1)) * time.Second
+}
+
+// declareDeath：判死唯一入口——先关 done 再排空 pending。顺序即纪律：等者醒来
+// 时必须能看到 isDead()==true，否则 CallTool 漏发死亡通告（2026-11-06 竞态族）。
+func (t *sseHTTPTransport) declareDeath() {
+	t.closeDone()
+	t.failPending()
+}
+
+// supervise：当前读流结束 ⇒ 指数退避带 Last-Event-ID 重连；mcpSSERetryMax 次
+// 耗尽才判死（先 closeDone 再排空 pending——顺序即 2026-11-06 修的死亡通告
+// 竞态纪律）。★ 重连期间在途调用不提前失败：各调用有自己的单次超时；重连成功
+// 后服务端可按 Last-Event-ID 重放缺口（是否重放由服务端决定，我们如实带头）。
+func (t *sseHTTPTransport) supervise() {
+	for {
+		err := <-t.streamEnd
+		if t.closed.Load() || t.ctx.Err() != nil {
+			return
+		}
+		reconnected := false
+		lastErr := err
+		for attempt := 1; attempt <= mcpSSERetryMax; attempt++ {
+			backoff := t.backoff(attempt)
+			select {
+			case <-t.ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			lastID := t.getLastEventID()
+			mcpLogf(t.name, "SSE 流断开（%v），第 %d/%d 次重连（Last-Event-ID=%q）",
+				lastErr, attempt, mcpSSERetryMax, lastID)
+			if cerr := t.connect(t.ctx, lastID); cerr != nil {
+				lastErr = cerr
+				continue
+			}
+			reconnected = true
+			break
+		}
+		if !reconnected {
+			mcpLogf(t.name, "SSE 重连 %d 次均失败——连接判死", mcpSSERetryMax)
+			t.declareDeath()
+			return
+		}
+	}
+}
+
+// mcpSSERetryMax：legacy SSE 断流后的重连上限（1s/2s/4s/8s/16s）。耗尽 = 真死，
+// 交回 hub 的死亡通告与「远程传输不自动重启」语义（respawnServer:1344）。
+const mcpSSERetryMax = 5
+
+func (t *sseHTTPTransport) readStream(body io.Reader, endpointCh chan<- *url.URL, streamEnd chan<- error) {
 	var gotEndpoint sync.Once
-	err := scanSSE(body, func(event, data string) error {
+	err := scanSSE(body, func(event, data, id string) error {
+		if id != "" {
+			t.mu.Lock()
+			t.lastEventID = id
+			t.mu.Unlock()
+		}
 		switch event {
 		case "endpoint":
 			u, err := t.base.Parse(strings.TrimSpace(data))
@@ -465,17 +731,11 @@ func (t *sseHTTPTransport) readStream(body io.Reader, endpointCh chan<- *url.URL
 			return nil
 		}
 	})
-	if err != nil && !t.closed.Load() {
-		select {
-		case errCh <- fmt.Errorf("SSE 流读取失败: %w", err):
-		default:
-		}
+	// 终态交给 supervise（重连/判死由它决定）；通道缓冲 1、单写者 ⇒ 必达。
+	select {
+	case streamEnd <- err:
+	default:
 	}
-	// ★ 与 stdio 同口径：先关 done 再排空 pending，否则等者看到的是普通错误
-	//   而 isDead() 仍为 false ⇒ 死亡通告漏发。
-	t.closeDone()
-	t.failPending()
-	_ = body
 }
 
 func (t *sseHTTPTransport) dispatch(raw []byte) {
@@ -487,6 +747,9 @@ func (t *sseHTTPTransport) dispatch(raw []byte) {
 		// 服务端反向请求：与 stdio 同口径回 -32601（best-effort，不阻塞读流）。
 		if msg.ID != nil {
 			go t.replyError(msg.ID, -32601, "method not supported: "+msg.Method)
+		} else if t.notifyFn != nil {
+			// ★ 2026-11-07：服务端主动通知不再丢弃（tools/list_changed 等）。
+			t.notifyFn(msg.Method, msg.Params)
 		}
 		return
 	}
@@ -623,17 +886,21 @@ func (t *sseHTTPTransport) Close() {
 	t.closeDone()
 }
 
-// scanSSE：RFC 兼容的最小 SSE 解析器（event/data/注释/CRLF/多行 data）。
-// ★ 不实现 Last-Event-ID/retry/reconnect：本期只做单次会话。
-func scanSSE(r io.Reader, fn func(event, data string) error) error {
+// scanSSE：RFC 兼容的最小 SSE 解析器（event/data/id/注释/CRLF/多行 data）。
+// ★ 2026-11-07：id 字段透传给回调（Last-Event-ID 重连需要它）——「不实现
+//   Last-Event-ID/retry/reconnect」的 §九边界本批闭合；retry 字段仍忽略
+//   （退避节奏应用侧自管，见各传输的重连循环）。
+func scanSSE(r io.Reader, fn func(event, data, id string) error) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), mcpHTTPEventMax)
 	var event string
 	var data bytes.Buffer
+	var id string
 	dataLen := 0
 	dispatch := func() error {
 		if dataLen == 0 {
 			event = ""
+			id = ""
 			return nil
 		}
 		name := event
@@ -641,10 +908,12 @@ func scanSSE(r io.Reader, fn func(event, data string) error) error {
 			name = "message"
 		}
 		payload := data.String()
+		eventID := id
 		event = ""
+		id = ""
 		data.Reset()
 		dataLen = 0
-		return fn(name, payload)
+		return fn(name, payload, eventID)
 	}
 	for sc.Scan() {
 		line := sc.Text()
@@ -666,6 +935,11 @@ func scanSSE(r io.Reader, fn func(event, data string) error) error {
 		switch field {
 		case "event":
 			event = value
+		case "id":
+			// 规范：id 含 NUL 时整行忽略。成本为零，照做。
+			if !strings.ContainsRune(value, 0) {
+				id = value
+			}
 		case "data":
 			if dataLen > 0 {
 				data.WriteByte('\n')

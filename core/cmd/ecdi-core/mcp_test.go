@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -947,14 +949,36 @@ func TestTransport_BrokenPipeClosesDoneFirst(t *testing.T) {
 	}
 }
 
-// TestTransport_SSEBrokenStreamClosesDoneFirst：legacy SSE 的同一判据。
-func TestTransport_SSEBrokenStreamClosesDoneFirst(t *testing.T) {
+// TestTransport_SSEExhaustedRetriesClosesDoneFirst：legacy SSE 的同一判据。
+// ★ 八版重连语义下「断流」不再即刻判死——在途调用各自持单次超时，supervise 带
+//   Last-Event-ID 自愈（TestMCP_SSEReconnectLastEventID 验收自愈）。但**重连
+//   耗尽**后的判死顺序契约原样不变：closeDone 必须先于排空 pending，否则等者
+//   先醒、isDead()=false ⇒ CallTool 漏发死亡通告（2026-11-06 修的竞态族）。
+// 驱动 supervise 全链路：streamEnd 收到终态 → 5 次重连全部打不可达端口（拨号
+// 即拒、退避注入为 0）→ 判死。看门狗 10s：判死若未发生，快速失败而非挂满超时。
+func TestTransport_SSEExhaustedRetriesClosesDoneFirst(t *testing.T) {
 	const n = 128
+	dead, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("本地端口不可用: %v", err)
+	}
+	deadAddr := dead.Addr().String()
+	dead.Close() // 先占后关 ⇒ 后续拨号连接被拒，connect 秒败
+	deadURL, err := url.Parse("http://" + deadAddr + "/sse")
+	if err != nil {
+		t.Fatalf("url 解析失败: %v", err)
+	}
+
 	for i := 0; i < 8; i++ {
 		tr := &sseHTTPTransport{
-			name:    "t",
-			pending: make(map[string]chan jsonrpcResponse),
-			done:    make(chan struct{}),
+			name:      "t",
+			base:      deadURL,
+			client:    newMCPHTTPClient(),
+			ctx:       context.Background(),
+			done:      make(chan struct{}),
+			pending:   make(map[string]chan jsonrpcResponse),
+			streamEnd: make(chan error, 1),
+			retryWait: func(int) time.Duration { return 0 },
 		}
 		woke := make([]chan bool, n)
 		for j := 0; j < n; j++ {
@@ -972,11 +996,18 @@ func TestTransport_SSEBrokenStreamClosesDoneFirst(t *testing.T) {
 			}(ch, woke[j])
 		}
 
-		tr.readStream(strings.NewReader(""), make(chan *url.URL, 1), make(chan error, 1))
+		tr.streamEnd <- errors.New("断流注入")
+		go tr.supervise()
 
 		for j := 0; j < n; j++ {
-			if ok := <-woke[j]; !ok {
-				t.Fatalf("第 %d 轮（等者 %d/%d）：SSE 等者先于 Done() 被唤醒 ⇒ 死亡通告漏发",
+			select {
+			case ok := <-woke[j]:
+				if !ok {
+					t.Fatalf("第 %d 轮（等者 %d/%d）：SSE 等者先于 Done() 被唤醒 ⇒ 死亡通告漏发",
+						i, j, n)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("第 %d 轮（等者 %d/%d）：10s 内判死未发生——supervise 未排空 pending",
 					i, j, n)
 			}
 		}

@@ -33,7 +33,10 @@ type stdioTransport struct {
 	wmu     sync.Mutex
 	stdin   io.WriteCloser
 	pending map[string]chan jsonrpcResponse
-	closed  atomic.Bool
+	// notifyFn：服务端主动通知的落点（Start 前设置；nil = 丢弃，旧行为）。
+	// 只在 Start 前写、读循环里读 ⇒ 无需加锁。
+	notifyFn func(method string, params json.RawMessage)
+	closed   atomic.Bool
 	done    chan struct{}
 	// doneOnce：Close 与 readLoop 都会关闭 done（进程自己退出 vs 我们关它），
 	// 两处各自 `select{case <-done: default: close(done)}` 是**无互斥**的，
@@ -57,6 +60,11 @@ func newStdioTransport(name string, cfg mcpServerConfig, rootDir string) *stdioT
 func (t *stdioTransport) ProtocolVersion() string { return mcpProtocolVersion }
 func (t *stdioTransport) Done() <-chan struct{}   { return t.done }
 func (t *stdioTransport) closeDone()              { t.doneOnce.Do(func() { close(t.done) }) }
+
+// SetNotifyHandler：Start 前注入服务端通知落点（见接口注释）。
+func (t *stdioTransport) SetNotifyHandler(fn func(method string, params json.RawMessage)) {
+	t.notifyFn = fn
+}
 
 // Start：拉起子进程、建立 stdio 读写循环。握手不在这里（mcpClient 的语义层）。
 func (t *stdioTransport) Start(_ context.Context) error {
@@ -212,11 +220,15 @@ func (t *stdioTransport) readLoop(r io.Reader) {
 			continue
 		}
 		if resp.Method != "" {
-			// ★ 这是**服务端发来的请求**（sampling / roots / elicitation 之类），
-			//   不是回执。我们声明了空 capabilities，正常不该出现；但静默丢弃会让
-			//   对方挂等一个永不到来的答复 ⇒ 明确回 -32601，别让它卡住。
+			// ★ 这是**服务端发来的请求或通知**（sampling / roots /
+			//   notifications/tools/list_changed 之类），不是回执。
+			//   · 请求：我们声明了空 capabilities，正常不该出现；但静默丢弃会让
+			//     对方挂等一个永不到来的答复 ⇒ 明确回 -32601，别让它卡住。
+			//   · 通知：2026-11-07 起不再丢弃——交给 notifyFn（hub 按 method 分发）。
 			if resp.ID != nil {
 				t.replyError(resp.ID, -32601, "method not supported: "+resp.Method)
+			} else if t.notifyFn != nil {
+				t.notifyFn(resp.Method, resp.Params)
 			}
 			continue
 		}
