@@ -1,0 +1,1397 @@
+{
+ "AddLine": {
+  "file": "App.cpp",
+  "lines": 19,
+  "sha": "8128018b47b911bf"
+ },
+ "AppConfig::CredentialTargetFor": {
+  "file": "AppConfig.cpp",
+  "lines": 4,
+  "sha": "486a4deb045f4cee"
+ },
+ "AppConfig::DefaultDir": {
+  "file": "AppConfig.cpp",
+  "lines": 11,
+  "sha": "d1142c50a87b33de"
+ },
+ "AppConfig::DefaultPath": {
+  "file": "AppConfig.cpp",
+  "lines": 4,
+  "sha": "470260f7769f6225"
+ },
+ "AppConfig::DefaultProvider": {
+  "file": "AppConfig.cpp",
+  "lines": 7,
+  "sha": "ddd24137aaf976c4"
+ },
+ "AppConfig::Find": {
+  "file": "AppConfig.cpp",
+  "lines": 6,
+  "sha": "c891aeb34dda9ec8"
+ },
+ "AppConfig::Load": {
+  "file": "AppConfig.cpp",
+  "lines": 99,
+  "sha": "1676d9342af035db"
+ },
+ "AppConfig::ProviderIdFromBaseUrl": {
+  "file": "AppConfig.cpp",
+  "lines": 13,
+  "sha": "ea42f5dad1fd910c"
+ },
+ "AppConfig::Save": {
+  "file": "AppConfig.cpp",
+  "lines": 66,
+  "sha": "b9c873e0e0123bb4"
+ },
+ "AppConfig::SetPathForTesting": {
+  "file": "AppConfig.cpp",
+  "lines": 3,
+  "sha": "3435dfefe7267997"
+ },
+ "AppConfig::Upsert": {
+  "file": "AppConfig.cpp",
+  "lines": 9,
+  "sha": "43096e25fb1b3b94"
+ },
+ "AppendCompact": {
+  "file": "Json.cpp",
+  "lines": 34,
+  "sha": "085e7b702a9cc705"
+ },
+ "AppendEscaped": {
+  "file": "Json.cpp",
+  "lines": 14,
+  "sha": "9086d6bcf9a876fc"
+ },
+ "AppendPretty": {
+  "file": "Json.cpp",
+  "lines": 42,
+  "sha": "290308db3cfe80af"
+ },
+ "Centered": {
+  "file": "UiKit.h",
+  "lines": 9,
+  "sha": "93c185df313fc057"
+ },
+ "ChildSource": {
+  "file": "ChildSource.cpp",
+  "lines": 3,
+  "sha": "ce19e1e46887638b"
+ },
+ "ChildSource::EnableLineStamps": {
+  "file": "ChildSource.cpp",
+  "lines": 5,
+  "sha": "aaee13d70b3b1c21"
+ },
+ "ChildSource::Eof": {
+  "file": "ChildSource.cpp",
+  "lines": 4,
+  "sha": "e5e38f93e0185b0c"
+ },
+ "ChildSource::ExitCode": {
+  "file": "ChildSource.cpp",
+  "lines": 4,
+  "sha": "d1681caacf237e2a"
+ },
+ "ChildSource::Exited": {
+  "file": "ChildSource.cpp",
+  "lines": 4,
+  "sha": "02aff54390801a1b"
+ },
+ "ChildSource::HasPending": {
+  "file": "ChildSource.cpp",
+  "lines": 4,
+  "sha": "cba66660c5554333"
+ },
+ "ChildSource::LinesReceived": {
+  "file": "ChildSource.cpp",
+  "lines": 4,
+  "sha": "961f9c2470b79123"
+ },
+ "ChildSource::Next": {
+  "file": "ChildSource.cpp",
+  "lines": 13,
+  "sha": "ffd5062f0a333308"
+ },
+ "ChildSource::NextWithin": {
+  "file": "ChildSource.cpp",
+  "lines": 16,
+  "sha": "d4e4626ad682fc0f"
+ },
+ "ChildSource::NextWithinStamped": {
+  "file": "ChildSource.cpp",
+  "lines": 24,
+  "sha": "d1e4b09dd930fcf7"
+ },
+ "ChildSource::NotifyDataArrived": {
+  "file": "ChildSource.cpp",
+  "lines": 39,
+  "sha": "f373854fcf1a1bdb"
+ },
+ "ChildSource::ReaderMain": {
+  "file": "ChildSource.cpp",
+  "lines": 54,
+  "sha": "fd53c20b13cb2948"
+ },
+ "ChildSource::RearmWake": {
+  "file": "ChildSource.cpp",
+  "lines": 11,
+  "sha": "2e114fd736717077"
+ },
+ "ChildSource::Send": {
+  "file": "ChildSource.cpp",
+  "lines": 17,
+  "sha": "be70412e28ddd87e"
+ },
+ "ChildSource::SetWakeHandler": {
+  "file": "ChildSource.cpp",
+  "lines": 4,
+  "sha": "db5f2d377adcdbe6"
+ },
+ "ChildSource::Start": {
+  "file": "ChildSource.cpp",
+  "lines": 88,
+  "sha": "3606c7bc20818945"
+ },
+ "ChildSource::Stop": {
+  "file": "ChildSource.cpp",
+  "lines": 34,
+  "sha": "431f0ea764627e51"
+ },
+ "CloseIfValid": {
+  "file": "ChildSource.cpp",
+  "lines": 6,
+  "sha": "37c6163c91064434"
+ },
+ "ContentWidth": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "01f472cdccf9a3a6"
+ },
+ "ConversationSubtitle": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "25dbb176c167946d"
+ },
+ "ConversationTitle": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "ca4e611ed841d842"
+ },
+ "CountingPanel::OnPaint": {
+  "file": "CountingPanel.cpp",
+  "lines": 9,
+  "sha": "45525b2f10035ef9"
+ },
+ "DaysFromCivil": {
+  "file": "ReplaySource.cpp",
+  "lines": 8,
+  "sha": "09aa28eab5477565"
+ },
+ "Delete": {
+  "file": "Credentials.cpp",
+  "lines": 11,
+  "sha": "d4d442b77e74a150"
+ },
+ "Dot": {
+  "file": "UiKit.h",
+  "lines": 7,
+  "sha": "f8e0ae859154d3cf"
+ },
+ "DotCell": {
+  "file": "UiKit.h",
+  "lines": 14,
+  "sha": "5a744c02982ef87c"
+ },
+ "ElapsedUs": {
+  "file": "MeasureProbe.cpp",
+  "lines": 6,
+  "sha": "3a5fddbf84c6f0d7"
+ },
+ "ElideMiddleByCodepoints": {
+  "file": "App.cpp",
+  "lines": 17,
+  "sha": "a51616d42f3abd25"
+ },
+ "Exists": {
+  "file": "Credentials.cpp",
+  "lines": 6,
+  "sha": "fee73b4e734859d5"
+ },
+ "ExtractTs": {
+  "file": "ReplaySource.cpp",
+  "lines": 9,
+  "sha": "00a7a1da253e1c5c"
+ },
+ "Fail": {
+  "file": "Credentials.cpp",
+  "lines": 4,
+  "sha": "7e748c5da8add818"
+ },
+ "HarnessApp::AcquireWorkspace": {
+  "file": "App.cpp",
+  "lines": 15,
+  "sha": "dd5ebebcfea89d4b"
+ },
+ "HarnessApp::AddNoticeRow": {
+  "file": "App.cpp",
+  "lines": 15,
+  "sha": "c3ca7e8ea7c0ac1a"
+ },
+ "HarnessApp::AddRow": {
+  "file": "App.cpp",
+  "lines": 20,
+  "sha": "5443bc7846cdd7df"
+ },
+ "HarnessApp::ApplyAnsweredLook": {
+  "file": "App.cpp",
+  "lines": 29,
+  "sha": "3891ebb1bcf3320a"
+ },
+ "HarnessApp::ApplySettingsVisibility": {
+  "file": "App.cpp",
+  "lines": 14,
+  "sha": "4ad51ba5ff3282b5"
+ },
+ "HarnessApp::ApplyUiStateToView": {
+  "file": "App.cpp",
+  "lines": 18,
+  "sha": "24a24036d7731cd3"
+ },
+ "HarnessApp::ArchiveSessionAt": {
+  "file": "App.cpp",
+  "lines": 36,
+  "sha": "f384bdf87b79d5c7"
+ },
+ "HarnessApp::AssignSessionWorkspace": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "1cfe31b5828373b2"
+ },
+ "HarnessApp::BindCollapsible": {
+  "file": "App.cpp",
+  "lines": 9,
+  "sha": "aa044af7d6d873b4"
+ },
+ "HarnessApp::BuildAskRow": {
+  "file": "App.cpp",
+  "lines": 55,
+  "sha": "cd83b2d39b288db1"
+ },
+ "HarnessApp::BuildBlockRow": {
+  "file": "App.cpp",
+  "lines": 219,
+  "sha": "374800ad65c7ac1a"
+ },
+ "HarnessApp::BuildBottom": {
+  "file": "App.cpp",
+  "lines": 30,
+  "sha": "f4d679b60876e30b"
+ },
+ "HarnessApp::BuildHistoryRow": {
+  "file": "App.cpp",
+  "lines": 34,
+  "sha": "4b63124339a1c050"
+ },
+ "HarnessApp::BuildMainArea": {
+  "file": "App.cpp",
+  "lines": 980,
+  "sha": "3ab7ef55f4592c8b"
+ },
+ "HarnessApp::BuildNoticeRow": {
+  "file": "App.cpp",
+  "lines": 10,
+  "sha": "64a49ea509073277"
+ },
+ "HarnessApp::BuildSessionGroupRow": {
+  "file": "App.cpp",
+  "lines": 55,
+  "sha": "8796250d10875b9d"
+ },
+ "HarnessApp::BuildSessionRow": {
+  "file": "App.cpp",
+  "lines": 147,
+  "sha": "be0687b892fd033f"
+ },
+ "HarnessApp::BuildTopBar": {
+  "file": "App.cpp",
+  "lines": 195,
+  "sha": "b72a1b4690e161a9"
+ },
+ "HarnessApp::BuildTranscriptExportText": {
+  "file": "App.cpp",
+  "lines": 48,
+  "sha": "87514c7ca6ea779d"
+ },
+ "HarnessApp::BuildUi": {
+  "file": "App.cpp",
+  "lines": 51,
+  "sha": "1e21d7ae46bbde1f"
+ },
+ "HarnessApp::CacheEvalMetrics": {
+  "file": "App.cpp",
+  "lines": 27,
+  "sha": "70f1b3418a1f1b74"
+ },
+ "HarnessApp::CacheProviderKeys": {
+  "file": "App.cpp",
+  "lines": 11,
+  "sha": "43da69d879802bc1"
+ },
+ "HarnessApp::ChooseWorkspaceFolder": {
+  "file": "App.cpp",
+  "lines": 38,
+  "sha": "f84f5ee227a9e957"
+ },
+ "HarnessApp::CompareRows": {
+  "file": "App.cpp",
+  "lines": 100,
+  "sha": "a1c68d13dd52bb55"
+ },
+ "HarnessApp::CompareSessionList": {
+  "file": "App.cpp",
+  "lines": 40,
+  "sha": "f33651ba6b85ad38"
+ },
+ "HarnessApp::CompareUi": {
+  "file": "App.cpp",
+  "lines": 53,
+  "sha": "d66664185ab9d466"
+ },
+ "HarnessApp::CreateAskRow": {
+  "file": "App.cpp",
+  "lines": 23,
+  "sha": "6b7eb1bf270ac1c8"
+ },
+ "HarnessApp::CreateBlockRow": {
+  "file": "App.cpp",
+  "lines": 25,
+  "sha": "2f606e47636b14b9"
+ },
+ "HarnessApp::CreateSessionFromOptions": {
+  "file": "App.cpp",
+  "lines": 88,
+  "sha": "569f54dfc32bab47"
+ },
+ "HarnessApp::DeleteSessionAt": {
+  "file": "App.cpp",
+  "lines": 31,
+  "sha": "82c6cb6e5d5f2940"
+ },
+ "HarnessApp::DigestReplayFile": {
+  "file": "App.cpp",
+  "lines": 20,
+  "sha": "01b7aa2d4a507bb4"
+ },
+ "HarnessApp::DirtyRefreshJumpButton": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "82b6002d2c3ea4f4"
+ },
+ "HarnessApp::DrainActiveLive": {
+  "file": "App.cpp",
+  "lines": 63,
+  "sha": "a03ef4c189ac8f1c"
+ },
+ "HarnessApp::DrainInstant": {
+  "file": "App.cpp",
+  "lines": 18,
+  "sha": "f081eba83d154dc0"
+ },
+ "HarnessApp::DrainTimed": {
+  "file": "App.cpp",
+  "lines": 20,
+  "sha": "00a032f428c87af7"
+ },
+ "HarnessApp::EnvSanitizeProviderId": {
+  "file": "App.cpp",
+  "lines": 12,
+  "sha": "8681ae2077fb45d3"
+ },
+ "HarnessApp::ExportTranscript": {
+  "file": "App.cpp",
+  "lines": 92,
+  "sha": "879d1b661a08ba8a"
+ },
+ "HarnessApp::FailPendingOperations": {
+  "file": "App.cpp",
+  "lines": 20,
+  "sha": "d6fadf375de2a356"
+ },
+ "HarnessApp::FailPrompt": {
+  "file": "App.cpp",
+  "lines": 14,
+  "sha": "bbe3c315f3a61af6"
+ },
+ "HarnessApp::FindHistoryFiles": {
+  "file": "App.cpp",
+  "lines": 23,
+  "sha": "c81b467ce57dd151"
+ },
+ "HarnessApp::FollowTailIfPinned": {
+  "file": "App.cpp",
+  "lines": 9,
+  "sha": "d42a4d37ddd51d61"
+ },
+ "HarnessApp::GroupTitlesForDisplay": {
+  "file": "App.cpp",
+  "lines": 11,
+  "sha": "9f7525ece6e1743a"
+ },
+ "HarnessApp::HandleGlobalKeyDown": {
+  "file": "App.cpp",
+  "lines": 40,
+  "sha": "de90f009dffddc60"
+ },
+ "HarnessApp::HandleLine": {
+  "file": "App.cpp",
+  "lines": 6,
+  "sha": "ced61b5c46769221"
+ },
+ "HarnessApp::HarnessApp": {
+  "file": "App.cpp",
+  "lines": 32,
+  "sha": "ee265507ab00aafb"
+ },
+ "HarnessApp::HasUnconfirmedPrompt": {
+  "file": "App.cpp",
+  "lines": 5,
+  "sha": "0b194ef064df9195"
+ },
+ "HarnessApp::HideTooltip": {
+  "file": "App.cpp",
+  "lines": 6,
+  "sha": "55e0ddec16b8bdae"
+ },
+ "HarnessApp::HistoryRoot": {
+  "file": "App.cpp",
+  "lines": 22,
+  "sha": "4216064a74990802"
+ },
+ "HarnessApp::HudTouch": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "39e7888469fc3139"
+ },
+ "HarnessApp::HudUnbuilt": {
+  "file": "App.cpp",
+  "lines": 54,
+  "sha": "b31e14de7ccb7524"
+ },
+ "HarnessApp::InheritedWorkspacePath": {
+  "file": "App.cpp",
+  "lines": 9,
+  "sha": "46788103c4a89e72"
+ },
+ "HarnessApp::InstallWakeHandler": {
+  "file": "App.cpp",
+  "lines": 19,
+  "sha": "d51b835e15692e23"
+ },
+ "HarnessApp::InstallWakeHandlers": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "a6f92aa6a4870bde"
+ },
+ "HarnessApp::LayoutSettingsOverlay": {
+  "file": "App.cpp",
+  "lines": 18,
+  "sha": "7219ed9acbab240a"
+ },
+ "HarnessApp::LoadUiState": {
+  "file": "App.cpp",
+  "lines": 52,
+  "sha": "61aff386ef87aa61"
+ },
+ "HarnessApp::MarkAnswered": {
+  "file": "App.cpp",
+  "lines": 35,
+  "sha": "0b1e75f0ac75f79f"
+ },
+ "HarnessApp::MarkLiveEof": {
+  "file": "App.cpp",
+  "lines": 6,
+  "sha": "e141f1d6bb0fd77b"
+ },
+ "HarnessApp::MaterializeOne": {
+  "file": "App.cpp",
+  "lines": 51,
+  "sha": "987f660f8fbcec6b"
+ },
+ "HarnessApp::MaterializePendingPrompts": {
+  "file": "App.cpp",
+  "lines": 45,
+  "sha": "3a3d725015b3942f"
+ },
+ "HarnessApp::MaterializeRows": {
+  "file": "App.cpp",
+  "lines": 5,
+  "sha": "abab01b9d0055a65"
+ },
+ "HarnessApp::MaybeDeleteTemporarySession": {
+  "file": "App.cpp",
+  "lines": 19,
+  "sha": "d958e64620a00149"
+ },
+ "HarnessApp::MaybeSendAutoPrompt": {
+  "file": "App.cpp",
+  "lines": 19,
+  "sha": "0ba7eca0a9c40726"
+ },
+ "HarnessApp::MaybeStartWorkspaceSync": {
+  "file": "App.cpp",
+  "lines": 37,
+  "sha": "2b96d7fd9380a864"
+ },
+ "HarnessApp::NewSession": {
+  "file": "App.cpp",
+  "lines": 50,
+  "sha": "7567901afb1d30ef"
+ },
+ "HarnessApp::NewTemporarySession": {
+  "file": "App.cpp",
+  "lines": 30,
+  "sha": "c4f1e4f02342e5a3"
+ },
+ "HarnessApp::OnAutoClose": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "1d51da9b95988336"
+ },
+ "HarnessApp::OnReplayTick": {
+  "file": "App.cpp",
+  "lines": 255,
+  "sha": "bb304ef08f8189a7"
+ },
+ "HarnessApp::OnSettingsSave": {
+  "file": "App.cpp",
+  "lines": 105,
+  "sha": "242d66fd10a5cc7f"
+ },
+ "HarnessApp::OnSweepTick": {
+  "file": "App.cpp",
+  "lines": 17,
+  "sha": "10037014815c2ed0"
+ },
+ "HarnessApp::OnTooltipFire": {
+  "file": "App.cpp",
+  "lines": 24,
+  "sha": "b24dc1acb2dcc64e"
+ },
+ "HarnessApp::OnWindowResized": {
+  "file": "App.cpp",
+  "lines": 48,
+  "sha": "0c49ad9a7edd887e"
+ },
+ "HarnessApp::OpenHistorySession": {
+  "file": "App.cpp",
+  "lines": 70,
+  "sha": "06dde186ac0340d0"
+ },
+ "HarnessApp::PauseActiveTimedClock": {
+  "file": "App.cpp",
+  "lines": 7,
+  "sha": "2b4666d79d0dcf39"
+ },
+ "HarnessApp::PostPrompt": {
+  "file": "App.cpp",
+  "lines": 33,
+  "sha": "c905fb906187c61d"
+ },
+ "HarnessApp::ProbeResizeClient": {
+  "file": "App.cpp",
+  "lines": 15,
+  "sha": "03d5d6460683eed8"
+ },
+ "HarnessApp::RebuildHistoryList": {
+  "file": "App.cpp",
+  "lines": 30,
+  "sha": "82b672cd7b9530c8"
+ },
+ "HarnessApp::RebuildModelList": {
+  "file": "App.cpp",
+  "lines": 39,
+  "sha": "0c51d28b8a06b8ea"
+ },
+ "HarnessApp::RebuildModelPopupList": {
+  "file": "App.cpp",
+  "lines": 63,
+  "sha": "c02e7de163173243"
+ },
+ "HarnessApp::RebuildProjectList": {
+  "file": "App.cpp",
+  "lines": 76,
+  "sha": "7b828d560de83baa"
+ },
+ "HarnessApp::RebuildSessionList": {
+  "file": "App.cpp",
+  "lines": 105,
+  "sha": "12788bf6c2f0fce7"
+ },
+ "HarnessApp::RebuildSettingsProviderList": {
+  "file": "App.cpp",
+  "lines": 52,
+  "sha": "3f290a5d6766ba69"
+ },
+ "HarnessApp::RebuildTranscriptView": {
+  "file": "App.cpp",
+  "lines": 51,
+  "sha": "0a90171ecb11981d"
+ },
+ "HarnessApp::RebuildUi": {
+  "file": "App.cpp",
+  "lines": 100,
+  "sha": "1dd552192b3b59a2"
+ },
+ "HarnessApp::RefreshEmptyGuide": {
+  "file": "App.cpp",
+  "lines": 82,
+  "sha": "9058e1570ad44d57"
+ },
+ "HarnessApp::RefreshHud": {
+  "file": "App.cpp",
+  "lines": 350,
+  "sha": "e5bb29577bbf3e29"
+ },
+ "HarnessApp::RefreshJumpButton": {
+  "file": "App.cpp",
+  "lines": 19,
+  "sha": "ac6fbf7802293ce5"
+ },
+ "HarnessApp::Relayout": {
+  "file": "App.cpp",
+  "lines": 184,
+  "sha": "e9e7a929f21ee62e"
+ },
+ "HarnessApp::RequestModelSwitch": {
+  "file": "App.cpp",
+  "lines": 21,
+  "sha": "aeb081517095b693"
+ },
+ "HarnessApp::RequestRepaint": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "234d4edc46edc5b3"
+ },
+ "HarnessApp::RequestWorkspace": {
+  "file": "App.cpp",
+  "lines": 24,
+  "sha": "5b9aadbffe0abcef"
+ },
+ "HarnessApp::ResolveCoreExecutable": {
+  "file": "App.cpp",
+  "lines": 49,
+  "sha": "8239108d2905ef83"
+ },
+ "HarnessApp::RestoreSessionAt": {
+  "file": "App.cpp",
+  "lines": 13,
+  "sha": "f9b7641d6131ca2d"
+ },
+ "HarnessApp::ResumeSessionTimedClock": {
+  "file": "App.cpp",
+  "lines": 8,
+  "sha": "17764a9af3e96a2a"
+ },
+ "HarnessApp::RouteLastMessage": {
+  "file": "App.cpp",
+  "lines": 336,
+  "sha": "4eb2e67dc350fd36"
+ },
+ "HarnessApp::Run": {
+  "file": "App.cpp",
+  "lines": 127,
+  "sha": "b1057bade3233908"
+ },
+ "HarnessApp::RunAnswerProbe": {
+  "file": "App.cpp",
+  "lines": 231,
+  "sha": "c3041965c641b0ad"
+ },
+ "HarnessApp::RunDelProvProbe": {
+  "file": "App.cpp",
+  "lines": 97,
+  "sha": "8ffe899351649142"
+ },
+ "HarnessApp::RunEmptyProbe": {
+  "file": "App.cpp",
+  "lines": 96,
+  "sha": "af277539da9bcd88"
+ },
+ "HarnessApp::RunEnterProbe": {
+  "file": "App.cpp",
+  "lines": 126,
+  "sha": "a744bb3d87c132c1"
+ },
+ "HarnessApp::RunGrowProbe": {
+  "file": "App.cpp",
+  "lines": 274,
+  "sha": "8a5c71a7220bb59e"
+ },
+ "HarnessApp::RunHistoryProbe": {
+  "file": "App.cpp",
+  "lines": 312,
+  "sha": "4bc92242925019f7"
+ },
+ "HarnessApp::RunHitProbe": {
+  "file": "App.cpp",
+  "lines": 73,
+  "sha": "0af2907849c52944"
+ },
+ "HarnessApp::RunHudProbe": {
+  "file": "App.cpp",
+  "lines": 71,
+  "sha": "13ae810600067e20"
+ },
+ "HarnessApp::RunJumpProbe": {
+  "file": "App.cpp",
+  "lines": 91,
+  "sha": "d97c3dcb0bfe9b6b"
+ },
+ "HarnessApp::RunKeyProbe": {
+  "file": "App.cpp",
+  "lines": 126,
+  "sha": "359e0f16a607e1fd"
+ },
+ "HarnessApp::RunMenuProbe": {
+  "file": "App.cpp",
+  "lines": 328,
+  "sha": "a3a04bc636c93d61"
+ },
+ "HarnessApp::RunModelProbe": {
+  "file": "App.cpp",
+  "lines": 93,
+  "sha": "d508ead6e6facfd7"
+ },
+ "HarnessApp::RunReasoningProbe": {
+  "file": "App.cpp",
+  "lines": 73,
+  "sha": "5f46757f57bfb64e"
+ },
+ "HarnessApp::RunRebuildProbe": {
+  "file": "App.cpp",
+  "lines": 124,
+  "sha": "7ccba322ead4dc7b"
+ },
+ "HarnessApp::RunResizeProbe": {
+  "file": "App.cpp",
+  "lines": 301,
+  "sha": "213379b8dd7457fe"
+ },
+ "HarnessApp::RunSelectProbe": {
+  "file": "App.cpp",
+  "lines": 56,
+  "sha": "0d9d8dac2dd3613b"
+ },
+ "HarnessApp::RunSessionProbe": {
+  "file": "App.cpp",
+  "lines": 29,
+  "sha": "8398ad41039e4759"
+ },
+ "HarnessApp::RunSettingsProbe": {
+  "file": "App.cpp",
+  "lines": 298,
+  "sha": "288c394a9dc86c44"
+ },
+ "HarnessApp::RunSidebarProbe": {
+  "file": "App.cpp",
+  "lines": 527,
+  "sha": "656c79c0304db352"
+ },
+ "HarnessApp::RunThemeProbe": {
+  "file": "App.cpp",
+  "lines": 263,
+  "sha": "eca35563ae4c1991"
+ },
+ "HarnessApp::RunWorkspaceProbe": {
+  "file": "App.cpp",
+  "lines": 352,
+  "sha": "313dc081fd38b7d7"
+ },
+ "HarnessApp::SaveUiState": {
+  "file": "App.cpp",
+  "lines": 46,
+  "sha": "a87a1894ebfb8deb"
+ },
+ "HarnessApp::SendModelSwitch": {
+  "file": "App.cpp",
+  "lines": 15,
+  "sha": "c03cc9501d8cd425"
+ },
+ "HarnessApp::SendPendingModelSwitchIfIdle": {
+  "file": "App.cpp",
+  "lines": 7,
+  "sha": "39676aae080eca42"
+ },
+ "HarnessApp::SendPrompt": {
+  "file": "App.cpp",
+  "lines": 14,
+  "sha": "b7e92f3e313182e5"
+ },
+ "HarnessApp::SetModelPopupOpen": {
+  "file": "App.cpp",
+  "lines": 17,
+  "sha": "2f2b26132848694a"
+ },
+ "HarnessApp::SetMoreMenuOpen": {
+  "file": "App.cpp",
+  "lines": 14,
+  "sha": "73342bd04f7b8cf1"
+ },
+ "HarnessApp::SetSettingsVisible": {
+  "file": "App.cpp",
+  "lines": 10,
+  "sha": "0bd21f1e6c01d54c"
+ },
+ "HarnessApp::SetSidebarVisible": {
+  "file": "App.cpp",
+  "lines": 21,
+  "sha": "b5f3c934a4b141c2"
+ },
+ "HarnessApp::ShowTooltipFor": {
+  "file": "App.cpp",
+  "lines": 6,
+  "sha": "e6f0c4245fa83d15"
+ },
+ "HarnessApp::SnapshotRows": {
+  "file": "App.cpp",
+  "lines": 40,
+  "sha": "ef79f4816493a322"
+ },
+ "HarnessApp::SnapshotSessionList": {
+  "file": "App.cpp",
+  "lines": 37,
+  "sha": "ed80adb9be5f434f"
+ },
+ "HarnessApp::SnapshotUi": {
+  "file": "App.cpp",
+  "lines": 20,
+  "sha": "99546f343f46d922"
+ },
+ "HarnessApp::SwitchToSession": {
+  "file": "App.cpp",
+  "lines": 41,
+  "sha": "8831a1bcd7c0e097"
+ },
+ "HarnessApp::SwitchToSessionByPtr": {
+  "file": "App.cpp",
+  "lines": 13,
+  "sha": "2fee66fa98baa28a"
+ },
+ "HarnessApp::SyncRowViewState": {
+  "file": "App.cpp",
+  "lines": 8,
+  "sha": "fbf8a3a3258b3c67"
+ },
+ "HarnessApp::SynthesizeClickAt": {
+  "file": "App.cpp",
+  "lines": 10,
+  "sha": "ad13c37c502e2af1"
+ },
+ "HarnessApp::SynthesizeKey": {
+  "file": "App.cpp",
+  "lines": 9,
+  "sha": "9bbb24e1ce20277c"
+ },
+ "HarnessApp::ToggleInspector": {
+  "file": "App.cpp",
+  "lines": 8,
+  "sha": "eaaa982be85dbc2a"
+ },
+ "HarnessApp::ToggleMoreMenu": {
+  "file": "App.cpp",
+  "lines": 1,
+  "sha": "e88683ba707cca86"
+ },
+ "HarnessApp::ToggleRow": {
+  "file": "App.cpp",
+  "lines": 29,
+  "sha": "b6658144af72a831"
+ },
+ "HarnessApp::TranscriptIsEmpty": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "19aeae1f97dbe44b"
+ },
+ "HarnessApp::TryAutoConnectFromConfig": {
+  "file": "App.cpp",
+  "lines": 43,
+  "sha": "a91c79fb6308dfc1"
+ },
+ "HarnessApp::UiStatePath": {
+  "file": "App.cpp",
+  "lines": 11,
+  "sha": "2bb207026cfda826"
+ },
+ "HarnessApp::UpdateModelChip": {
+  "file": "App.cpp",
+  "lines": 16,
+  "sha": "bfe0c0319125c27f"
+ },
+ "HarnessApp::WidgetKindName": {
+  "file": "App.cpp",
+  "lines": 10,
+  "sha": "27f976a23ef4220b"
+ },
+ "HarnessApp::WorkspaceById": {
+  "file": "App.cpp",
+  "lines": 7,
+  "sha": "df1e187b79bab254"
+ },
+ "HarnessApp::WorkspaceById#2": {
+  "file": "App.cpp",
+  "lines": 7,
+  "sha": "60ca4d745793c91e"
+ },
+ "HarnessApp::WorkspaceByPath": {
+  "file": "App.cpp",
+  "lines": 10,
+  "sha": "e96988c8bdd8af4f"
+ },
+ "HarnessApp::WriteSummary": {
+  "file": "App.cpp",
+  "lines": 1082,
+  "sha": "2f72aa1bf7b5fe82"
+ },
+ "HarnessApp::WriteTranscriptExport": {
+  "file": "App.cpp",
+  "lines": 17,
+  "sha": "071b586119bf56cd"
+ },
+ "HarnessApplication::OnKeyDown": {
+  "file": "App.cpp",
+  "lines": 18,
+  "sha": "0b1a6ab41c648861"
+ },
+ "HarnessApplication::OnMouseWheel": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "fca00b635b8900d8"
+ },
+ "HarnessApplication::OnTimer": {
+  "file": "App.cpp",
+  "lines": 25,
+  "sha": "1527e903789fc751"
+ },
+ "HarnessApplication::OnWindowResized": {
+  "file": "App.cpp",
+  "lines": 4,
+  "sha": "3bf271974bf31ab7"
+ },
+ "Label": {
+  "file": "UiKit.h",
+  "lines": 9,
+  "sha": "6dd8ec0b07c3b952"
+ },
+ "MakeDark": {
+  "file": "Theme.h",
+  "lines": 85,
+  "sha": "04ee744bdd15e420"
+ },
+ "MakeLight": {
+  "file": "Theme.h",
+  "lines": 97,
+  "sha": "a64f0c0317eaca51"
+ },
+ "MeasureProbe::Initialize": {
+  "file": "MeasureProbe.cpp",
+  "lines": 3,
+  "sha": "945262fc6082870a"
+ },
+ "MeasureProbe::LineHeight": {
+  "file": "MeasureProbe.cpp",
+  "lines": 7,
+  "sha": "8ed8f3dd14a007e3"
+ },
+ "MeasureProbe::MeasureProbe": {
+  "file": "MeasureProbe.cpp",
+  "lines": 2,
+  "sha": "a089461592efcd35"
+ },
+ "MeasureProbe::MeasureText": {
+  "file": "MeasureProbe.cpp",
+  "lines": 10,
+  "sha": "1db5ed52c389c875"
+ },
+ "MonoFont": {
+  "file": "Theme.h",
+  "lines": 6,
+  "sha": "fe1c30bca9f157f3"
+ },
+ "MutablePath": {
+  "file": "AppConfig.cpp",
+  "lines": 4,
+  "sha": "215f319a51d5eaba"
+ },
+ "NowHm": {
+  "file": "App.cpp",
+  "lines": 8,
+  "sha": "6546c2d2f19fa0cc"
+ },
+ "NowIso": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 9,
+  "sha": "f5c40d9e247a7e57"
+ },
+ "PaintProbe::AvgExecuteUs": {
+  "file": "PaintProbe.cpp",
+  "lines": 6,
+  "sha": "c3854f2f4e2e7bb5"
+ },
+ "PaintProbe::AvgFrameCommands": {
+  "file": "PaintProbe.cpp",
+  "lines": 6,
+  "sha": "0c1508e7b44f9626"
+ },
+ "PaintProbe::BeginFrame": {
+  "file": "PaintProbe.cpp",
+  "lines": 4,
+  "sha": "8ffa5c070f87a8a1"
+ },
+ "PaintProbe::DrawArc": {
+  "file": "PaintProbe.cpp",
+  "lines": 8,
+  "sha": "603dfe085ff3e2a3"
+ },
+ "PaintProbe::DrawFocusRect": {
+  "file": "PaintProbe.cpp",
+  "lines": 6,
+  "sha": "67daeee99147e52f"
+ },
+ "PaintProbe::DrawImage": {
+  "file": "PaintProbe.cpp",
+  "lines": 5,
+  "sha": "1f7f955aa6f544e3"
+ },
+ "PaintProbe::DrawLine": {
+  "file": "PaintProbe.cpp",
+  "lines": 6,
+  "sha": "e5b63edc0860afa0"
+ },
+ "PaintProbe::DrawRect": {
+  "file": "PaintProbe.cpp",
+  "lines": 5,
+  "sha": "08c24b453098156d"
+ },
+ "PaintProbe::DrawRoundedRect": {
+  "file": "PaintProbe.cpp",
+  "lines": 6,
+  "sha": "c177cefa87d61a44"
+ },
+ "PaintProbe::DrawText": {
+  "file": "PaintProbe.cpp",
+  "lines": 6,
+  "sha": "14b7f50c3aa6a77a"
+ },
+ "PaintProbe::EndFrame": {
+  "file": "PaintProbe.cpp",
+  "lines": 9,
+  "sha": "99bb47b4781b98a8"
+ },
+ "PaintProbe::Initialize": {
+  "file": "PaintProbe.cpp",
+  "lines": 3,
+  "sha": "3763c9c95fb34e80"
+ },
+ "PaintProbe::IsReady": {
+  "file": "PaintProbe.cpp",
+  "lines": 3,
+  "sha": "35bf59f95e2d4410"
+ },
+ "PaintProbe::LastFrameCommands": {
+  "file": "PaintProbe.cpp",
+  "lines": 3,
+  "sha": "4be822e1f7878aaa"
+ },
+ "PaintProbe::MaxExecuteUs": {
+  "file": "PaintProbe.cpp",
+  "lines": 7,
+  "sha": "bbe590011ede72a5"
+ },
+ "PaintProbe::MaxFrameCommands": {
+  "file": "PaintProbe.cpp",
+  "lines": 7,
+  "sha": "bf293982d7768adf"
+ },
+ "PaintProbe::PaintProbe": {
+  "file": "PaintProbe.cpp",
+  "lines": 2,
+  "sha": "bd874607968f970b"
+ },
+ "PaintProbe::PopClip": {
+  "file": "PaintProbe.cpp",
+  "lines": 5,
+  "sha": "45f94ba6c509abec"
+ },
+ "PaintProbe::PushClip": {
+  "file": "PaintProbe.cpp",
+  "lines": 5,
+  "sha": "ad60b1e88ccb9041"
+ },
+ "PaintProbe::TotalCommands": {
+  "file": "PaintProbe.cpp",
+  "lines": 7,
+  "sha": "87ee52a9a5908397"
+ },
+ "PaintProbe::TotalExecuteUs": {
+  "file": "PaintProbe.cpp",
+  "lines": 7,
+  "sha": "a265c145b403b888"
+ },
+ "Parse": {
+  "file": "Json.cpp",
+  "lines": 6,
+  "sha": "aa4c491d46a0e095"
+ },
+ "ParseIso8601Ms": {
+  "file": "ReplaySource.cpp",
+  "lines": 10,
+  "sha": "27b18d656c3d523c"
+ },
+ "PathToUtf8": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "ef395990574e719b"
+ },
+ "Pick": {
+  "file": "App.cpp",
+  "lines": 3,
+  "sha": "918debf357dc806d"
+ },
+ "PromptBar::ApplySendStyle": {
+  "file": "PromptBar.cpp",
+  "lines": 9,
+  "sha": "b4dc307fc9b0b379"
+ },
+ "PromptBar::ApplyStopStyle": {
+  "file": "PromptBar.cpp",
+  "lines": 11,
+  "sha": "38b207877716a57f"
+ },
+ "PromptBar::DesiredInputHeight": {
+  "file": "PromptBar.cpp",
+  "lines": 21,
+  "sha": "766f9a137ae48be6"
+ },
+ "PromptBar::LayoutChildren": {
+  "file": "PromptBar.cpp",
+  "lines": 25,
+  "sha": "b5cd162be7a37aff"
+ },
+ "PromptBar::MaxInputHeight": {
+  "file": "PromptBar.cpp",
+  "lines": 11,
+  "sha": "6ca7d5629374789f"
+ },
+ "PromptBar::PromptBar": {
+  "file": "PromptBar.cpp",
+  "lines": 60,
+  "sha": "505da5ff41bb8e1f"
+ },
+ "PromptBar::SetButtonStates": {
+  "file": "PromptBar.cpp",
+  "lines": 7,
+  "sha": "806177f50aae41d3"
+ },
+ "PromptBar::SetSize": {
+  "file": "PromptBar.cpp",
+  "lines": 10,
+  "sha": "da79e94f44f1dd6f"
+ },
+ "PromptBar::SetStateDrivenEnabled": {
+  "file": "PromptBar.cpp",
+  "lines": 3,
+  "sha": "22b4109347039c26"
+ },
+ "PromptBar::Submit": {
+  "file": "PromptBar.cpp",
+  "lines": 14,
+  "sha": "25b3302664b09f28"
+ },
+ "PromptBar::SyncInputHeight": {
+  "file": "PromptBar.cpp",
+  "lines": 21,
+  "sha": "247ba292cf04ba5c"
+ },
+ "ProtocolWriter::Answer": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 11,
+  "sha": "22a619bb6050ba57"
+ },
+ "ProtocolWriter::Bye": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 7,
+  "sha": "fcb7b1726d6885f6"
+ },
+ "ProtocolWriter::Cancel": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 7,
+  "sha": "c2a6b2ee1b3f01b5"
+ },
+ "ProtocolWriter::Hello": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 11,
+  "sha": "91f3f1e280b7d522"
+ },
+ "ProtocolWriter::Model": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 22,
+  "sha": "146adfa0046a2158"
+ },
+ "ProtocolWriter::Prompt": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 11,
+  "sha": "4e2218ab35fbef62"
+ },
+ "ProtocolWriter::SendWith": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 17,
+  "sha": "af4967d96a49f3fd"
+ },
+ "ProtocolWriter::Workspace": {
+  "file": "ProtocolWriter.cpp",
+  "lines": 11,
+  "sha": "de6f947b12387a6d"
+ },
+ "Read": {
+  "file": "Credentials.cpp",
+  "lines": 17,
+  "sha": "953caf1d3a7b95ac"
+ },
+ "ReasoningTitle": {
+  "file": "App.cpp",
+  "lines": 14,
+  "sha": "ca255114a6859519"
+ },
+ "ReplaySource::Load": {
+  "file": "ReplaySource.cpp",
+  "lines": 40,
+  "sha": "07cb0ae02e6644ae"
+ },
+ "ReplaySource::Next": {
+  "file": "ReplaySource.cpp",
+  "lines": 5,
+  "sha": "c23ec18bfa1c9ad5"
+ },
+ "ReplaySource::NextDue": {
+  "file": "ReplaySource.cpp",
+  "lines": 5,
+  "sha": "54f5a54421dcf387"
+ },
+ "Row": {
+  "file": "UiKit.h",
+  "lines": 7,
+  "sha": "71b8102fde995935"
+ },
+ "SansFont": {
+  "file": "Theme.h",
+  "lines": 6,
+  "sha": "fb97af07f084092f"
+ },
+ "SemiFont": {
+  "file": "Theme.h",
+  "lines": 6,
+  "sha": "f3d7306637f3a509"
+ },
+ "SwitchTheme": {
+  "file": "Theme.h",
+  "lines": 4,
+  "sha": "0b435bb6d46feee4"
+ },
+ "ToolTitle": {
+  "file": "App.cpp",
+  "lines": 23,
+  "sha": "75913ce125828eab"
+ },
+ "Transcript::FindBlock": {
+  "file": "Transcript.cpp",
+  "lines": 4,
+  "sha": "e40f125596e2110d"
+ },
+ "Transcript::IsKnownKind": {
+  "file": "Transcript.cpp",
+  "lines": 5,
+  "sha": "331a213df3205741"
+ },
+ "Transcript::OnLine": {
+  "file": "Transcript.cpp",
+  "lines": 120,
+  "sha": "28829eb1353ede25"
+ },
+ "UnknownKindText": {
+  "file": "App.cpp",
+  "lines": 9,
+  "sha": "a15f37d6bf7beef0"
+ },
+ "Utf8FromWide": {
+  "file": "main.cpp",
+  "lines": 10,
+  "sha": "a91c5b5739fd35ad"
+ },
+ "Utf8FromWidePath": {
+  "file": "App.cpp",
+  "lines": 12,
+  "sha": "7acf7f6241262a52"
+ },
+ "VStack": {
+  "file": "UiKit.h",
+  "lines": 7,
+  "sha": "686e0962ba116550"
+ },
+ "Value::Dump": {
+  "file": "Json.cpp",
+  "lines": 5,
+  "sha": "9a6e2caa16806bf8"
+ },
+ "Value::Find": {
+  "file": "Json.cpp",
+  "lines": 5,
+  "sha": "14fd059bc245cf16"
+ },
+ "Value::GetBool": {
+  "file": "Json.cpp",
+  "lines": 4,
+  "sha": "69b5723c55dbef25"
+ },
+ "Value::GetNumber": {
+  "file": "Json.cpp",
+  "lines": 4,
+  "sha": "f07b38801ad8ac8a"
+ },
+ "Value::GetString": {
+  "file": "Json.cpp",
+  "lines": 4,
+  "sha": "bcad80ce6678442e"
+ },
+ "Value::Pretty": {
+  "file": "Json.cpp",
+  "lines": 5,
+  "sha": "aaa3e9a4665c977e"
+ },
+ "WarnZeroSized": {
+  "file": "UiKit.h",
+  "lines": 10,
+  "sha": "06ad9e128ec9bc08"
+ },
+ "WideFromUtf8Path": {
+  "file": "App.cpp",
+  "lines": 10,
+  "sha": "a72b248eb325b0e4"
+ },
+ "WideToUtf8": {
+  "file": "AppConfig.cpp",
+  "lines": 9,
+  "sha": "812dfd294ba21a9f"
+ },
+ "Write": {
+  "file": "Credentials.cpp",
+  "lines": 19,
+  "sha": "aa2c1dd0446b9ef6"
+ },
+ "wWinMain": {
+  "file": "main.cpp",
+  "lines": 172,
+  "sha": "d28a152bf27193f7"
+ }
+}

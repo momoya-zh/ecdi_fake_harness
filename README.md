@@ -391,7 +391,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（84 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（152 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -487,10 +487,16 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 
 `evals/` 是评估数据的**唯一落点**：每轮工作收口时，把当轮的正/负对照读数（机器可读 JSON，
 **轮级**粒度）从 `.scratch/` 归档进来；中间调试件（`_b3_*`、`_asan_*` 这类）不进。
-**现状欠账**：现有 **84** 份、最新仍是 2026-10-24（`p35-deepseek-noarg-live-1.json`）——
-P3.6 / P4 A–J / 后台作业 / L1 沙盒 / 子代理 / 上下文压缩 / MCP / 回合折叠这几轮的读数
-只在 `.scratch/`（**gitignored**，JSON 369 份）里，账面上看不出发生过 ⇒ **待补库**
-（下一步清单第 2 条）。
+**现状欠账（2026-11-07 已清）**：10-24 以来各轮的收口读数已按轮归档 **68 份**
+（总量 84 → **152**，最新 2026-11-07）：App.cpp 拆分 before/after 全套含四阶段指纹
+（`split-*`）· 10-26 的 25 探针进门横评（`probes25-*`）· P4 逐相位基线链 + G 尖峰
+可选中 A/B 对 + H 模型浮窗（`p4-*`）· P3.6 设置探针 live/replay 双臂（`p36-*`）·
+#71 换库 GL 回放（`lib71-*`）· 会话持久化（`session-persist-*`）· REQ-14（`req14-*`）·
+v5 子代理正/负/cap 门（`v5-agent-*`）· ask 提案卡正/负（`v5-ask-*`）· MCP 可见性与
+HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协议声明臂三件 +
+83 断言冒烟（`protoarm-*` / `mcp-smoke-83assert`）。逐份来源映射见 `status.txt`
+2026-11-07 EVALS-BACKFILL 条目。**不进**：被门反复覆盖的 `_reg*`（每轮重 derive）、
+调查中间件（重试链/变异探索）。今后每轮收口即按本口径归档。
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
@@ -527,8 +533,9 @@ P3.6 / P4 A–J / 后台作业 / L1 沙盒 / 子代理 / 上下文压缩 / MCP /
    身份判据钉死「GUI 眼中的 protocolVer == 声明值」防钳位洗绿）。牙齿实测：守卫退回
    `== 3` 的变异体上 v6 臂三判据全红。范围边界：caps 缺 `model` 的热切换拒绝是交互门
    （state-probe 观测不到），有 cap 一侧由 §2e 真核 switch-ok 臂覆盖。
-2. **evals/ 补库**：按上面已拍板的口径，把 2026-10-24 以来各轮收口读数从 `.scratch/`
-   归档进 `evals/`（每轮挑正/负对照，不搬中间调试件）。
+2. ~~**evals/ 补库**：按上面已拍板的口径，把 2026-10-24 以来各轮收口读数从 `.scratch/`
+   归档进 `evals/`（每轮挑正/负对照，不搬中间调试件）。~~ **已落地（2026-11-07）**：
+   68 份按轮归档（84 → 152），映射见 `status.txt` EVALS-BACKFILL 条目；今后每轮收口即归档。
 3. **TODO-06 门自身可信度**：`regress.py` live 分支判据仍是 `out.exists()`（写盘后崩也绿）；
    若能拿到 PDB（gui 目标 `/Zi+/DEBUG` 或 `/MAP`）先把 F1/F2 调用链落到源行——拿得到就排
    第 2 条之前：「归属定不了之前不开新功能」。
