@@ -522,17 +522,43 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         .cornerRadius = 0.0f,
         .borderWidth = 0.0f,
         .borderColor = toolPlainBg});
-    auto label = std::make_unique<ECDI::Label>(bodyText);
-    rec.label = label.get();
-    label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-    label->SetWordWrap(true);   // Phase 29：工具体按 bodyW 断行（JSON/日志长串）
-    {
-        ECDI::Font f = harness::MonoFont(14.0f);
-        label->SetFont(f);
+    // ★★ 2026-11-07（G 计划收尾）：tool 折叠体可选中队列的最后一块——user/system/
+    //   error/assistant/markdown 段落在此前各批已铺（README 的「只到尖峰」欠账行
+    //   实为漂移），tool_call/tool_result 的折叠体是真正的剩余缺口，也是日常最想
+    //   复制的（工具输出是转录里最长的文本）。体部换只读 TextBox：与 Label 版同形
+    //   （透明底/无边框/无 caret/同 mono 字体同色/显式 wrap——SetWordWrap 在
+    //   TextWidget 基类，Label/TextBox 通用）。header 是折叠开关，保持 Button 不动。
+    //   作业增量路径（ApplyJobToRow 的 label->SetText）对只读 TextBox 同样成立：
+    //   只读挡的是用户编辑，不挡程序化 SetText。reasoning 折叠体刻意不进
+    //   （思维链默认折叠、复制场景弱），探针与债务行都如实记这个边界。
+    if (m_options.selectableRows) {
+        auto box = std::make_unique<ECDI::TextBox>();
+        rec.label = box.get();
+        box->SetText(bodyText);
+        box->SetReadOnly(true);
+        box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        box->SetWordWrap(true);   // Phase 29：工具体按 bodyW 断行（JSON/日志长串）
+        box->SetFont(harness::MonoFont(14.0f));
+        box->SetStyle(ECDI::TextBoxStyleOverride{
+            .background = toolPlainBg,
+            .caretWidth = 0.0f,
+            .padding = 0.0f,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f});
+        rec.body->GetContent()->AddChild(std::move(box));
+    } else {
+        auto label = std::make_unique<ECDI::Label>(bodyText);
+        rec.label = label.get();
+        label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        label->SetWordWrap(true);   // Phase 29：工具体按 bodyW 断行（JSON/日志长串）
+        {
+            ECDI::Font f = harness::MonoFont(14.0f);
+            label->SetFont(f);
+        }
+        rec.body->GetContent()->AddChild(std::move(label));
     }
     // Phase 30 批二：CollapsiblePanel 收起态钉住内容可见性（#51④）——
     // 收起溢绘已由框架修复，应用侧 SetVisible workaround 退役。
-    rec.body->GetContent()->AddChild(std::move(label));
     panel->AddChild(std::move(body));
     return panel;
 }

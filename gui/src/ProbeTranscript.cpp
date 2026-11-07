@@ -625,6 +625,36 @@ void HarnessApp::RunSelectProbe() {
         if (!rec.matched) rec.note = "clipboard != block full text";
         m_probeState.selectProbeLog.push_back(std::move(rec));
     }
+    // ①b 工具折叠体（2026-11-07，G 计划收尾）：展开 → 焦点给体部 TextBox →
+    //    Ctrl+A/C ⇒ 剪贴板 == 体部全文。展开走 ToggleRow——「点击路径与探针共用
+    //    的唯一入口」（见其注释：探针自写一遍切换就是第二份实现，测的是它自己）。
+    //    【牙齿】体部若仍是 Label（--selectable-rows 未铺到 tool 行或被改回），
+    //    dynamic_cast 落空 ⇒ 本相 matched=false ⇒ 门红——这正是本次要守的缺口。
+    //    只读 TextBox 的复制与正文行同一条 TextBox.h:50 契约，无需新断言面。
+    {
+        RowRec* toolRow = nullptr;
+        for (RowRec& r : m_sess->rows) {
+            if (!r.tool || !r.label) continue;
+            if (dynamic_cast<ECDI::TextBox*>(r.label)) { toolRow = &r; break; }
+        }
+        SelectProbeRec rec;
+        rec.phase = "tool-select-and-copy";
+        if (!toolRow) {
+            rec.matched = false;
+            rec.note = "no tool row with TextBox body (selectable rows not extended to tool rows?)";
+            m_probeState.selectProbeLog.push_back(std::move(rec));
+        } else {
+            ToggleRow(*toolRow, /*reasoning=*/false);
+            const std::string toolText = toolRow->label->GetText();
+            m_window->SetFocusedWidget(toolRow->label);
+            SynthesizeKey(ECDI::KeyCode::A, false, ECDI::KeyModifier::Ctrl);
+            SynthesizeKey(ECDI::KeyCode::C, false, ECDI::KeyModifier::Ctrl);
+            rec.clipText = readClip();
+            rec.matched = (rec.clipText == toolText);
+            if (!rec.matched) rec.note = "clipboard != tool body full text";
+            m_probeState.selectProbeLog.push_back(std::move(rec));
+        }
+    }
     // ② 负对照：焦点回输入框、放点文本，同组按键 ⇒ 剪贴板 = 输入框内容。
     if (m_promptBar && m_promptBar->input()) {
         ECDI::TextBox* input = m_promptBar->input();

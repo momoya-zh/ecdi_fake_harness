@@ -391,7 +391,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（152 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（155 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -460,7 +460,8 @@ PY
 （**整树重建**，不是换色）· 多会话（创建 / 切换 / 冻结时钟 / 删除）· 工作区**租约** + 真实目录列表 +
 临时会话 · 会话归档 · 转录导出 · `···` 内联菜单 · 窗口缩放 + **最小尺寸 880×460**（框架拦，不回弹）·
 Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶后内部滚动）·
-思维链默认折叠 · 上下文用量环 · 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
+思维链默认折叠 · 上下文用量环 · **转录可选中**（`--selectable-rows`：user/assistant/system/
+error/markdown/tool 折叠体全可选中复制，`--select-probe` 三相进门）· 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
 **回合级折叠**（回答结束即把本回合的过程行收成一条「› 已完成 · N 步 · X.Xs」摘要，
 `user` 与最终回答保持可见；点摘要条展开／再收起，**行数不变**）·
 ask **提案卡**（write/edit 审批前看 unified diff、run/task 看完整作用域）·
@@ -479,7 +480,7 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 | **MCP HTTP 的服务端通知流** | Streamable HTTP 只做了「请求-响应」方向；GET 上的主动通知、legacy 重连 / `Last-Event-ID`、OAuth 动态注册均未做（方案 §九「诚实边界」） |
 | ~~**MCP 单次调用超时**~~ **已落地（2026-11-06）** | `--mcp-timeout`（默认 60s；0 不限）+ 服务级 `mcp.json` `"timeout": <sec>`；超时真发取消通知——送达则保留连接复用，未送达（stdio 僵死）才清退并触发按需 respawn。规则与诚实边界见方案 §十一 |
 | ~~★ **用户模式的机器判据**~~ **已落地（2026-11-06）** | `--mode-probe` 五相进门（`baseline-dev` / `switch-user` / `dev-restored` / `negative` 负对照 / `inspector-memory`）：顶栏胶囊、26px 底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆，负对照带确认过的牙。闭合记录：`docs/P4-gui-usability-plan.md` §12 |
-| **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
+| ~~**转录可选中：只到尖峰**~~ **已落地（2026-11-07）** | **订正：这行的「user/system 未铺」本身是漂移**——user/system/error/markdown 段落在 G 之后的批次里已 TextBox 化，真正的缺口只有 tool 行。本批铺完：`--selectable-rows` 下 tool_call/tool_result 折叠体换只读 TextBox（mono/wrap 同形，header 保持折叠钮，作业增量 SetText 路径不受只读影响），探针新增 `tool-select-and-copy` 相（ToggleRow 展开 → Ctrl+A/C → 剪贴板 == 体部全文，变异体实测会红）。**reasoning 折叠体刻意不进**（思维链默认折叠、复制场景弱）。默认关不变 ⇒ 基线路径零变化（REALISTIC A/B：invalidations 29=29 逐位同） |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
 | ~~**`--settings-probe` 的 4 相**~~ **已机判（2026-10-27 起）** | 四相在回放跑法下结构上不可达（designed-red 登记，理由见 `regress.py` EXTRA_PROBES 注释）；由 **§2e live 设置探针真跑真断**——真 core 重建 + 首启分支（配置必须不存在），必判九相含上述四相，另带 `protocolDeclared == 6` 身份判据 ⇒ **不是人工验收** |
 
@@ -540,8 +541,8 @@ HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协�
    若能拿到 PDB（gui 目标 `/Zi+/DEBUG` 或 `/MAP`）先把 F1/F2 调用链落到源行——拿得到就排
    第 2 条之前：「归属定不了之前不开新功能」。
 
-功能侧（MCP 服务端主动通知流 / 转录可选中铺到 `user`/`system`/`tool` 行 / HUD 脏位修复进门）
-等以上收完再挑。
+功能侧（MCP 服务端主动通知流 / HUD 脏位修复进门 / MCP 小修包：hello.mcp 快照 respawn 后
+不跟手、切工作区不重发现 `mcp.json`、model-cap 拒绝侧 live 断言）等以上收完再挑。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
