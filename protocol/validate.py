@@ -102,6 +102,15 @@ def read_fixture(path, findings):
     except UnicodeDecodeError as exc:
         findings.hit("ENC", 0, "not valid UTF-8: %s" % exc)
         return []
+    # ★ 2026-11-07：末字节必须是 LF（§1.1 分帧 / §1.2 EOF 截断显式报错）。
+    #   此前只查 BOM 与 CRLF，末字节漏检——两份「必须有效」的正向夹具
+    #   （jobs/background-task、mcp/status）因此长期缺尾 LF：GUI 侧 ReplaySource
+    #   每轮都把它们判成「最后一行被截断」并放一条错误通告（§1.2 的报错面是
+    #   对的，错的是这些文件本身）。hostile/no-trailing-lf.jsonl 是这条规则的
+    #   正向（故意违规）样本。
+    if text and not text.endswith("\n"):
+        findings.hit("ENC", 0, "final byte is not LF; file is EOF-truncated "
+                               "(protocol 1.1 framing / 1.2 explicit error)")
     return text.split("\n")
 
 

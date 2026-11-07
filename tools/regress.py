@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # ============================================================
-# 全量回归验证套件：6 夹具基线 + 25 个探针 + 1 个仪器声明 + REQ-03 live A/B
+# 全量回归验证套件：7 夹具基线 + 25 个探针 + 1 个仪器声明 + REQ-03 live A/B
 # + live 协议声明臂（2d-b，2026-11-07）+ live 设置探针（真 core，2e）+ MCP 真链路冒烟（2f）+ 协议校验
 # ------------------------------------------------------------
 # 判据说明（本仓纪律）：
@@ -101,6 +101,10 @@ FIXTURES = [
     ("scale", "protocol/fixtures/scale/scale-transcript-2000.jsonl", (2000, 4590, 8906)),
     ("hostile-seq-gap", "protocol/fixtures/hostile/seq-gap.jsonl", (1, 3, 13)),
     ("hostile-truncated", "protocol/fixtures/hostile/truncated-final-line.jsonl", (1, 1, 5)),
+    # ★ 2026-11-07（F7 闭合）：唯一**故意**缺尾 LF 的夹具——每行都是完整 JSON，
+    #   违规点只在文件末字节（validate.py 的 ENC 检查守它）；GUI 侧 ReplaySource
+    #   的 §1.2 截断分支由此每轮必经，摘要 truncatedFinalLine 断言见 §1 循环。
+    ("hostile-no-lf", "protocol/fixtures/hostile/no-trailing-lf.jsonl", (1, 1, 5)),
 ]
 
 PROBES = [
@@ -1064,7 +1068,7 @@ def main():
     _sha, _size, _mt = exe_fingerprint()
     print(f"BINARY: {EXE}  sha256:{_sha}  size={_size}  mtime={_mt}")
 
-    print("== 1. 夹具结构基线 (6 fixtures) ==")
+    print("== 1. 夹具结构基线 (7 fixtures) ==")
     for name, rel, exp in FIXTURES:
         out = OUT / f"_reg_{name}.json"
         out.unlink(missing_ok=True)
@@ -1079,8 +1083,17 @@ def main():
         d = json.loads(out.read_text(encoding="utf-8"))
         got = (d["blocks"], d["deltas"], d["messages"])
         ok = (got == exp)
+        # ★ 2026-11-07（F7 闭合）：§1.2 报错面的机读判据——摘要新增
+        #   truncatedFinalLine。七份里唯一应为 true 的是故意缺尾 LF 的
+        #   hostile-no-lf；其余任何一份为 true 都意味着截断分支被无意触发
+        #   （2026-11-07 前两份正向夹具正是这样病着而无人可见）。
+        trunc_ok = (d.get("truncatedFinalLine") is True) == (name == "hostile-no-lf")
+        if not trunc_ok:
+            ok = False
         fail += 0 if ok else 1
-        print(f"  {name:20s} {got[0]}/{got[1]}/{got[2]:<12} exp {exp[0]}/{exp[1]}/{exp[2]:<12} {'OK' if ok else 'MISMATCH'}")
+        tag = ("OK" if (got == exp and trunc_ok)
+               else ("TRUNC-FLAG" if got == exp else "MISMATCH"))
+        print(f"  {name:20s} {got[0]}/{got[1]}/{got[2]:<12} exp {exp[0]}/{exp[1]}/{exp[2]:<12} {tag}")
 
     print("\n== 2. 探针断言 (13 probes) ==")
     for flag, key in PROBES:

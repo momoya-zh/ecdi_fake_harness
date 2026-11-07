@@ -1639,3 +1639,67 @@ func TestMCP_CallTimeout_ConfigDisableZero(t *testing.T) {
 		t.Fatalf("expected tool success with zero timeout, got: %+v", res)
 	}
 }
+
+// TestMCP_DiscoveryChain_Injected：发现链纯核心的全分支表测（2026-11-07，
+// mcp-host-plan §五「单测密闭性」闭合）。目录来源全部由参数注入，不读进程环境——
+// 第三级 UserHomeDir 分支在此前「APPDATA 恒有」的开发机上结构性测不到，这里补齐。
+// 产品包装层（os.Getenv / os.UserHomeDir）由 isolateMCPDiscovery 的环境隔离守。
+func TestMCP_DiscoveryChain_Injected(t *testing.T) {
+	root := t.TempDir()
+	wsBoth := filepath.Join(root, "ws-both")   // .ecdi/mcp.json 与 mcp.json 并存
+	wsPlain := filepath.Join(root, "ws-plain") // 只有 mcp.json
+	wsEmpty := filepath.Join(root, "ws-empty") // 两处都没有
+	appData := filepath.Join(root, "appdata")
+	home := filepath.Join(root, "home")
+	for _, d := range []string{
+		filepath.Join(wsBoth, ".ecdi"), wsPlain, wsEmpty,
+		filepath.Join(appData, "ecdi-fake-harness"),
+		filepath.Join(home, ".config", "ecdi-fake-harness"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dotEcdi := filepath.Join(wsBoth, ".ecdi", "mcp.json")
+	wsCfg := filepath.Join(wsPlain, "mcp.json")
+	globalCfg := filepath.Join(appData, "ecdi-fake-harness", "mcp.json")
+	homeCfg := filepath.Join(home, ".config", "ecdi-fake-harness", "mcp.json")
+	for _, p := range []string{dotEcdi, wsCfg, globalCfg, homeCfg} {
+		if err := os.WriteFile(p, []byte(`{"servers":{}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name       string
+		explicitIn string
+		wsRoot     string
+		appData    string
+		home       string
+		wantPath   string
+		wantSource string
+	}{
+		{"explicit hit", wsCfg, "", "", "", wsCfg, mcpConfigSourceExplicit},
+		// 契约：显式路径不存在 ⇒ ("", "explicit")——不静默换下一级文件。
+		{"explicit miss", filepath.Join(root, "nope", "mcp.json"), wsPlain, appData, "", "", mcpConfigSourceExplicit},
+		{"workspace .ecdi 优先于 mcp.json", "", wsBoth, appData, home, dotEcdi, mcpConfigSourceWorkspace},
+		{"workspace mcp.json", "", wsPlain, appData, home, wsCfg, mcpConfigSourceWorkspace},
+		{"workspace 两者皆无 ⇒ 落全局 appData", "", wsEmpty, appData, home, globalCfg, mcpConfigSourceGlobal},
+		{"appData 空 ⇒ 回落 home/.config（此前测不到的分支）", "", wsEmpty, "", home, homeCfg, mcpConfigSourceGlobal},
+		// else-if 语义（与旧链逐位一致）：appData 非空时 home 分支不参与，
+		// 即使 appData 下没有配置文件也不回落——Windows 上 APPDATA 恒有 ⇒
+		// home 分支在生产是死码，这正是它此前测不到的第二重原因。
+		{"appData 非空但无文件 ⇒ 双空（不回落 home）", "", wsEmpty, filepath.Join(root, "no-appdata"), home, "", ""},
+		{"全部为空/不存在 ⇒ 双空", "", wsEmpty, "", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPath, gotSource := findMCPConfigFileIn(tc.explicitIn, tc.wsRoot, tc.appData, tc.home)
+			if gotPath != tc.wantPath || gotSource != tc.wantSource {
+				t.Fatalf("findMCPConfigFileIn(%q, %q, %q, %q) = (%q, %q), want (%q, %q)",
+					tc.explicitIn, tc.wsRoot, tc.appData, tc.home,
+					gotPath, gotSource, tc.wantPath, tc.wantSource)
+			}
+		})
+	}
+}

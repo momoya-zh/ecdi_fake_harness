@@ -1,0 +1,5 @@
+{"t":"hello","seq":0,"ts":"2026-10-03T11:10:00.000Z","protocol":3,"core":"0.1.0","session":"s-hostile-3","caps":["tools"]}
+{"t":"state","seq":1,"ts":"2026-10-03T11:10:00.010Z","value":"running"}
+{"t":"block_start","seq":2,"ts":"2026-10-03T11:10:00.100Z","id":"b1","kind":"assistant"}
+{"t":"delta","seq":3,"ts":"2026-10-03T11:10:00.140Z","id":"b1","text":"本文件每行都是完整 JSON；唯一违规点是文件末字节不是 LF（协议 1.1/1.2）。"}
+{"t":"block_end","seq":4,"ts":"2026-10-03T11:10:00.180Z","id":"b1","ok":true}

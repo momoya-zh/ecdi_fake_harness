@@ -89,6 +89,10 @@ func waitFor(t *testing.T, c *outCollector, desc string, cond func(map[string]an
 //	而所有 session 测试都传 `mcpConfig=""` + 临时 workspace ⇒ 只要开发机上放了
 //	这一份全局配置，`go test` 就会在每个 session 测试里**拉起真的 MCP 服务**
 //	（最坏 5s/服务 × N）。测试必须密闭，不能依赖跑测试的人没配过 MCP。
+//
+//	★ 2026-11-07：发现链核心已抽为可注入的 findMCPConfigFileIn（纯函数，不读
+//	环境；TestMCP_DiscoveryChain_Injected 直接注入目录）。本隔离保留——它守的
+//	是产品包装层（薄包装仍在读真环境）。
 func isolateMCPDiscovery(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()

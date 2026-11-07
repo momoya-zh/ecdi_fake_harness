@@ -608,7 +608,29 @@ func findMCPConfigFile(explicitPath string, workspaceRoot string) string {
 //
 // ★ 显式路径不存在时返回 ("", "explicit")：调用方据此把"你以为开了 MCP"报出来，
 // 而不是退回下一级去读一个用户没指定的文件（静默换文件比不启用更糟）。
+//
+// ★ 2026-11-07（mcp-host-plan §五「单测密闭性」闭合）：本函数只是薄包装——环境
+// 目录在此读取，发现链本体下沉到 findMCPConfigFileIn（目录来源全部由参数给出，
+// 不读进程环境）。此前被测代码直接读 APPDATA/UserHomeDir，测试只能靠改环境变量
+// 间接控制，且第三级 UserHomeDir 分支在「APPDATA 恒有」的开发机上结构性测不到。
+// isolateMCPDiscovery 的环境隔离保留，守的是产品包装层（纵深防御）。
 func findMCPConfigFileWithSource(explicitPath string, workspaceRoot string) (path, source string) {
+	return findMCPConfigFileIn(explicitPath, workspaceRoot, os.Getenv("APPDATA"), userHomeDirOrEmpty())
+}
+
+// userHomeDirOrEmpty：os.UserHomeDir 的无错版——出错一律当空串（与旧链的
+// `err == nil && home != ""` 判据逐位一致）。
+func userHomeDirOrEmpty() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
+// findMCPConfigFileIn：发现链的纯核心，目录来源全部由参数给出、不读进程环境。
+// appData 非空时优先用它（Windows 全局级），否则回落 home/.config（POSIX 惯例）。
+func findMCPConfigFileIn(explicitPath, workspaceRoot, appData, home string) (path, source string) {
 	if explicitPath != "" {
 		if _, err := os.Stat(explicitPath); err == nil {
 			return explicitPath, mcpConfigSourceExplicit
@@ -627,12 +649,12 @@ func findMCPConfigFileWithSource(explicitPath string, workspaceRoot string) (pat
 	}
 
 	// 全局 APPDATA / .config
-	if appData := os.Getenv("APPDATA"); appData != "" {
+	if appData != "" {
 		p := filepath.Join(appData, "ecdi-fake-harness", "mcp.json")
 		if _, err := os.Stat(p); err == nil {
 			return p, mcpConfigSourceGlobal
 		}
-	} else if home, err := os.UserHomeDir(); err == nil && home != "" {
+	} else if home != "" {
 		p := filepath.Join(home, ".config", "ecdi-fake-harness", "mcp.json")
 		if _, err := os.Stat(p); err == nil {
 			return p, mcpConfigSourceGlobal

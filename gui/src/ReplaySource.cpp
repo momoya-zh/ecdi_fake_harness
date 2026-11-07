@@ -61,9 +61,14 @@ bool ReplaySource::Load(const std::filesystem::path& path, std::string& error) {
         }
         m_lines.push_back(std::move(line));
     }
-    // 协议 §1.2：EOF 截断的最后一行必须显式报错
+    // 协议 §1.2：EOF 截断的最后一行必须显式报错，不得静默丢弃。
+    // ★ 文案订正（2026-11-07）：旧文案写 "dropped"，但本实现从未丢行——getline
+    //   会把无尾 LF 的末行照常交给上面的循环（hostile/no-trailing-lf 夹具实测
+    //   messages=5，五行全部回放）。§1.2 要求的是「必须报错」而非「必须丢弃」：
+    //   保留回放 + 显式报错才是 compliant 行为，文案随行为改。
     if (!raw.empty() && raw.back() != '\n' && !m_lines.empty()) {
-        m_truncatedError = "final line truncated (missing LF) - dropped per protocol 1.2";
+        m_truncatedError =
+            "final line truncated (missing LF) - reported per protocol 1.2 (line still replayed)";
     }
     return true;
 }

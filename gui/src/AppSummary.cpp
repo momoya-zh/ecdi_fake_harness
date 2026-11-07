@@ -70,6 +70,15 @@ void HarnessApp::WriteSummary() {
     std::snprintf(buf, sizeof(buf), "  \"messages\": %zu,\n",
                   m_sess->replay ? m_sess->replay->Total() : m_sess->liveLines);
     json += buf;
+    // ★ 2026-11-07（F7 闭合）：源文件「EOF 截断」标志的机读证据（协议 §1.2：
+    //   截断必须显式报错）。GUI 侧的报错面 = 转录里的错误通告行（AddNoticeRow），
+    //   摘要此前对它全盲——没有这个字段，「哪份夹具触发了截断分支」只能靠人眼。
+    //   盲区实证：jobs/background-task 与 mcp/status 两份「必须有效」的正向夹具
+    //   2026-11-07 前长期缺尾 LF，每轮 --job-probe/--mcp-probe 都在放假通告而
+    //   无任何读数可见。fixture 侧由 validate.py 的末字节 ENC 检查守。
+    json += std::string("  \"truncatedFinalLine\": ") +
+            (m_sess->replay && !m_sess->replay->TruncatedError().empty() ? "true" : "false") +
+            ",\n";
     std::snprintf(buf, sizeof(buf), "  \"invalidations\": %zu,\n", m_invalidations);
     json += buf;
     std::snprintf(buf, sizeof(buf), "  \"paints\": %zu,\n", m_evalPaints);

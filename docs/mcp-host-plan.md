@@ -212,7 +212,15 @@
 | 缺什么 | 说明 |
 |---|---|
 | HTTP 服务端通知流 | Streamable HTTP 只实现了「请求-响应」方向；GET 上的服务端主动通知、legacy 的重连/`Last-Event-ID` 不在本期（§九边界） |
-| 单测密闭性 | `findMCPConfigFile` 的第三级读用户主目录；测试侧已用 `isolateMCPDiscovery` 把 `APPDATA`/`HOME`/`USERPROFILE` 指到临时目录，但**被测代码**仍会读真主目录（生产行为正确，测试靠环境覆盖） |
+
+★ **单测密闭性已于 2026-11-07 闭合**：发现链拆出纯核心
+`findMCPConfigFileIn(explicit, workspace, appData, home)`——目录来源全部由参数给出，
+被测代码不再读进程环境（`os.Getenv`/`os.UserHomeDir` 只存在于薄包装
+`findMCPConfigFileWithSource`）。第三级 `UserHomeDir` 分支在「APPDATA 恒有」的开发机
+上此前结构性测不到（且 `else-if` 语义下 appData 在场时它本就不参与——双重死码），
+现由 `TestMCP_DiscoveryChain_Injected` 直接注入合成目录覆盖全分支，含「显式路径
+不存在 ⇒ `("", "explicit")`、不静默换文件」契约。`isolateMCPDiscovery` 的环境隔离
+保留，守产品包装层。
 
 ★ **HTTP/SSE 传输已于 2026-11-06 闭合（六版，§九）**：Streamable HTTP + legacy
 HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 标识、六臂（A–F）冒烟。
