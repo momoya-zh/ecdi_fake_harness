@@ -1173,22 +1173,34 @@ void HarnessApp::RefreshHud() {
     if (m_options.stateProbe && m_promptBar) {
         ECDI::Button* send = m_promptBar->sendButton();
         ECDI::Button* stop = m_promptBar->stopButton();
+        ECDI::Button* pick = m_hud.workspacePick;   // ★ 2026-11-07：picker 同点回读
         if (send && stop) {
             const bool sendEnabled = send->IsEnabled();
             const bool stopEnabled = stop->IsEnabled();
             const std::string sendTitle = send->GetText();
+            const bool pickerEnabledNow = pick ? pick->IsEnabled() : false;
+            const bool pickerVisibleNow = pick ? pick->IsVisible() : false;
+            // ★ picker 使能也参与「变化才记」：它比 send 先翻（hello 解析出 caps
+            //   即翻，不必等 workspace 同步完成）——不记的话，「picker 已就绪而
+            //   send 未就绪」的中间态在轨迹里不存在，2d-b 臂就少了定位分歧的那行。
             const bool changed = !m_probeState.stateProbeLastValid ||
                                  sendEnabled != m_probeState.stateProbeLastSend ||
-                                 stopEnabled != m_probeState.stateProbeLastStop;
+                                 stopEnabled != m_probeState.stateProbeLastStop ||
+                                 pickerEnabledNow != m_probeState.stateProbeLastPicker;
             if (changed) {
                 StateProbeRec rec;
                 rec.coreState = m_sess->coreState.empty() ? "idle" : m_sess->coreState;
                 rec.sendEnabled = sendEnabled;
                 rec.stopEnabled = stopEnabled;
                 rec.sendTitle = sendTitle;
+                rec.pickerEnabled = pickerEnabledNow;
+                rec.pickerVisible = pickerVisibleNow;
+                rec.workspaceCap = m_sess->workspaceCap;
+                rec.protocolVer = m_sess->protocolVer;
                 m_probeState.stateProbeLog.push_back(std::move(rec));
                 m_probeState.stateProbeLastSend = sendEnabled;
                 m_probeState.stateProbeLastStop = stopEnabled;
+                m_probeState.stateProbeLastPicker = pickerEnabledNow;
                 m_probeState.stateProbeLastValid = true;
             }
         }
@@ -1530,7 +1542,11 @@ void HarnessApp::AppendStateProbeSummary(std::string& json) {
         json += "{\"state\": \"" + r.coreState + "\", \"sendEnabled\": " +
                 (r.sendEnabled ? "true" : "false") + ", \"stopEnabled\": " +
                 (r.stopEnabled ? "true" : "false") + ", \"sendTitle\": \"" +
-                r.sendTitle + "\"}";
+                r.sendTitle + "\", \"pickerEnabled\": " +
+                (r.pickerEnabled ? "true" : "false") + ", \"pickerVisible\": " +
+                (r.pickerVisible ? "true" : "false") + ", \"workspaceCap\": " +
+                (r.workspaceCap ? "true" : "false") + ", \"protocolVer\": " +
+                std::to_string(r.protocolVer) + "}";
     }
     json += "],\n";
 }

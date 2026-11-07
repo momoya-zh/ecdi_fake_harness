@@ -34,6 +34,13 @@ type session struct {
 	dropSeqEvery int
 	dropBlockEnd bool
 
+	// ── hello 声明旋钮（2026-11-07，regress 2d-b live 协议臂）─────────
+	// 默认（protocol 3 + tools,ask,workspace）与历史基线逐字节相同；2d-b 臂用
+	// 它们构造「声明 4/6」「未声明 workspace」的合法 core——闭合 2026-11-06
+	// COVERAGE HOLE（GUI 侧对 protocol>3 的处理在整条 live 语料里零断言）。
+	protocolVer int
+	capsList    []string
+
 	// ★ --burst（2026-10-24）：关掉节奏等待，并把一轮输出攒在一次写出里。
 	//   缓冲本体在 wire.Out（burst=true ⇒ 256KB + 控制面必刷）；
 	//   这个布尔只管 sleep() 是否直接返回（积压要一次性到达，不是快一点）。
@@ -92,6 +99,7 @@ type pendingWorkspace struct {
 func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 	wsDelayMs int, burst bool, resumeID, sessionID, workspace string,
 	contextTokens int, failSummarize bool, globalMemory string,
+	protocolVer int, capsList []string,
 	in <-chan wire.StampedLine, stc *atomic.Int32,
 	log func(string, ...any)) *session {
 	s := &session{
@@ -99,6 +107,8 @@ func newSession(seed int64, speed float64, dropSeq int, dropBlockEnd bool,
 		speed:            speed,
 		dropSeqEvery:     dropSeq,
 		dropBlockEnd:     dropBlockEnd,
+		protocolVer:      protocolVer,
+		capsList:         capsList,
 		workspaceDelayMs: wsDelayMs,
 		burst:            burst,
 		out:              wire.NewOut(os.Stdout, burst),
@@ -264,9 +274,12 @@ func (s *session) run() error {
 	}()
 	// 协议 §3.1：core→gui 第一条 = hello，新会话 seq 从 0 起，resume 从 lastSeq+1 续。
 	// ★ v3：protocol 升到 3，并声明 workspace 能力（§3.1：未声明 ⇒ GUI 不得显示选择器）。
+	// ★ 2026-11-07：版本与 caps 改为可声明（--protocol/--caps）；默认值 = 本注释
+	//   前两行，逐字节不变。GUI 侧对声明结果的解析由 --state-probe 行回读、
+	//   在门里断言（判据建立在 GUI 的解析输出上，不建立在「我们传了什么」上）。
 	hello := map[string]any{
-		"t": "hello", "protocol": 3, "core": "0.2.0",
-		"session": s.sessionID, "caps": []string{"tools", "ask", "workspace"},
+		"t": "hello", "protocol": s.protocolVer, "core": "0.2.0",
+		"session": s.sessionID, "caps": s.capsList,
 	}
 	if s.contextLimit > 0 {
 		hello["context"] = s.contextLimit

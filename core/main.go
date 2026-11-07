@@ -8,6 +8,7 @@
 //
 //	fake-core [--speed 1.0] [--seed 20261007] [--drop-seq N] [--drop-block-end]
 //	          [--workspace-delay-ms N] [--burst] [--quiet]
+//	          [--protocol 3] [--caps tools,ask,workspace]
 //
 // stdin  = gui→core 消息（JSONL，一行一条）
 // stdout = core→gui 消息（JSONL，一行一条，每条即刷；`--burst` 例外，见下）
@@ -29,6 +30,7 @@ package main
 import (
 	"flag"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"ecdi-fake-core/internal/wire"
@@ -50,6 +52,16 @@ func main() {
 	contextTokens := flag.Int("context", 0, "上下文容量分母（token 数；0 = 不发 hello.context）")
 	failSummarize := flag.Bool("fail-summarize", false, "测试注入：强制模拟摘要压缩失败（用于负对照验证）")
 	globalMemory := flag.String("global-memory", "", "全局记忆目录（缺省为 exe 同级 data/memory）")
+	// ★ --protocol / --caps（2026-11-07，regress 2d-b）：hello 声明旋钮，只改 hello
+	//   里这两个字段，剧本行为不变。默认值 = 历史基线（3 + tools,ask,workspace）⇒
+	//   既有跑法逐字节不变。存在理由：2026-11-06 的「选择文件夹死钮」（AppHud 的
+	//   liveReady 守卫 == 3 未随 v4 迁移）在自动化语料里结构性不可见——全语料的
+	//   live 支线都跑 protocol 3 的本程序。这两个旋钮让门能构造「声明 4/6」「未
+	//   声明 workspace」的合法 core，GUI 侧解析结果由 --state-probe 行回读断言。
+	protocolVer := flag.Int("protocol", 3,
+		"hello.protocol 声明值（默认 3 ⇒ 既有基线逐字节不变；2d-b 臂传 4/6）")
+	capsCSV := flag.String("caps", "tools,ask,workspace",
+		"hello.caps，逗号分隔（默认 ⇒ 与既有基线逐字节相同；--caps tools,ask 构造未声明 workspace 的合法 core，§3.1）")
 	flag.Parse()
 
 	logf := wire.NewLogger("[fake-core] ", *quiet)
@@ -59,9 +71,16 @@ func main() {
 	curState.Store(wire.CodeIdle)
 	go wire.ReadStdin(lines, &curState, logf)
 
+	var caps []string
+	for _, c := range strings.Split(*capsCSV, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			caps = append(caps, c)
+		}
+	}
+
 	s := newSession(*seed, *speed, *dropSeq, *dropBlockEnd, *wsDelay, *burst,
 		*resumeID, *sessionID, *workspace, *contextTokens, *failSummarize, *globalMemory,
-		lines, &curState, logf)
+		*protocolVer, caps, lines, &curState, logf)
 	if err := s.run(); err != nil {
 		logf("fatal: %v", err)
 		os.Exit(1)

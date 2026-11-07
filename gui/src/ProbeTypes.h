@@ -21,6 +21,15 @@ struct StateProbeRec {
     bool sendEnabled = true;
     bool stopEnabled = false;
     std::string sendTitle;   // Button::GetText()——标题文本直接回读，不靠像素
+    // ★★ 2026-11-07（live 协议臂 2d-b）：同行回读 picker / caps / 版本面。
+    //   picker 两项直接回读真实按钮；workspaceCap/protocolVer 是从 hello 解析出的
+    //   会话字段——判据建立在 GUI 的解析结果上，而不是门传给假 core 的参数上，
+    //   「GUI 钳位/漏解析」在这条臂上会红。存在理由：2026-11-06 的
+    //   「选择文件夹死钮」（liveReady 守卫 == 3）在整条 live 语料里结构性不可见。
+    bool pickerEnabled = false;   // workspacePick->IsEnabled()
+    bool pickerVisible = true;    // workspacePick->IsVisible()（§3.1 未声明 ⇒ 隐藏）
+    bool workspaceCap = false;    // hello.caps 是否声明 workspace
+    int protocolVer = 0;          // hello.protocol 的 GUI 解析值
 };
 
 struct HitProbeRec {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # ============================================================
 # 全量回归验证套件：6 夹具基线 + 25 个探针 + 1 个仪器声明 + REQ-03 live A/B
-# + live 设置探针（真 core，2e）+ MCP 真链路冒烟（2f）+ 协议校验
+# + live 协议声明臂（2d-b，2026-11-07）+ live 设置探针（真 core，2e）+ MCP 真链路冒烟（2f）+ 协议校验
 # ------------------------------------------------------------
 # 判据说明（本仓纪律）：
 #   * 夹具基线只看 blocks/deltas/messages —— paints/frames 会随字体与实现变化，
@@ -972,6 +972,84 @@ def check_workspace_probe(core):
     return 0 if ok else 1
 
 
+# ★★ 2026-11-07：live 协议声明臂——闭合 status.txt 2026-11-06 登记的 COVERAGE HOLE。
+#   病灶：假 core 恒发 "protocol": 3，全部 live 支线只跑 fake-core ⇒ GUI 侧对
+#   「声明版本 > 3 的 core」的处理全语料零断言。2026-11-06 用户报的「无参启动点
+#   『选择文件夹』没反应」正是这个洞长成的缺陷：AppHud 的 liveReady 守卫 == 3
+#   未随 v4 迁移，而 100% protocol 3 的语料对它结构性失明。
+#   旋钮：假 core 新增 --protocol / --caps（默认 3 + tools,ask,workspace ⇒ 既有
+#   基线逐字节不变）。三臂分工：
+#     v4-full / v6-full   —— 版本守卫（>= 3）与 picker 使能/可见在声明 > 3 时必须照常；
+#     v6-no-workspace     —— §3.1 反面：未声明 workspace ⇒ picker 隐藏且永不就绪，
+#                            但**对话照常**（sendEnabled 仍须在 idle 翻真——正是
+#                            2026-10-20 修过的「workspace 能力被当成对话前提」回归）。
+#   断言面 = --state-probe 行的同点回读字段（pickerEnabled/pickerVisible/
+#   workspaceCap/protocolVer）。★ protocolVer 判的是 GUI 解析 hello 的结果，
+#   不是我们传的参数——「GUI 钳位/漏解析」在这条臂上会红，绿不了。
+#   牙齿自证：把 liveReady 退回 == 3，v4/v6 两臂的「settled 后 send 翻真」与
+#   「picker 使能可见」同时红；把 workspaceCap 塞回 liveReady，no-workspace 臂红。
+PROTO_ARMS = [
+    # (臂名, 假 core 参数串, 声明版本, 是否声明 workspace)
+    ("v4-full", "--protocol=4 --caps=tools,ask,workspace,model", 4, True),
+    ("v6-full", "--protocol=6 --caps=tools,ask,workspace,model", 6, True),
+    ("v6-no-workspace", "--protocol=6 --caps=tools,ask", 6, False),
+]
+
+
+def check_protocol_arms(core):
+    """声明 4 / 6 / 缺能力各一支 live 臂，判据建立在 state-probe 回读上。"""
+    fail = 0
+
+    def check(label, ok, detail):
+        nonlocal fail
+        fail += 0 if ok else 1
+        print(f"  {label:44s} {'OK' if ok else 'FAILED':6s}  {detail}")
+
+    for name, core_args, proto, want_ws in PROTO_ARMS:
+        out = OUT / f"_reg-proto-arm-{name}.json"
+        out.unlink(missing_ok=True)
+        try:
+            r = subprocess.run([str(EXE), "--core", str(core), "--core-args", core_args,
+                                "--state-probe", "--theme", "light",
+                                "--auto-close", "15000", "--out", str(out)],
+                               cwd=ROOT, capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            record(f"proto-arm:{name}", None, out)
+            check(name, False, "TIMEOUT")
+            continue
+        record(f"proto-arm:{name}", r.returncode, out)
+        if not out.exists():
+            check(name, False, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
+            continue
+        doc = json.loads(out.read_text(encoding="utf-8"))
+        rows = doc.get("stateProbe") or []
+        if not rows:
+            check(name, False, "NO ROWS (stateProbe)")
+            continue
+        # 身份判据：某行的 protocolVer == 声明值 ⇒ GUI 真的解析了 hello.protocol。
+        #   没有它，「GUI 把版本钳成 3」会让后面全部判据绿得毫无意义。
+        seen = sorted({x.get("protocolVer") for x in rows})
+        check(f"{name} · hello.protocol 解析为 {proto}", proto in seen,
+              f"GUI 眼中的 protocolVer: {seen}")
+        last = rows[-1]
+        check(f"{name} · 最终 settled 于 idle 且发送使能",
+              last.get("state") == "idle" and last.get("sendEnabled") is True,
+              f"last: state={last.get('state')} send={last.get('sendEnabled')}")
+        if want_ws:
+            check(f"{name} · picker 使能且可见（声明 workspace ⇒ 就绪）",
+                  last.get("workspaceCap") is True and last.get("pickerEnabled") is True
+                  and last.get("pickerVisible") is True,
+                  f"last: cap={last.get('workspaceCap')} "
+                  f"picker={last.get('pickerEnabled')}/{last.get('pickerVisible')}")
+        else:
+            check(f"{name} · 未声明 workspace ⇒ picker 隐藏且不就绪（§3.1）",
+                  last.get("workspaceCap") is False and last.get("pickerEnabled") is False
+                  and last.get("pickerVisible") is False,
+                  f"last: cap={last.get('workspaceCap')} "
+                  f"picker={last.get('pickerEnabled')}/{last.get('pickerVisible')}")
+    return fail
+
+
 def main():
     if not EXE.exists():
         print(f"Error: GUI executable not found at {EXE}")
@@ -1076,10 +1154,14 @@ def main():
         print("  SKIP: core/bin/fake-core.exe 不存在"
               "（cd core && go build -o bin/fake-core.exe .）")
         print("  SKIP: --workspace-probe 同样跳过（它需要活会话的写通道）")
+        print("  SKIP: live 协议声明臂（2d-b）同样跳过")
     else:
         fail += check_async_delivery(core)
         print("\n== 2d. live 探针 (workspace) ==")
         fail += check_workspace_probe(core)
+
+        print("\n== 2d-b. live 协议声明臂 (fake-core --protocol/--caps，2026-11-07) ==")
+        fail += check_protocol_arms(core)
 
     print("\n== 2e. live 设置探针 (真 core，覆盖 4 个 designed-red 相) ==")
     # 不放进上面的 else：它用的是 ecdi-core.exe，与 fake-core.exe 在不在无关。

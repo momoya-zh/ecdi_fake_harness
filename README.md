@@ -143,6 +143,10 @@ harness_gui.exe --core core/bin/fake-core.exe --core-args --speed=0.2 --auto-pro
 ★ **负载旋钮 `--burst`**（`--core-args --burst`）：关掉节奏等待 + 把一轮输出攒成**一次写出**
 ⇒ 真造出队列积压。REQ-03 的「单回调预算」判据靠它才**可证伪**——不加时队列最多 8 行、那条
 判据恒真；加上后 `maxLinesPerCallback` 恰好顶到 **256**（去掉预算则 430）。
+★ **声明旋钮 `--protocol` / `--caps`**（2026-11-07）：只改 hello 的 `"protocol"`/`"caps"`
+两个字段，剧本行为不变；默认 = 历史基线（3 + tools,ask,workspace）⇒ 既有跑法逐字节不变。
+regress 2d-b 用它们构造「声明 4/6」「未声明 workspace」的合法 core——GUI 侧解析结果由
+`--state-probe` 行回读断言（闭合 2026-11-06「选择文件夹死钮」那类版本守卫的语料盲区）。
 
 **④b 拉起真 core**（P3：真模型 + 真工具；规格见 `docs/P3-real-core-spec.md`）
 
@@ -240,7 +244,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 |---|---|
 | `--mode-probe` | 用户模式 vs 开发者模式切换、可逆性与偏好记忆（**P4 Phase J 缺口闭合**：5 相覆盖 baseline-dev / switch-user / dev-restored / negative / inspector-memory，断言顶栏胶囊、26px底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆及负对照区分力） |
 | `--cull-probe` | 命令分类 / 帧时 / 测量成本 |
-| `--state-probe` | 回读按钮使能位（REQ-04） |
+| `--state-probe` | 回读按钮使能位（REQ-04）＋ picker 使能/可见、caps、protocolVer 同点回读（2026-11-07，2d-b 协议臂的断言面） |
 | `--hit-probe` | 命中门控受控对照（REQ-04 **边界**：禁用 ⇒ 点击不达） |
 | `--order-probe` | 块**到达序**可从模型恢复（step 0a） |
 | `--rebuild-probe` | 运行期整树重建（换主题的唯一诚实做法） |
@@ -510,12 +514,18 @@ P3.6 / P4 A–J / 后台作业 / L1 沙盒 / 子代理 / 上下文压缩 / MCP /
 
 **2026-11-07 对齐**：
 
-1. **protocol 覆盖洞**：假 core 恒发 `"protocol": 3`，全部 live 支线只跑 fake-core ⇒
+1. ~~**protocol 覆盖洞**：假 core 恒发 `"protocol": 3`，全部 live 支线只跑 fake-core ⇒
    2026-11-06「无参启动点『选择文件夹』无反应」（`AppHud` 的 `liveReady` 守卫 `== 3` 未随
    v4 迁移）自动化语料 100% 看不见（`status.txt` 登记 COVERAGE HOLE）。做法：假 core 加
    `--protocol=N`（默认 3 ⇒ 既有基线逐字节不动）+ 门里 live 臂声明 4/6，断言
    `sendEnabled`/`pickerEnabled` 在 idle 真转真、caps 缺 `workspace`/`model` 时对应交互隐藏。
-   真 core 现声明 **6**（`core/cmd/ecdi-core/session.go:277`），洞在变宽。
+   真 core 现声明 **6**（`core/cmd/ecdi-core/session.go:277`），洞在变宽。~~
+   **已落地（2026-11-07）**：假 core `--protocol/--caps`（默认逐字节不变）+ 门 2d-b 三臂
+   （v4-full / v6-full / v6-no-workspace），判据建立在 `--state-probe` 新增的同点回读字段上
+   （pickerEnabled/pickerVisible/workspaceCap/protocolVer——判 GUI 的解析结果，不判传参；
+   身份判据钉死「GUI 眼中的 protocolVer == 声明值」防钳位洗绿）。牙齿实测：守卫退回
+   `== 3` 的变异体上 v6 臂三判据全红。范围边界：caps 缺 `model` 的热切换拒绝是交互门
+   （state-probe 观测不到），有 cap 一侧由 §2e 真核 switch-ok 臂覆盖。
 2. **evals/ 补库**：按上面已拍板的口径，把 2026-10-24 以来各轮收口读数从 `.scratch/`
    归档进 `evals/`（每轮挑正/负对照，不搬中间调试件）。
 3. **TODO-06 门自身可信度**：`regress.py` live 分支判据仍是 `out.exists()`（写盘后崩也绿）；

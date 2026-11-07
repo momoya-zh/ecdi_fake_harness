@@ -40,6 +40,7 @@ struct ProbeState {
     bool stateProbeLastValid = false;            // 是否已有「上次」可比
     bool stateProbeLastSend = true;
     bool stateProbeLastStop = false;
+    bool stateProbeLastPicker = false;           // ★ 2026-11-07：picker 使能也参与「变化才记」
 
     std::vector<HitProbeRec> hitProbeLog;
     int hitProbeSendCalls = 0;      // SendPrompt 进入次数（探针期间唯一观测通道）
