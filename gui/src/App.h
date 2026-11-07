@@ -1766,6 +1766,9 @@ private:
     //   ★ 唯一需要等待的是 `NewSession()`：回放模式下它会 `AddNoticeRow` + `Relayout`，
     //     但这些全是同步的，故整条探针可以一轮跑完。
     void RunSidebarProbe();
+    // ★★ 2026-11-07：sidebar 探针 live 臂（HUD 脏位门 + TIMER-STARVATION 回归牙）。
+    //   多拍状态机，tick 推进点在 AppStream.cpp live 分支；实现与判据见 ProbeSidebar.cpp。
+    void RunSidebarProbeLive();
 
     // ★★ Step 3（2026-10-19）：ask 答案内容（`answer`）进模型的取证。
     //   形状同 `RunSessionProbe`：同步跑完即 Exit，不需要跨 tick（无动画参与）。

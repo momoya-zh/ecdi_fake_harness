@@ -71,10 +71,124 @@ using harness::internal::kSidebarGroupH;
 //   ⑥ deleted       删掉那个新会话 ⇒ 列表行数回到 baseline、
 //                   **活动会话的转录行数一位都不变**（负对照：删别人不能动我）
 // ═══════════════════════════════════════════════════════════════════════════
+// ★★ 2026-11-07：sidebar 探针 live 臂（HUD 脏位门 + TIMER-STARVATION 回归牙）——
+// 多拍状态机，tick 推进点挂在 AppStream.cpp 的 live 分支（settings-probe 同一条
+// 「推进点必须铺满所有会话形态」纪律）。
+//
+// 场景 = 用户报的原场景：live 空闲、两个会话、点第二行的「×」。判据读**控件
+// 文本**（GetText()）——模型侧 sessionCount 只是对照，「模型变了、控件没跟」这类
+// 缺陷的形状。删除之后没有任何 core 行会来触发刷新，脏位不被 live 分支消费 ⇒
+// 计数文本停格 ⇒ 红（2026-10-27 修复的门）。
+//
+// ★ 同时是 TIMER-STARVATION 修复的回归牙：修前「live 拉起第二会话」本身就把
+//   消息泵打进 DrainActiveLive↔RearmWake 死循环（冻结会话积压自投 ⇒ PostToUi
+//   洪泛 ⇒ WM_TIMER/WM_PAINT 饿死）——本臂连跑完都不可能（TIMEOUT 红）。
+//   wakePosts 快照随之入档：洪泛时它每秒数千，修复后有界。
+//
+// ★ live 下「＋ 新建会话」会真拉一个 core（NewSession 的 live 分支）——这正是
+// 被测流程本体；假 core 由 Job Object 收尸。回放臂的「探针不造真进程」纪律只
+// 约束回放模式。焦点守卫不需要：不读 paints/frames。
+void HarnessApp::RunSidebarProbeLive() {
+    if (!m_sess || !m_hud.sessList) { m_probeState.sidebarProbeDone = true; return; }
+
+    auto snapLiveRec = [&](const char* phase, bool matched, const std::string& bad) {
+        SidebarProbeRec rec;
+        rec.phase = phase;
+        rec.sessionCount = m_sessions.size();
+        rec.activeIndex = m_activeIndex;
+        rec.transcriptRows = m_sess->rows.size();
+        rec.rowCount = m_hud.sessList->GetContentView().GetChildCount();
+        rec.sessCountText = m_hud.sessCount ? m_hud.sessCount->GetText() : "";
+        rec.headSubText = m_hud.convSub ? m_hud.convSub->GetText() : "";
+        rec.wakePosts = m_sess->child ? m_sess->child->WakePosts() : 0;
+        rec.matched = matched;
+        rec.firstDivergence = bad;
+        m_probeState.sidebarProbeLog.push_back(std::move(rec));
+    };
+    auto fail = [&](const char* phase, const std::string& why) {
+        snapLiveRec(phase, false, why);
+        m_probeState.sidebarProbeDone = true;
+    };
+
+    switch (m_probeState.sidebarLiveStage) {
+    case 0: {
+        // 等 hello 解析 + 首会话 idle（live 就绪）。hello 未到（protocolVer==0）不动。
+        if (m_sess->protocolVer == 0 || m_sess->coreState != "idle" ||
+            m_sessions.size() != 1) {
+            return;
+        }
+        snapLiveRec("live-before-new", true, "");
+        // 点「＋ 新建会话」（真实派发链；定位法同回放臂 ⑧c——按文字找）
+        ECDI::Button* newBtn = nullptr;
+        for (size_t c = 0; c < m_hud.sidebar->GetChildCount(); ++c) {
+            auto* b = dynamic_cast<ECDI::Button*>(m_hud.sidebar->GetChildAt(c));
+            if (b && b->GetText() == "＋ 新建会话") { newBtn = b; break; }
+        }
+        if (!newBtn) {
+            fail("live-after-delete", "no 「＋ 新建会话」 button on sidebar");
+            return;
+        }
+        SynthesizeClickAt(static_cast<int>(newBtn->GetAbsolutePosition().x) + newBtn->GetWidth() / 2,
+                          static_cast<int>(newBtn->GetAbsolutePosition().y) + newBtn->GetHeight() / 2);
+        if (m_sidebarDirty) { m_sidebarDirty = false; RebuildSessionList(); }
+        m_probeState.sidebarLiveStage = 1;
+        return;
+    }
+    case 1: {
+        // 等第二个会话的 core 完成 hello（idle）。会话对象在点击那一拍已在表里。
+        if (m_sessions.size() != 2 || m_activeIndex != 1 || m_sess->coreState != "idle") {
+            return;
+        }
+        snapLiveRec("live-after-new", true, "");
+        {
+            SidebarProbeRec& rec = m_probeState.sidebarProbeLog.back();
+            // 建会话路径的 HUD 跟手是**前提**检查（hello 会置脏位，修前也绿）；
+            // 真正的牙在 stage 2 的删除。
+            if (rec.sessCountText != "2 个会话") {
+                rec.matched = false;
+                rec.firstDivergence = "sessCountText=" + rec.sessCountText;
+            }
+        }
+        // 点第二行的「×」（非归档行有两个按钮，按文字找「×」，同回放臂）
+        ECDI::Widget& content = m_hud.sessList->GetContentView();
+        ECDI::Widget* row = 1 < content.GetChildCount() ? content.GetChildAt(1) : nullptr;
+        ECDI::Button* delBtn = nullptr;
+        if (row) {
+            for (size_t c = 0; c < row->GetChildCount(); ++c) {
+                if (auto* b = dynamic_cast<ECDI::Button*>(row->GetChildAt(c))) {
+                    if (b->GetText() == "×") { delBtn = b; break; }
+                }
+            }
+        }
+        if (!delBtn) {
+            fail("live-after-delete", "no × button on row 2");
+            return;
+        }
+        SynthesizeClickAt(static_cast<int>(delBtn->GetAbsolutePosition().x) + delBtn->GetWidth() / 2,
+                          static_cast<int>(delBtn->GetAbsolutePosition().y) + delBtn->GetHeight() / 2);
+        if (m_sidebarDirty) { m_sidebarDirty = false; RebuildSessionList(); }
+        m_probeState.sidebarLiveStage = 2;
+        return;
+    }
+    default: {
+        // 等删除生效（模型侧回到 1）。下一拍读 HUD 文字——修好的实现此时已刷新。
+        if (m_sessions.size() != 1) return;
+        std::string bad;
+        const std::string cnt = m_hud.sessCount ? m_hud.sessCount->GetText() : "";
+        if (cnt != "1 个会话") bad = "sessCountText=" + cnt + " (期望 1 个会话)";
+        if (m_activeIndex != 0) bad += "; activeIndex != 0";
+        snapLiveRec("live-after-delete", bad.empty(), bad);
+        m_probeState.sidebarProbeDone = true;
+        return;
+    }
+    }
+}
+
 void HarnessApp::RunSidebarProbe() {
     if (!m_sess) { m_probeState.sidebarProbeDone = true; return; }
-    // ★ 只在回放模式：live 下 NewSession 会真拉 core 子进程，探针不该制造真进程。
-    if (!m_sess->replay) { m_probeState.sidebarProbeDone = true; return; }
+    // ★ live 分流（2026-11-07）：live 臂见上；回放臂照旧往下走（回放里 settle
+    //   分支恒消费脏位，同臂测不出 live 路径）。
+    if (!m_sess->replay) { RunSidebarProbeLive(); return; }
     if (!m_hud.sessList) { m_probeState.sidebarProbeDone = true; return; }
 
     auto snap = [&](const char* phase) {
@@ -1507,10 +1621,14 @@ void HarnessApp::AppendSidebarProbeSummary(std::string& json) {
                       "\"activeIndex\": %zu, \"selectedRows\": %zu, "
                       "\"selectedIndex\": %zu, \"transcriptRows\": %zu, "
                       "\"sidebarVisible\": %s, \"midWidth\": %d, "
+                      "\"sessCountText\": \"%s\", \"headSubText\": \"%s\", "
+                      "\"wakePosts\": %zu, "
                       "\"matched\": %s, \"firstDivergence\": \"%s\"}",
                       r.phase.c_str(), r.rowCount, r.sessionCount, r.activeIndex,
                       r.selectedRows, r.selectedIndex, r.transcriptRows,
                       r.sidebarVisible ? "true" : "false", r.midWidth,
+                      esc(r.sessCountText).c_str(), esc(r.headSubText).c_str(),
+                      r.wakePosts,
                       r.matched ? "true" : "false",
                       esc(r.firstDivergence).c_str());
         json += b;

@@ -92,6 +92,11 @@ struct SidebarProbeRec {
     bool sidebarVisible = true; // 侧栏可见性
     bool matched = true;        // 与对照快照逐行一致（仅 rebuild 类 phase 有意义）
     std::string firstDivergence; // 第一处差异的行摘要（匹配时为空）
+    // ★★ 2026-11-07（live 臂，HUD 脏位门 + TIMER-STARVATION 牙）：HUD 文字回读
+    //   与唤醒投递计数。脏位不被消费 / 唤醒洪泛时，文本停格、wakePosts 暴涨。
+    std::string sessCountText = "";   // 侧栏「N 个会话」Label 的 GetText()
+    std::string headSubText = "";     // 头栏副标 Label 的 GetText()（含「会话 i/n」）
+    size_t wakePosts = 0;             // 活动会话 ChildSource::WakePosts() 快照
 };
 
 struct AnswerProbeRec {

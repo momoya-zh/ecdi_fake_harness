@@ -202,6 +202,7 @@ struct ProbeState {
     // ★★ 2026-11-07（2d-b 第四臂）：model-cap 拒绝侧 live 断言。live + caps 缺
     //   "model" + idle 时经 RequestModelSwitch（设置面板同一入口）试一次切换，
     //   断言「拒绝通知行在屏 + 不落 pending/queue」。回放不触发（writer 为空）。
+    int sidebarLiveStage = 0;   // ★ 2026-11-07 live 臂状态机：0 未开始 / 1 已点新建 / 2 已点删除
     bool capRefusalTried = false;
     bool capRefusalModelCap = false;   // 试的那一刻 hasModelCap 的读数（应 false）
     bool capRefusalNotice = false;     // 拒绝通知行上屏

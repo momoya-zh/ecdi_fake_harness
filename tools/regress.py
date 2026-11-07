@@ -1005,6 +1005,69 @@ PROTO_ARMS = [
 ]
 
 
+def check_sidebar_live_arm(core):
+    """2d-c：live 会话删除后侧栏计数必须跟手（HUD 脏位门 + TIMER-STARVATION 牙）。
+
+    场景 = 用户报的原场景：live 空闲、两个会话、点第二行的 ×。判据读 sidebarProbe
+    数组里 live-* 三相的控件文本。这同时是 DrainActiveLive↔RearmWake 死循环修复
+    （2026-11-07）的回归牙：修前「live 拉起第二会话」本身就把消息泵打进唤醒洪泛
+    （冻结会话积压自投 ⇒ PostToUi 每秒数千 ⇒ WM_TIMER/WM_PAINT 饿死）——本臂连
+    跑完都不可能（TIMEOUT）；修后 arm 正常推进、wakePosts 有界。
+    """
+    fail = 0
+
+    def check(label, ok, detail):
+        nonlocal fail
+        fail += 0 if ok else 1
+        print(f"  {label:44s} {'OK' if ok else 'FAILED':6s}  {detail}")
+
+    out = OUT / "_reg-sidebar-live.json"
+    out.unlink(missing_ok=True)
+    try:
+        r = subprocess.run([str(EXE), "--core", str(core), "--sidebar-probe",
+                            "--theme", "light",
+                            "--auto-close", "30000", "--out", str(out)],
+                           cwd=ROOT, capture_output=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        record("sidebar-live", None, out)
+        check("sidebar-live", False, "TIMEOUT（唤醒洪泛？见 status.txt TIMER-STARVATION）")
+        return fail
+    record("sidebar-live", r.returncode, out)
+    if not out.exists():
+        check("sidebar-live", False,
+              f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
+        return fail
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    rows = {x.get("phase"): x for x in (doc.get("sidebarProbe") or [])}
+    after_new = rows.get("live-after-new") or {}
+    after_del = rows.get("live-after-delete") or {}
+    if not after_del:
+        check("sidebar-live · live-after-delete 相存在", False,
+              f"phases={sorted(rows)}")
+        return fail
+    check("sidebar-live · 新建后两会话且计数跟手",
+          after_new.get("sessionCount") == 2
+          and after_new.get("sessCountText") == "2 个会话"
+          and after_new.get("matched") is True,
+          f"after-new: count={after_new.get('sessionCount')} "
+          f"text={after_new.get('sessCountText')!r} "
+          f"matched={after_new.get('matched')} div={after_new.get('firstDivergence')}")
+    check("sidebar-live · 删除后模型侧回到 1 且计数文本跟手",
+          after_del.get("sessionCount") == 1
+          and after_del.get("sessCountText") == "1 个会话"
+          and after_del.get("matched") is True,
+          f"after-delete: count={after_del.get('sessionCount')} "
+          f"text={after_del.get('sessCountText')!r} "
+          f"matched={after_del.get('matched')} div={after_del.get('firstDivergence')}")
+    # ★ 唤醒洪泛的机读面（WorkBuddy 指定的验证读数）：洪泛时 WakePosts 每秒数千；
+    #   修复后整个臂（新建→hello→删除）的正常投递是个位数~几十。
+    wake = after_del.get("wakePosts", 0)
+    check("sidebar-live · wakePosts 有界（无洪泛）",
+          isinstance(wake, int) and wake < 1000,
+          f"after-delete wakePosts={wake}")
+    return fail
+
+
 def check_protocol_arms(core):
     """声明 4 / 6 / 缺能力各一支 live 臂，判据建立在 state-probe 回读上。"""
     fail = 0
@@ -1195,6 +1258,9 @@ def main():
 
         print("\n== 2d-b. live 协议声明臂 (fake-core --protocol/--caps，2026-11-07) ==")
         fail += check_protocol_arms(core)
+
+        print("\n== 2d-c. live 会话删除 HUD 臂 (sidebar-probe live 分支，2026-11-07) ==")
+        fail += check_sidebar_live_arm(core)
 
     print("\n== 2e. live 设置探针 (真 core，覆盖 4 个 designed-red 相) ==")
     # 不放进上面的 else：它用的是 ecdi-core.exe，与 fake-core.exe 在不在无关。

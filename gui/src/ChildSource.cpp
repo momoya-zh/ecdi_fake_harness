@@ -230,6 +230,10 @@ void ChildSource::RearmWake() {
     if (hasData) NotifyDataArrived();
 }
 
+void ChildSource::ClearWakeFlag() {
+    m_wakeArmed.store(false, std::memory_order_release);
+}
+
 bool ChildSource::HasPending() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     return !m_queue.empty();

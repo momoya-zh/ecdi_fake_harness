@@ -155,12 +155,23 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
         }
     }
 
-    // ★ 复位**所有** live 源的唤醒标志，不只是活动会话的那个：
-    //   被切走的会话（冻结中）不 drain，但它的读线程可能已经 arm 过了；
-    //   不复位 ⇒ 它切回活动时标志恒 true ⇒ 永不投递 ⇒ 只能靠 33ms 兜底，
-    //   而这个后果**没有任何读数会报**（探针只看活动会话）。
+    // ★ 复位唤醒标志的口径（2026-11-07 TIMER-STARVATION 修，WorkBuddy 归因）：
+    //   · **活动会话**：RearmWake()——清旗标 +「有积压就立刻再投」（预算没抽完
+    //     的部分靠它；本会话就是 drain 对象，再投必被消费）。
+    //   · **冻结中会话**：只 ClearWakeFlag()、**不重投**——drain 只抽 m_sess，
+    //     冻结会话的积压行无人消费；「有积压 ⇒ 再投」在这里成为确定性死循环
+    //     （每投一次 drain 的仍是活动会话，积压永远在 ⇒ PostToUi 无限洪泛 ⇒
+    //     普通优先级线程消息饿死 WM_TIMER/WM_PAINT：实测一个核烧满、caret/
+    //     tooltip/--auto-close 全哑、0 paint）。2026-10-30 那笔「复位所有 live 源」
+    //     修的是「冻结会话旗标恒 true」——那个问题由 ClearWakeFlag + 激活路径
+    //     的 RearmWake（AppSession.cpp:507）解决，自投半边是错的。
     for (auto& session : m_sessions) {
-        if (session->child) session->child->RearmWake();
+        if (!session->child) continue;
+        if (session.get() == m_sess) {
+            session->child->RearmWake();
+        } else {
+            session->child->ClearWakeFlag();
+        }
     }
 
     if (handled > 0) {
@@ -309,6 +320,10 @@ void HarnessApp::OnReplayTick() {
         //   ★ 教训同 reasoning-probe 的"第一版只放末尾"：探针的跨 tick 推进点
         //     必须铺满**所有**能让它所在的会话形态，缺一个就是永远停在那一拍。
         if (m_options.settingsProbe && !m_probeState.settingsProbeDone) RunSettingsProbe();
+        // ★★ 2026-11-07：sidebar 探针的 live 臂（HUD 脏位门 + TIMER-STARVATION
+        //   回归牙）。上面那条脏位消费正是它要门住的对象；且修前「live 拉起第二
+        //   会话」本身会让本臂永远跑不完（唤醒洪泛）——推进点必须铺满所有会话形态。
+        if (m_options.sidebarProbe && !m_probeState.sidebarProbeDone) RunSidebarProbeLive();
         return;
     }
 

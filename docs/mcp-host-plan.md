@@ -551,23 +551,28 @@ tool_result 行；全部改动在 core（`mcp_runtime.go` / `mcp.go` / `mcp_stdi
   断言拒绝通知行上屏且不落 pending/queue；假 core `--caps=tools,ask,workspace` 的
   第四臂 `v6-no-model` 专门喂这个分支。
 
-### ④ HUD 脏位门（2d-c）—— **未落：造门时挖出新缺陷（归属未定）**
+### ④ HUD 脏位门（2d-c）—— **已随根因修复落地（2026-11-07 晚，WorkBuddy 归因）**
 
 - **缺口**：2026-10-27「live 分支也要吃 `m_hudDirty`」的修复只有截图证据、零门
   （回放 settle 分支恒消费脏位，同臂测不出 live 路径）。
-- **造门经过**：`--sidebar-probe` live 臂（多拍状态机，tick 挂 AppStream live 分支）：
-  live idle 点「＋ 新建会话」拉起第二个会话，再点其「×」删，断言侧栏计数文本跟手。
-  门在 regress 2d-c 跑出 **TIMEOUT**（产物都没写出来）。
-- **挖出的缺陷（2026-11-07，登记未归属）**：live 多会话一拉起第二个会话，**全部
-  `WM_TIMER` 停摆**（caret/tooltip/`--auto-close` 全哑），而消息泵仍处理 `PostToUi`
-  投递闭包。实证链：同二进制纯 live 8s 内 TIMER 事件 99 次 vs 带点击 1 次；绕过
-  合成点击直接调 `NewSession()` 仍复现（非鼠标事件）；推迟 2s 再拉起仍复现（非
-  settle 竞速）。候选归属：(a) GUI 第二会话路径碰窗口/定时器生命周期；(b) ECDI 泵
-  线程消息与 `WM_TIMER` 的优先级饿死交互；(c) 同 id SetTimer 异常重设。
-- **处置**：按「归属定不了之前不开新功能」，live 臂与 2d-c 门**整体撤场**
-  （`--sidebar-probe` 回到回放臂）；缺陷登记 status.txt + roadmap，门待归属后另落。
-  **表层症状可能同根**：2026-10-27「删除后 HUD 冻结」正是 tick 死了脏位无从消费
-  的形状——该修复本身没错，但它的门在多会话 live 下被本缺陷挡住。
+- **造门挖出的缺陷——已归因（当日两轮）**：live 多会话一拉起第二个会话，全部
+  `WM_TIMER` 停摆（caret/tooltip/`--auto-close` 全哑）、0 paint、一个核烧满，而
+  消息泵仍处理 `PostToUi` 闭包。harness 侧三层观测（CPU 采样、StackWalk64 栈、
+  paint 计数）把范围压到「消息泵活着但队列永不空闲」，**最终由 WorkBuddy 侧
+  核对源码定案：不在 ECDI**（泵是阻塞 GetMessageW；Invalidate 是整客户区无局部
+  重绘概念；SettleLayoutIfDirty 单趟——三条失效出口均单趟/有界），**真根因在
+  harness 自己**：`DrainActiveLive` 尾部对所有 live 会话 `RearmWake()`（2026-10-30
+  「复位所有 live 源」那笔），而 `RearmWake` 含「队列有积压就立刻再投」；drain
+  只抽活动会话 ⇒ **非活动且有积压的冻结会话 = 无限自投源** ⇒ `PostToUi` 普通优先
+  级线程消息洪泛 ⇒ 低优先级合成消息（WM_TIMER/WM_PAINT）永不生成。五个症状一个
+  原因；与 2026-10-27「删除后 HUD 冻结」同根坐实。
+- **修法（最小，harness 侧）**：drain 尾部只对活动会话 `RearmWake`；冻结会话只
+  `ClearWakeFlag()`（旗标复位保留——防陈旧旗标压住激活后的真唤醒；激活路径
+  `AppSession.cpp:507` 自带 `RearmWake`，积压不丢）。ECDI 零改动。
+- **门落地**：`--sidebar-probe` live 臂（`RunSidebarProbeLive`，多拍状态机）：
+  live idle 点「＋ 新建会话」拉第二会话、点其「×」删，断言侧栏计数**控件文本**
+  跟手 + `wakePosts` 有界（<1000 机读面；洪泛时每秒数千）。修前该臂连跑完都不
+  可能（TIMEOUT）；修后三相全真、wakePosts 0→2→1。
 
 ### 判据与读数
 

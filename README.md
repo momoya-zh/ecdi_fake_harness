@@ -551,18 +551,22 @@ HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协�
    `v6-no-model`（拒绝分支 live 断言）。冒烟 101 → **119**（F/G① 各 +1、H 臂 16 条），
    方案 `docs/mcp-host-plan.md` §十三。**第四项（HUD 脏位门）未落**：造门时挖出
    新缺陷——live 多会话一拉起第二个会话，全部 `WM_TIMER` 停摆（见下）。
-5. **★ 新缺陷登记（2026-11-07，归属未定）**：live 模式拉起第二个会话（`＋ 新建会话`
-   → 第二个 ChildSource/core）之后，**全部 `WM_TIMER` 停摆**——caret 闪烁、tooltip、
-   `--auto-close` 全部不再触发；消息泵仍活着（`PostToUi` 投递闭包照常处理：第二
-   会话的 hello/workspace 照走）。实证：同二进制纯 live 8s 内 TIMER 事件 99 次 vs
-   带「点击 ＋」探针 1 次；绕过合成点击**直接调 `NewSession()`**（无鼠标事件）同样
-   复现；把拉起推迟到 settle 风暴后 2s 仍复现（非竞速）。候选归属：(a) GUI 侧第二
-   会话路径触碰了窗口/定时器生命周期；(b) ECDI 泵的线程消息（`PostThreadMessageW`
-   唤醒）与 `WM_TIMER` 交互——持续线程消息会按 Win32 优先级饿死 `WM_TIMER`；
-   (c) 同 id `SetTimer` 被异常重设。按「归属定不了之前不开新功能」，HUD 脏位门
-   （2d-c）本批不落；登记到 `status.txt` + roadmap。**用户可见推论**：多会话 live
-   下光标可能不闪、`--auto-close` 跑批失效——与 2026-10-27「删除后 HUD 冻结」的
-   表层症状可能同根（tick 死了，脏位消费无从谈起）。
+5. ~~**★ 新缺陷登记（2026-11-07，归属未定）**：live 拉起第二个会话后全部
+   `WM_TIMER` 停摆~~ **已归因并修复（2026-11-07 晚，WorkBuddy 侧核对源码定案）**。
+   **真根因在 harness 自己**（ECDI 三条失效出口经静态核对均单趟/有界，排除）：
+   `DrainActiveLive` 尾部对**所有** live 会话 `RearmWake()`（2026-10-30 那笔
+   「复位所有 live 源」），而 `RearmWake` 的语义含「队列有积压就立刻再投」；
+   drain 只抽活动会话 ⇒ **「非活动且有积压的冻结会话」成为无限自投源**——每次
+   投递 drain 的仍是活动会话，冻结会话的积压永远在 ⇒ `PostToUi` 普通优先级线程
+   消息洪泛 ⇒ `WM_TIMER`/`WM_PAINT`（低优先级合成消息，仅在队列空窗生成）永不
+   出现：一个核烧满、caret/tooltip/auto-close 全哑、0 paint、闭包照跑——五个
+   症状一个原因。**修法（最小）**：drain 尾部只对活动会话 `RearmWake`，冻结会话
+   只 `ClearWakeFlag()`（旗标复位仍必要，防陈旧旗标压住激活后的真唤醒；激活
+   路径 `AppSession.cpp:507` 本就自带 `RearmWake`，积压不丢）。ECDI 零改动。
+   **门随根因落地**：2d-c live 臂（侧栏计数文本跟手 + `wakePosts` 有界机读面）
+   重进 regress——修前该臂连跑完都不可能（TIMEOUT），修后三相全真、wakePosts
+   0→2→1。**与 2026-10-27「删除后 HUD 冻结」同根坐实**：多会话 live 一开，
+   tick 死了，脏位消费无从谈起——那笔修复本身没错，只是被本缺陷挡住进不了门。
 
 功能侧（`notifications/progress` 的 token 往返 + GUI 进度面、OAuth 动态注册、
 TODO-06 crash.dmp 归属）等下一轮再挑。
