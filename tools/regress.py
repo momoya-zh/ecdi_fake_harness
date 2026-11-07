@@ -40,7 +40,7 @@ OUT = ROOT / ".scratch"
 #   冒烟逻辑本身在 tools/mcp-smoke/ 里，不复制一份到门内。
 MCP_SMOKE = ROOT / "tools" / "mcp-smoke" / "drive.py"
 MCP_RESULT = OUT / "mcp-smoke" / "result.json"
-MCP_SMOKE_CHECKS = 101  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail；32→37：hello.mcp；37→64：HTTP/SSE 两臂；64→71：HTTP 不可达失败臂；71→83：F 臂 env minimal + 按需重启，均 2026-11-06；83→101：G 臂通知流——tools/list_changed 重拉兑现 11 条 + legacy 断流 Last-Event-ID 重连自愈 7 条，2026-11-07）
+MCP_SMOKE_CHECKS = 119  # 数量钉死：少一条 = 有断言被删/漏跑，不能绿（28→32：提案卡 detail；32→37：hello.mcp；37→64：HTTP/SSE 两臂；64→71：HTTP 不可达失败臂；71→83：F 臂 env minimal + 按需重启，均 2026-11-06；83→101：G 臂通知流——tools/list_changed 重拉兑现 11 条 + legacy 断流 Last-Event-ID 重连自愈 7 条，2026-11-07；101→119：九版 t:"mcp" 状态覆盖——F 重启后 +1、G① 重拉后 +1、H 臂工作区重发现 16 条（含幽灵工具调不通的行为级判据），2026-11-07）
 
 # ============================================================
 # ★★ 2026-11-01（`TODO-06` 机制欠账）：可复核性三件套 = rc / 落盘 / 二进制指纹
@@ -992,11 +992,16 @@ def check_workspace_probe(core):
 #   不是我们传的参数——「GUI 钳位/漏解析」在这条臂上会红，绿不了。
 #   牙齿自证：把 liveReady 退回 == 3，v4/v6 两臂的「settled 后 send 翻真」与
 #   「picker 使能可见」同时红；把 workspaceCap 塞回 liveReady，no-workspace 臂红。
+#   ★ 2026-11-07 第四臂 v6-no-model：caps 缺 "model" ⇒ GUI 的热切换拒绝分支
+#     （RequestModelSwitch 第二道门）此前在整条 live 语料里结构性不可见
+#     （真 core 恒声明 model）——探针经同一入口试一次切换，断言拒绝通知上屏
+#     且不落 pending/queue（stateProbeCapRefusal）。
 PROTO_ARMS = [
-    # (臂名, 假 core 参数串, 声明版本, 是否声明 workspace)
-    ("v4-full", "--protocol=4 --caps=tools,ask,workspace,model", 4, True),
-    ("v6-full", "--protocol=6 --caps=tools,ask,workspace,model", 6, True),
-    ("v6-no-workspace", "--protocol=6 --caps=tools,ask", 6, False),
+    # (臂名, 假 core 参数串, 声明版本, 是否声明 workspace, 是否声明 model)
+    ("v4-full", "--protocol=4 --caps=tools,ask,workspace,model", 4, True, True),
+    ("v6-full", "--protocol=6 --caps=tools,ask,workspace,model", 6, True, True),
+    ("v6-no-workspace", "--protocol=6 --caps=tools,ask", 6, False, False),
+    ("v6-no-model", "--protocol=6 --caps=tools,ask,workspace", 6, True, False),
 ]
 
 
@@ -1009,7 +1014,7 @@ def check_protocol_arms(core):
         fail += 0 if ok else 1
         print(f"  {label:44s} {'OK' if ok else 'FAILED':6s}  {detail}")
 
-    for name, core_args, proto, want_ws in PROTO_ARMS:
+    for name, core_args, proto, want_ws, want_model in PROTO_ARMS:
         out = OUT / f"_reg-proto-arm-{name}.json"
         out.unlink(missing_ok=True)
         try:
@@ -1051,6 +1056,21 @@ def check_protocol_arms(core):
                   and last.get("pickerVisible") is False,
                   f"last: cap={last.get('workspaceCap')} "
                   f"picker={last.get('pickerEnabled')}/{last.get('pickerVisible')}")
+        # ★ 2026-11-07：model-cap 拒绝侧 live 断言。缺 model 的臂必须看到
+        #   「拒绝通知上屏 + 不落 pending/queue」；声明了 model 的臂则不得触发
+        #   尝试（门在 hasModelCap 上——误触发 = cap 解析或门写错，也要红）。
+        refusal = doc.get("stateProbeCapRefusal")
+        if want_model:
+            check(f"{name} · 声明 model ⇒ 不触发拒绝探针",
+                  refusal is None,
+                  f"stateProbeCapRefusal 在场: {refusal}")
+        else:
+            check(f"{name} · 缺 model ⇒ 切换被拒（通知上屏且无在途/排队）",
+                  refusal is not None and refusal.get("tried") is True
+                  and refusal.get("modelCap") is False
+                  and refusal.get("notice") is True
+                  and refusal.get("noPending") is True,
+                  f"stateProbeCapRefusal: {refusal}")
     return fail
 
 

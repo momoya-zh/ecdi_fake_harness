@@ -1,0 +1,603 @@
+{
+  "passed": 119,
+  "failed": 0,
+  "fails": [],
+  "core": "D:\\Project\\ECDI_fake_harness\\core\\bin\\ecdi-core.exe",
+  "checks": [
+    {
+      "check": "A/hello 到达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/hello.protocol == 6",
+      "ok": true,
+      "detail": "6"
+    },
+    {
+      "check": "A/caps 含 mcp",
+      "ok": true,
+      "detail": "['tools', 'ask', 'workspace', 'model', 'jobs', 'mcp']"
+    },
+    {
+      "check": "A/hello.mcp 在场且来源为显式配置",
+      "ok": true,
+      "detail": "{'source': 'explicit', 'config': 'D:\\\\Project\\\\ECDI_fake_harness\\\\.scratch\\\\mcp-smoke\\\\mcp.json', 'services': [{'name': 'smoke', 'tools': 2, 'transport': 'stdio'}], 'failed': [], 'disabled': 0}"
+    },
+    {
+      "check": "A/hello.mcp 列出 smoke/2 工具且无失败",
+      "ok": true,
+      "detail": "{'services': [{'name': 'smoke', 'tools': 2, 'transport': 'stdio'}], 'failed': []}"
+    },
+    {
+      "check": "A/ask 门被触发（外部工具默认过门）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/问句带服务与真实工具名",
+      "ok": true,
+      "detail": "允许调用 MCP 工具 git.status（服务：smoke）吗？参数：{\"short\": true}"
+    },
+    {
+      "check": "A/ask 带提案卡 detail",
+      "ok": true,
+      "detail": "dict"
+    },
+    {
+      "check": "A/detail 判别值与服务",
+      "ok": true,
+      "detail": "{'tool': 'mcp', 'server': 'smoke'}"
+    },
+    {
+      "check": "A/detail 真实工具名",
+      "ok": true,
+      "detail": "git.status"
+    },
+    {
+      "check": "A/detail argsKv 是键值数组",
+      "ok": true,
+      "detail": "list"
+    },
+    {
+      "check": "A/argsKv 含 short=true（与调用参数一致）",
+      "ok": true,
+      "detail": "[{'k': 'short', 'v': 'true'}]"
+    },
+    {
+      "check": "A/tool_call 指向真实 MCP 工具",
+      "ok": true,
+      "detail": "mcp__smoke__git_status"
+    },
+    {
+      "check": "A/tool_result 块出现",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/结果来自真 server（ok: 前缀）",
+      "ok": true,
+      "detail": "ok: {\"short\": true}"
+    },
+    {
+      "check": "A/参数真的传到了 server",
+      "ok": true,
+      "detail": "ok: {\"short\": true}"
+    },
+    {
+      "check": "A/tool_result ok:true",
+      "ok": true,
+      "detail": "{'t': 'block_end', 'seq': 13, 'ts': '2026-11-07T10:12:09.585Z', 'id': 'b4', 'ok': True}"
+    },
+    {
+      "check": "A/第二轮收尾回到 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/模型看到了工具结果（第二轮文本）",
+      "ok": true,
+      "detail": "1"
+    },
+    {
+      "check": "A/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "A/bye 后无 MCP server 残留",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "check": "A/stderr: 1 个服务 2 个工具",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp:smoke] 服务端协商到 protocolVersion=2025-"
+    },
+    {
+      "check": "A/stderr: hub 注册 2 个工具",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/stderr: 协商差异被说出来",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "A/无 MCP 失败 system 块",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "A/上交给模型的 MCP 工具数 == 2",
+      "ok": true,
+      "detail": "['mcp__smoke__git_status', 'mcp__smoke______']"
+    },
+    {
+      "check": "A/每个名字都满足 function.name 字符集",
+      "ok": true,
+      "detail": "['mcp__smoke__git_status', 'mcp__smoke______']"
+    },
+    {
+      "check": "A/中文工具名被折叠成下划线",
+      "ok": true,
+      "detail": "['mcp__smoke__git_status', 'mcp__smoke______']"
+    },
+    {
+      "check": "B/坏服务不挡 hello",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "B/caps 仍含 mcp",
+      "ok": true,
+      "detail": "['tools', 'ask', 'workspace', 'model', 'jobs', 'mcp']"
+    },
+    {
+      "check": "B/hello.mcp 列出好服务与 broken 失败",
+      "ok": true,
+      "detail": "{'services': [{'name': 'smoke', 'tools': 2, 'transport': 'stdio'}], 'failed': [{'name': 'broken', 'error': '启动进程失败: exec: \"no-such-mcp-server.exe\": executable file not found in %PATH%'}]}"
+    },
+    {
+      "check": "B/失败 system 块可见",
+      "ok": true,
+      "detail": "[MCP] 服务 broken 启动失败：启动进程失败: exec: \"no-such-mcp-server.exe\": executable file not found in %PATH%（本次未启用）"
+    },
+    {
+      "check": "B/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "B/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "B/坏服务被点名",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp:smoke] 服务端协商到 protocolVersion=2025-06-18（本传输按 2024-11-05 语义实现，差异见 docs/mcp-host-plan.md §二.3）\n[mcp] 启动服务 broken 失败: 启动进程失败: exec: \"no-s"
+    },
+    {
+      "check": "B/好服务仍然注册（1 个服务、2 个工具）",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp:smoke] 服务端协商到 protocolVersion=2025-"
+    },
+    {
+      "check": "C/hello 到达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "C/caps 含 mcp",
+      "ok": true,
+      "detail": "['tools', 'ask', 'workspace', 'model', 'jobs', 'mcp']"
+    },
+    {
+      "check": "C/hello.mcp 标注 http 传输",
+      "ok": true,
+      "detail": "{'services': [{'name': 'remote', 'tools': 2, 'transport': 'http'}]}"
+    },
+    {
+      "check": "C/ask 门被触发（远程工具默认过门）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "C/问句带服务与真实工具名",
+      "ok": true,
+      "detail": "允许调用 MCP 工具 git.status（服务：remote）吗？参数：{\"short\": true}"
+    },
+    {
+      "check": "C/ask 带提案卡 detail",
+      "ok": true,
+      "detail": "{'argsKv': [{'k': 'short', 'v': 'true'}], 'server': 'remote', 'tool': 'mcp', 'toolName': 'git.status'}"
+    },
+    {
+      "check": "C/tool_call 指向远程 MCP 工具",
+      "ok": true,
+      "detail": "mcp__remote__git_status"
+    },
+    {
+      "check": "C/tool_result 块出现",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "C/结果来自 HTTP server（ok: 前缀）",
+      "ok": true,
+      "detail": "ok: {\"short\": true}"
+    },
+    {
+      "check": "C/第二轮收尾回到 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "C/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "C/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "C/stderr: 1 个服务 2 个工具",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp] 配置 D:\\Project\\ECDI_fake_harness\\.s"
+    },
+    {
+      "check": "C/session 头全程合规",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "check": "C/protocol-version 头全程合规",
+      "ok": true,
+      "detail": "[]"
+    },
+    {
+      "check": "C/Close 发 DELETE 终止会话",
+      "ok": true,
+      "detail": "1"
+    },
+    {
+      "check": "D/hello 到达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "D/hello.mcp 标注 sse 传输",
+      "ok": true,
+      "detail": "{'services': [{'name': 'legacy', 'tools': 2, 'transport': 'sse'}]}"
+    },
+    {
+      "check": "D/ask 门被触发",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "D/ask 带提案卡 detail",
+      "ok": true,
+      "detail": "{'argsKv': [{'k': 'short', 'v': 'true'}], 'server': 'legacy', 'tool': 'mcp', 'toolName': 'git.status'}"
+    },
+    {
+      "check": "D/tool_result 块出现",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "D/结果来自 SSE 回执（ok: 前缀）",
+      "ok": true,
+      "detail": "ok: {\"short\": true}"
+    },
+    {
+      "check": "D/第二轮收尾回到 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "D/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "D/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "D/stderr: 1 个服务 2 个工具",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp] 配置 D:\\Project\\ECDI_fake_harness\\.s"
+    },
+    {
+      "check": "D/initialize 走 POST /messages",
+      "ok": true,
+      "detail": "4"
+    },
+    {
+      "check": "E/hello 到达（不可达服务不应挡住会话）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "E/不可达服务不进 caps",
+      "ok": true,
+      "detail": "['tools', 'ask', 'workspace', 'model', 'jobs']"
+    },
+    {
+      "check": "E/hello.mcp 记录远程失败",
+      "ok": true,
+      "detail": "{'failed': [{'name': 'remote', 'error': 'initialize 握手失败: HTTP 请求失败: Post \"http://127.0.0.1:50431/mcp\": dial tcp 127.0.0.1:50431: connectex: No connection could be made because the target machine actively refused it.'}]}"
+    },
+    {
+      "check": "E/失败 system 块可见",
+      "ok": true,
+      "detail": "[MCP] 服务 remote 启动失败：initialize 握手失败: HTTP 请求失败: Post \"http://127.0.0.1:50431/mcp\": dial tcp 127.0.0.1:50431: connectex: No connection could be made because the"
+    },
+    {
+      "check": "E/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "E/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "E/stderr 点名不可达服务",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp] 启动服务 remote 失败: initialize 握手失败: HTTP 请求失败: Post \"http://127.0.0.1:50431/m"
+    },
+    {
+      "check": "F/hello 到达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "F/hello.mcp 报 smoke/4 工具（2 常规 + 2 测试专用）",
+      "ok": true,
+      "detail": "{'services': [{'name': 'smoke', 'tools': 4, 'transport': 'stdio'}]}"
+    },
+    {
+      "check": "F/第一次 ask 是崩溃工具",
+      "ok": true,
+      "detail": "允许调用 MCP 工具 dev.crash（服务：smoke）吗？参数：{}"
+    },
+    {
+      "check": "F/崩溃调用 tool_result ok=false",
+      "ok": true,
+      "detail": "{'tr': True, 'end': {'t': 'block_end', 'seq': 13, 'ts': '2026-11-07T10:12:14.504Z', 'id': 'b4', 'ok': False}}"
+    },
+    {
+      "check": "F/崩溃有 system 块且预告重启",
+      "ok": true,
+      "detail": "[MCP 服务 smoke 已退出：服务无响应或进程已退出；下次调用将尝试自动重启]"
+    },
+    {
+      "check": "F/第二次 ask 是环境回读",
+      "ok": true,
+      "detail": "允许调用 MCP 工具 dev.env（服务：smoke）吗？参数：{\"name\": \"SMOKE_LEAK\"}"
+    },
+    {
+      "check": "F/minimal 模式不泄漏普通环境变量（回包 env:<>）",
+      "ok": true,
+      "detail": "env:<>"
+    },
+    {
+      "check": "F/重启有 system 块（第 1/3 次）",
+      "ok": true,
+      "detail": "[MCP 服务 smoke 已自动重启（第 1/3 次）：4 个工具已重新注册]"
+    },
+    {
+      "check": "F/重启后 t:\"mcp\" 覆盖到达（smoke/4 工具）",
+      "ok": true,
+      "detail": "{'t': 'mcp', 'seq': 24, 'ts': '2026-11-07T10:12:14.580Z', 'failed': [], 'disabled': 0, 'source': 'explicit', 'config': 'D:\\\\Project\\\\ECDI_fake_harness\\\\.scratch\\\\mcp-smoke\\\\runtime.json', 'services': [{'name': 'smoke', 'tools': 4, 'transport': 'stdio'}]}"
+    },
+    {
+      "check": "F/收尾回到 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "F/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "F/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "F/stderr: 1 个服务 4 个工具",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp:smoke] 服务端协商到 protocolVersion=2025-06-18（本传输按 2024-11-05 语义实现，差异见 docs/mcp-"
+    },
+    {
+      "check": "G①/hello 到达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G①/GET 通知流已打开",
+      "ok": true,
+      "detail": "1"
+    },
+    {
+      "check": "G①/list_changed 已推送",
+      "ok": true,
+      "detail": "1"
+    },
+    {
+      "check": "G①/tools/list 首拉+重拉 ≥2 次",
+      "ok": true,
+      "detail": "2"
+    },
+    {
+      "check": "G①/t:\"mcp\" 覆盖到达（remote/3 工具）",
+      "ok": true,
+      "detail": "{'t': 'mcp', 'seq': 1, 'ts': '2026-11-07T10:12:15.235Z', 'source': 'explicit', 'config': 'D:\\\\Project\\\\ECDI_fake_harness\\\\.scratch\\\\mcp-smoke\\\\http-g.json', 'services': [{'name': 'remote', 'tools': 3, 'transport': 'http'}], 'failed': [], 'disabled': 0}"
+    },
+    {
+      "check": "G①/新工具过 ask 门（重拉后模型侧可见）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G①/问句指向新工具",
+      "ok": true,
+      "detail": "允许调用 MCP 工具 cloud.ping（服务：remote）吗？参数：{}"
+    },
+    {
+      "check": "G①/tool_result 块出现",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G①/新工具真调通（ok: 前缀）",
+      "ok": true,
+      "detail": "ok: {}"
+    },
+    {
+      "check": "G①/收尾 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G①/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G①/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "G②/hello 到达（断流后自愈）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G②/重连后调用照常",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G②/收尾 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "G②/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "G②/stderr 记录重连（Last-Event-ID）",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[mcp:legacy] 服务端通知 notifications/message（已记录，无动作）\n[mcp:legacy] SSE 流断开（<nil>），第 "
+    },
+    {
+      "check": "G②/SSE 至少两条连接（断流+重连）",
+      "ok": true,
+      "detail": "2"
+    },
+    {
+      "check": "G②/重连带 Last-Event-ID: g1",
+      "ok": true,
+      "detail": "g1"
+    },
+    {
+      "check": "H/hello 到达",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "H/hello 无 mcp 字段（起点工作区无配置）",
+      "ok": true,
+      "detail": "['caps', 'context', 'core', 'protocol', 'seq', 'session', 't', 'ts']"
+    },
+    {
+      "check": "H/切到 B 的 ack ok",
+      "ok": true,
+      "detail": "{'t': 'workspace', 'seq': 4, 'ts': '2026-11-07T10:12:18.116Z', 'request_id': 'w1', 'ok': True, 'path': 'D:/Project/ECDI_fake_harness/.scratch/mcp-smoke/ws-h-mcp'}"
+    },
+    {
+      "check": "H/切到 B 后 t:\"mcp\"（source=workspace）",
+      "ok": true,
+      "detail": "{'t': 'mcp', 'seq': 3, 'ts': '2026-11-07T10:12:18.116Z', 'services': [{'name': 'mock', 'tools': 2, 'transport': 'stdio'}], 'failed': [], 'disabled': 0, 'source': 'workspace', 'config': 'D:\\\\Project\\\\ECDI_fake_harness\\\\.scratch\\\\mcp-smoke\\\\ws-h-mcp\\\\mcp.json'}"
+    },
+    {
+      "check": "H/快照指向 B 的 mcp.json 且 mock/2 工具",
+      "ok": true,
+      "detail": "{'config': 'D:\\\\Project\\\\ECDI_fake_harness\\\\.scratch\\\\mcp-smoke\\\\ws-h-mcp\\\\mcp.json', 'services': [{'name': 'mock', 'tools': 2, 'transport': 'stdio'}]}"
+    },
+    {
+      "check": "H/B 工具过 ask 门",
+      "ok": true,
+      "detail": "允许调用 MCP 工具 git.status（服务：mock）吗？参数：{\"short\": true}"
+    },
+    {
+      "check": "H/B 工具真调通（ok: 前缀）",
+      "ok": true,
+      "detail": "ok: {\"short\": true}"
+    },
+    {
+      "check": "H/第一轮收尾 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "H/切回 C 的 ack ok",
+      "ok": true,
+      "detail": "{'t': 'workspace', 'seq': 27, 'ts': '2026-11-07T10:12:18.129Z', 'path': 'D:/Project/ECDI_fake_harness/.scratch/mcp-smoke/ws-h-empty2', 'request_id': 'w2', 'ok': True}"
+    },
+    {
+      "check": "H/切回 C 后空载荷 t:\"mcp\"（现在没有 MCP）",
+      "ok": true,
+      "detail": "{'t': 'mcp', 'seq': 26, 'ts': '2026-11-07T10:12:18.129Z', 'services': [], 'failed': [], 'disabled': 0}"
+    },
+    {
+      "check": "H/清空通知",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "H/幽灵工具调用失败（未知工具）",
+      "ok": true,
+      "detail": "未知工具 \"mcp__mock__git_status\"（可用：read_file / list_dir / grep / write_file / edit_file / run_command / job_output / job_ki"
+    },
+    {
+      "check": "H/收尾 idle",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "H/bye 回执",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "check": "H/退出码 0",
+      "ok": true,
+      "detail": "0"
+    },
+    {
+      "check": "H/stderr: 两次状态更新记录",
+      "ok": true,
+      "detail": "[ecdi-core] credential: present (len=9, source=flag)\n[ecdi-core] provider registry from environment: 0 entries\n[ecdi-core] providers registered: 0 (initial=\"\")\n[ecdi-core] loaded memories: 0 loaded, 0"
+    }
+  ]
+}

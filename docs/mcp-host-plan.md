@@ -116,7 +116,7 @@
 | `core/cmd/ecdi-core/mcp_proc_windows.go` | 整树纳管：Job Object（`KILL_ON_JOB_CLOSE`）+ 挂起启动→挂接→恢复 | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_proc_other.go` | 整树纳管：独立进程组 + 杀 `-pgid` | ✅ 二版新增 |
 | `core/cmd/ecdi-core/mcp_test.go` + `mcp_http_test.go` | 单测：mock server（stdio + httptest HTTP/SSE）、握手、schema 规约/剥离、名字压缩、输出上限、超时/崩溃、死亡通告、分页、**整树清退（心跳判据）**、多服务、**启动状态/配置错误可见**、**HTTP 头/SSE/会话/重定向/E2E** | ✅ 33 案（`go test -list` 实测；二版读数 22 案全绿，四–七版 +8、八版 +3） |
-| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + stdio server + HTTP/SSE server + 脚本化 SSE，六臂（A–F）**83 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、**Streamable/legacy 传输与头**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
+| `tools/mcp-smoke/` | 真链路冒烟：真 core 二进制 + stdio server + HTTP/SSE server + 脚本化 SSE，八臂（A–H）**119 条断言**（含 ask 门、**提案卡 detail**、**`hello.mcp` 状态与失败块**、**Streamable/legacy 传输与头**、参数穿越、bye 后无残留）；已接进 `regress.py` §2f（缺二进制 **SKIP** / 陈旧二进制 **FAILED** / 超时 **FAILED** + 看门狗） | ✅ |
 | `main.go` | `--mcp-config` 参数 | ✅ |
 | `tools.go` | `askPrompt` MCP 问句（四版起用**真实工具名**）；`trimOutputTo`（截断语义抽成可配上限） | ✅ |
 | `session.go` | `toolDefs` 聚合 MCP 工具；`execTool` 统一路由；`emitMCPDeadNotices`；退出清理；**`hello.mcp` + 启动失败 `system` 块** | ✅ 五版新增 |
@@ -213,7 +213,7 @@
 |---|---|
 | （无——见下方各闭合注记；最新的开放边界见 §九修订） |
 
-★ **HTTP 服务端通知流已于 2026-11-07 闭合（八版，§五/§九）**：
+★ **HTTP 服务端通知流已于 2026-11-07 闭合（§五/§九；该批未单占章节号，见 §十三 头注）**：
   · **Streamable HTTP 的 GET 通知流**——initialize 成功后客户端对同一端点 GET
   （`Accept: text/event-stream`）打开服务端→客户端流；收到 `notifications/*` 交给
   hub（`SetNotifyHandler`，三种传输同一落点），服务端反向请求照旧回 -32601；
@@ -222,7 +222,7 @@
   · **`notifications/tools/list_changed` 真兑现**：hub 重拉该服务 `tools/list`
   （复用 respawn 的 `respawnMu` 串行 + `unregister/registerClientLocked` 换血），
   新工具**无需重启会话即可调用**；失败保留旧表并记日志。hello.mcp 仍是启动期
-  快照（§八边界不变，副标/卡片不跟手是另一条已登记边界）。
+  快照（§八边界；「副标/卡片不跟手」已由 2026-11-07 十版 `t:"mcp"` 闭合，§十三）。
   · **legacy SSE 断流自愈**：断流不再直接判死——带 Last-Event-ID 重连
   （`mcpSSERetryMax=5` 次指数退避），重连耗尽才 `closeDone + failPending`
   （死亡通告顺序纪律不变）；`scanSSE` 透传 SSE `id` 字段。
@@ -331,9 +331,11 @@ HTTP+SSE（`transport:"sse"`）、`url/headers` 配置、状态里的 transport 
     **负对照另跑一支**（demo 无 `mcp` 字段 ⇒ 卡片、副标 MCP 段、失败行全缺）。
 - **诚实边界**：
   1. 这是**启动期快照**：运行期服务崩掉仍只走 `noteDead` → `system` 块，卡片不会把
-     已死服务改成红行（要实时状态得另开控制面消息，不在本期）。
-  2. MCP hub 在会话创建时按**初始工作区**初始化；切换工作区不会重新发现 `mcp.json`
-     （与工具表/记忆的既有边界同源，未在本期改动）。
+     已死服务改成红行（★ 2026-11-07 十版补：**重注册/重拉/重发现**走 `t:"mcp"` 覆盖，
+     §十三；死亡本身仍不改快照——死者保留在卡上，通告走 system 块）。
+  2. ~~MCP hub 在会话创建时按**初始工作区**初始化；切换工作区不会重新发现 `mcp.json`~~
+     **已闭合（2026-11-07 十版）**：工作区切换（idle 门后）重跑同一条发现链，结果发
+     `t:"mcp"` + system 块，旧工具清空（幽灵工具调不通有行为级判据）。
   3. 失败 `system` 块沿用 `system` 的弱化色（与死亡通告一致）；红色只在检视栏卡的
      失败行与副标的「K 个失败」上。产品模式默认可见，但不靠颜色叫醒。
   4. `--mcp-probe` 跑在开发者模式（任一探针即开发者模式）；用户模式走**同一个**
@@ -463,8 +465,9 @@ tool_result 行；全部改动在 core（`mcp_runtime.go` / `mcp.go` / `mcp_stdi
 
 - ★ **per-call 超时已于 2026-11-06 闭合（八版，见 §十一）**：支持全局 `--mcp-timeout`（默认 60s）与 `mcp.json` 单服务 `"timeout": <sec>`；超时自动发取消通知，且取消通知未送达（僵死）时主动清退并触发下次按需 respawn。
 - **后台/主动重启**：没有调用就不重启；不做崩溃计数持久化（每会话重置）。
-- **GUI 运行期状态刷新**：`hello.mcp.services[].tools` 仍是**启动期快照**；重启后若服务
-  端工具集变了，副标/卡片上的数字不会跟着变（转录里的 system 通告才是真值）。
+- ★ **GUI 运行期状态刷新已于 2026-11-07 闭合（十版，见 §十三）**：控制面消息
+  `t:"mcp"`（协议 §3.14）在 respawn 重注册 / `tools/list_changed` 重拉 / 工作区重发现
+  后权威覆盖快照；空载荷 = 现在没有 MCP。
 
 ## 十一、 八版（2026-11-06）：单次调用超时（per-call timeout）
 
@@ -502,3 +505,86 @@ tool_result 行；全部改动在 core（`mcp_runtime.go` / `mcp.go` / `mcp_stdi
   `TestTransport_SSEBrokenStreamClosesDoneFirst`。两案各放 128 个等者、跑 8 轮，要求
   **全部**「醒来时 `Done()` 已关」：修复前 6/6 次全红（确定性复现，不靠调度运气），
   修复后 6/6 次全绿，`-race -count=2` 干净。冒烟修复后连跑 12 次 83/83。
+
+
+## 十三、 十版（2026-11-07）：MCP 小修包 —— 状态覆盖 `t:"mcp"` / 工作区重发现 / 两门
+
+> 章节号注：服务端通知流批次（2026-11-07，见 §五/§九 的闭合注）落在九版与本版之间，
+> 未单占章节号；本版沿用文档的批次序号继续编。
+
+四项来源：2026-11-07 排队的产品短板（README 功能侧「MCP 小修包」），动手前逐条重验
+真形状，全部坐实。
+
+### ① 状态覆盖 `t:"mcp"`（协议 §3.14，闭合「快照 respawn 不跟手」）
+
+- **缺陷**：`hello.mcp` 是启动期快照——respawn 重注册、`tools/list_changed` 重拉之后，
+  GUI 检视栏卡与副标的工具数全部停格；模型侧工具表已变，两路从此不一致。
+- **改动**：控制面消息 `t:"mcp"`（字段 = `hello.mcp` 平铺；**空载荷 = 现在没有 MCP**
+  ⇒ GUI 收卡）；hub 加 `onStatusChange` 回调（触发点刻意在锁外），session 侧
+  `emitMCPStatus`。GUI 的 hello.mcp 与 `t:"mcp"` 共用 `ApplyMcpStatusObject`，
+  以最近一次收到的为准。
+- **冒烟抓的第三处（竞速）**：GET 通知流原在 `Do(initialize)` 成功即自动开——
+  服务端首条 `list_changed` 可能在 `startAndInit` 期间到达，而 hub 的
+  `h.clients[server]` 注册要等 `startAndInit` 返回 ⇒ `refreshServerTools` 读表为空
+  静默 return，重拉丢失（冒烟 G① 实测 ~1/3；字节级 [DBG] 实证「事件已分发、
+  重拉未发生」）。修 = **开流时机归 HUB**：传输层新增 `enableNotifyStream()`
+  （幂等），hub 在两处 `registerClientLocked` 之后调用（初启 + respawn）——
+  通知到达时注册表必然就位。直连测试显式 arm（时序与 hub 同款）。
+- **冒烟抓的第二处**：`h.status.Services` 构造期冻结——respawn/重拉后 `Status()`
+  返回的还是旧工具数，`t:"mcp"` 带着旧数照样「合法」。补 `recomputeStatusLocked`
+  （从 clients/toolMap 重导 Services；Source/Config/Problem/Failed/Disabled 是启动期
+  事实，不改写）。
+
+### ② 工作区切换重发现 `mcp.json`
+
+- **缺陷**：`handleWorkspace` 只 chdir + loadMemories——旧工作区的服务变幽灵工具
+  （cwd 已走、进程还挂着旧目录），新工作区的 `mcp.json` 被无视。
+- **改动**：`rebuildMCPHubForWorkspace`（idle 门后）：旧 hub `Close()`（子进程树/
+  连接/通知流全撤）→ 同一条 `NewMCPHub` 链 → `t:"mcp"` + system 块；**两头都从没配过
+  MCP 的会话静默**（没有可说的变化）。
+
+### ③ model-cap 拒绝侧 live 断言（2d-b 第四臂）
+
+- **缺口**：`RequestModelSwitch` 的「core 未声明 model 能力」拒绝分支在整条 live 语料
+  结构性不可见（真 core 恒声明 model）——与 2026-11-06「选择文件夹死钮」同族。
+- **改动**：`--state-probe` 加主动尝试（live + 缺 cap + idle，经 **同一入口** 触发一次），
+  断言拒绝通知行上屏且不落 pending/queue；假 core `--caps=tools,ask,workspace` 的
+  第四臂 `v6-no-model` 专门喂这个分支。
+
+### ④ HUD 脏位门（2d-c）—— **未落：造门时挖出新缺陷（归属未定）**
+
+- **缺口**：2026-10-27「live 分支也要吃 `m_hudDirty`」的修复只有截图证据、零门
+  （回放 settle 分支恒消费脏位，同臂测不出 live 路径）。
+- **造门经过**：`--sidebar-probe` live 臂（多拍状态机，tick 挂 AppStream live 分支）：
+  live idle 点「＋ 新建会话」拉起第二个会话，再点其「×」删，断言侧栏计数文本跟手。
+  门在 regress 2d-c 跑出 **TIMEOUT**（产物都没写出来）。
+- **挖出的缺陷（2026-11-07，登记未归属）**：live 多会话一拉起第二个会话，**全部
+  `WM_TIMER` 停摆**（caret/tooltip/`--auto-close` 全哑），而消息泵仍处理 `PostToUi`
+  投递闭包。实证链：同二进制纯 live 8s 内 TIMER 事件 99 次 vs 带点击 1 次；绕过
+  合成点击直接调 `NewSession()` 仍复现（非鼠标事件）；推迟 2s 再拉起仍复现（非
+  settle 竞速）。候选归属：(a) GUI 第二会话路径碰窗口/定时器生命周期；(b) ECDI 泵
+  线程消息与 `WM_TIMER` 的优先级饿死交互；(c) 同 id SetTimer 异常重设。
+- **处置**：按「归属定不了之前不开新功能」，live 臂与 2d-c 门**整体撤场**
+  （`--sidebar-probe` 回到回放臂）；缺陷登记 status.txt + roadmap，门待归属后另落。
+  **表层症状可能同根**：2026-10-27「删除后 HUD 冻结」正是 tick 死了脏位无从消费
+  的形状——该修复本身没错，但它的门在多会话 live 下被本缺陷挡住。
+
+### 判据与读数
+
+- 冒烟 101 → **119**：F 臂重启后 `t:"mcp"` +1；G① 重拉后 +1；**H 臂 16 条**（起点无
+  配置 → 切到带 `mcp.json` 的工作区 → `t:"mcp"` + mock/2 工具可调 → 切回 → 空载荷 +
+  清空通知 → **幽灵工具调不通**（内置分发回「未知工具」，行为级判据））。
+  `MCP_SMOKE_CHECKS` 101→119。
+- Go：`TestSession_WorkspaceMCPRediscovery`（会话级三段：静默 / 重发现 / 清空）。
+- `--mcp-probe` 新增 ⑦ 判据（行尾工具数逐字 = 模型侧当前值）；夹具
+  `fixtures/mcp/status.jsonl` 中段加 `t:"mcp"`（fs 3→5，seq 顺延），validate 同步
+  `KNOWN_TYPES/CORE_TYPES`。
+- 读数按口径②归档 `evals/mcp-smoke-119assert.json`；proto-arm（含第四臂）/ mcp-probe
+  为门每轮重 derive 的 `_reg*`，诚实台账 = 门本身，不归档。
+
+### 诚实边界
+
+- 服务**死亡**本身仍不改快照：`noteDead` 不动 `Services`——死者保留在卡上，死亡通告
+  走 system 块（「卡片把死服务改成红行」需要存活位进协议，本期不做）。
+- respawn 上限计数、每次 respawn 的次数不进快照（通知走 system 块）。
+- OAuth 动态注册、`notifications/progress` token 往返 + GUI 进度面仍未做（另批）。

@@ -586,6 +586,20 @@ type mcpHub struct {
 	defaultCallTimeout time.Duration
 	// status：启动期快照（见上方类型注释）。构造期写入，之后只读。
 	status mcpHubStatus
+	// onStatusChange：状态快照变更的落点（会话注入 ⇒ 发 t:"mcp"，协议 §3.10）。
+	// 触发点（statusChanged）刻意在锁外：回调里回读 Status() 自己拿锁，锁内回调
+	// 是死锁配方。构造后注入一次、只读，无需锁。
+	onStatusChange func()
+}
+
+// statusChanged：运行期工具表/服务表变了（respawn 重注册、list_changed 重拉）。
+// hello.mcp 是启动期快照，GUI 卡片靠 t:"mcp" 才能跟手——不叫就是 2026-11-07
+// 修的「快照 respawn 不跟手」缺陷本体。
+func (h *mcpHub) statusChanged() {
+	if h == nil || h.onStatusChange == nil {
+		return
+	}
+	h.onStatusChange()
 }
 
 func newEmptyMCPHub(rootDir string) *mcpHub {
@@ -1064,6 +1078,19 @@ func mcpToolNameHashed(server, tool string, forceHash bool) string {
 //   respawn 漏掉消解就会在 toolDefs 里留两份同名定义，provider 整轮 400。
 // ★ 顺序：respawn 后该服务的定义追加到末尾（不插回原位）。只发生一次，
 //   比「记住原下标再插入」简单可靠；代价是前缀缓存失效一次，可接受。
+// enableNotifyStream：注册完成后打开该 client 的服务端主动通知流（若传输支持）。
+// ★ 时机纪律见 streamableHTTPTransport.enableNotifyStream 的注释——通知到达时
+// 注册表必须已就位，否则 refreshServerTools 读表为空、重拉静默丢失。stdio/legacy
+// 无此概念（类型断言失败 = no-op）。
+func (h *mcpHub) enableNotifyStream(client *mcpClient) {
+	if h == nil || client == nil {
+		return
+	}
+	if s, ok := client.transport.(interface{ enableNotifyStream() }); ok {
+		s.enableNotifyStream()
+	}
+}
+
 func (h *mcpHub) registerClientLocked(server string, client *mcpClient) int {
 	registered := 0
 	for _, t := range client.tools {
@@ -1088,6 +1115,31 @@ func (h *mcpHub) registerClientLocked(server string, client *mcpClient) int {
 		registered++
 	}
 	return registered
+}
+
+// recomputeStatusLocked：从 clients/toolMap 重导 status.Services（respawn 重注册
+// / list_changed 重拉之后调用，调用方持写锁）。status 其余字段（Source/Config/
+// Problem/Failed/Disabled）是**启动期事实**，不在这里改写——respawn 成功不把
+// 启动时的失败历史洗掉（那是 hello.mcp 快照的语义）；本函数只让「当前注册了
+// 什么」跟上 toolMap，t:"mcp" 状态覆盖（§3.14）靠它才有真数——否则快照冻结在
+// 构造期，respawn 后 GUI 卡片显示的还是旧工具数（2026-11-07 冒烟 G①/H 臂抓的）。
+func (h *mcpHub) recomputeStatusLocked() {
+	svcs := make([]mcpServerStatus, 0, len(h.clients))
+	for name := range h.clients {
+		registered := 0
+		for _, ref := range h.toolMap {
+			if ref.serverName == name {
+				registered++
+			}
+		}
+		kind := ""
+		if cfg, ok := h.serverCfg[name]; ok {
+			kind, _ = cfg.transportKind()
+		}
+		svcs = append(svcs, mcpServerStatus{Name: name, Tools: registered, Transport: kind})
+	}
+	sort.Slice(svcs, func(i, j int) bool { return svcs[i].Name < svcs[j].Name })
+	h.status.Services = svcs
 }
 
 // unregisterServerLocked：摘掉某服务的全部工具（respawn 前调用）。调用方持写锁。
@@ -1172,6 +1224,7 @@ func newMCPHubFromConfig(cfg *mcpConfigFile, rootDir string) (*mcpHub, error) {
 		hub.clients[sName] = client
 		hub.serverCfg[sName] = cfg.MCPServers[sName]
 		hub.registerClientLocked(sName, client)
+		hub.enableNotifyStream(client)
 	}
 	// ★ 服务行报的是**真正注册进工具表的**数量，不是服务端声明的数量：
 	//   撞名无法消解时后者会虚高，而 GUI 的"N 个工具"必须与模型工具表一致。
@@ -1440,9 +1493,11 @@ func (h *mcpHub) respawnServer(ctx context.Context, server string) (*mcpClient, 
 	h.clients[server] = client
 	h.unregisterServerLocked(server)
 	count := h.registerClientLocked(server, client)
+	h.recomputeStatusLocked()
 	h.respawn[server] = attempts + 1
 	delete(h.dead, server)
 	h.mu.Unlock()
+	h.enableNotifyStream(client)   // 注册已落地 ⇒ 现在开通知流才无竞态
 
 	// 旧客户端已经死了，但句柄（Job Object 等）要关：不关就是每会话泄一个内核对象。
 	if cur != nil {
@@ -1450,6 +1505,7 @@ func (h *mcpHub) respawnServer(ctx context.Context, server string) (*mcpClient, 
 	}
 	h.noteNotice(fmt.Sprintf("[MCP 服务 %s 已自动重启（第 %d/%d 次）：%d 个工具已重新注册]",
 		server, attempts+1, mcpRespawnMax, count), true)
+	h.statusChanged()   // 工具表刚换血 ⇒ t:"mcp" 让 GUI 卡片跟手
 	return client, ""
 }
 
@@ -1473,8 +1529,8 @@ func (h *mcpHub) onServerNotify(server string) func(string, json.RawMessage) {
 // refreshServerTools：notifications/tools/list_changed 的兑现——重拉该服务的
 // tools/list 并重注册。复用 respawn 的两把锁：respawnMu 串行化（不与重启赛跑）、
 // mu 写锁只包注册表换血。失败保留旧工具表并如实记日志——「通知到了但没兑现」
-// 必须可见，静默失败比不改更糟。★ hello.mcp 是启动期快照（§八边界），本刷新
-// 只影响模型侧工具表，副标/检视栏卡不跟手——那是已登记的独立边界。
+// 必须可见，静默失败比不改更糟。成功后 statusChanged ⇒ t:"mcp" 让 GUI 卡片跟手
+// （2026-11-07 前「卡不跟手」是登记过的边界，本行闭合它）。
 func (h *mcpHub) refreshServerTools(server string) {
 	if h == nil || h.closed.Load() {
 		return
@@ -1503,8 +1559,10 @@ func (h *mcpHub) refreshServerTools(server string) {
 	}
 	h.unregisterServerLocked(server)
 	count := h.registerClientLocked(server, client)
+	h.recomputeStatusLocked()
 	h.mu.Unlock()
 	mcpLogf(server, "notifications/tools/list_changed → 工具表已更新（%d 个工具）", count)
+	h.statusChanged()   // 模型侧工具表已变 ⇒ t:"mcp" 让 GUI 卡片跟手
 }
 
 // noteDead：登记「某服务死了」。同名只记第一次（死因以首次为准）。

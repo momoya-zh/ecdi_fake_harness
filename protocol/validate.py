@@ -36,9 +36,10 @@ KNOWN_TYPES = {
     "model",                              # v4: gui -> core request; also core -> gui ack
     "agent",                              # v5: core -> gui subagent lifecycle (control plane)
     "job",                                # v6: core -> gui background job lifecycle (control plane)
+    "mcp",                                # v6: core -> gui MCP status update (§3.14, 2026-11-07)
 }
 CORE_TYPES = {"hello", "state", "block_start", "delta", "block_end", "ask",
-              "usage", "error", "bye", "agent", "job"}
+              "usage", "error", "bye", "agent", "job", "mcp"}
 
 # PROTOCOL 3.3 block kinds.  Kept here so the validator and the GUI agree on one
 # list: Transcript::IsKnownKind in gui/src/Transcript.cpp is the C++ twin, and a

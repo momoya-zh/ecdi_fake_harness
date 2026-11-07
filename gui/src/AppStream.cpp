@@ -771,36 +771,11 @@ void HarnessApp::RouteLastMessage() {
         // ★★ 2026-11-06：MCP 启动期状态（协议 §3.1 可选 `mcp`）。
         //   ★ 只有字段在场才置 has=true；缺字段 ≠ 0 个服务（那是"没配/未启用"，
         //     副标与卡片都不该出现）。旧 core 不认这个字段是本仓要支持的形态。
+        //   ★ 2026-11-07：解析体抽为 ApplyMcpStatusObject——t:"mcp"（§3.14）的
+        //     字段集与这里完全一致，两处各写一份迟早写岔。
         m_sess->mcp = McpStatus{};
         if (const json::Value* m = msg.Find("mcp"); m && m->IsObject()) {
-            m_sess->mcp.has = true;
-            m_sess->mcp.source = m->GetString("source");
-            m_sess->mcp.config = m->GetString("config");
-            m_sess->mcp.problem = m->GetString("problem");
-            if (const json::Value* d = m->Find("disabled"); d && d->IsNumber()) {
-                m_sess->mcp.disabled = static_cast<int>(d->number);
-            }
-            if (const json::Value* svcs = m->Find("services"); svcs && svcs->IsArray()) {
-                for (const auto& item : svcs->array) {
-                    if (!item.IsObject()) continue;
-                    McpServiceItem s;
-                    s.name = item.GetString("name");
-                    s.transport = item.GetString("transport");
-                    if (const json::Value* n = item.Find("tools"); n && n->IsNumber()) {
-                        s.tools = static_cast<int>(n->number);
-                    }
-                    if (!s.name.empty()) m_sess->mcp.services.push_back(std::move(s));
-                }
-            }
-            if (const json::Value* fails = m->Find("failed"); fails && fails->IsArray()) {
-                for (const auto& item : fails->array) {
-                    if (!item.IsObject()) continue;
-                    McpFailureItem f;
-                    f.name = item.GetString("name");
-                    f.error = item.GetString("error");
-                    if (!f.name.empty()) m_sess->mcp.failed.push_back(std::move(f));
-                }
-            }
+            ApplyMcpStatusObject(*m);
         }
         // ★ 无论字段在不在都重建一次：字段缺席时要能把上一份 hello 的卡片收掉
         //   （同一 Session 重新握手/切 core 时不留陈旧状态）。
@@ -1009,7 +984,66 @@ void HarnessApp::RouteLastMessage() {
         HandleJobMessage(msg);
         return;
     }
+    if (t == "mcp") {
+        // ★★ 协议 v6 §3.14（2026-11-07）：MCP 状态权威覆盖（respawn 重注册 /
+        //   list_changed 重拉 / 工作区重发现）。语义 = 「当前状态」，以它覆盖
+        //   hello.mcp 的快照；空载荷（无任何证据字段）= 现在没有 MCP ⇒ 收卡。
+        //   ★ 本消息可能从 hub goroutine 发出、在任何 core 状态到达——只动
+        //     MCP 状态面，不触碰转录块状态机（§3.14 线程纪律）。
+        const json::Value* svcs = msg.Find("services");
+        const json::Value* fails = msg.Find("failed");
+        const json::Value* dis = msg.Find("disabled");
+        const bool hasEvidence =
+            !msg.GetString("source").empty() || !msg.GetString("config").empty() ||
+            !msg.GetString("problem").empty() ||
+            (svcs && svcs->IsArray() && !svcs->array.empty()) ||
+            (fails && fails->IsArray() && !fails->array.empty()) ||
+            (dis && dis->IsNumber() && dis->number > 0);
+        if (hasEvidence) {
+            ApplyMcpStatusObject(msg);
+        } else {
+            m_sess->mcp = McpStatus{};   // 收卡（has=false ⇒ 副标/卡片整段消失）
+        }
+        RebuildMcpCard();
+        m_hudDirty = true;
+        return;
+    }
     // state / usage：上移到 HUD，转录不渲染
+}
+
+// ★★ 协议 v6 §3.14（2026-11-07）：MCP 状态字段解析（hello.mcp 与 t:"mcp" 共用）。
+// 调用方保证 `m` 是对象；这里负责把字段集灌进 `m_sess->mcp` 并置 has=true。
+// 与 core 的 emitMCPStatus / hello.mcp 组装是同一份字段表（§3.1）。
+void HarnessApp::ApplyMcpStatusObject(const json::Value& m) {
+    m_sess->mcp = McpStatus{};
+    m_sess->mcp.has = true;
+    m_sess->mcp.source = m.GetString("source");
+    m_sess->mcp.config = m.GetString("config");
+    m_sess->mcp.problem = m.GetString("problem");
+    if (const json::Value* d = m.Find("disabled"); d && d->IsNumber()) {
+        m_sess->mcp.disabled = static_cast<int>(d->number);
+    }
+    if (const json::Value* svcs = m.Find("services"); svcs && svcs->IsArray()) {
+        for (const auto& item : svcs->array) {
+            if (!item.IsObject()) continue;
+            McpServiceItem s;
+            s.name = item.GetString("name");
+            s.transport = item.GetString("transport");
+            if (const json::Value* n = item.Find("tools"); n && n->IsNumber()) {
+                s.tools = static_cast<int>(n->number);
+            }
+            if (!s.name.empty()) m_sess->mcp.services.push_back(std::move(s));
+        }
+    }
+    if (const json::Value* fails = m.Find("failed"); fails && fails->IsArray()) {
+        for (const auto& item : fails->array) {
+            if (!item.IsObject()) continue;
+            McpFailureItem f;
+            f.name = item.GetString("name");
+            f.error = item.GetString("error");
+            if (!f.name.empty()) m_sess->mcp.failed.push_back(std::move(f));
+        }
+    }
 }
 
 // ★★ 协议 v6 §3.13（2026-11-05）：后台作业的控制面消息。

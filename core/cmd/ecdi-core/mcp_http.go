@@ -264,13 +264,19 @@ func (t *streamableHTTPTransport) Do(ctx context.Context, req jsonrpcRequest) (j
 	default:
 		doErr = fmt.Errorf("不支持的响应 Content-Type %q", ct)
 	}
-	// ★ initialize 成功 ⇒ 打开服务端主动通知流（2025-06-18：客户端可 GET 同一
-	//   端点接收服务端请求/通知）。只启一次；405 = 服务端不提供，循环内自行停。
-	//   流的死活不影响 POST 主通道（Done() 不由这里驱动）。
-	if doErr == nil && req.Method == "initialize" {
-		t.notifyOnce.Do(func() { go t.notifyStreamLoop() })
-	}
+	// ★ 通知流的打开时机在 enableNotifyStream()——由 HUB 在**注册完成后**调用。
+	//   不在这里自动启：GET 流若在 initialize 一成功就开，服务端的首条
+	//   list_changed 可能在 startAndInit 期间到达 ⇒ hub 侧 h.clients 还没有这个
+	//   client ⇒ refreshServerTools 读表为空静默 return，重拉丢失（冒烟 G①
+	//   实测 ~1/3；客户端字节级实证「事件已分发、重拉未发生」）。流死活不影响
+	//   POST 主通道（Done() 不由这里驱动）。
 	return result, doErr
+}
+
+// enableNotifyStream：打开服务端主动通知流（幂等）。★ 调用方 = HUB，时机 =
+// registerClientLocked 之后——那时任何到达的通知都必然找得到注册表。
+func (t *streamableHTTPTransport) enableNotifyStream() {
+	t.notifyOnce.Do(func() { go t.notifyStreamLoop() })
 }
 
 // Cancel：Streamable HTTP 用一条通知 POST 告知服务端（规范允许；回 202 即算送达）。

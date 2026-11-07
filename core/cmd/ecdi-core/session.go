@@ -122,6 +122,10 @@ type session struct {
 
 	// ── MCP Host：外部工具能力（docs/mcp-host-plan.md）───────────────
 	mcp *mcpHub
+	// mcpConfigPath/mcpTimeout：启动参数存档——工作区切换要按**同一份**显式
+	// 配置与新 cwd 重发现（rebuildMCPHubForWorkspace），不能靠猜。
+	mcpConfigPath string
+	mcpTimeout    time.Duration
 }
 
 // pendingWorkspace = 一个已受理、尚未应答的工作区请求（与假 core 同构）。
@@ -189,7 +193,10 @@ func newSession(cfg llmConfig, allowTools []string, providerEnv map[string]llmCo
 	// ── MCP Host 初始化（发现并启动配置的服务，拉取工具列表）──
 	// ★ 2026-11-06：配置层错误也保留 hub（带 status.Problem）——产品面要靠它
 	//   把"配置坏了"与"根本没配"分开；只打 stderr 等于没发生（见 mcp.go Status）。
+	s.mcpConfigPath = mcpConfig
+	s.mcpTimeout = mcpTimeout
 	if mcpHub, err := NewMCPHub(mcpConfig, s.cwd, mcpTimeout); mcpHub != nil {
+		mcpHub.onStatusChange = s.onMCPStatusChange
 		s.mcp = mcpHub
 		if err != nil {
 			s.log("WARNING: mcp hub initialization failed: %v", err)
@@ -969,6 +976,84 @@ func (s *session) emitMCPNotices() {
 		s.emit(map[string]any{"t": "block_end", "id": nid, "ok": note.OK})
 		s.log("mcp: %s", note.Text)
 	}
+}
+
+// onMCPStatusChange：hub 状态快照变更（respawn 重注册 / list_changed 重拉 /
+// 工作区重发现）的回调——发 t:"mcp" 让 GUI 卡片跟手。hub goroutine 也会进来，
+// wire.Out 自带锁 ⇒ 线程安全；字段内容见 emitMCPStatus。
+func (s *session) onMCPStatusChange() {
+	s.emitMCPStatus()
+}
+
+// emitMCPStatus：把当前 MCP 状态快照平铺成 t:"mcp" 消息（协议 §3.10，v6 增补）。
+// 语义是「**当前**状态，权威覆盖」——GUI 收到即以它重建检视栏卡与副标；空载荷
+// （无任何证据字段）= 现在没有 MCP，GUI 收卡。hello.mcp 仍是启动期快照，不动。
+func (s *session) emitMCPStatus() {
+	if s.mcp == nil {
+		return
+	}
+	st := s.mcp.Status()
+	if st.Services == nil {
+		st.Services = []mcpServerStatus{}
+	}
+	if st.Failed == nil {
+		st.Failed = []mcpFailureStatus{}
+	}
+	m := map[string]any{"t": "mcp",
+		"services": st.Services, "failed": st.Failed, "disabled": st.Disabled}
+	if st.Source != "" {
+		m["source"] = st.Source
+	}
+	if st.Config != "" {
+		m["config"] = st.Config
+	}
+	if st.Problem != "" {
+		m["problem"] = st.Problem
+	}
+	s.emit(m)
+	s.log("mcp: status update (%d services, %d failed, %d disabled)",
+		len(st.Services), len(st.Failed), st.Disabled)
+}
+
+// rebuildMCPHubForWorkspace：工作区切换后的 MCP 重发现（2026-11-07，idle 门后）。
+// mcp.json 是项目级配置：切走不重发现 = 旧工作区的服务变幽灵工具、新工作区的
+// mcp.json 被无视。旧 hub 先 Close（子进程树/连接/通知流全撤），再走与启动
+// **同一条** NewMCPHub 链；结果无论好坏都发 t:"mcp"，且新旧任何一侧有证据时
+// 发 system 块——「换了工作区之后 MCP 变成什么样」必须在界面上看得见；
+// 两头都从没配过 MCP 的会话则一个字都不说（没有可说的变化）。
+func (s *session) rebuildMCPHubForWorkspace() {
+	oldHadEvidence := s.mcp != nil && s.mcp.Status().hasEvidence()
+	if s.mcp != nil {
+		s.mcp.Close()
+	}
+	hub, err := NewMCPHub(s.mcpConfigPath, s.cwd, s.mcpTimeout)
+	if hub != nil {
+		hub.onStatusChange = s.onMCPStatusChange
+		s.mcp = hub
+	}
+	if s.mcp == nil {
+		return
+	}
+	st := s.mcp.Status()
+	newHasEvidence := st.hasEvidence()
+	if !oldHadEvidence && !newHasEvidence {
+		return
+	}
+	switch {
+	case err != nil || st.Problem != "":
+		s.emitNotice(fmt.Sprintf("[MCP] 工作区已切换：配置读取失败（%s）：%s",
+			st.Config, st.Problem), false)
+	case len(st.Services) == 0 && len(st.Failed) == 0 && st.Disabled == 0:
+		s.emitNotice("[MCP] 工作区已切换：新工作区没有 mcp.json，外部工具已清空", false)
+	default:
+		tools := 0
+		for _, svc := range st.Services {
+			tools += svc.Tools
+		}
+		s.emitNotice(fmt.Sprintf("[MCP] 工作区已切换：按新工作区重发现（%s：%d 个服务 %d 个工具）",
+			st.Config, len(st.Services), tools), true)
+	}
+	s.emitMCPStatus()
 }
 
 // ── L2 防爆：估算、折叠、预算压缩（docs/session-persistence-decisions.md §7.3）──
@@ -1883,6 +1968,9 @@ func (s *session) handleWorkspace(msg wire.GuiMsg, arrived wire.State) {
 	s.loadMemories()
 	// 记忆区段是 system prompt 的一部分：换了工作区，估算锚点即失效。
 	s.invalidateUsageBase()
+	// ★ 2026-11-07：MCP 配置随工作区重发现（mcp.json 是项目级配置）。
+	//   本入口已在 idle 门后；重发现是本地操作 + 服务启动（有超时），不发 state。
+	s.rebuildMCPHubForWorkspace()
 	s.emit(map[string]any{"t": "workspace", "request_id": msg.RequestID,
 		"ok": true, "path": resolved})
 }

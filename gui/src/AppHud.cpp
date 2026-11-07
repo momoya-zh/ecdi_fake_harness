@@ -1197,12 +1197,37 @@ void HarnessApp::RefreshHud() {
                 rec.pickerVisible = pickerVisibleNow;
                 rec.workspaceCap = m_sess->workspaceCap;
                 rec.protocolVer = m_sess->protocolVer;
+                rec.modelCap = m_sess->hasModelCap;
                 m_probeState.stateProbeLog.push_back(std::move(rec));
                 m_probeState.stateProbeLastSend = sendEnabled;
                 m_probeState.stateProbeLastStop = stopEnabled;
                 m_probeState.stateProbeLastPicker = pickerEnabledNow;
                 m_probeState.stateProbeLastValid = true;
             }
+        }
+        // ★★ 2026-11-07（2d-b 第四臂）：model-cap 拒绝侧 live 断言。
+        //   条件：live（writer 在场——与 RequestModelSwitch 第一道门同一判据，回放
+        //   不触发）+ hello 已解析 + caps 缺 "model" + idle + 尚未试过。经
+        //   RequestModelSwitch 试一次切换——那是设置面板按钮的**同一入口**（单入口
+        //   纪律），拒绝必须留下通知行且不落 pending/queue。此前整条 live 语料里
+        //   「拒绝分支」结构性不可见（真 core 恒声明 model），与 2026-11-06 的
+        //   「选择文件夹死钮」同族缺口。
+        if (m_sess->writer && !m_sess->hasModelCap && m_sess->protocolVer > 0 &&
+            m_sess->coreState == "idle" && !m_probeState.capRefusalTried) {
+            m_probeState.capRefusalTried = true;
+            m_probeState.capRefusalModelCap = m_sess->hasModelCap;
+            RequestModelSwitch("caprefusal-probe", "refusal-target");
+            bool notice = false;
+            for (const RowRec& r : m_sess->rows) {
+                if (r.label &&
+                    r.label->GetText().find("未声明 model 能力") != std::string::npos) {
+                    notice = true;
+                    break;
+                }
+            }
+            m_probeState.capRefusalNotice = notice;
+            m_probeState.capRefusalNoPending =
+                m_sess->pendingModelId.empty() && m_sess->queuedModelProvider.empty();
         }
     }
     if (HudTouch("stateChip"), m_hud.stateChip) {
@@ -1545,9 +1570,19 @@ void HarnessApp::AppendStateProbeSummary(std::string& json) {
                 r.sendTitle + "\", \"pickerEnabled\": " +
                 (r.pickerEnabled ? "true" : "false") + ", \"pickerVisible\": " +
                 (r.pickerVisible ? "true" : "false") + ", \"workspaceCap\": " +
-                (r.workspaceCap ? "true" : "false") + ", \"protocolVer\": " +
+                (r.workspaceCap ? "true" : "false") + ", \"modelCap\": " +
+                (r.modelCap ? "true" : "false") + ", \"protocolVer\": " +
                 std::to_string(r.protocolVer) + "}";
     }
     json += "],\n";
+    // ★★ 2026-11-07（2d-b 第四臂）：model-cap 拒绝侧 live 断言（只在试过时输出）。
+    if (m_probeState.capRefusalTried) {
+        json += "  \"stateProbeCapRefusal\": {\"tried\": true, \"modelCap\": " +
+                std::string(m_probeState.capRefusalModelCap ? "true" : "false") +
+                ", \"notice\": " +
+                std::string(m_probeState.capRefusalNotice ? "true" : "false") +
+                ", \"noPending\": " +
+                std::string(m_probeState.capRefusalNoPending ? "true" : "false") + "},\n";
+    }
 }
 

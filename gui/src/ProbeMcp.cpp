@@ -16,6 +16,10 @@
 //   ④ 会话头副标含 `McpStatusText()` 的逐字结果；没有 mcp 字段时不得出现 "MCP"。
 //   ⑤ 屏上 `[MCP]` system 行数 == 失败数 + (配置错误 ? 1 : 0)。
 //   ⑥ 负向（demo）：没有 mcp 字段 ⇒ 卡片不可见、0 行、副标无 MCP、0 条 MCP 行。
+//   ⑦ ★ 八版（2026-11-07，t:"mcp" 跟手）：每个服务行的工具数必须与**模型侧
+//      当前值逐字相等**（`<name> · [transport · ]<N> 工具`）。正向夹具在流中段
+//      带一条 t:"mcp"（fs 3→5 工具）——GUI 若无视它，卡片还画 hello 的 3，
+//      模型侧已是 5 ⇒ 此判据红。这是「快照跟手」的唯一机器判据。
 //
 // ★ 负对照必须另跑一支（demo 夹具）：正向只证明"有状态时会显示"，
 //   "每个会话都预先显示一张 MCP 卡"的实现同样能绿。见 tools/regress.py。
@@ -74,6 +78,13 @@ void HarnessApp::RunMcpProbe() {
                         text.rfind(svc.name + " · " + svc.transport + " · ", 0) == 0) {
                         ++rec.transportRows;
                     }
+                    // ★ 八版（⑦）：行必须**逐字终结**于当前工具数——卡片跟手
+                    //   （t:"mcp" 覆盖生效）的唯一行级判据。
+                    const std::string want =
+                        svc.name + " · " +
+                        (remote ? svc.transport + " · " : std::string()) +
+                        std::to_string(svc.tools) + " 工具";
+                    if (text == want) ++rec.toolCountRows;
                     break;
                 }
             }
@@ -113,6 +124,7 @@ void HarnessApp::RunMcpProbe() {
                       rec.serviceRows == rec.modelServices &&
                       rec.transportRows == rec.modelRemote &&
                       rec.failureRows == rec.modelFailed &&
+                      rec.toolCountRows == rec.modelServices &&
                       rec.subtitleHasMcp && rec.subtitleMatched &&
                       rec.renderedMcpNotices == expectedNotices;
     } else {
@@ -125,11 +137,12 @@ void HarnessApp::RunMcpProbe() {
         char note[480];
         std::snprintf(note, sizeof(note),
                       "has=%d services=%zu failed=%zu tools=%zu card=%d rows=%zu/%zu "
-                      "svcRows=%zu remoteRows=%zu/%zu failRows=%zu notices=%zu/%zu "
-                      "subHasMcp=%d subMatched=%d",
+                      "svcRows=%zu toolCountRows=%zu/%zu remoteRows=%zu/%zu failRows=%zu "
+                      "notices=%zu/%zu subHasMcp=%d subMatched=%d",
                       rec.modelHas ? 1 : 0, rec.modelServices, rec.modelFailed, rec.modelTools,
                       rec.cardVisible ? 1 : 0, rec.cardRows, expectedRows,
-                      rec.serviceRows, rec.transportRows, rec.modelRemote,
+                      rec.serviceRows, rec.toolCountRows, rec.modelServices,
+                      rec.transportRows, rec.modelRemote,
                       rec.failureRows, rec.renderedMcpNotices, expectedNotices,
                       rec.subtitleHasMcp ? 1 : 0, rec.subtitleMatched ? 1 : 0);
         rec.note = note;
@@ -149,13 +162,15 @@ void HarnessApp::AppendMcpProbeSummary(std::string& json) {
                       "{\"phase\": \"%s\", \"modelHas\": %s, \"modelServices\": %zu, "
                       "\"modelFailed\": %zu, \"modelTools\": %zu, \"modelRemote\": %zu, "
                       "\"cardVisible\": %s, \"cardRows\": %zu, \"serviceRows\": %zu, "
+                      "\"toolCountRows\": %zu, "
                       "\"transportRows\": %zu, \"failureRows\": %zu, "
                       "\"renderedMcpNotices\": %zu, \"subtitleHasMcp\": %s, "
                       "\"subtitleMatched\": %s, \"matched\": %s, \"note\": \"%s\"}",
                       r.phase.c_str(), r.modelHas ? "true" : "false", r.modelServices,
                       r.modelFailed, r.modelTools, r.modelRemote,
                       r.cardVisible ? "true" : "false",
-                      r.cardRows, r.serviceRows, r.transportRows, r.failureRows,
+                      r.cardRows, r.serviceRows, r.toolCountRows, r.transportRows,
+                      r.failureRows,
                       r.renderedMcpNotices,
                       r.subtitleHasMcp ? "true" : "false",
                       r.subtitleMatched ? "true" : "false",

@@ -1962,11 +1962,15 @@ private:
     void BuildAgentCard(ECDI::Panel& insp, int rowH);
     void RebuildAgentList();
     // ★★ 2026-11-06：右栏「MCP」卡与副标（实现全在 `AppMcp.cpp`）。
-    //   状态来源只有 `hello.mcp`；无该字段 ⇒ `RebuildMcpCard` 隐藏卡片、
+    //   状态来源：`hello.mcp`（启动快照）+ `t:"mcp"`（运行期权威覆盖，2026-11-07
+    //   §3.14）——两者以最近一次收到的为准；空载荷 ⇒ `RebuildMcpCard` 隐藏卡片、
     //   `McpStatusText` 返回空串（副标不拼 MCP 段）。
     void BuildMcpCard(ECDI::Panel& insp, int rowH);
     void RebuildMcpCard();
     std::string McpStatusText() const;
+    // ★ 2026-11-07（§3.14）：把承载 MCP 状态字段的对象（hello 的 `mcp` 子对象，
+    //   或 t:"mcp" 消息本体）解析进 `m_sess->mcp`（has=true）。字段集与 §3.1 一致。
+    void ApplyMcpStatusObject(const json::Value& m);
     // ★★ 2026-11-06：MCP 产品面可见性（--mcp-probe）。判据与负对照见 ProbeMcp.cpp 头注。
     void RunMcpProbe();
     // ★★ 2026-11-06：开发者模式与用户模式分流判据（--mode-probe）。见 ProbeMode.cpp。

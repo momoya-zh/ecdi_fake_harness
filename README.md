@@ -244,12 +244,12 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 |---|---|
 | `--mode-probe` | 用户模式 vs 开发者模式切换、可逆性与偏好记忆（**P4 Phase J 缺口闭合**：5 相覆盖 baseline-dev / switch-user / dev-restored / negative / inspector-memory，断言顶栏胶囊、26px底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆及负对照区分力） |
 | `--cull-probe` | 命令分类 / 帧时 / 测量成本 |
-| `--state-probe` | 回读按钮使能位（REQ-04）＋ picker 使能/可见、caps、protocolVer 同点回读（2026-11-07，2d-b 协议臂的断言面） |
+| `--state-probe` | 回读按钮使能位（REQ-04）＋ picker 使能/可见、caps、protocolVer 同点回读（2026-11-07，2d-b 协议臂的断言面）；★ 十版：live + 缺 `model` cap + idle 时经 `RequestModelSwitch` 同一入口试一次切换，断言拒绝通知上屏且不落 pending/queue（2d-b 第四臂 `v6-no-model` 的断言面） |
 | `--hit-probe` | 命中门控受控对照（REQ-04 **边界**：禁用 ⇒ 点击不达） |
 | `--order-probe` | 块**到达序**可从模型恢复（step 0a） |
 | `--rebuild-probe` | 运行期整树重建（换主题的唯一诚实做法） |
 | `--session-probe` | 多会话：创建 / 切换 / 冻结时钟 |
-| `--sidebar-probe` | 侧栏会话列表与折叠 |
+| `--sidebar-probe` | 侧栏会话列表与折叠（live 删除臂在造门时挖出新缺陷，见 2026-11-07 对齐第 4 条；门待缺陷归属后另落） |
 | `--answer-probe` | `ask` 的决定**入模型**（否则重建后答案丢失） |
 | `--theme-probe` | 双主题令牌 |
 | `--history-probe` | 磁盘文件作会话（replay 到末尾） |
@@ -277,7 +277,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--agent-probe` | 子代理缩进 / 归属 / 代理卡（**协议 v5**：缩进行数=归属块数、竖线行数=缩进行数、缩进吃宽、卡行数=代理数+1 且随有无代理显隐；★ **负对照另跑一支**——无 agent 夹具上缩进恒 0，见 `tools/regress.py`） |
 | `--job-probe` | 后台作业卡（**协议 v6** `job` 消息）：卡片挂在发起它的 `run_command` 工具行，标题含 job id+状态、正文含 start.command 与尾部输出，模型/视图两路对齐；★ **负对照另跑一支**——无 `job` 的 demo 夹具上不得出现任何「后台」字样 |
 | `--proposal-probe` | ask 提案卡（**协议 v5** `detail`，2026-11-05）：diff 行数/±行数与模型侧重切行数两路对齐、无空提案体；★ **负对照另跑一支**——无 detail 夹具（demo）上提案行恒 0（回落路径完好） |
-| `--mcp-probe` | MCP 产品面可见性（**`hello.mcp`**，2026-11-06）：副标 `MCP N 个服务 / M 个工具（K 个失败）`、检视栏卡行数/服务名/失败名、失败 `system` 行与模型侧两路对齐；★ **负对照另跑一支**——无 `mcp` 字段的 demo 上卡片/副标/失败行整段缺席 |
+| `--mcp-probe` | MCP 产品面可见性（**`hello.mcp`**，2026-11-06）：副标 `MCP N 个服务 / M 个工具（K 个失败）`、检视栏卡行数/服务名/失败名、失败 `system` 行与模型侧两路对齐；★ **负对照另跑一支**——无 `mcp` 字段的 demo 上卡片/副标/失败行整段缺席。★ 十版加 ⑦：每个服务行的工具数与**模型侧当前值逐字相等**（正向夹具中段带一条 `t:"mcp"`（§3.14），GUI 无视它即红——「快照跟手」的唯一机器判据） |
 | `--fold-probe` | **回合级折叠**（2026-11-06）：回答结束（`state:idle`）后把本回合的过程行（`tool_call`/`tool_result`/`reasoning`/中间 `assistant`）收成一条「› 已完成 · N 步 · X.Xs」摘要，`user` 与最终回答保持可见。读数四路对齐：模型 `foldHidden` == 视图不可见行数、可见过程行 == 过程行 − 隐藏数、摘要条文案含步数、**展开↔折叠往返后 `rows.size()` 不变**；★ **负对照另跑一支**——过程行不足两条的夹具上 `folds` 恒 0（否则「无脑全折」在正臂也绿） |
 
 另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
@@ -391,7 +391,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（156 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（157 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -533,7 +533,8 @@ HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协�
    （pickerEnabled/pickerVisible/workspaceCap/protocolVer——判 GUI 的解析结果，不判传参；
    身份判据钉死「GUI 眼中的 protocolVer == 声明值」防钳位洗绿）。牙齿实测：守卫退回
    `== 3` 的变异体上 v6 臂三判据全红。范围边界：caps 缺 `model` 的热切换拒绝是交互门
-   （state-probe 观测不到），有 cap 一侧由 §2e 真核 switch-ok 臂覆盖。
+   （state-probe 观测不到）——**已由十版第四臂闭合**（`v6-no-model`，拒绝分支经同一
+   入口触发并断言，见 2026-11-07 对齐第 4 条）。
 2. ~~**evals/ 补库**：按上面已拍板的口径，把 2026-10-24 以来各轮收口读数从 `.scratch/`
    归档进 `evals/`（每轮挑正/负对照，不搬中间调试件）。~~ **已落地（2026-11-07）**：
    68 份按轮归档（84 → 152），映射见 `status.txt` EVALS-BACKFILL 条目；今后每轮收口即归档。
@@ -541,8 +542,30 @@ HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协�
    若能拿到 PDB（gui 目标 `/Zi+/DEBUG` 或 `/MAP`）先把 F1/F2 调用链落到源行——拿得到就排
    第 2 条之前：「归属定不了之前不开新功能」。
 
-功能侧（MCP 服务端主动通知流 / HUD 脏位修复进门 / MCP 小修包：hello.mcp 快照 respawn 后
-不跟手、切工作区不重发现 `mcp.json`、model-cap 拒绝侧 live 断言）等以上收完再挑。
+4. ~~**MCP 小修包**（通知流落地后排队的产品短板）：hello.mcp 快照 respawn 后不跟手 /
+   切工作区不重发现 `mcp.json` / HUD 脏位修复进门 / model-cap 拒绝侧 live 断言~~
+   **四项中三项已落地（2026-11-07 十版）**：协议 §3.14 控制面消息 `t:"mcp"`（状态
+   权威覆盖，空载荷 = 收卡）+ `status.Services` 重导（构造期冻结是冒烟抓的第二处）+
+   工作区切换重发现（idle 门后重跑发现链，旧工具清空有「幽灵工具调不通」行为级
+   判据）+ `--mcp-probe` ⑦ 判据（夹具中段带 `t:"mcp"`）+ 2d-b 第四臂
+   `v6-no-model`（拒绝分支 live 断言）。冒烟 101 → **119**（F/G① 各 +1、H 臂 16 条），
+   方案 `docs/mcp-host-plan.md` §十三。**第四项（HUD 脏位门）未落**：造门时挖出
+   新缺陷——live 多会话一拉起第二个会话，全部 `WM_TIMER` 停摆（见下）。
+5. **★ 新缺陷登记（2026-11-07，归属未定）**：live 模式拉起第二个会话（`＋ 新建会话`
+   → 第二个 ChildSource/core）之后，**全部 `WM_TIMER` 停摆**——caret 闪烁、tooltip、
+   `--auto-close` 全部不再触发；消息泵仍活着（`PostToUi` 投递闭包照常处理：第二
+   会话的 hello/workspace 照走）。实证：同二进制纯 live 8s 内 TIMER 事件 99 次 vs
+   带「点击 ＋」探针 1 次；绕过合成点击**直接调 `NewSession()`**（无鼠标事件）同样
+   复现；把拉起推迟到 settle 风暴后 2s 仍复现（非竞速）。候选归属：(a) GUI 侧第二
+   会话路径触碰了窗口/定时器生命周期；(b) ECDI 泵的线程消息（`PostThreadMessageW`
+   唤醒）与 `WM_TIMER` 交互——持续线程消息会按 Win32 优先级饿死 `WM_TIMER`；
+   (c) 同 id `SetTimer` 被异常重设。按「归属定不了之前不开新功能」，HUD 脏位门
+   （2d-c）本批不落；登记到 `status.txt` + roadmap。**用户可见推论**：多会话 live
+   下光标可能不闪、`--auto-close` 跑批失效——与 2026-10-27「删除后 HUD 冻结」的
+   表层症状可能同根（tick 死了，脏位消费无从谈起）。
+
+功能侧（`notifications/progress` 的 token 往返 + GUI 进度面、OAuth 动态注册、
+TODO-06 crash.dmp 归属）等下一轮再挑。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 

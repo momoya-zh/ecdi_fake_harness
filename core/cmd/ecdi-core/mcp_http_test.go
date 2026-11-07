@@ -675,6 +675,10 @@ func TestMCP_HTTPStreamableGETNotifications(t *testing.T) {
 		t.Fatalf("startAndInit: %v", err)
 	}
 	t.Cleanup(c.Close)
+	// ★ 九版修：开流时机归 HUB（注册后）——直连测试显式 arm，时序与 hub 同款。
+	if s, ok := c.transport.(interface{ enableNotifyStream() }); ok {
+		s.enableNotifyStream()
+	}
 
 	waitSignal(t, gotReconnect, "带 Last-Event-ID 的重连 GET")
 	gmu.Lock()
@@ -724,6 +728,10 @@ func TestMCP_HTTPStreamableGET405(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := startHTTPClient(t, mcpServerConfig{URL: srv.URL + "/mcp"})
+	// ★ 九版修：开流时机归 HUB（注册后）——直连测试显式 arm，时序与 hub 同款。
+	if s, ok := c.transport.(interface{ enableNotifyStream() }); ok {
+		s.enableNotifyStream()
+	}
 	time.Sleep(400 * time.Millisecond) // 给 notifyStreamLoop 足够时间走完 405 停止路径
 	mu.Lock()
 	if gets != 1 {

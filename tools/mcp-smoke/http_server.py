@@ -178,6 +178,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
+        # ★ 首字节立即下发（SSE 心跳注释）：头部之后体部长时间静音会触发客户端
+        #   响应体检测的竞速（实测 1/3 概率推送永不可见）——先冲一条注释把体部
+        #   「点亮」，再等推送时序。
+        try:
+            self.wfile.write(b": ping\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
         if self.state.notify_push_enabled:
             # ★ 先等首次 tools/list 完成再推 list_changed——否则推送与首拉竞速，
             #   drive 的「首拉 2 个工具」前提不稳。推完后 tools/list 升级为 3 项。

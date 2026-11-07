@@ -121,8 +121,11 @@ class FakeLLM:
                 has_tool_msg = any(m.get("role") == "tool" for m in body.get("messages", []))
                 if outer.script is not None:
                     # 脚本化：一轮一个调用，跑完再收尾（F 臂用）。
+                    # ★ 九版：条目可为 None = 该轮直接给纯文本收尾（无 tool_call）
+                    #   ——H 臂「一 prompt 一调用、两条 prompt」的剧本必须显式收尾，
+                    #   否则调用后的续轮会再弹下一个调用（F 臂的双调用一条流形状）。
                     idx = rnd - 1
-                    if idx < len(outer.script):
+                    if idx < len(outer.script) and outer.script[idx] is not None:
                         name, targs = outer.script[idx]
                         out.append(chunk({"role": "assistant", "content": "步骤 %d。" % (idx + 1)}))
                         out.append("data: " + json.dumps({"choices": [{"delta": {"tool_calls": [{
@@ -164,19 +167,22 @@ def chunk(delta):
 
 # ── core 管道驱动 ────────────────────────────────────────────────
 class CoreProc:
-    def __init__(self, core, cfg, url, session, extra_args=None, extra_env=None):
+    def __init__(self, core, cfg, url, session, extra_args=None, extra_env=None, ws=None):
         self.lines = []
         self.stderr = []
         self.q = []
         self.qc = threading.Condition()
         env = dict(os.environ)
         env.update(extra_env or {})
+        argv = [str(core), "--base-url", url, "--model", "smoke", "--key", "smoke-key",
+                "--session", session, "--context", "160000"]
+        if cfg is not None:
+            argv += ["--mcp-config", str(cfg)]
+        argv += ["--workspace", str(ws or SMOKE)] + list(extra_args or [])
         self.p = subprocess.Popen(
-            [str(core), "--base-url", url, "--model", "smoke", "--key", "smoke-key",
-             "--mcp-config", str(cfg), "--workspace", str(SMOKE), "--session", session,
-             "--context", "160000"] + list(extra_args or []),
+            argv,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=str(SMOKE), env=env)
+            cwd=str(ws or SMOKE), env=env)
         threading.Thread(target=self._read_out, daemon=True).start()
         threading.Thread(target=self._read_err, daemon=True).start()
         PROCS.append(self)
@@ -596,6 +602,17 @@ def arm_f(core, port):
               restart is not None and "第 1/3 次" in restart.get("text", ""),
               (restart or {}).get("text", "")[:200])
 
+        # ★ 九版（2026-11-07，协议 §3.14）：respawn 重注册 ⇒ t:"mcp" 状态覆盖——
+        #   GUI 卡片跟手的通道。事件块走 notice 队列、t:"mcp" 即时 emit，两者顺序
+        #   不定；wait 全队列扫描不丢行，先后无所谓。
+        mcpupd = wait_for(c, lambda m: m.get("t") == "mcp", 10)
+        ok_upd = False
+        if mcpupd:
+            svcs = mcpupd.get("services") or []
+            ok_upd = any(s.get("name") == "smoke" and s.get("tools") == 4
+                         and s.get("transport") == "stdio" for s in svcs)
+        check("F/重启后 t:\"mcp\" 覆盖到达（smoke/4 工具）", ok_upd, mcpupd or "TIMEOUT")
+
         idle = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
         check("F/收尾回到 idle", idle is not None)
 
@@ -648,9 +665,19 @@ def arm_g(core, port, base_url, http_state):
             # 重拉没兑现 ⇒ 把 core 的通知流日志抖出来（诊断面，不参与判据）。
             dbg = [l for l in c.stderr if "DBG" in l or "通知" in l or "重连" in l]
             print("G①-DIAG: 重拉未兑现，core 通知流日志：%s" % (dbg[:8] or ["(无)"]))
+            (SMOKE / "g-diag-stderr.txt").write_text(
+                "\n".join(c.stderr), encoding="utf-8")   # 全量落盘（flake 现场用）
         check("G①/GET 通知流已打开", opens >= 1, opens)
         check("G①/list_changed 已推送", sent, opens)
         check("G①/tools/list 首拉+重拉 ≥2 次", lists >= 2, lists)
+        # ★ 九版（协议 §3.14）：重拉成功 ⇒ t:"mcp" 状态覆盖（remote 升到 3 工具）。
+        mcpupd = wait_for(c, lambda m: m.get("t") == "mcp", 10)
+        ok_upd = False
+        if mcpupd:
+            svcs = mcpupd.get("services") or []
+            ok_upd = any(s.get("name") == "remote" and s.get("tools") == 3
+                         and s.get("transport") == "http" for s in svcs)
+        check("G①/t:\"mcp\" 覆盖到达（remote/3 工具）", ok_upd, mcpupd or "TIMEOUT")
         c.send({"t": "prompt", "seq": 1, "text": "调一下新工具", "client_id": "smoke-g1"})
         ask = wait_for(c, lambda m: m.get("t") == "ask", 20)
         check("G①/新工具过 ask 门（重拉后模型侧可见）", ask is not None)
@@ -709,6 +736,112 @@ def arm_g(core, port, base_url, http_state):
     check("G②/重连带 Last-Event-ID: g1", lei == "g1", lei)
 
 
+def arm_h(core, tmp):
+    """工作区切换的 MCP 重发现（2026-11-07 九版，协议 §3.14）。
+
+    mcp.json 是项目级配置：起点工作区没有任何 mcp.json（hello 无 mcp 字段），
+    切到带 mcp.json 的工作区 ⇒ t:"mcp"（source=workspace）+ 新服务工具真可调；
+    再切回无配置工作区 ⇒ 空载荷 t:"mcp"（=「现在没有 MCP」）+ 清空通知，且旧
+    工具成幽灵——再调用它走内置分发，回「未知工具」失败（行为级判据：
+    幽灵工具必须真的消失，不是 stderr 里没日志）。
+    ★ 隔离：APPDATA 指到一次性目录 ⇒ 全局级发现链必空（否则宿主机的全局
+      mcp.json 会混进判据）；起点/终点工作区都是一次性目录。
+    """
+    ws_a = tmp / "ws-h-empty"
+    ws_b = tmp / "ws-h-mcp"
+    ws_c = tmp / "ws-h-empty2"
+    for d in (ws_a, ws_b, ws_c):
+        d.mkdir(parents=True, exist_ok=True)
+    cfg_b = {"mcpServers": {"mock": {"command": sys.executable, "args": [str(SERVER)]}}}
+    cfg_path = ws_b / "mcp.json"
+    cfg_path.write_text(json.dumps(cfg_b), encoding="utf-8")
+    appdata = tmp / "ws-h-appdata"
+    appdata.mkdir(exist_ok=True)
+
+    llm_h = FakeLLM(script=[
+        ("mcp__mock__git_status", {"short": True}),
+        None,   # 第一条 prompt 的收尾轮（idle）
+        ("mcp__mock__git_status", {"short": True}),
+        None,   # 第二条 prompt 的收尾轮
+    ])
+    srv_h = ThreadingHTTPServer(("127.0.0.1", 0), llm_h.handler())
+    port_h = srv_h.server_address[1]
+    threading.Thread(target=srv_h.serve_forever, daemon=True).start()
+    c = CoreProc(core, None, "http://127.0.0.1:%d/v1" % port_h, "s-smoke-ws-mcp",
+                 ws=ws_a, extra_env={"APPDATA": str(appdata)})
+    try:
+        hello = wait_for(c, lambda m: m.get("t") == "hello", 10)
+        check("H/hello 到达", hello is not None)
+        check("H/hello 无 mcp 字段（起点工作区无配置）",
+              hello is not None and "mcp" not in hello,
+              sorted((hello or {}).keys()))
+        c.send({"t": "hello", "seq": 0})
+
+        # ── 切到 B（有 mcp.json）──────────────────────────────────
+        c.send({"t": "workspace", "seq": 1, "request_id": "w1", "path": str(ws_b)})
+        ack = wait_for(c, lambda m: m.get("t") == "workspace" and m.get("request_id") == "w1", 15)
+        check("H/切到 B 的 ack ok", ack is not None and ack.get("ok") is True, ack)
+        upd = wait_for(c, lambda m: m.get("t") == "mcp", 15)
+        svcs = (upd or {}).get("services") or []
+        check("H/切到 B 后 t:\"mcp\"（source=workspace）",
+              upd is not None and upd.get("source") == "workspace", upd or "TIMEOUT")
+        check("H/快照指向 B 的 mcp.json 且 mock/2 工具",
+              any(s.get("name") == "mock" and s.get("tools") == 2
+                  and s.get("transport") == "stdio" for s in svcs)
+              and str(cfg_path) in str((upd or {}).get("config", "")),
+              {"config": (upd or {}).get("config"), "services": svcs})
+        c.send({"t": "prompt", "seq": 2, "text": "请查看 git 状态", "client_id": "smoke-h1"})
+        ask = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        check("H/B 工具过 ask 门", ask is not None and "git.status" in ask.get("question", ""),
+              (ask or {}).get("question", "")[:120])
+        if ask:
+            c.send({"t": "answer", "seq": 3, "id": ask.get("id"), "choice": "allow"})
+        tr = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        d = wait_for(c, lambda m: m.get("t") == "delta" and m.get("id") == (tr or {}).get("id"), 10)
+        check("H/B 工具真调通（ok: 前缀）",
+              ((d or {}).get("text", "")).startswith("ok:"),
+              (d or {}).get("text", "")[:100])
+        idle1 = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("H/第一轮收尾 idle", idle1 is not None)
+
+        # ── 切回 C（无配置）────────────────────────────────────────
+        c.send({"t": "workspace", "seq": 4, "request_id": "w2", "path": str(ws_c)})
+        ack2 = wait_for(c, lambda m: m.get("t") == "workspace" and m.get("request_id") == "w2", 15)
+        check("H/切回 C 的 ack ok", ack2 is not None and ack2.get("ok") is True, ack2)
+        upd2 = wait_for(c, lambda m: m.get("t") == "mcp", 15)
+        check("H/切回 C 后空载荷 t:\"mcp\"（现在没有 MCP）",
+              upd2 is not None and not (upd2.get("services") or [])
+              and not upd2.get("source") and not upd2.get("problem"),
+              upd2 or "TIMEOUT")
+        clear = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "system"
+                         and "外部工具已清空" in m.get("text", ""), 10)
+        check("H/清空通知", clear is not None)
+
+        # ── 幽灵工具：切走后旧工具必须真的调不通 ──────────────────
+        # （未知 mcp__ 工具仍过 ask 门——门不依赖注册表；放行后走内置分发失败。）
+        c.send({"t": "prompt", "seq": 5, "text": "再查一次 git 状态", "client_id": "smoke-h2"})
+        ask2 = wait_for(c, lambda m: m.get("t") == "ask", 20)
+        if ask2:
+            c.send({"t": "answer", "seq": 6, "id": ask2.get("id"), "choice": "allow"})
+        tr2 = wait_for(c, lambda m: m.get("t") == "block_start" and m.get("kind") == "tool_result", 15)
+        d2 = wait_for(c, lambda m: m.get("t") == "delta" and m.get("id") == (tr2 or {}).get("id"), 10)
+        check("H/幽灵工具调用失败（未知工具）",
+              tr2 is not None and "未知工具" in (d2 or {}).get("text", ""),
+              (d2 or {}).get("text", "")[:120])
+        idle2 = wait_for(c, lambda m: m.get("t") == "state" and m.get("value") == "idle", 20)
+        check("H/收尾 idle", idle2 is not None)
+        c.send({"t": "bye", "seq": 7})
+        bye = wait_for(c, lambda m: m.get("t") == "bye", 10)
+        check("H/bye 回执", bye is not None)
+        code = c.p.wait(timeout=10)
+        check("H/退出码 0", code == 0, code)
+    finally:
+        c.kill_tree()
+        srv_h.shutdown()
+    err = "\n".join(c.stderr)
+    check("H/stderr: 两次状态更新记录", err.count("status update") >= 2, err[:200])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--core", default=str(ROOT / "core" / "bin" / "ecdi-core.exe"))
@@ -763,6 +896,7 @@ def main():
         arm_e(core, port, dead_url)
         arm_f(core, port_f)
         arm_g(core, port_g, http_base_g, http_state_g)
+        arm_h(core, SMOKE)
     finally:
         srv.shutdown()
         srv_f.shutdown()

@@ -29,6 +29,7 @@ struct StateProbeRec {
     bool pickerEnabled = false;   // workspacePick->IsEnabled()
     bool pickerVisible = true;    // workspacePick->IsVisible()（§3.1 未声明 ⇒ 隐藏）
     bool workspaceCap = false;    // hello.caps 是否声明 workspace
+    bool modelCap = false;        // hello.caps 是否声明 model（八版 2d-b 第四臂）
     int protocolVer = 0;          // hello.protocol 的 GUI 解析值
 };
 
@@ -540,6 +541,7 @@ struct McpProbeRec {
     bool cardVisible = false;          // 视图：MCP 卡是否显形
     size_t cardRows = 0;               // 视图：卡片列表行数
     size_t serviceRows = 0;            // 视图：含每个服务名的行数（应 == modelServices）
+    size_t toolCountRows = 0;          // 视图：行尾工具数与模型侧逐字相等的行数（八版 ⑦，应 == modelServices）
     size_t transportRows = 0;          // 视图：远程服务行里带 transport 字样的行数（应 == 远程服务数）
     size_t modelRemote = 0;            // 模型：transport 非 stdio 的服务数（六版）
     size_t failureRows = 0;            // 视图：含每个失败服务名的行数（应 == modelFailed）
