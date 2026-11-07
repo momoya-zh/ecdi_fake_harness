@@ -387,7 +387,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十八份夹具）· 全部 `evals/*.json`（82 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十八份夹具）· 全部 `evals/*.json`（84 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -429,7 +429,7 @@ PY
 
 ## 当前状态
 
-> 时点：**2026-11-04**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
+> 时点：**2026-11-07**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
 
 ### 已收口
 
@@ -445,6 +445,8 @@ PY
 | **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
 | **协议 v5 子代理（2026-11-04）** | **只加字段与控制消息，不加 kind**：`block_start` 可选 `agent`/`parent` + `agent` 生命周期消息 + **I12/I13**（`validate.py` 已查）。夹具 **14 份**（v5 增 1 正向并行 + 1 cap 缺失 + 3 hostile）。core：`agent.go`（`task` 特判走 ask 门、semaphore 并行 `--max-agents=2`、独立 history、逐子代理 delta 合批；`wire.Out` 加锁保 I4）、深度 1、`--agent-max-turns=8` / `--agent-timeout=120s`、**委派即授权**（`docs/P3-real-core-spec.md` §4.4.2）。GUI：缩进行 + 2px 归属竖线、检视栏「代理」卡（点击定位）、状态胶囊活跃数、`--agent-probe` 正/负对照进门。全量回归 **PASS** + `validate.py` 绿。已声明未做：连续归属竖线（ECDI 逐控件 PushClip，另批）、代理卡定位无高亮、GUI 侧 `--agents` 默认注入 |
 | **协议 v6 后台长任务（2026-11-05）** | **只加控制面消息，不加 kind**：`job start/output/end` + **I14**（`validate.py` 已查，只约束 `protocol>=6`）。core：`jobs.go`（jobHub / 256KB 环窗 / 200ms 合批 / 30min 上限 / 并发 4 / ask 期缓冲即 I3）；`run_command background=true` + `job_output` / `job_kill` / `job_list`（控制工具不过 ask 门）；会话退出全杀。GUI：作业状态贴在发起它的 `run_command` 工具卡（标题 `j1 状态`、折叠体尾部输出），重建从 `jobsByCall` 重放；`kProtocolMaxSupported=6`。★ 同日补齐**子进程输出转码**：GBK 控制台 → UTF-8（前台整段判定、后台流式增量，切点对齐字符边界），协议 §1.3。夹具 **17 份**（v6 增 1 正向 + 1 hostile）；`--job-probe` 正/负对照进门。 |
+| **MCP Host（2026-11-05/06）** | stdio JSON-RPC 2.0 + Streamable HTTP（`2025-06-18`）/ legacy HTTP+SSE（`transport:"sse"` + `url/headers`）；工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 · 24KB 输出上限 · 整树清退 · 崩溃显式提示与按需重启（上限 3 次）· 取消真发 `notifications/cancelled` · `--mcp-env=minimal` 白名单 · per-call 超时 `--mcp-timeout`（默认 60s）+ 服务级 `"timeout"`（送达则保留复用，未送达才清退 respawn）；产品面：`hello.mcp` + 会话头副标 + 检视栏「MCP」卡 + 启动失败 `system` 块 + GUI 侧提案卡（`detail.tool:"mcp"`）。六臂（A–F）冒烟 **83 条**；方案与诚实边界 `docs/mcp-host-plan.md` |
+| **回合级折叠（2026-11-07）** | 描述见下「现在能做什么」；`--fold-probe` 正/负对照进门（正向 realistic folds=31 / 负向「过程行不足两条 ⇒ 一行不折」folds=0）。折叠态挂 `user` 条目（`RetagTurns` 每轮重建摘要条，挂摘要条必丢——0c 缺陷同型）；展开走无重建快路径（文本测量缓存不失效）。四项跟进缺口同日闭合（2026-11-07 第二批） |
 
 
 ### 现在能做什么（都有探针与负对照）
@@ -468,22 +470,22 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 
 | 缺什么 | 状态 |
 |---|---|
-| ★ **长会话上下文管理（截断/摘要）** | 现每轮全量携带历史 messages，长交互或大文件读取容易超出模型 context window 限制 |
+| ~~★ **长会话上下文管理（截断/摘要）**~~ **已落地（2026-10-28）** | Stage 1 旧工具载荷折叠（无 LLM）/ Stage 2 LLM 摘要 / Stage 3 确定性兜底（`summaryMaxRunes=2000` · `summaryInputRatio=0.60`，`core/cmd/ecdi-core/session.go:48`）；`context.jsonl` 留 `compact` 记录；`--fail-summarize` 注入失败路径。方案与验收：`docs/session-persistence-decisions.md` §7 |
 | **MCP HTTP 的服务端通知流** | Streamable HTTP 只做了「请求-响应」方向；GET 上的主动通知、legacy 重连 / `Last-Event-ID`、OAuth 动态注册均未做（方案 §九「诚实边界」） |
 | ~~**MCP 单次调用超时**~~ **已落地（2026-11-06）** | `--mcp-timeout`（默认 60s；0 不限）+ 服务级 `mcp.json` `"timeout": <sec>`；超时真发取消通知——送达则保留连接复用，未送达（stdio 僵死）才清退并触发按需 respawn。规则与诚实边界见方案 §十一 |
-| ★ **用户模式的机器判据** | **零覆盖**。26 个探针全部跑在开发者模式下（那是刻意的：分流必须对既有基线零扰动），于是 P4 Phase J 新增的产品面——无参启动那一侧——一个断言都没有。最小补法：两相加进 `--rebuild-probe` 或新开 `--mode-probe`（用户模式下指定句柄逐个必须不可见 / 切回开发者后快照与基线一致）。方案 §12「已知缺口」 |
+| ~~★ **用户模式的机器判据**~~ **已落地（2026-11-06）** | `--mode-probe` 五相进门（`baseline-dev` / `switch-user` / `dev-restored` / `negative` 负对照 / `inspector-memory`）：顶栏胶囊、26px 底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆，负对照带确认过的牙。闭合记录：`docs/P4-gui-usability-plan.md` §12 |
 | **转录可选中：只到尖峰** | G 只把尖峰行改成只读 `TextBox`，尚未铺到 `user`/`system`/`tool` 行；`--selectable-rows` 默认关 |
 | 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
-| **`--settings-probe` 的 4 相** | `first-run` / `save` / `session-live` / `switch-ok` 只能在「无参启动 + 真实配置 + 真凭据 + protocol 4」下验收 ⇒ 是**人工验收**，不进回归门（门守住其余 4 相，含 cleanup 的隔离断言） |
+| ~~**`--settings-probe` 的 4 相**~~ **已机判（2026-10-27 起）** | 四相在回放跑法下结构上不可达（designed-red 登记，理由见 `regress.py` EXTRA_PROBES 注释）；由 **§2e live 设置探针真跑真断**——真 core 重建 + 首启分支（配置必须不存在），必判九相含上述四相，另带 `protocolDeclared == 6` 身份判据 ⇒ **不是人工验收** |
 
-### `evals/` 的口径（★ 待定，别把它当「仍在更新」）
+### `evals/` 的口径（**已拍板 2026-11-07：② 全部读数**）
 
-`evals/` 现有 **84** 份读数，**最新一份是 2026-10-24**（`p35-deepseek-noarg-live-1.json`）。
-**P3.6（多提供商热切换）、P4（可用性 A–H）、App.cpp 拆分这几轮都没有归档**——读数只在
-`.scratch/`（**gitignored**）里，所以账面上看不出这几轮发生过。
-⇒ 两种口径必居其一，目前**两边都没写**，所以它看起来像停摆：① `evals/` 是**钉住的发布基线**，
-`.scratch/` 是工作读数；② `evals/` 就是全部读数，那就该把新读数补进去。
-**待拍板（2026-10-26 复核：仍未定，条目继续挂着，不假装已解决）。**
+`evals/` 是评估数据的**唯一落点**：每轮工作收口时，把当轮的正/负对照读数（机器可读 JSON，
+**轮级**粒度）从 `.scratch/` 归档进来；中间调试件（`_b3_*`、`_asan_*` 这类）不进。
+**现状欠账**：现有 **84** 份、最新仍是 2026-10-24（`p35-deepseek-noarg-live-1.json`）——
+P3.6 / P4 A–J / 后台作业 / L1 沙盒 / 子代理 / 上下文压缩 / MCP / 回合折叠这几轮的读数
+只在 `.scratch/`（**gitignored**，JSON 369 份）里，账面上看不出发生过 ⇒ **待补库**
+（下一步清单第 2 条）。
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
@@ -491,11 +493,11 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
 `git show | wc -l` 实测重建（`App.h` 的账此前**加减不闭合**）· 关闭「`--settings-probe` 会删
 用户真实配置」的缺陷（现在无 `--config` 直接拒绝启动）。
 
-其后的顺序（2026-11-05 对齐）：
+其后的顺序（2026-11-05 对齐）——**已全部收完**：
 
-1. **③ 后台长任务**——`run_command` 拆出后台作业（job_id / 输出回读 / 取消），
-   复用 L1 的 Job Object 句柄；它同时是"可用 agent"的下一块短板。
-2. **P4 Phase I：路径可点 + 只读预览**——产品侧最后一块半成品（A–H 已落地，G 只到尖峰）。
+1. ~~**③ 后台长任务**——`run_command` 拆出后台作业（job_id / 输出回读 / 取消），
+   复用 L1 的 Job Object 句柄~~ **已落地（2026-11-05）**（见「已收口」协议 v6 行）。
+2. ~~**P4 Phase I：路径可点 + 只读预览**~~ **已落地**（见「已收口」P4 A–J 行）。
 3. ~~**MCP host**~~ **已落地（2026-11-05）**：stdio 传输 + 整树清退 + ask 门 + 24KB 输出上限，
    见 `docs/mcp-host-plan.md`。~~产品面可见性~~ **已落地（2026-11-06）**：
    `hello.mcp` + 会话头副标 + 检视栏「MCP」卡 + 启动失败 `system` 块 + `--mcp-probe` 正反对照。
@@ -505,6 +507,23 @@ I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
    HTTP+SSE（`transport:"sse"`）+ `url/headers` 配置 + 状态里的传输标识。
    ~~运行期语义~~ **已落地（2026-11-06）**：`--mcp-env=minimal`、崩溃后按需重启（上限 3 次）、
    取消时真发 `notifications/cancelled`；六臂（A–F）冒烟 **83 条**。
+
+**2026-11-07 对齐**：
+
+1. **protocol 覆盖洞**：假 core 恒发 `"protocol": 3`，全部 live 支线只跑 fake-core ⇒
+   2026-11-06「无参启动点『选择文件夹』无反应」（`AppHud` 的 `liveReady` 守卫 `== 3` 未随
+   v4 迁移）自动化语料 100% 看不见（`status.txt` 登记 COVERAGE HOLE）。做法：假 core 加
+   `--protocol=N`（默认 3 ⇒ 既有基线逐字节不动）+ 门里 live 臂声明 4/6，断言
+   `sendEnabled`/`pickerEnabled` 在 idle 真转真、caps 缺 `workspace`/`model` 时对应交互隐藏。
+   真 core 现声明 **6**（`core/cmd/ecdi-core/session.go:277`），洞在变宽。
+2. **evals/ 补库**：按上面已拍板的口径，把 2026-10-24 以来各轮收口读数从 `.scratch/`
+   归档进 `evals/`（每轮挑正/负对照，不搬中间调试件）。
+3. **TODO-06 门自身可信度**：`regress.py` live 分支判据仍是 `out.exists()`（写盘后崩也绿）；
+   若能拿到 PDB（gui 目标 `/Zi+/DEBUG` 或 `/MAP`）先把 F1/F2 调用链落到源行——拿得到就排
+   第 2 条之前：「归属定不了之前不开新功能」。
+
+功能侧（MCP 服务端主动通知流 / 转录可选中铺到 `user`/`system`/`tool` 行 / HUD 脏位修复进门）
+等以上收完再挑。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 
