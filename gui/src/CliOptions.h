@@ -352,6 +352,12 @@ struct CliOptions {
     //   且摘要条在位"，负臂证明"过程行不足时不折"。详见 ProbeFold.cpp。
     bool foldProbe = false;
     bool tableProbe = false;            // --table-probe：富内容二期 Markdown 表格渲染判据
+    // ★★ 2026-11-08：块级全套解析判据（--md-probe）。与 --table-probe **独立**——
+    //   表格那 6 相是既有基线，混在一起会让两条线的回归互相掩盖。
+    // ★★ 2026-11-09：同一条探针追加**段内内联样式** 11 相（富内容 §H）⇒ 共 21 相。
+    //   仍不带独立 flag：两者都是「同一段 markdown 文本的解析判据」，共用一个夹具跑法；
+    //   拆成两个 flag 等于让 `tools/regress.py` 多跑一次整份夹具回放只为省几行分区。
+    bool mdProbe = false;
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
     bool modeProbe = false;             // --mode-probe：开发者视图 ↔ 用户模式分流判据（P4 Phase J 缺口闭合）
     bool anyProbeSeen = false;          // 命令行解析时任意探针命中（闭合手抄 flag 易遗漏的债务）
@@ -364,7 +370,7 @@ struct CliOptions {
                reasoningProbe || orderProbe || rebuildProbe || sessionProbe ||
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
-               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || copyProbe ||
+               growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || mdProbe || copyProbe ||
                agentProbe || proposalProbe || jobProbe || mcpProbe || foldProbe;
     }
 };

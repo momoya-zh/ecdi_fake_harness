@@ -230,6 +230,11 @@ void HarnessApp::WriteSummary() {
     if (m_options.tableProbe && !m_probeState.tableProbeLog.empty()) {
         AppendTableProbeSummary(json);
     }
+    // ★★ 2026-11-08（富内容 B+）：块级全套解析判据。与 table 相**分开**输出，
+    //   两条线的回归互不掩盖。
+    if (m_options.mdProbe && !m_probeState.mdProbeLog.empty()) {
+        AppendMdProbeSummary(json);
+    }
     if (m_options.selectProbe && !m_probeState.selectProbeLog.empty()) {
         AppendSelectProbeSummary(json);
     }

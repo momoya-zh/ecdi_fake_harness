@@ -91,3 +91,167 @@ A（核对，半小时级）→ B（原型先行，过目后实施）→ C（实
 ## F. 裁决记录（2026-10-28）
 E1=渲染期解析；E2=复制进 `.ecdi/imports/`；E3=A→B→C；E4=先由用户复现缺口（已确认为 `TextBox` 软折行缺失，登记 `REQ-15` 交 ECDI 侧实现）。
 
+## G. 扩围裁决（2026-11-07）：转录富渲染 = 块级全套先行，内联样式登记 REQ
+
+> 用户定调：「富内容其实应该把转录全做好，目前就只做了表格的转录」。
+> 现状核对：`ParseMarkdownSegments` 只有 `Paragraph | Table` 两段种（`gui/src/Transcript.h:156`）；
+> 标题 / 代码块 / 列表 / 引用 / 分隔线 / 链接 / 段内粗斜体全部按原文显示。
+
+**范围拆两层，代价不同：**
+
+1. **块级全套（本批做）**：标题（h1–h3）/ 围栏代码块（mono + 底色）/ 有序、无序列表 / 引用块 /
+   分隔线 / 链接。应用层全做得了——ECDI `Font` 已有 weight/family/size（REQ-10 已消费），
+   每块一个控件、各给各的字体，是表格方案（§B）的同形扩展：
+   - 扩 `MarkdownSegmentKind` 段种 + `ParseMarkdownSegments` 纯函数 + 组装分支，解析器仍收在一处、探针可直接调。
+   - 协议 / journal / context 依旧零改动（模型侧口径不漂移）；切分点仍落 `block_end`，流式中途整段回落纯文本。
+   - 版心仍 `TranscriptLayoutWidth = min(可用宽, 760)`；行高/探针冲击面按 §0.3 清单显式改判据、不静默重基线。
+   - **按惯例 HTML 原型先行**（`docs/prototype/`）过目，再动 C++。
+2. **段内内联样式（粗体 / 斜体 / 行内 code）= REQ-20，交 ECDI**：框架一控件一套字体
+   （`TextWidget.h:23` TextStyle 唯一来源；安装头 + ECDI 源仓 grep styled-span 类 API 零命中），
+   已按铁律登记 `ecdi-capability-requests.md` **REQ-20**（对账 ECDI #53 群 / 富文本另立项既有裁决，
+   不排期、不阻断块级）。**不在应用层拆控件绕行**——会打破「一 block 一 TextBox」选中/复制假设。
+
+**顺序更新**：A ✅ → B ✅ → **B+（块级全套，本项）** → C（文件导入）。C 独立且小，B+ 过目实施后再收。
+
+### G.1 批 1 落地记录（2026-11-08）：解析器 + 纯函数判据
+
+**已完成（只动解析器与探针，未动渲染、未动协议/journal/夹具）：**
+
+| 项 | 落点 | 证据 |
+|---|---|---|
+| 段种扩到 7 种 | `MarkdownSegmentKind{Paragraph,Table,Heading,CodeBlock,ListItem,Quote,Hr}`（`Transcript.h:156`） | `--md-probe` 8/8 PASS |
+| 行状态机 | `ClassifyLine` / `StripListMarker` / `StripQuoteMarker`（`Transcript.cpp` 匿 namespace），主循环按围栏→表格→标题→分隔线→列表→引用→段落的优先级装配 | 同上 |
+| 基线不变量**扩大** | 原判据「无 Table ⇒ 单 Paragraph 等于原文」→「**除 Paragraph 外一个段都没有** ⇒ 单 Paragraph 等于原文」（`Transcript.cpp` 尾） | 7 份夹具 blocks/deltas/messages 逐字不变（见下） |
+| 新判据 | `--md-probe` 8 相：heading / fence / fence-unclosed / list / quote / hr / no-construct-identity / mixed-order | 全量 `tools/regress.py` = **PASS** |
+
+**基线证据**（批 1 后实测，与批 1 前逐字相同）：
+
+```
+demo-session         blocks=8     deltas=19   messages=43    viol=0
+realistic-session    blocks=220   deltas=717  messages=1213  viol=0
+cot-session          blocks=44    deltas=934  messages=1044  viol=0
+scale-transcript-2000 blocks=2000 deltas=4590 messages=8906  viol=0
+```
+
+**两处与 §G 原定口径的偏离（须记，否则后续验收对不上）：**
+
+1. **链接本批不解析**：用户 2026-11-08 裁定「等 REQ-19-B 落地再做链接」。§G 原文把链接列进块级全套，
+   实际按裁决**移出本批**——`[x](y)` 按原文进 Paragraph，不解析、不假装支持。
+   加进段种却点不开，比不渲染更糟。
+2. **列表逐项成段，不合并成一个 List 段**：每个 `- xxx` 产出一条 `ListItem` 段（带 `ordered/marker/depth`）。
+   理由是「一控件一套字体」+ 悬挂缩进要靠 marker 与正文分栏摆位；合并成多行文本会把悬挂缩进做成第二套排版。
+   `--md-probe` 的 `list` 相断言「5 项 / 3 有序 / 序号原文 1-2-3 不重排 / depth=1 恰一处」。
+
+**REQ-20 已由 ECDI 侧交付，但**验收口径收窄**：`SpanStyle` 只有 `family/weight/foreground`
+三个 optional，头注释明文「严禁包含 size（闸门 3）或斜体（闸门 2 / L44-8）」。
+⇒ 内联样式实际只能兑现**粗体 + 行内 code** 两件，**斜体永远不会生效**（不是没做，是框架裁决不做）。
+§G 原文「粗体 / 斜体 / 行内 code 三件套」须按此改写，否则将来照文档验收斜体会撞空。
+
+> ★★ **2026-11-09 订正（此段结论已过期，保留作历史）**：Phase 45（ECDI `eb2106a`）已在
+> `SpanStyle` 上追加 `italic` 与 `size` 两个维度，头注释也同步改写（不再是「严禁包含」）。
+> ⇒ 「斜体永远不会生效 / 字号不可变」**只在 Phase 44 时点成立**。本仓的实际范围由用户
+> 2026-11-09 重新裁定：**斜体暂不纳入、`size` 留位不用**（见 §H.1）——这是**产品选择**，
+> 不再是框架限制。★ 教训：凡以「某 Phase 时点的头文件」为依据写下的能力边界，消费前必须
+> 重读一遍安装头（本次若照旧文验收，会把「能做的」当成「做不了的」）。
+ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符号表内；安装头与 ECDI 源树 102/102 逐字节相同）。
+
+### G.2 批 2 落地记录（2026-11-08）：渲染 + 判据推广 + 夹具
+
+| 项 | 落点 | 证据 |
+|---|---|---|
+| **判据收成一处** | 新增 `HasMarkdownBlocks(segs)`（`Transcript.cpp`）＝「存在任一非 Paragraph 段」。原先两处各写一份「找 Table」（`AppTranscript.cpp:261` 重建期 / `AppStream.cpp:581` 流式结束期）全部改为调它 | 漏改的形态从「静默不渲染」变成「编译不过」 |
+| `hasTable` → `hasMarkdown` | `RowRec::hasMarkdown` 为正名；`hasTable()` 保留为**只读别名函数**（9 个既有引用点含 `--table-probe` 2 处回读无需同时改判据） | 写路径唯一，不会双份状态漂移 |
+| 段元数据 | `RowRec::SegMeta{kind, level, depth, ordered, marker, lastOfList}`，与 `segments` **严格同序同长** | `render-blocks` 相断言 `segMeta.size()==segments.size()` |
+| 装配分支 | `BuildAssistantMarkdownWidgets` 扩到 7 段种；新增 `BuildCodeBlockWidget` / `BuildListItemWidget` / `BuildQuoteWidget` / `BuildHrWidget`（`AppTranscript.cpp`） | `render-blocks` PASS |
+| 段间距按种 | `Relayout` 段循环改为读 `segMeta` 取间距：h1 12 / h2 10 / h3 8 / 代码块 12 / 列表项间 3 末项 10 / 引用 10 / hr 12 / 表格 12 | 原为写死 +10/+12，做不出层级 |
+| 代码块横滚 | `ScrollView` + `BarStyleOverride{.thickness=4}` + 内容 `GetContentView().AddChild` + `SetContentExtent`（照表格先例） | 用户裁决：横滚 + 复制钮，不软折行 |
+| 专用夹具 | `protocol/fixtures/markdown/blocks-session.jsonl`（53 行 / 5 块 / 39 delta），生成器 `gen_blocks_fixture.py` 确定性可复现（sha256 `20fdda1a…`） | 既有夹具 **一律未动** |
+
+**批 2 后基线复验（逐字相同）**：demo 8/19/43、realistic 220/717/1213、cot 44/934/1044、scale 2000/4590/8906，violations 全 0。
+
+**§0.3 冲击面实测结论（逐条核对，无静默重基线）**：
+
+| 探针 | 结果 | 说明 |
+|---|---|---|
+| `--select-probe` | 3/3 PASS | 「一 block 一 TextBox」假设**未被打破**——块级行内每个段仍各是一个 TextBox，但选中/复制相判的是一致性而非「只有一个」 |
+| `--rebuild-probe` | 3/3（negative 为 designed-red） | 行数与内容未漂移 |
+| `--grow-probe` | 12/12 PASS | 行高逻辑未受影响 |
+| `--answer-probe` | 5 PASS + negative(designed-red) | 点击合成未受影响 |
+| `--table-probe` | 6/6 PASS | 表格线完全没有回归 |
+| `--md-probe` | **10/10 PASS** | 新增 |
+
+⇒ §0.3 预警的五个探针**没有一个需要改判据**。原因是块级只在「含块级构造」的块上生效，而既有夹具里这类块的数量是 0——所以基线天然不动。这不是巧合，是「解析器在无构造时逐字回落原文」这条不变量的直接结果。
+
+### G.3 仍然开放
+
+1. ✅ **`REQ-20` 内联样式**——**2026-11-09 本仓已消费**（粗体 + 行内 code；斜体按用户裁定暂不做、
+   `size` 留位），见 **§H**。★ 本节下文（§G.1 末段）「斜体永远不会生效」的结论**已过期**：
+   那是按 Phase 44 头文件写的，Phase 45（`eb2106a`）已开 `italic` / `size` 两个维度。
+2. **链接**——等 `REQ-19-B`（OpenExternal）。`[x](y)` 当前按原文显示。
+3. **C 项（文件导入）**——§G 顺序里排在 B+ 之后，未动。
+4. **`REQ-21`（新）**——`SpanStyle` 缺 `background` ⇒ 行内 code 无底色块。已登记、不等它。
+
+---
+
+## H. 段内内联样式（富内容 §H，2026-11-09）
+
+> 触发：ECDI Phase 44/45 交付 `TextWidget::SetStyledText` + `SpanStyle`（`#88`）后，本仓开始消费。
+> 用户同批拍板：**粗体 + 行内 code 上线；斜体暂不做；`size` 留位；`background` 缺口先登记（REQ-21）**。
+
+### H.1 范围与验收口径（★ 先钉死，否则验收会撞空）
+
+| 构造 | 语法 | 兑现方式 | 状态 |
+|---|---|---|---|
+| 粗体 | `**x**` / `__x__` | `SpanStyle::weight = 700` | ✅ 上线 |
+| 行内 code | `` `x` `` | `family = "Consolas"` + `foreground = 强调蓝` | ✅ 上线（**无底色**，见 REQ-21） |
+| 斜体 | `*x*` / `_x_` | —— | ❌ **不做**（用户 2026-11-09 裁定）；**按原文保留**，不解析、不去标记 |
+| 字号覆盖 | `SpanStyle::size` | —— | ⏸️ **留位不用**（保版心行高稳定） |
+| 删除线 / 链接 | `~~x~~` / `[x](y)` | —— | ❌ 不做（无 span 维度 / 等 REQ-19-B） |
+
+### H.2 实现落点
+
+| 项 | 落点 | 说明 |
+|---|---|---|
+| 解析器 | `ParseInlineRuns(text, InlineCodeStyle)`（`Transcript.cpp`） | **纯函数、三遍式**：扫描 token → 配对校验 → 输出 clean text + spans。规则 R1–R9 全写在实现处注释里 |
+| 码点口径 | `ECDI::DecodeCodepointAt` | ★ **不自己写前导字节判定**——`SequenceLength` 在框架里已有一份真相，复制一份就会出现「cp 索引与 ECDI 漂移」这类最难查的错 |
+| 判据 | `HasInlineStyles(runs)`（`Transcript.cpp`） | 与 `HasMarkdownBlocks` 同一条纪律：唯一实现，渲染侧只调 |
+| 渲染接入 | `HarnessApp::ApplyInlineText`（`AppTranscript.cpp`） | **唯一入口**，三路正文共用：复合渲染的段控件（`makeText`）/ 无块级构造的只读 `TextBox` / `Label` |
+| 流式升级 | `AppStream.cpp` 的 `block_end` 分支 | 只有行内样式（无块级构造）的块，流式期仍是原文；块结束时**就地** `ApplyInlineText` + `Relayout`（不重建整行——行内只换 text/spans，重建会冲掉滚动与选中） |
+| 判据 | `--md-probe` 相 11–21 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` |
+
+### H.3 为什么解析器是「三遍式」而不是「区间查找 + 字符串替换」
+
+1. **码点索引是硬约束**：`TextSpan.startCp/cpCount` 是 UTF-8 解码后的字符位。删掉 `**` 再找位置的实现
+   几乎必然按字节算偏移 —— 纯 ASCII 相全绿，中文段落一进来就漂。逐码点步进让 cp 索引成为扫描的
+   自然产物（`inline-cp-cjk` 就是为这条写的相：emoji 4 字节 + 中文 3 字节）。
+2. **未闭合必须回落原文**：流式中途 `**粗` 每天都在发生。区间查找式为「找不到闭合」要写回滚；
+   先配对再把未匹配标记降级为字面，天然满足（`inline-unclosed`）。
+3. **嵌套要扁平化**：ECDI 的 span 契约是「有序、无重叠」，而 `**粗 `code` 尾**` 语法上是嵌套的。
+   逐码点取「当前有效标记栈」的样式位、再把**样式相同的连续码点**合并 ⇒ 自然摊平成
+   `[粗][粗+code][粗]` 三个不重叠区间，没有专门的扁平化代码（`inline-mixed`）。
+
+### H.4 与既有基线的关系
+
+- **无构造 ⇒ 逐字节旧行为**：`ParseInlineRuns` 无标记时 `text` 逐字等于原文、`spans` 空 ⇒
+  `ApplyInlineText` 落回 `SetText`。7 份既有夹具的 blocks/deltas/messages 与渲染路径**不变**
+  （与块级批 2 同一条不变量，`inline-identity` + `render-inline-negative` 两相守它）。
+- **`user` 气泡不接**：用户输入不按 markdown 渲染（保持「我说的」原文）。
+- **tool 体 / ask 体不接**：本批只做 assistant 正文链路（含 `system` / `error` 同分支）。
+
+### H.5 开放问题（本批**不**解决，如实留痕）
+
+1. ★ **两种复制口径不一致**（本批引入）：轮次「复制」按钮走 `GetTurnCopyText`，取的是 `block->text`
+   **markdown 原文**（含 `**`）；而 Ctrl+A/C 选中复制走 TextBox，拿到的是**干净文本**（无标记）。
+   ⇒ 同一段内容两条路给出不同结果。哪个才对是产品决定（粘到文档里通常想要原文，粘到聊天框想要干净），
+   **不擅自统一**。`--copy-probe` / `--select-probe` 各自自洽 ⇒ 探针不会红，但用户能感觉到差异。
+2. ★ **TextBox 富文本 × 软折行未在 ECDI 单测覆盖**：Phase 44 的 `Test44TextBoxReadOnlySupport` 只测了
+   定尺寸绘制 + 选区 + 明文复制，**没有开 wrap**；而本仓 assistant 正文（`--selectable-rows`）是
+   **开软折行的只读 TextBox**。⇒ 「行内 code 正好跨折行点」这一情形只能靠本仓实测，
+   `--md-probe` 的渲染相不覆盖它（那一相只读 `GetText()`）。**待用户编译后目视确认**。
+3. **行内 code 无底色**——`REQ-21`，等 ECDI。
+4. **斜体 / `size` 未用**——用户裁定（见 §H.1）。若将来要用，本仓解析器只需加两条产出规则。
+5. **表格单元格 / 引用块内多行 / 代码块**：后两者不走行内解析（代码块本就该保留原文）；
+   表格单元格目前是独立 Label/TextBox，未接 `ApplyInlineText`——下一批可铺。
+
+
+

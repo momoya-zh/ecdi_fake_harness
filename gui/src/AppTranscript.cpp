@@ -36,6 +36,7 @@
 #include "ECDI/Widget/Panel.h"
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
 #include "ECDI/Widget/ScrollView.h"
+#include "ECDI/Platform/PlatformWindow.h"
 
 #include <algorithm>
 #include <ctime>
@@ -256,18 +257,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
             .borderWidth = 0.0f,
             .borderColor = plainBg});
 
-        // ★★ 富内容二期：若块已完结（ended）且含 Markdown 表格，构建复合网格结构
+        // ★★ 富内容 B+（2026-11-08）：判据从「含 Table」推广为「含任何块级构造」。
+        //   ★ 这一步是块级全套真正的**入口开关**：解析器早就会产 Heading/CodeBlock/
+        //     ListItem/Quote/Hr 了，但这里若仍只认 Table，那些段**永远不会被渲染**，
+        //     而且不报错、不崩——只是原文照旧显示。判据本身收在 Transcript.cpp 一处
+        //     （`HasMarkdownBlocks`），漏改一处的形态从「静默」变成「编译不过」。
         if (block.kind == "assistant" && block.ended) {
             auto segs = ParseMarkdownSegments(block.text);
-            bool containsTable = false;
-            for (const auto& s : segs) {
-                if (s.kind == MarkdownSegmentKind::Table) {
-                    containsTable = true;
-                    break;
-                }
-            }
-            if (containsTable) {
-                rec.hasTable = true;
+            if (HasMarkdownBlocks(segs)) {
+                rec.hasMarkdown = true;
                 BuildAssistantMarkdownWidgets(*panel, rec, segs);
                 return panel;
             }
@@ -279,7 +277,6 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         if (m_options.selectableRows) {
             auto box = std::make_unique<ECDI::TextBox>();
             rec.label = box.get();
-            box->SetText(block.text);
             box->SetReadOnly(true);
             box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
             box->SetFont(harness::SansFont(harness::kFontBody, 400));
@@ -291,14 +288,20 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
                 .borderWidth = 0.0f});
             if (block.kind == "system") box->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
             if (block.kind == "error") box->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
+            // ★ 2026-11-09（§H）：一度**只有**「有块级构造」的 assistant 行才会走
+            //   `BuildAssistantMarkdownWidgets`（那里的段控件才是富文本）。普通段落
+            //   ——也就是绝大多数回答——走的就是这条单控件路径。不在这里接，
+            //   「`git status` 加粗」这类行内样式在真机上永远不会出现。
+            ApplyInlineText(*box, block.text);
             panel->AddChild(std::move(box));
         } else {
-            auto label = std::make_unique<ECDI::Label>(block.text);
+            auto label = std::make_unique<ECDI::Label>();
             rec.label = label.get();
             label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
             label->SetFont(harness::SansFont(harness::kFontBody, 400));   // 同 user 分支：统一中文 face
             if (block.kind == "system") label->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
             if (block.kind == "error") label->SetTextColor(Pick(m_options.probeContrast, kErrorDark, kProbeInk));
+            ApplyInlineText(*label, block.text);
             panel->AddChild(std::move(label));
         }
 
@@ -1811,38 +1814,136 @@ void HarnessApp::AddNoticeRow(const std::string& text, const ECDI::Color& color)
 
 
 // ── Markdown 表格渲染与控件组装（富内容二期）─────────────────────
+// ★★ 2026-11-08（富内容 B+）：装配分支扩到块级全套。
+//   ★ 纪律：**每种段种都必须往 `rec.segMeta` 推一条**，且与 `rec.segments`
+//     严格同序同长。`Relayout` 靠 index 对齐两者取段间距——少推一条会让后面
+//     所有段的间距**整体错位一格**，而且不报错（只是越来越挤或越来越松）。
+// ── 段内内联样式接入（富内容 §H，2026-11-09）─────────────────────────────
+// ★ 三条正文路径共用这一个函数：复合渲染的段控件（`makeText`）/ 无块级构造时的
+//   只读 TextBox / 同位置的 Label。三处各写一份的后果不是编译错，是**静默降级**
+//   ——不崩、不报错，只是星号还留在屏幕上。块级全套当年「解析对了但没渲染」
+//   就是这一类形态，所以这次把入口收成一处。
+// ★ 无行内构造时走原来的 `SetText`（逐字节同旧行为）⇒ 7 份既有夹具的渲染路径不变。
+// ★ 行内 code 的颜色取主题强调蓝；`--probe-contrast` 下退化为正文色——那是**对比度
+//   量具**，给行内 code 上一种中间亮度只会污染读数，不构成"更清晰的界面"。
+void HarnessApp::ApplyInlineText(ECDI::TextWidget& widget, const std::string& text) const {
+    InlineCodeStyle codeStyle;
+    codeStyle.family = harness::kMonoFamily;
+    codeStyle.color = Pick(m_options.probeContrast, kDarkAccent, kProbeInk);
+
+    const InlineRuns runs = ParseInlineRuns(text, codeStyle);
+    if (HasInlineStyles(runs)) {
+        widget.SetStyledText(runs.text, runs.spans);
+        return;
+    }
+    widget.SetText(text);
+}
+
 void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
                                               const std::vector<MarkdownSegment>& segs) {
     const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
     rec.segments.clear();
     rec.tables.clear();
+    rec.segMeta.clear();
     rec.label = nullptr;
 
-    for (const auto& seg : segs) {
+    auto pushMeta = [&rec](MarkdownSegmentKind k) -> RowRec::SegMeta& {
+        rec.segMeta.push_back(RowRec::SegMeta{});
+        rec.segMeta.back().kind = k;
+        return rec.segMeta.back();
+    };
+
+    // 建一个「正文型」文本控件：Paragraph / Heading / ListItem / Quote 共用，
+    // 只有字体、颜色、缩进不同。★ selectable 开关沿用二期裁决（只读 TextBox
+    // ⇒ 可选中/复制不需要框架新能力）。
+    auto makeText = [&](const std::string& text, const ECDI::Font& font,
+                        const ECDI::Color& color) -> std::unique_ptr<ECDI::Widget> {
+        if (m_options.selectableRows) {
+            auto box = std::make_unique<ECDI::TextBox>();
+            box->SetReadOnly(true);
+            box->SetTextColor(color);
+            box->SetFont(font);
+            box->SetStyle(ECDI::TextBoxStyleOverride{
+                .background = plainBg,
+                .caretWidth = 0.0f,
+                .padding = 0.0f,
+                .cornerRadius = 0.0f,
+                .borderWidth = 0.0f});
+            // ★ 2026-11-09（§H）：段内样式在这里接进来。**必须在 SetFont 之后**——
+            //   span 只覆盖维度，基字体/基色仍来自控件本身，顺序反了就会有一帧用错基准。
+            ApplyInlineText(*box, text);
+            return box;
+        }
+        auto label = std::make_unique<ECDI::Label>();
+        label->SetTextColor(color);
+        label->SetFont(font);
+        ApplyInlineText(*label, text);
+        return label;
+    };
+
+    for (size_t si = 0; si < segs.size(); ++si) {
+        const auto& seg = segs[si];
         if (seg.kind == MarkdownSegmentKind::Paragraph) {
             if (seg.text.empty()) continue;
-            if (m_options.selectableRows) {
-                auto box = std::make_unique<ECDI::TextBox>();
-                box->SetText(seg.text);
-                box->SetReadOnly(true);
-                box->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-                box->SetFont(harness::SansFont(harness::kFontBody, 400));
-                box->SetStyle(ECDI::TextBoxStyleOverride{
-                    .background = plainBg,
-                    .caretWidth = 0.0f,
-                    .padding = 0.0f,
-                    .cornerRadius = 0.0f,
-                    .borderWidth = 0.0f});
-                if (!rec.label) rec.label = box.get();
-                rec.segments.push_back(box.get());
-                panel.AddChild(std::move(box));
-            } else {
-                auto label = std::make_unique<ECDI::Label>(seg.text);
-                label->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-                label->SetFont(harness::SansFont(harness::kFontBody, 400));
-                if (!rec.label) rec.label = label.get();
-                rec.segments.push_back(label.get());
-                panel.AddChild(std::move(label));
+            auto w = makeText(seg.text, harness::SansFont(harness::kFontBody, 400),
+                              Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+            // `rec.label` 是 TextWidget*（行高/换行判决要用），makeText 返回 Widget*
+            // ⇒ 建树期它必定是 TextWidget 派生（TextBox 或 Label），显式转型。
+            if (!rec.label) rec.label = dynamic_cast<ECDI::TextWidget*>(w.get());
+            rec.segments.push_back(w.get());
+            pushMeta(seg.kind);
+            panel.AddChild(std::move(w));
+        } else if (seg.kind == MarkdownSegmentKind::Heading) {
+            if (seg.text.empty()) continue;
+            // 标题：按 level 给字号与字重。★ 正文一律 400（长文累眼），
+            //   标题是短文本 ⇒ 走 UI 默认 700，层级靠**字号**拉开。
+            const float size = (seg.level <= 1) ? 19.0f : (seg.level == 2 ? 16.0f : 14.0f);
+            auto w = makeText(seg.text, harness::SansFont(size, 700),
+                              Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+            rec.segments.push_back(w.get());
+            RowRec::SegMeta& m = pushMeta(seg.kind);
+            m.level = seg.level;
+            panel.AddChild(std::move(w));
+        } else if (seg.kind == MarkdownSegmentKind::CodeBlock) {
+            // 围栏代码块：带底色/边框的卡 + 语言标 + 复制钮 + 横向滚动。
+            auto cb = BuildCodeBlockWidget(seg);
+            if (cb) {
+                rec.segments.push_back(cb.get());
+                pushMeta(seg.kind);
+                panel.AddChild(std::move(cb));
+            }
+        } else if (seg.kind == MarkdownSegmentKind::ListItem) {
+            // 列表项：marker 与正文**分开摆**（悬挂缩进）——一行一个控件，
+            //   marker 用固定槽宽右对齐，正文从槽后起排。
+            const std::string markerText =
+                seg.ordered ? (std::to_string(seg.marker) + ".") : std::string("\xe2\x80\xa2");
+            auto w = BuildListItemWidget(markerText, seg.text, seg.depth);
+            if (w) {
+                rec.segments.push_back(w.get());
+                RowRec::SegMeta& m = pushMeta(seg.kind);
+                m.depth = seg.depth;
+                m.ordered = seg.ordered;
+                m.marker = seg.marker;
+                // 列表末项：下一段不是列表项 ⇒ 本项是末项（下方间距更大，收束整组）
+                const bool nextIsList =
+                    (si + 1 < segs.size() && segs[si + 1].kind == MarkdownSegmentKind::ListItem);
+                m.lastOfList = !nextIsList;
+                panel.AddChild(std::move(w));
+            }
+        } else if (seg.kind == MarkdownSegmentKind::Quote) {
+            // 引用块：左侧 3px 强调竖条 + 缩进正文（同原型）
+            auto w = BuildQuoteWidget(seg.text);
+            if (w) {
+                rec.segments.push_back(w.get());
+                pushMeta(seg.kind);
+                panel.AddChild(std::move(w));
+            }
+        } else if (seg.kind == MarkdownSegmentKind::Hr) {
+            auto w = BuildHrWidget();
+            if (w) {
+                rec.segments.push_back(w.get());
+                pushMeta(seg.kind);
+                panel.AddChild(std::move(w));
             }
         } else if (seg.kind == MarkdownSegmentKind::Table) {
             RowRec::TableRec trec;
@@ -1850,6 +1951,7 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
             if (tableWidget) {
                 rec.tables.push_back(std::move(trec));
                 rec.segments.push_back(tableWidget.get());
+                pushMeta(seg.kind);
                 panel.AddChild(std::move(tableWidget));
             }
         }
@@ -1871,6 +1973,152 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
     auto* copyRaw = copy.get();
     copy->SetOnClick([this, bid, copyRaw] { CopyTurnTextByBlockId(bid, copyRaw); });
     panel.AddChild(std::move(copy));
+}
+
+// ── 块级全套控件装配（富内容 B+，2026-11-08）─────────────────────────
+// ★ 代码块横滚条厚度（4px，与表格同口径——用户 2026-11-01 裁决「全仓条宽统一」）。
+//   ★ 定义在**使用处之前**：`kTableBarThickness` 在表格段那边、位置更靠后，
+//     直接引用会编译不过（这一点是编译报错教我的，不是我看出来的）。
+constexpr int kCodeBarThickness = 4;
+// ★ 设计纪律（三条，都写过一次亏）：
+//   1. **不做旁路测量**：建树期控件未挂窗，`AutoSize()` 拿不到测量器（preferred 回落 0）。
+//      一切宽/高都留给 `Relayout` 在挂窗后定稿（同表格「建树只建、布局定稿」）。
+//   2. **行高必须够装下最后一行**：控制高 < 行盒高会裁掉末行 1px
+//      （2026-11-01 实际发生过）。下面所有高度都由 `uikit::LineBox` / `AutoSize` 得来，
+//      不写死 14/16 这类魔法数。
+//   3. **间距逐段给出**：由 `RowRec::SegMeta` 携带，`Relayout` 按段种取值；
+//      不在控件里藏 padding（否则同一段在「首段/中间段/末段」三种位置无法区分）。
+
+// 代码块：卡（边框 + 代码底色）+ 顶部条（语言标 + 复制钮）+ 横向滚动代码区。
+//   ★ 用户 2026-11-08 裁决：超出版心走**横向滚动 + 复制钮**（不软折行）——
+//     代码缩进是语义的一部分，软折行会毁掉对齐结构。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildCodeBlockWidget(const MarkdownSegment& seg) {
+    const ECDI::Color codeBg = Pick(m_options.probeContrast, kCardBg, kProbeBg);
+    const ECDI::Color lineCol = Pick(m_options.probeContrast, kLine, kProbeInk);
+
+    auto card = std::make_unique<ECDI::Panel>();
+    card->SetStyle(ECDI::PanelStyleOverride{
+        .background = codeBg,
+        .cornerRadius = kRadiusCard,
+        .borderWidth = 1.0f,
+        .borderColor = lineCol});
+
+    // 顶部条：语言标（左）+ 复制钮（右）
+    auto bar = std::make_unique<ECDI::Panel>();
+    bar->SetStyle(ECDI::PanelStyleOverride{
+        .background = codeBg,
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f});
+
+    const std::string langText = seg.lang.empty() ? std::string("text") : seg.lang;
+    auto langLabel = std::make_unique<ECDI::Label>(langText);
+    langLabel->SetFont(harness::SansFont(harness::kFontMicro, 400));
+    langLabel->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+
+    // 复制钮：★ 复制的是**代码正文**（不含围栏与语言标），否则贴到别处不能直接跑。
+    auto copyBtn = std::make_unique<ECDI::Button>("复制");
+    copyBtn->SetFont(harness::SansFont(12.0f, 400));
+    copyBtn->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    copyBtn->SetStyle(ECDI::ButtonStyleOverride{
+        .background = codeBg,
+        .border = codeBg,
+        .borderWidth = 0.0f,
+        .cornerRadius = kRadiusBtn,
+        .pressedBackground = kToolHeaderPressed,
+        .hoverBackground = kToolHeaderHover});
+    const std::string code = seg.text;
+    copyBtn->SetOnClick([this, code, copyBtnRaw = copyBtn.get()] {
+        if (m_window) {
+            m_window->GetPlatformWindow().SetClipboardText(code);
+        }
+        copyBtnRaw->SetText("已复制");
+    });
+
+    bar->AddChild(std::move(langLabel));
+    bar->AddChild(std::move(copyBtn));
+
+    // 代码区：横向滚动（超宽可拖），内容按原样保留空白与换行
+    //   ★ API 照表格先例：`GetContentView().AddChild` + `SetContentExtent` 显式更新；
+    //     滚动条厚度走 `ScrollBarStyleOverride{.thickness}`（ScrollBar 没有 SetThickness）。
+    auto scroll = std::make_unique<ECDI::ScrollView>();
+    scroll->SetScrollStep(28);
+    if (auto* hb = scroll->GetHorizontalScrollBar()) {
+        hb->SetStyle(ECDI::ScrollBarStyleOverride{.thickness = kCodeBarThickness});
+    }
+    if (auto* vb = scroll->GetVerticalScrollBar()) {
+        vb->SetStyle(ECDI::ScrollBarStyleOverride{.thickness = kCodeBarThickness});
+    }
+    auto codeLabel = std::make_unique<ECDI::Label>(code);
+    codeLabel->SetFont(harness::MonoFont(harness::kFontMicro));
+    codeLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+    scroll->GetContentView().AddChild(std::move(codeLabel));
+    // ★ extent 先按「内容自然尺寸」占位，真正的宽由 Relayout 期实测后重下（见下）。
+    //   这里给一个非零值，避免 ScrollView 在首次 ApplyLayout 时把内容裁成 0 宽。
+    scroll->SetContentExtent(1, 1);
+
+    card->AddChild(std::move(bar));
+    card->AddChild(std::move(scroll));
+    return card;
+}
+
+// 列表项：marker 槽（定宽右对齐）+ 正文。悬挂缩进 = 正文左边界越过 marker。
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildListItemWidget(const std::string& marker,
+                                                             const std::string& text, int depth) {
+    auto row = std::make_unique<ECDI::Panel>();
+    row->SetStyle(ECDI::PanelStyleOverride{
+        .background = ECDI::Color(0, 0, 0, 0),
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f});
+
+    // ★ marker 用 muted 色（原型 `.md-li::marker { color: var(--muted) }`）：
+    //   视觉上退到后面，正文才是主体。槽宽定 22 是为了 `10.` 这类两位数不挤压正文。
+    auto mk = std::make_unique<ECDI::Label>(marker);
+    mk->SetFont(harness::SansFont(harness::kFontBody, 400));
+    mk->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+
+    auto body = std::make_unique<ECDI::Label>(text);
+    body->SetFont(harness::SansFont(harness::kFontBody, 400));
+    body->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+
+    row->AddChild(std::move(mk));
+    row->AddChild(std::move(body));
+    // ★ depth 不进控件也不进文本：它由 `RowRec::SegMeta::depth` 携带，
+    //   Relayout 从 meta 取——避免复制时带出缩进空格，也避免给控件加 tag 字段。
+    (void)depth;
+    return row;
+}
+
+// 引用块：左侧 3px 强调竖条 + 缩进正文（原型：3px bar + 12px 左 padding + muted 文本）
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildQuoteWidget(const std::string& text) {
+    auto row = std::make_unique<ECDI::Panel>();
+    row->SetStyle(ECDI::PanelStyleOverride{
+        .background = ECDI::Color(0, 0, 0, 0),
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f});
+
+    auto bar = std::make_unique<ECDI::Panel>();
+    bar->SetStyle(ECDI::PanelStyleOverride{
+        .background = Pick(m_options.probeContrast, kLine, kProbeInk),
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f});
+
+    auto body = std::make_unique<ECDI::Label>(text);
+    body->SetFont(harness::SansFont(harness::kFontBody, 400));
+    body->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+
+    row->AddChild(std::move(bar));
+    row->AddChild(std::move(body));
+    return row;
+}
+
+// 分隔线：1px 横线，撑满版心
+std::unique_ptr<ECDI::Widget> HarnessApp::BuildHrWidget() {
+    auto line = std::make_unique<ECDI::Panel>();
+    line->SetStyle(ECDI::PanelStyleOverride{
+        .background = Pick(m_options.probeContrast, kLine, kProbeInk),
+        .cornerRadius = 0.0f,
+        .borderWidth = 0.0f});
+    return line;
 }
 
 // ★ 表格滚动条薄化（2026-11-01 用户裁决）：4px = 默认厚度 12 的 1/3。
@@ -2243,7 +2491,7 @@ void HarnessApp::UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
     while (panel->GetChildCount() > 0) {
         panel->RemoveChild(panel->GetChildAt(0));
     }
-    rec.hasTable = true;
+    rec.hasMarkdown = true;
     rec.blockId = block.id;
     BuildAssistantMarkdownWidgets(*panel, rec, segs);
 }

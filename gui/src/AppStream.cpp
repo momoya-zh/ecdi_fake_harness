@@ -382,6 +382,9 @@ void HarnessApp::OnReplayTick() {
                 {&CliOptions::modelProbe, &ProbeState::modelProbeDone, &HarnessApp::RunModelProbe},
                 {&CliOptions::selectProbe, &ProbeState::selectProbeDone, &HarnessApp::RunSelectProbe},
                 {&CliOptions::tableProbe, &ProbeState::tableProbeDone, &HarnessApp::RunTableProbe},
+                // ★★ 2026-11-08（富内容 B+）：块级全套解析判据。同步组——8 相全在纯函数上，
+                //   不依赖窗口/帧，跑完即判。
+                {&CliOptions::mdProbe, &ProbeState::mdProbeDone, &HarnessApp::RunMdProbe},
                 {&CliOptions::copyProbe, &ProbeState::copyProbeDone, &HarnessApp::RunCopyProbe},
                 // ★ 协议 v5（2026-11-04）：子代理缩进。同步组——判据全在跑完后的
                 //   行几何与生命周期表上，不需要等下一帧。
@@ -576,18 +579,25 @@ void HarnessApp::RouteLastMessage() {
         }
         row->ended = true;
 
-        // ★★ 富内容二期：assistant 块在 block_end 时若包含 Markdown 表格，从流式纯文本升级为表格渲染
-        if (block && block->kind == "assistant" && !row->hasTable) {
+        // ★★ 富内容 B+（2026-11-08）：流式结束升级判据从「含 Table」推广为
+        //   「含任何块级构造」。与重建期 `AppTranscript.cpp` 的入口开关**同源**
+        //   ——两处都调 `HasMarkdownBlocks`，避免二期那种「两个地方各写一份找 Table」
+        //   的形态，加一种块级时漏改一处就静默不渲染。
+        if (block && block->kind == "assistant" && !row->hasMarkdown) {
             auto segs = ParseMarkdownSegments(block->text);
-            bool containsTable = false;
-            for (const auto& s : segs) {
-                if (s.kind == MarkdownSegmentKind::Table) {
-                    containsTable = true;
-                    break;
-                }
-            }
-            if (containsTable) {
+            if (HasMarkdownBlocks(segs)) {
                 UpgradeAssistantRowToMarkdown(*row, *block, segs);
+                Relayout();
+                RequestRepaint();
+            } else if (row->label) {
+                // ★★ 2026-11-09（富内容 §H）：**只有行内样式**（无块级构造）的块，
+                //   流式期一直是原文（delta 逐条 `SetText`，见上面的 delta 分支）。
+                //   块结束时在这里就地升级成富文本。
+                //   ★ 为什么不重建整行：行内样式只改「文本片段 → 样式区间」，
+                //     控件类型、字体、颜色、所在面板都不变 ⇒ 重建是纯浪费，
+                //     还会把滚动位置与选中态一起冲掉。
+                //   ★ `Relayout` 不能省：去掉 `**` 之后段落变短，行高/换行点会变。
+                ApplyInlineText(*row->label, block->text);
                 Relayout();
                 RequestRepaint();
             }

@@ -238,7 +238,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 不钉 `paints/frames`（后者随字体与实现变化，钉死它会把一次合法收敛判成回归）。
 ★ 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
 
-### 探针（**37 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
+### 探针（**38 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
 
 | 探针 | 读什么 |
 |---|---|
@@ -271,6 +271,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--async-probe` | **REQ-03**：投递 vs 轮询的 A/B（**live**）——`blockedUs` / 唤醒承载占比 / 单回调预算 / 送达延迟分位 |
 | `--overlay-probe` | 浮层拓扑与 Light Dismiss（模态遮罩 / 下拉 / tooltip 全走注册式浮层口，11 相含 tooltip **配色**判据） |
 | `--table-probe` | Markdown 表格渲染（富内容二期）判据 |
+| `--md-probe` | **富内容 B+**：markdown **块级全套**判据（10 相：heading / fence / fence-unclosed / list / quote / hr / no-construct-identity / mixed-order / **render-blocks** / **render-negative**）。前 8 相纯函数、后 2 相真走 `BuildBlockRow` 数落地的控件——只测解析会漏掉「解析对了但入口开关没开、屏幕上一个字都没变」那种失败。夹具用专用的 `protocol/fixtures/markdown/blocks-session.jsonl`（既有七份夹具里 headings/quotes/hr/links 出现次数全是 0，块级在它们上面跑得通只证明不崩）。★ 与 `--table-probe` **刻意分开**——表格 6 相是二期既有基线，混跑会让两条线的回归互相掩盖 |
 | `--copy-probe` | 按块复制与复制全部判据 |
 | `--valign-probe` | 单行输入框垂直居中（**REQ-14**：caret 几何公开判据 + Top→Center 翻转臂 / 恢复臂） |
 | `--preview-probe` | I 路径可点 + 只读预览（8 相） |

@@ -126,6 +126,11 @@ PROBES = [
 DEMO = "protocol/fixtures/demo-session.jsonl"
 REALISTIC = "protocol/fixtures/realistic/realistic-session.jsonl"
 SCALE = "protocol/fixtures/scale/scale-transcript-2000.jsonl"
+# ★★ 2026-11-08（富内容 B+）：块级全套夹具。实测七份既有夹具里 headings/quotes/hr/links
+#   出现次数全是 0，只有 realistic 含围栏（14）与列表（20）——块级渲染在既有夹具上
+#   「跑得通」只证明不崩，证明不了对。这份是**新增**的，既有基线一律不动。
+#   生成器：protocol/fixtures/markdown/gen_blocks_fixture.py（确定性，sha256 稳定）。
+MD_BLOCKS = "protocol/fixtures/markdown/blocks-session.jsonl"
 COT = "protocol/fixtures/cot/cot-session.jsonl"
 # ★★ 协议 v5（2026-11-04）：子代理正向夹具（两个 task 并行、各自带 tool_call）。
 SUBAGENT = "protocol/fixtures/subagent/parallel-two-agents.jsonl"
@@ -157,6 +162,14 @@ AGENT_CAP_MISSING = "protocol/fixtures/subagent/agent-cap-missing.jsonl"
 #   不收「跑起来才发现红」的相——那叫回归，不叫设计。
 EXTRA_PROBES = [
     ("--table-probe", "tableProbe", DEMO, [], []),
+    # ★★ 2026-11-08（富内容 B+）：块级全套**解析 + 渲染**判据，10 相。
+    # ★★ 2026-11-09（富内容 §H）：同一探针追加**段内内联样式** 11 相 ⇒ 共 21 相。
+    #   新增的 inline-* 相里也有两相走真实 BuildBlockRow（render-inline /
+    #   render-inline-negative），同理需要真夹具才能证明「屏幕上确实没有星号」。
+    #   ★ 配 MD_BLOCKS（专用夹具）而不是 DEMO：前 8 相是纯函数、任何夹具都能跑，
+    #     但后两相（render-blocks / render-negative）走真实 BuildBlockRow，
+    #     用专用夹具才顺便验证「整份夹具回放时块级真的渲染」这条端到端读法。
+    ("--md-probe", "mdProbe", MD_BLOCKS, [], []),
     ("--copy-probe", "copyProbe", REALISTIC, [], []),
     ("--empty-probe", "emptyProbe", DEMO, [], []),
     ("--key-probe", "keyProbe", DEMO, [], []),

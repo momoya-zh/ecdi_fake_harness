@@ -596,8 +596,33 @@ private:
         bool foldable = false;                    // 本行属于回合过程（可被折叠）
         bool foldHidden = false;
         bool foldBar = false;
-        bool hasTable = false;                    // 富内容二期：是否包含 Markdown 表格
+        // ★★ 2026-11-08（富内容 B+，rich-content-plan §G.1）：
+        //   原 `hasTable` 是二期的字段名，语义是「本行走了复合 markdown 渲染」。
+        //   块级全套落地后这个**名字变成负债**：标题/列表/引用的行同样走复合渲染，
+        //   但它们一个表格都没有——读 `hasTable == false` 会得出「没走复合渲染」的
+        //   **错误结论**（AppStream 的升级判据就正是这么读的）。
+        //   ⇒ 正名 `hasMarkdown`；`hasTable` 保留为**只读别名函数**，让 9 个既有
+        //     引用点（含 --table-probe 的 2 处回读）无需同时改判据即可编译。
+        //     ★ 别名不给赋值：写路径只有 `hasMarkdown` 一个，避免两份状态各自漂移。
+        bool hasMarkdown = false;                 // 本行是否走了复合 markdown 渲染
+        [[nodiscard]] bool hasTable() const noexcept { return hasMarkdown; }
         std::vector<ECDI::Widget*> segments;      // 富内容段落/表格控件列表（非拥有）
+        // ★★ 2026-11-08（富内容 B+）：**段元数据**（与 `segments` 一一对应）。
+        //   ★ 为什么必须有：`Relayout` 原来的段间距是写死的（段落 +10、表格 +12），
+        //     而块级要的是「h1 下方 10 / h2 下方 8 / 代码块前后 12 / 列表项行间 3」。
+        //     间距若不留元数据，整个版心只能一律 10px，§G 要的标题层级根本做不出来。
+        //   ★ 为什么独立于 `segments`：`segments` 是**非拥有指针**，探针要按段种逐段
+        //     断言。若把段种塞进控件（`SetTag` 之类）则探针必须穿过控件读，而控件
+        //     dynamic_cast 已经分不清「两种都是 Label 的段种」（h3 与列表项同族）。
+        struct SegMeta {
+            MarkdownSegmentKind kind = MarkdownSegmentKind::Paragraph;
+            int level = 0;      // Heading
+            int depth = 0;      // ListItem
+            bool ordered = false;
+            int marker = 0;
+            bool lastOfList = false;   // 列表末项（下方间距更大，收束整体）
+        };
+        std::vector<SegMeta> segMeta;
         // ★★ 富内容二期第二轮（2026-11-01，T1+T2 裁决）：表格内部布局的**可重跑**元数据。
         //   列宽依赖版心宽（Relayout 期才可知）⇒ 建表期只建控件 + 量自然宽；
         //   折行 / 行高 / 列线几何全由 `LayoutTableInterior` 在 Relayout 期定稿
@@ -1101,6 +1126,23 @@ private:
                                        const std::vector<MarkdownSegment>& segs);
     std::unique_ptr<ECDI::Widget> BuildTableWidget(const MarkdownTable& table,
                                                    RowRec::TableRec& out);
+    // ★★ 2026-11-08（富内容 B+）：块级全套的控件装配。
+    //   ★ 每个都返回**独立可摆放**的控件（宽由 Relayout 按版心下发改，高由自身内容定），
+    //     与表格「建树期只建、布局期定稿」同形；不在建树期算宽，因为版心宽此时未知。
+    std::unique_ptr<ECDI::Widget> BuildCodeBlockWidget(const MarkdownSegment& seg);
+    std::unique_ptr<ECDI::Widget> BuildListItemWidget(const std::string& marker,
+                                                      const std::string& text, int depth);
+    std::unique_ptr<ECDI::Widget> BuildQuoteWidget(const std::string& text);
+    std::unique_ptr<ECDI::Widget> BuildHrWidget();
+    // ★★ 2026-11-09（富内容 §H）：段内内联样式接入的**唯一入口**。
+    //   ★ 为什么是成员函数而不是文件内静态 helper：正文控件在三条路径上被建起来
+    //     （复合渲染的段控件 / 无块级构造时的只读 TextBox / 同位置的 Label），
+    //     三条都要「解析 → 有样式 SetStyledText，没样式 SetText」。而**行内 code 的
+    //     颜色取决于 `m_options.probeContrast`**（高对比探针模式下必须退化成正文色，
+    //     否则一种中间亮度会污染对比度读数）——那是个成员状态，静态函数拿不到。
+    //   ★ 判据仍收在 `Transcript.cpp`（`ParseInlineRuns` / `HasInlineStyles`），
+    //     本函数只做「解析结果 → 控件」这一步，不含任何解析规则。
+    void ApplyInlineText(ECDI::TextWidget& widget, const std::string& text) const;
     void LayoutTableInterior(RowRec::TableRec& t, int availW);
     void UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
                                        const std::vector<MarkdownSegment>& segs);
@@ -1958,6 +2000,8 @@ private:
     // ★★ P4 Phase G（--select-probe）：选中复制判据。形状同 RunJumpProbe。
     void RunSelectProbe();
     void RunTableProbe();
+    // ★★ 2026-11-08（富内容 B+）：块级全套解析判据（纯函数，不依赖窗口/夹具）。
+    void RunMdProbe();
     void RunCopyProbe();
     // ★★ 协议 v5（2026-11-04）：右栏「代理」卡（实现全在 `AppAgents.cpp`）。
     //   `BuildAgentCard` 由 `BuildInspector` 末尾一行调用；`RebuildAgentList`
@@ -2005,6 +2049,8 @@ private:
     // 重建后标题少一段——探针 A/B 会当场抓住。
     std::string ToolTitleWithJob(const Block& block) const;
     void AppendTableProbeSummary(std::string& json);
+    // ★★ 2026-11-08（富内容 B+）：md 探针结果输出。
+    void AppendMdProbeSummary(std::string& json);
 
     // ★★ P4（--delprov-probe）：删除所选判据。三路：
     //   dedup-load（同 id 8 份 ⇒ Load 去重剩 1）/ delete-one（2 家删所选剩 1，

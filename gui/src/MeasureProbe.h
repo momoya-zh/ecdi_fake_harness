@@ -25,6 +25,9 @@ public:
     void Initialize(const PlatformRenderContext& context) override;
     Size MeasureText(const Font& font, const std::string& text) override;
     float LineHeight(const Font& font) override;
+    // Phase 45（#89）：TextMeasurer 新增纯虚 Ascent，纯透传——不计数、不进读数口径
+    // （本仓不用 span 的 size 覆盖 ⇒ 该链调用次数恒 0）。
+    float Ascent(const Font& font) override;
 
     // ── 读数 ──────────────────────────────────────────────
     [[nodiscard]] size_t MeasureCalls() const noexcept { return m_measureCalls; }

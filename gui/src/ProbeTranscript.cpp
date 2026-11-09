@@ -1047,6 +1047,430 @@ void HarnessApp::AppendDelProvProbeSummary(std::string& json) {
 
 
 
+// ── 块级全套解析探针（--md-probe）─────────────────────────────────────
+// ★★ 2026-11-08（富内容 B+ / rich-content-plan §G）：
+//   ★ 这一套只判**纯函数**，不建窗口、不读夹具 ⇒ 在任何 --replay 下都能跑，
+//     且与渲染成败解耦：解析对了渲染错了，这里照样 PASS（那是渲染相该抓的）。
+//   ★ 每一相都成对：**正臂**（构造被识别成对的段种）+ **负臂**（长得像但**不该**被识别）。
+//     只测正臂的探针会奖励「过度解析」——把正文里的 `---` 当分隔线也能全绿。
+//   ★ 最后一相 "no-construct-identity" 是**基线不变量**的锚：不含任何块级构造的文本
+//     必须原封不动返回单 Paragraph，这是 7 份既有夹具不变的根因。
+void HarnessApp::RunMdProbe() {
+    if (m_probeState.mdProbeDone) return;
+    m_probeState.mdProbeDone = true;
+
+    auto add = [&](const std::string& phase, bool ok, const std::string& note) {
+        MdProbeRec rec;
+        rec.phase = phase;
+        rec.matched = ok;
+        rec.note = ok ? "" : note;
+        m_probeState.mdProbeLog.push_back(std::move(rec));
+    };
+
+    // 1. heading：h1/h2/h3 + 前后段落；负臂：`#hashtag`（无空格）不是标题
+    {
+        const std::string src =
+            "引言文字\n\n"
+            "# 一级标题\n\n"
+            "## 二级标题\n\n"
+            "### 三级标题\n\n"
+            "结尾\n\n"
+            "#没空格不是标题";
+        auto segs = ParseMarkdownSegments(src);
+        int h = 0;
+        std::string levels;
+        bool lastIsPara = false;
+        for (const auto& s : segs) {
+            if (s.kind == MarkdownSegmentKind::Heading) {
+                ++h;
+                levels += std::to_string(s.level);
+            }
+        }
+        lastIsPara = !segs.empty() && segs.back().kind == MarkdownSegmentKind::Paragraph &&
+                     segs.back().text.find("#没空格") != std::string::npos;
+        bool ok = (h == 3) && (levels == "123") && lastIsPara;
+        add("heading", ok,
+            "h=" + std::to_string(h) + " levels=" + levels +
+                " lastIsPara=" + (lastIsPara ? "1" : "0"));
+    }
+
+    // 2. fence：代码块内的 `#`/`-`/`|` 不得二次解析；lang 要摘出来
+    {
+        const std::string src =
+            "```cpp\n"
+            "# 这不是标题\n"
+            "- 这不是列表\n"
+            "| 这不是 | 表格 |\n"
+            "```\n";
+        auto segs = ParseMarkdownSegments(src);
+        bool ok = segs.size() == 1 && segs[0].kind == MarkdownSegmentKind::CodeBlock &&
+                  segs[0].lang == "cpp" &&
+                  segs[0].text.find("# 这不是标题") != std::string::npos &&
+                  segs[0].text.find("| 这不是 | 表格 |") != std::string::npos;
+        add("fence", ok, "segs=" + std::to_string(segs.size()));
+    }
+
+    // 3. fence-unclosed：未闭合围栏整段回退为原文（不静默丢弃、不假装代码块）
+    {
+        const std::string src = "```json\n{\"a\": 1}\n";
+        auto segs = ParseMarkdownSegments(src);
+        bool ok = segs.size() == 1 && segs[0].kind == MarkdownSegmentKind::Paragraph &&
+                  segs[0].text.find("```json") != std::string::npos &&
+                  segs[0].text.find("{\"a\": 1}") != std::string::npos;
+        add("fence-unclosed", ok, "segs=" + std::to_string(segs.size()));
+    }
+
+    // 4. list：有序/无序、原文序号不重排、嵌套 depth
+    {
+        const std::string src =
+            "- 顶层无序\n"
+            "  - 二级无序\n"
+            "1. 第一\n"
+            "2. 第二\n"
+            "3. 第三";
+        auto segs = ParseMarkdownSegments(src);
+        int items = 0, ordered = 0, depth1 = 0;
+        std::string markers;
+        for (const auto& s : segs) {
+            if (s.kind == MarkdownSegmentKind::ListItem) {
+                ++items;
+                if (s.ordered) {
+                    ++ordered;
+                    markers += std::to_string(s.marker);
+                }
+                if (s.depth == 1) ++depth1;
+            }
+        }
+        bool ok = items == 5 && ordered == 3 && markers == "123" && depth1 == 1;
+        add("list", ok,
+            "items=" + std::to_string(items) + " ordered=" + std::to_string(ordered) +
+                " markers=" + markers + " depth1=" + std::to_string(depth1));
+    }
+
+    // 5. quote：连续 > 行合并成一段，`>` 已剥离
+    {
+        const std::string src = "> 第一行引用\n> 第二行引用\n\n正常段落";
+        auto segs = ParseMarkdownSegments(src);
+        bool ok = segs.size() == 2 && segs[0].kind == MarkdownSegmentKind::Quote &&
+                  segs[0].text == "第一行引用\n第二行引用" &&
+                  segs[1].kind == MarkdownSegmentKind::Paragraph;
+        add("quote", ok, "segs=" + std::to_string(segs.size()));
+    }
+
+    // 6. hr：`---`/`***`/`___` 是分隔线；负臂 `- 列表项` 与 `**粗体**` 不是
+    {
+        const std::string src =
+            "上面\n\n"
+            "---\n\n"
+            "中间\n\n"
+            "***\n\n"
+            "下面\n\n"
+            "___\n\n"
+            "- 这是列表不是分隔线\n\n"
+            "**这是粗体不是分隔线**";
+        auto segs = ParseMarkdownSegments(src);
+        int hr = 0;
+        for (const auto& s : segs) {
+            if (s.kind == MarkdownSegmentKind::Hr) ++hr;
+        }
+        // 负臂（★ 2026-11-08 修正）：这两行**不是**分隔线，但各自的归属不同——
+        //   `- 这是列表不是分隔线` 是 ListItem（行首 `- ` + 后面有正文 ⇒ 列表项），
+        //   `**这是粗体不是分隔线**` 是 Paragraph（`**` 不是分隔线字符，也不是列表）。
+        //   原来的判据要求两者都留在 Paragraph，把「列表项」误判成了解析器缺陷——
+        //   是**探针写错了**，不是解析器错。判据改为各自就位、且 Hr 数量不多不少。
+        bool listOk = false;
+        bool paraOk = false;
+        for (const auto& s : segs) {
+            if (s.kind == MarkdownSegmentKind::ListItem &&
+                s.text.find("这是列表不是分隔线") != std::string::npos) {
+                listOk = true;
+            }
+            if (s.kind == MarkdownSegmentKind::Paragraph &&
+                s.text.find("**这是粗体不是分隔线**") != std::string::npos) {
+                paraOk = true;
+            }
+        }
+        bool ok = hr == 3 && listOk && paraOk;
+        add("hr", ok,
+            "hr=" + std::to_string(hr) + " listOk=" + (listOk ? "1" : "0") +
+                " paraOk=" + (paraOk ? "1" : "0"));
+    }
+
+    // 7. no-construct-identity：**基线不变量**——无构造文本必须逐字等于原文
+    {
+        // ★ 刻意混入长得像块级、但不构成块级的三行：缩进代码、行内 `|`、行内 `#`
+        const std::string src =
+            "这是一段普通正文，包含 `- 行内短横` 与 `# 行内井号`。\n"
+            "缩进四空格的普通行不应变成代码块：\n"
+            "    这行是缩进正文\n"
+            "还有一行含 | 竖线但下一行不是分隔行";
+        auto segs = ParseMarkdownSegments(src);
+        bool ok = segs.size() == 1 && segs[0].kind == MarkdownSegmentKind::Paragraph &&
+                  segs[0].text == src;
+        add("no-construct-identity", ok,
+            "segs=" + std::to_string(segs.size()) +
+                " identical=" + ((!segs.empty() && segs[0].text == src) ? "1" : "0"));
+    }
+
+    // 8. 混合：表格 + 标题 + 列表共存时各自成段、顺序保持
+    {
+        const std::string src =
+            "## 小节标题\n\n"
+            "| 列A | 列B |\n"
+            "| --- | --- |\n"
+            "| 1 | 2 |\n\n"
+            "- 列表项";
+        auto segs = ParseMarkdownSegments(src);
+        bool ok = segs.size() == 3 &&
+                  segs[0].kind == MarkdownSegmentKind::Heading &&
+                  segs[1].kind == MarkdownSegmentKind::Table &&
+                  segs[2].kind == MarkdownSegmentKind::ListItem;
+        std::string kinds;
+        for (const auto& s : segs) {
+            kinds += std::to_string(static_cast<int>(s.kind));
+        }
+        add("mixed-order", ok, "segs=" + std::to_string(segs.size()) + " kinds=" + kinds);
+    }
+
+    // 9. render-blocks：**渲染侧**判据——真走一遍 BuildBlockRow，数落地的控件。
+    //   ★ 为什么纯函数判据不够：解析对了不等于渲染了。入口开关若仍只认 Table，
+    //     解析器会产出正确的段，但 `BuildAssistantMarkdownWidgets` 根本不会被调用——
+    //     纯函数探针照样全绿。这一相就是抓那种「解析正确、屏幕上什么都没有」。
+    {
+        Block mockBlock;
+        mockBlock.id = "mock_blocks";
+        mockBlock.kind = "assistant";
+        mockBlock.text =
+            "# 标题\n\n"
+            "正文段落\n\n"
+            "```cpp\nint x = 1;\n```\n\n"
+            "- 列表项\n"
+            "1. 有序项\n\n"
+            "> 引用\n\n"
+            "---\n";
+        mockBlock.ended = true;
+
+        RowRec mockRec;
+        auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+        // 段种计数（渲染侧真实落地的段）
+        int nHead = 0, nCode = 0, nList = 0, nQuote = 0, nHr = 0, nPara = 0;
+        for (const auto& m : mockRec.segMeta) {
+            switch (m.kind) {
+                case MarkdownSegmentKind::Heading: ++nHead; break;
+                case MarkdownSegmentKind::CodeBlock: ++nCode; break;
+                case MarkdownSegmentKind::ListItem: ++nList; break;
+                case MarkdownSegmentKind::Quote: ++nQuote; break;
+                case MarkdownSegmentKind::Hr: ++nHr; break;
+                case MarkdownSegmentKind::Paragraph: ++nPara; break;
+                default: break;
+            }
+        }
+        // ★ 判据必须同时含「都有」和「顺序对」：只数个数会让「全排错位」也过。
+        bool metaMatchesSegs = (mockRec.segMeta.size() == mockRec.segments.size());
+        bool ok = mockRec.hasMarkdown && metaMatchesSegs &&
+                  nHead == 1 && nCode == 1 && nList == 2 && nQuote == 1 && nHr == 1 &&
+                  nPara == 1;
+        add("render-blocks", ok,
+            "hasMd=" + std::string(mockRec.hasMarkdown ? "1" : "0") +
+                " segs=" + std::to_string(mockRec.segments.size()) +
+                " meta=" + std::to_string(mockRec.segMeta.size()) +
+                " h=" + std::to_string(nHead) + " code=" + std::to_string(nCode) +
+                " list=" + std::to_string(nList) + " quote=" + std::to_string(nQuote) +
+                " hr=" + std::to_string(nHr) + " para=" + std::to_string(nPara));
+    }
+
+    // 10. render-negative：**负对照**——不含块级构造时不得走复合渲染。
+    //   ★ 没有这一相，"render-blocks 全绿" 不能证明入口开关有判别力：
+    //     一个「永远走复合渲染」的实现也能让上面全绿，但会把普通段落也切碎。
+    {
+        Block mockBlock;
+        mockBlock.id = "mock_plain";
+        mockBlock.kind = "assistant";
+        mockBlock.text = "这是一段完全普通的正文，没有任何块级构造。\n第二行也是。";
+        mockBlock.ended = true;
+
+        RowRec mockRec;
+        auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+        bool ok = !mockRec.hasMarkdown && mockRec.label != nullptr &&
+                  mockRec.segments.empty() && mockRec.segMeta.empty();
+        add("render-negative", ok,
+            "hasMd=" + std::string(mockRec.hasMarkdown ? "1" : "0") +
+                " segs=" + std::to_string(mockRec.segments.size()));
+    }
+
+    // ══ 11–20：段内内联样式（富内容 §H，2026-11-09）══════════════════════
+    // ★ 与块级相同一条纪律：**正臂 + 负臂成对**，且每相断言 clean 全文与 spans 的
+    //   逐字段值。只断言「有 span」的探针会奖励「随便加粗任意东西」的实现。
+    // ★ `inline-cp-cjk` 专测**码点索引**：emoji（4 字节）+ 中文（3 字节）混排，
+    //   按字节算偏移的实现会在这里露馅，而纯 ASCII 的相全绿——这是本批最容易错的地方。
+    // ★ 颜色用哨兵值（`FromRGBA8(1,2,3)`）而不是主题色：解析器不认主题，
+    //   探针也不该依赖主题表；哨兵色能同时证明「颜色是透传的」而不是写死的。
+    {
+        const ECDI::Color sentinel = ECDI::Color::FromRGBA8(1, 2, 3);
+        InlineCodeStyle cs;
+        cs.family = "Consolas";
+        cs.color = sentinel;
+
+        // 11. inline-bold：`**` 成对 ⇒ 去标记 + 一个 weight=700 区间，且**不夹带**其它维度
+        {
+            const std::string src = "这是**粗体**文字";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "这是粗体文字" && r.spans.size() == 1 &&
+                      r.spans[0].startCp == 2 && r.spans[0].cpCount == 2 &&
+                      r.spans[0].style.weight.has_value() && *r.spans[0].style.weight == 700 &&
+                      !r.spans[0].style.family.has_value() &&
+                      !r.spans[0].style.foreground.has_value();
+            add("inline-bold", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 12. inline-code：反引号 ⇒ 去标记 + family/foreground 双维（哨兵色透传）
+        {
+            const std::string src = "运行 `git status` 看看";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "运行 git status 看看" && r.spans.size() == 1 &&
+                      r.spans[0].startCp == 3 && r.spans[0].cpCount == 10 &&
+                      r.spans[0].style.family.has_value() && *r.spans[0].style.family == "Consolas" &&
+                      r.spans[0].style.foreground.has_value() && *r.spans[0].style.foreground == sentinel &&
+                      !r.spans[0].style.weight.has_value();
+            add("inline-code", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 13. inline-mixed：嵌套（粗体里的 code）必须摊平成 3 个**不重叠**区间
+        //     `**加粗含 `code` 结尾**` → [0,4)粗 / [4,4)粗+code / [8,3)粗
+        {
+            const std::string src = "**加粗含 `code` 结尾**";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "加粗含 code 结尾" && r.spans.size() == 3 &&
+                      r.spans[0].startCp == 0 && r.spans[0].cpCount == 4 &&
+                      r.spans[1].startCp == 4 && r.spans[1].cpCount == 4 &&
+                      r.spans[2].startCp == 8 && r.spans[2].cpCount == 3;
+            if (ok) {
+                ok = r.spans[0].style.weight.has_value() && !r.spans[0].style.family.has_value() &&
+                     r.spans[1].style.weight.has_value() && r.spans[1].style.family.has_value() &&
+                     r.spans[2].style.weight.has_value() && !r.spans[2].style.family.has_value();
+            }
+            add("inline-mixed", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 14. inline-unclosed：未闭合 ⇒ **逐字等于原文**（含星号），零样式
+        {
+            const std::string src = "**未闭合的粗体与 `未闭合的代码";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == src && r.spans.empty();
+            add("inline-unclosed", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 15. inline-escape：反斜杠转义 ⇒ 标记变字面且反斜杠不保留
+        {
+            const std::string src = "\\*\\*不是粗体\\*\\* 与 \\`不是代码\\`";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "**不是粗体** 与 `不是代码`" && r.spans.empty();
+            add("inline-escape", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 16. inline-negative：负臂——长得像标记但**不该**生效的三类
+        //     ① `2 ** 3` 两侧空白（flanking）  ② `snake_case_name` 词内下划线（intraword）
+        //     ③ `****` 零内容
+        {
+            const std::string src = "计算 2 ** 3 与 snake_case_name 还有 **** 结束";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == src && r.spans.empty();
+            add("inline-negative", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 17. inline-cp-cjk：★ 码点索引专项——emoji(1 cp / 4 字节) + 中文(1 cp / 3 字节)
+        //     源 `😀**粗**A` ⇒ clean `😀粗A`，唯一区间 startCp=1 cpCount=1
+        //     按字节算偏移的实现会得到 startCp=4（4 字节 emoji）⇒ 本相变红。
+        {
+            const std::string src = "\xF0\x9F\x98\x80" "**粗**A";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "\xF0\x9F\x98\x80" "粗A" && r.spans.size() == 1 &&
+                      r.spans[0].startCp == 1 && r.spans[0].cpCount == 1;
+            add("inline-cp-cjk", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 18. inline-code-literal：code span 内不解析（`R5`）——`**x**` 是字面
+        {
+            const std::string src = "用 `**x**` 表示通配";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "用 **x** 表示通配" && r.spans.size() == 1 &&
+                      r.spans[0].startCp == 2 && r.spans[0].cpCount == 5 &&
+                      r.spans[0].style.weight.has_value() == false &&
+                      r.spans[0].style.family.has_value();
+            add("inline-code-literal", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 19. inline-identity：**基线不变量**——无构造 ⇒ clean 逐字等于原文、零 spans。
+        //     与块级 "no-construct-identity" 互补：那条保夹具的分段数，这条保字面内容。
+        {
+            const std::string src =
+                "普通正文里出现 4 * 5 = 20 与 3 _ 4，还有未闭合的单引号 ` 和星号 *。";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == src && r.spans.empty();
+            add("inline-identity", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 20. render-inline：**渲染侧**判据——真走一遍建行，读控件上的文本。
+        //     ★ 为什么必须有这一相：解析全绿不等于屏幕上没星号。`ApplyInlineText`
+        //       若没接到这条路径（无块级构造的普通段落），解析器照样全过，
+        //       而控件上仍是 `**粗体**` 原文。判据 = 控件 `GetText()` 已是干净文本。
+        {
+            Block mockBlock;
+            mockBlock.id = "mock_inline";
+            mockBlock.kind = "assistant";
+            mockBlock.text = "这是**粗体**与 `code` 混合的正文。";
+            mockBlock.ended = true;
+
+            RowRec mockRec;
+            auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+            const std::string got = mockRec.label ? mockRec.label->GetText() : std::string();
+            bool ok = mockRec.label != nullptr && !mockRec.hasMarkdown &&
+                      got == "这是粗体与 code 混合的正文。";
+            add("render-inline", ok, "got='" + got + "'");
+        }
+
+        // 21. render-inline-negative：负对照——纯文本行不得被改写（逐字等于原文）
+        {
+            Block mockBlock;
+            mockBlock.id = "mock_inline_neg";
+            mockBlock.kind = "assistant";
+            mockBlock.text = "一行没有任何标记的普通正文";
+            mockBlock.ended = true;
+
+            RowRec mockRec;
+            auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+            const std::string got = mockRec.label ? mockRec.label->GetText() : std::string();
+            bool ok = mockRec.label != nullptr && got == mockBlock.text && !mockRec.hasMarkdown;
+            add("render-inline-negative", ok, "got='" + got + "'");
+        }
+    }
+
+    if (m_application) m_application->Exit();
+}
+
+void HarnessApp::AppendMdProbeSummary(std::string& json) {
+    json += "  \"mdProbe\": [";
+    for (size_t i = 0; i < m_probeState.mdProbeLog.size(); ++i) {
+        const MdProbeRec& r = m_probeState.mdProbeLog[i];
+        json += (i ? ", " : "");
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "{\"phase\": \"%s\", \"matched\": %s, \"note\": \"%s\"}",
+                      r.phase.c_str(), r.matched ? "true" : "false", r.note.c_str());
+        json += b;
+    }
+    json += "],\n";
+}
+
 // ── Markdown 表格渲染探针（--table-probe）─────────────────────
 void HarnessApp::RunTableProbe() {
     if (m_probeState.tableProbeDone) return;
@@ -1137,7 +1561,7 @@ void HarnessApp::RunTableProbe() {
 
         RowRec mockRec;
         auto rowPanel = BuildBlockRow(mockBlock, mockRec);
-        bool ok = (mockRec.hasTable == false && mockRec.label != nullptr);
+        bool ok = (mockRec.hasTable() == false && mockRec.label != nullptr);
         rec.matched = ok;
         if (!ok) rec.note = "streaming block must not split table prematurely";
         m_probeState.tableProbeLog.push_back(std::move(rec));
@@ -1155,7 +1579,7 @@ void HarnessApp::RunTableProbe() {
 
         RowRec mockRec;
         auto rowPanel = BuildBlockRow(mockBlock, mockRec);
-        bool ok = (mockRec.hasTable == true && mockRec.segments.size() >= 2);
+        bool ok = (mockRec.hasTable() == true && mockRec.segments.size() >= 2);
         if (ok) {
             bool foundSv = false;
             for (auto* w : mockRec.segments) {

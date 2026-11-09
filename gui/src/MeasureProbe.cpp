@@ -41,4 +41,8 @@ float MeasureProbe::LineHeight(const Font& font) {
     return height;
 }
 
+float MeasureProbe::Ascent(const Font& font) {
+    return m_inner->Ascent(font);
+}
+
 } // namespace ECDI

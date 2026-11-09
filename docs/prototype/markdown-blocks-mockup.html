@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECDI Fake Harness - 转录块级 Markdown 全套渲染原型（B+）</title>
+<style>
+  :root {
+    --bg-dark: #12151a;
+    --panel-dark: #1a1e26;
+    --panel2-dark: #222733;
+    --line-dark: #2c3342;
+    --line-subtle-dark: #232936;
+    --text-dark: #d8dde8;
+    --text-muted-dark: #828c9e;
+    --accent-dark: #4d82f7;
+    --accent-bg-dark: rgba(77, 130, 247, 0.12);
+    --table-header-dark: #202634;
+    --table-zebra-dark: rgba(255, 255, 255, 0.02);
+    --table-hover-dark: rgba(77, 130, 247, 0.06);
+    --code-bg-dark: #161a22;
+
+    --bg-light: #f5f6f9;
+    --panel-light: #ffffff;
+    --panel2-light: #ebeef5;
+    --line-light: #dcdfe6;
+    --line-subtle-light: #e4e7ed;
+    --text-light: #2c3e50;
+    --text-muted-light: #7c8594;
+    --accent-light: #3370ff;
+    --accent-bg-light: rgba(51, 112, 255, 0.08);
+    --table-header-light: #f0f2f7;
+    --table-zebra-light: rgba(0, 0, 0, 0.015);
+    --table-hover-light: rgba(51, 112, 255, 0.04);
+    --code-bg-light: #f6f8fa;
+  }
+
+  body.theme-dark {
+    --bg: var(--bg-dark); --panel: var(--panel-dark); --panel2: var(--panel2-dark);
+    --line: var(--line-dark); --line-subtle: var(--line-subtle-dark);
+    --text: var(--text-dark); --text-muted: var(--text-muted-dark);
+    --accent: var(--accent-dark); --accent-bg: var(--accent-bg-dark);
+    --table-header: var(--table-header-dark); --table-zebra: var(--table-zebra-dark);
+    --table-hover: var(--table-hover-dark); --code-bg: var(--code-bg-dark);
+  }
+  body.theme-light {
+    --bg: var(--bg-light); --panel: var(--panel-light); --panel2: var(--panel2-light);
+    --line: var(--line-light); --line-subtle: var(--line-subtle-light);
+    --text: var(--text-light); --text-muted: var(--text-muted-light);
+    --accent: var(--accent-light); --accent-bg: var(--accent-bg-light);
+    --table-header: var(--table-header-light); --table-zebra: var(--table-zebra-light);
+    --table-hover: var(--table-hover-light); --code-bg: var(--code-bg-light);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6; padding: 24px;
+    display: flex; justify-content: center; transition: background 0.2s, color 0.2s;
+  }
+  .container { width: 100%; max-width: 1100px; display: flex; flex-direction: column; gap: 20px; }
+
+  .control-bar {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 18px; display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 12px;
+  }
+  .control-bar h1 { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 12px;
+    background: var(--accent-bg); color: var(--accent); font-weight: 500;
+  }
+  .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  button {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    padding: 6px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  label.chk { font-size: 12.5px; color: var(--text-muted); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+
+  .spec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .spec-card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px;
+    font-size: 12.5px; color: var(--text-muted);
+  }
+  .spec-card h3 { font-size: 13px; color: var(--text); margin-bottom: 6px; font-weight: 600; }
+  .spec-card b { color: var(--text); font-weight: 600; }
+  .spec-card code { font-size: 11.5px; }
+
+  /* ── 转录区：版心模型同表格原型（TranscriptLayoutWidth = min(宽, 760)）── */
+  .transcript-area {
+    padding: 24px 16px; display: flex; flex-direction: column; align-items: center;
+    background: var(--bg); border: 1px solid var(--line-subtle); border-radius: 8px;
+  }
+  .message-row { width: 100%; max-width: 760px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 6px; }
+  body.wide .message-row { max-width: 100%; }
+  .message-header { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+  .avatar {
+    width: 20px; height: 20px; border-radius: 4px; display: grid; place-items: center;
+    font-size: 11px; font-weight: bold; background: var(--accent); color: #fff;
+  }
+  .avatar.user-avatar { background: var(--text-muted); }
+  .message-bubble {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px 16px; display: flex; flex-direction: column; font-size: 13.5px;
+  }
+  .user-bubble { background: var(--accent-bg); border-color: rgba(77, 130, 247, 0.3); align-self: flex-end; max-width: 80%; }
+
+  /* ── 块级元素规格（每块 = 一个控件，Font{size,weight,family} 各给各的）── */
+  .md > * + * { margin-top: 10px; }
+
+  /* 标题：h1 19px/700 · h2 16px/650 · h3 14px/600（正文 13.5px/400 基准） */
+  .md-h1 { font-size: 19px; font-weight: 700; line-height: 1.4; margin-top: 4px; }
+  .md-h2 { font-size: 16px; font-weight: 650; line-height: 1.4; padding-bottom: 4px; border-bottom: 1px solid var(--line-subtle); }
+  .md-h3 { font-size: 14px; font-weight: 600; line-height: 1.4; }
+  .md > .md-h1 + *, .md > .md-h2 + *, .md > .md-h3 + * { margin-top: 6px; }
+
+  /* 围栏代码块：mono 12.5px · code-bg 底 · 1px 边框 · 语言标签 + 复制钮 */
+  .md-codeblock { border: 1px solid var(--line); border-radius: 6px; background: var(--code-bg); overflow: hidden; }
+  .md-codeblock .code-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 12px; font-size: 11px; color: var(--text-muted);
+    border-bottom: 1px solid var(--line-subtle); background: var(--panel2);
+  }
+  .md-codeblock .code-copy { padding: 1px 8px; font-size: 11px; border-radius: 4px; }
+  .md-codeblock pre {
+    padding: 10px 12px; font-family: Consolas, "Courier New", monospace; font-size: 12.5px;
+    line-height: 1.55; overflow-x: auto; white-space: pre; color: var(--text);
+  }
+
+  /* 列表：v1 前缀法（「• 」/「1. 」进文本），嵌套 = 全角空格缩进；悬挂缩进后置 */
+  .md-list { display: flex; flex-direction: column; gap: 3px; }
+  .md-list .li { display: flex; gap: 8px; }
+  .md-list .li .marker { color: var(--text-muted); flex: none; min-width: 18px; text-align: right; }
+  .md-list .li.nested { padding-left: 26px; }
+
+  /* 引用块：左 3px 强调条 +  muted 文本 */
+  .md-quote {
+    border-left: 3px solid var(--accent); padding: 4px 0 4px 12px;
+    color: var(--text-muted); display: flex; flex-direction: column; gap: 6px;
+  }
+
+  /* 分隔线：1px line-subtle */
+  .md-hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
+
+  /* 链接：强调色 + 下划线；v1 只变色，点击打开待 REQ-19-B（OpenExternal） */
+  .md-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+  .md-link:hover { opacity: 0.8; }
+
+  /* 内联样式 = REQ-20 范围：默认显示原文标记；勾选「REQ-20 预览」才看将来态 */
+  .md-rich { display: none; }
+  body.inline-preview .md-rich { display: inline; }
+  body.inline-preview .md-raw { display: none; }
+  .md-rich strong { font-weight: 700; }
+  .md-rich em { font-style: italic; }
+  code {
+    font-family: Consolas, monospace; font-size: 12px; background: var(--panel2);
+    padding: 1px 5px; border-radius: 3px; border: 1px solid var(--line-subtle);
+  }
+  .req20-note { font-size: 11px; color: var(--text-muted); background: var(--accent-bg); border-radius: 4px; padding: 2px 8px; display: inline-block; }
+
+  /* 表格：与已落地的表格渲染同形（同屏对照） */
+  .ecdi-table-wrap { width: 100%; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; background: var(--panel); }
+  .ecdi-table { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+  .ecdi-table th {
+    background: var(--table-header); font-weight: 600; padding: 9px 14px;
+    border-bottom: 1px solid var(--line); border-right: 1px solid var(--line-subtle);
+  }
+  .ecdi-table th:last-child { border-right: none; }
+  .ecdi-table td { padding: 8px 14px; border-bottom: 1px solid var(--line-subtle); border-right: 1px solid var(--line-subtle); }
+  .ecdi-table td:last-child { border-right: none; }
+  .ecdi-table tr:last-child td { border-bottom: none; }
+  .ecdi-table tr:nth-child(even) { background: var(--table-zebra); }
+  .ecdi-table tr:hover { background: var(--table-hover); }
+
+  /* 原文态：今天 GUI 的样子（整段纯文本） */
+  .raw-view { display: none; }
+  body.raw-mode .raw-view { display: block; }
+  body.raw-mode .rendered-view { display: none; }
+  .raw-view pre {
+    font-family: Consolas, monospace; font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-all; color: var(--text);
+  }
+  .view-tag { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+
+  .foot-note { font-size: 12px; color: var(--text-muted); padding: 0 4px 12px; }
+  .foot-note b { color: var(--text); }
+</style>
+</head>
+<body class="theme-dark">
+<div class="container">
+
+  <div class="control-bar">
+    <h1>转录块级 Markdown 全套渲染 <span class="badge">B+ 原型 · 2026-11-07</span></h1>
+    <div class="actions">
+      <button id="themeToggle" onclick="toggleTheme()">🌓 暗 / 亮</button>
+      <button id="widthToggle" onclick="toggleWidth()">↔ 版心 [760px / 100%]</button>
+      <button id="viewToggle" onclick="toggleView()">原文态对照</button>
+      <label class="chk"><input type="checkbox" id="inlinePreview" onchange="toggleInline()"> REQ-20 内联预览（将来态）</label>
+    </div>
+  </div>
+
+  <div class="spec-grid">
+    <div class="spec-card">
+      <h3>① 标题 h1–h3</h3>
+      每级一个 Label：<b>19px/700 · 16px/650 · 14px/600</b>（正文 13.5px/400）。h2 带底部细线。
+      Font{size,weight} 走 REQ-10 已闭合通路，零新框架能力。
+    </div>
+    <div class="spec-card">
+      <h3>② 围栏代码块</h3>
+      mono 12.5px + 深底 + 1px 边框；头栏 = 语言标签 + <b>复制钮</b>（框架剪贴板通路已有）。
+      超宽局部横向滚动，不破版心。未闭合围栏 = 不解析、回落纯文本。
+    </div>
+    <div class="spec-card">
+      <h3>③ 列表（有序 / 无序 / 嵌套）</h3>
+      v1 <b>前缀法</b>：「• 」/「1. 」进文本、嵌套用缩进，一个列表一个 Label。
+      悬挂缩进（折行对齐 marker 右侧）需要框架能力，后置不夹带。
+    </div>
+    <div class="spec-card">
+      <h3>④ 引用块 / ⑤ 分隔线</h3>
+      引用 = 左 3px 强调条 + muted 文本（Panel + Label，同表格容器先例）。
+      分隔线 = 1px <code>kLine</code>，上下留白 14px。
+    </div>
+    <div class="spec-card">
+      <h3>⑥ 链接</h3>
+      强调色 + 下划线。<b>v1 只变色不可点</b>——点击打开外部链接依赖 REQ-19-B
+      （OpenExternal，仍开放）；可先做「点击复制链接」。
+    </div>
+    <div class="spec-card">
+      <h3>⑦ 边界（不做的事）</h3>
+      段内粗体/斜体/行内 code = <b>REQ-20</b>（styled spans，交 ECDI，勾选上方预览看将来态）。
+      协议/journal 零改动；切分只落 <code>block_end</code>，流式中途整段纯文本。
+    </div>
+  </div>
+
+  <div class="transcript-area">
+    <div class="message-row">
+      <div class="message-header"><span class="avatar user-avatar">U</span> 用户 · 14:32</div>
+      <div class="message-bubble user-bubble">帮我梳理一下 MCP 通知流的实现要点，给个验收清单和示例配置。</div>
+    </div>
+
+    <div class="message-row">
+      <div class="message-header"><span class="avatar">A</span> 助手 · 14:32 <span class="req20-note">块级渲染提案</span></div>
+
+      <div class="message-bubble rendered-view md">
+        <div class="view-tag">▼ 渲染态（提案）</div>
+
+        <div class="md-h1">MCP 通知流实现要点</div>
+        <p>三种传输（stdio / Streamable HTTP / legacy SSE）统一走 hub 分发。
+          <span class="md-raw">核心是 **单一分发口径**，而不是 `scanSSE` 各写各的。</span>
+          <span class="md-rich">核心是 <strong>单一分发口径</strong>，而不是 <code>scanSSE</code> 各写各的。</span>
+        </p>
+
+        <div class="md-h2">1. 传输层行为</div>
+        <div class="md-list">
+          <div class="li"><span class="marker">•</span><span>Streamable HTTP：GET 通知流，405 = 不支持即停</span></div>
+          <div class="li"><span class="marker">•</span><span>断流带 Last-Event-ID 退避重连</span></div>
+          <div class="li nested"><span class="marker">◦</span><span>重连 5 次耗尽才判死（legacy SSE 同口径）</span></div>
+          <div class="li"><span class="marker">•</span><span>stdio：通知与响应同走一条 stdout，按 id 分流</span></div>
+        </div>
+
+        <div class="md-h2">2. 示例配置</div>
+        <div class="md-codeblock">
+          <div class="code-head"><span>json · mcp.json</span><button class="code-copy" onclick="copyCode(this)">复制</button></div>
+          <pre>{
+  "servers": {
+    "docs": {
+      "transport": "http",
+      "url": "http://127.0.0.1:9120/mcp",
+      "timeout": 60
+    }
+  }
+}</pre>
+        </div>
+
+        <div class="md-h3">验收清单</div>
+        <div class="md-list">
+          <div class="li"><span class="marker">1.</span><span>tools/list_changed 触发重拉工具表，新工具免重启可调</span></div>
+          <div class="li"><span class="marker">2.</span><span>断流自愈期间调用方拿到显式错误，不静默挂起</span></div>
+          <div class="li"><span class="marker">3.</span><span>死亡通知在坏传输上不丢（death-race 牙齿对覆盖）</span></div>
+        </div>
+
+        <div class="md-quote">
+          <span>设计取舍：通知流只做「送达 + 分发」，语义消费（如 progress 的 GUI 进度面）另批——</span>
+          <span>避免一个 Phase 夹带两件事。</span>
+        </div>
+
+        <hr class="md-hr">
+
+        <p>判据与读数见 <span class="md-link" title="v1 只变色；点击打开待 REQ-19-B">docs/mcp-host-plan.md §十三</span>，
+          冒烟断言 83 → 119 条。
+          <span class="md-raw">段内的 **粗体**、*斜体* 与 `行内 code` 本批仍按原文显示（REQ-20 待 ECDI）。</span>
+          <span class="md-rich">段内的 <strong>粗体</strong>、<em>斜体</em> 与 <code>行内 code</code> 属 REQ-20 将来态（本预览仅供对照）。</span>
+        </p>
+
+        <div class="md-h2">3. 三传输对照（表格 = 已落地能力，同屏对照）</div>
+        <div class="ecdi-table-wrap">
+          <table class="ecdi-table">
+            <thead><tr><th>传输</th><th>通知流</th><th>断流策略</th><th style="text-align:right">冒烟断言</th></tr></thead>
+            <tbody>
+              <tr><td>stdio</td><td>stdout 同口径</td><td>僵死清退 + 按需 respawn</td><td style="text-align:right">34</td></tr>
+              <tr><td>Streamable HTTP</td><td>GET 流</td><td>Last-Event-ID 退避重连</td><td style="text-align:right">51</td></tr>
+              <tr><td>legacy SSE</td><td>event 流</td><td>重连 5 次耗尽判死</td><td style="text-align:right">34</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="message-bubble raw-view">
+        <div class="view-tag">▼ 原文态（今天 GUI 的样子：整段纯文本，标记全部可见）</div>
+        <pre># MCP 通知流实现要点
+
+三种传输（stdio / Streamable HTTP / legacy SSE）统一走 hub 分发。核心是 **单一分发口径**，而不是 `scanSSE` 各写各的。
+
+## 1. 传输层行为
+
+- Streamable HTTP：GET 通知流，405 = 不支持即停
+- 断流带 Last-Event-ID 退避重连
+  - 重连 5 次耗尽才判死（legacy SSE 同口径）
+- stdio：通知与响应同走一条 stdout，按 id 分流
+
+## 2. 示例配置
+
+```json
+{
+  "servers": {
+    "docs": {
+      "transport": "http",
+      "url": "http://127.0.0.1:9120/mcp",
+      "timeout": 60
+    }
+  }
+}
+```
+
+### 验收清单
+
+1. tools/list_changed 触发重拉工具表，新工具免重启可调
+2. 断流自愈期间调用方拿到显式错误，不静默挂起
+3. 死亡通知在坏传输上不丢（death-race 牙齿对覆盖）
+
+&gt; 设计取舍：通知流只做「送达 + 分发」，语义消费（如 progress 的 GUI 进度面）另批——
+&gt; 避免一个 Phase 夹带两件事。
+
+---
+
+判据与读数见 [docs/mcp-host-plan.md §十三](docs/mcp-host-plan.md)，冒烟断言 83 → 119 条。段内的 **粗体**、*斜体* 与 `行内 code` 本批仍按原文显示（REQ-20 待 ECDI）。
+
+## 3. 三传输对照（表格 = 已落地能力，同屏对照）
+
+| 传输 | 通知流 | 断流策略 | 冒烟断言 |
+|---|---|---|---:|
+| stdio | stdout 同口径 | 僵死清退 + 按需 respawn | 34 |
+| Streamable HTTP | GET 流 | Last-Event-ID 退避重连 | 51 |
+| legacy SSE | event 流 | 重连 5 次耗尽判死 | 34 |</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot-note">
+    <b>实施映射（过目后才动 C++）</b>：扩 <b>MarkdownSegmentKind</b>（Heading / CodeBlock / List / Quote / Hr / Link 段落仍归 Paragraph）→
+    <b>ParseMarkdownSegments</b> 纯函数（探针直调）→ BuildAssistantMarkdownWidgets 组装分支。
+    解析只落 block_end；协议 / journal / context 零改动；版心 min(宽, 760) 不变。
+    探针冲击面按 rich-content-plan §0.3 清单显式改判据（rebuild / hit / answer / grow / cull / select），不静默重基线。
+  </div>
+
+</div>
+
+<script>
+  function toggleTheme() {
+    const b = document.body;
+    b.classList.toggle('theme-dark');
+    b.classList.toggle('theme-light');
+  }
+  function toggleWidth() {
+    document.body.classList.toggle('wide');
+    document.getElementById('widthToggle').classList.toggle('active');
+  }
+  function toggleView() {
+    document.body.classList.toggle('raw-mode');
+    document.getElementById('viewToggle').classList.toggle('active');
+  }
+  function toggleInline() {
+    document.body.classList.toggle('inline-preview', document.getElementById('inlinePreview').checked);
+  }
+  function copyCode(btn) {
+    const pre = btn.closest('.md-codeblock').querySelector('pre');
+    navigator.clipboard.writeText(pre.textContent).then(() => {
+      btn.textContent = '已复制 ✓';
+      setTimeout(() => { btn.textContent = '复制'; }, 1500);
+    });
+  }
+</script>
+</body>
+</html>

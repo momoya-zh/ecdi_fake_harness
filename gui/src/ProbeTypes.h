@@ -427,6 +427,16 @@ struct TableProbeRec {
     std::string note;
 };
 
+// ★★ 2026-11-08（富内容 B+，rich-content-plan §G）：块级全套解析判据。
+//   ★ 为什么单独一套探针而不并进 --table-probe：table 那 6 相是二期的**既有判据**，
+//     混进新相会让「表格没有回归」和「块级新增正确」两件事互相掩盖——
+//     一个相 FAIL 时看不出是哪条线坏的。分开跑，各自 PASS 才是独立证据。
+struct MdProbeRec {
+    std::string phase;
+    bool matched = true;
+    std::string note;
+};
+
 struct CopyProbeRec {
     std::string phase;
     bool matched = true;

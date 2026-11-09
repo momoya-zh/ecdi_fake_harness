@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.21**（2026-11-05；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.24**（2026-11-09；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）；**REQ-20 🔄 开放（2026-11-07 登记：段内内联样式 styled spans 能力缺口；★ 同日 ECDI 裁决已回：重启条件成立、富文本另立项 = ECDI deferred **#88**，Phase 号待排；块级全套先行见 rich-content-plan §G）**；**★ 2026-11-08 ECDI 侧已交付、本仓待消费**：ECDI `#88` / Phase 44（`008daff` batch2）落地 `TextWidget::SetStyledText(const std::string&, const std::vector<TextSpan>&)` + `SpanStyle` + `TextSpan`（`third_party/ecdi/include/ECDI/Widget/TextSpan.h`）。**★★ 验收口径必须收窄**：`SpanStyle` 只有 `family`/`weight`/`foreground` 三个 optional，头注释明文「严禁包含 size（闸门 3）或**斜体**（闸门 2 / L44-8）」⇒ 本仓能兑现的是**粗体**（`weight=700`）与**行内 code**（`family=Consolas`+`foreground`）两件，**斜体永远不生效**、**字号不可变**。§G 原文「粗体/斜体/行内 code 三件套」须按此改写。链路已核验：`ECDI.lib` 符号表含 `SetStyledText` 与 `ClampAndValidateSpans`，安装头与 ECDI 源树 **102/102 逐字节相同**，重链 35/35 成功、demo 基线 8/19/43 不变。**本仓尚未改任何与 styled spans 相关的代码。** ★★ **2026-11-09 更新**：本仓**已消费**——粗体（`**x**` / `__x__`）与行内 code（`` `x` ``）上线（`ParseInlineRuns` + `--md-probe` 11 个 inline 相 + `ApplyInlineText` 三路接入），**斜体按用户裁定暂不做**（`*x*` 按原文保留），`size` 留位不用；同批登记 **REQ-21**（`SpanStyle` 缺 `background` ⇒ 行内 code 无底色）。详见 `rich-content-plan.md` §H。
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -892,6 +892,46 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 
 ---
 
+### REQ-20 🔄 段内内联样式（styled spans：粗体 / 斜体 / 行内 code）—— 转录富渲染碰到「一控件一套字体」边界
+
+> 立案：2026-11-07，用户裁定「富内容应该把转录全做好，目前只做了表格」。范围拆两层：
+> **块级全套**（标题 / 围栏代码块 / 列表 / 引用 / 分隔线 / 链接）应用层做得了、先行（`rich-content-plan.md` §G）；
+> **段内内联样式**是框架能力边界，按铁律登记交 ECDI，不在应用层拆控件绕行。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-07 富内容二期扩围裁决（`docs/rich-content-plan.md` §G） |
+| 状态 | ✅ **已闭合（2026-11-09，本仓已消费）**（能力缺口，ECDI 侧已交付：`#88` / Phase 44 落地 `TextWidget::SetStyledText` + `SpanStyle`，Phase 45 追加 `italic` / `size`。★ **2026-11-07 ECDI 裁决**：重启条件成立、富文本另立项 = ECDI `docs/dev/roadmap-deferred.md` **#88**（v2.81）。★★ 本仓消费口径（用户 2026-11-09 裁定）：**粗体 + 行内 code 上线，斜体暂不做、`size` 留位**；残留维度缺口另立 **REQ-21**） |
+| 归属 | **ECDI 侧（能力缺口，非缺陷）**。已按 §1.1 核实到源码仓：安装头 + ECDI 源仓（`D:\Project\ECDI`）全库 grep `RichText/TextRun/InlineStyle/TextSpan/StyleRun/SetRangeFont` **零命中**；`TextWidget.h:23`「Phase 9：持有 TextStyle（m_style——文字视觉唯一来源）」⇒ 一控件一套样式；`Font.h:16-20` 已有 weight（REQ-10 已消费）但粒度 = 整控件 |
+| 缺口（一句话） | markdown 段内粗体 / 斜体 / 行内 code 需要「同一文本流内混排样式」，而框架文字视觉按控件单值（TextStyle/Font）——「这半句加粗」在框架里不存在 |
+| ★ ECDI 侧既有裁决（勿重开，先对账） | `phase28-long-text-cost-requirements.md:39/72`：富文本（styled spans）= 非目标、另立项；`phase36-font-expressiveness-requirements.md:64`：富文本 → **#53 渲染表现力群**、单消费者不立项；`roadmap-deferred.md:196`（#53）：重启条件 = 第二消费者出现。★ 本仓转录渲染已是真实消费者（表格渲染已闭合、块级全套启动）——**是否构成重启条件由 ECDI 裁，本仓不预设**。★★ **2026-11-07 裁决已回（ECDI 侧 v2.81 / #88）**：用户澄清口径本意——「等第二消费者」防的是**内部 demo 自嗨**（当时完全没有独立开库消费的项目）；本仓 = 真实外部消费工程 ⇒ **重启条件成立**；**富文本另立项、不并 #53 群**（体量不匹配，沿 phase28「另立项」口径），#53 群其余项维持不动。（★ 路径订正：三份文档实在 ECDI 仓 `docs/dev/` 下；`roadmap-deferred.md` #53 实在 `:196`，核验属实） |
+| ★ 代价（为何不在应用层绕行） | 绕行 = 把内联样式拆成多个 Label 拼接 ⇒ ① 打破「一 block 一 TextBox」的选中/复制假设（`--select-probe` / `--selectable-rows` 2026-11-07 刚铺完 tool 体）；② 跨控件折行要自管（框架 wrap 按控件），CJK 混排是重灾区；③ rebuild/hit/answer/grow/cull/select 探针冲击面比表格大且属静默重基线。同 REQ-15 教训：不在应用层塞 `\n` 式绕行 |
+| 建议修法 | `TextWidget`/`Label` 的 styled spans 能力（文本 + 逐段 Font/颜色覆盖，测量/折行/命中统一在框架内）；API 形状由 ECDI 裁，本仓不预设。`TextBox` 侧若开需兼顾选中/复制通路 |
+| 边界（不夸大） | 能力缺口、非缺陷：今天行为自洽（内联标记按原文显示、内容不丢）。按 11-04「不为采数据挡功能」定调不挡块级功能；块级全套不受影响、先行。（★ 2026-11-07 裁决更新：原「不排期」→ **已另立项**，Phase 号与顺位待 ECDI 排，见状态行） |
+| 验收判据 | ① ECDI 侧单测：同一 Label 内粗体/常规/mono 三段混排，测量与折行正确、逐段样式生效（GDI/GL 两链一致）；② 判别力：回退任一段样式 ⇒ 恰该用例红；③ 本仓消费后：转录段内粗体/斜体/行内 code 真渲染，选中/复制仍取块全文（口径消费时定）；④ 负对照：既有单字体路径（全部现行探针）不回归 |
+| 待办 / 开放问题 | ① ✅ **已裁（2026-11-07）**：富文本**另立项**（ECDI deferred #88），不并 #53 群；② ✅ **本仓消费已落地（2026-11-09）**：粗体 + 行内 code 上线，斜体暂不做、`size` 留位，见 `rich-content-plan.md` §H；③ 块级全套独立推进，见 `rich-content-plan.md` §G |
+
+---
+
+### REQ-21 🔄 `SpanStyle` 缺 `background` —— 行内 code 画不出底色块
+
+> 立案：2026-11-09（本仓消费 Phase 44/45 的 styled spans 时暴露）。同批用户裁定
+> 「background 问题先登记」⇒ 行内 code **不等它**，以「等宽 + 前景色」先上线。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-09 富内容 §H 消费时发现（`docs/rich-content-plan.md` §H） |
+| 状态 | 🔄 **开放**（能力缺口；**不阻断**行内 code——本仓已用等宽 + 前景色兑现，底色属「观感维度」缺失） |
+| 归属 | **ECDI 侧（能力缺口，非缺陷）**。已按 §1.1 核实到安装头：`third_party/ecdi/include/ECDI/Widget/TextSpan.h:15-23` 的 `SpanStyle` 只有 `family` / `weight` / `foreground` / `italic` / `size` **五个 optional，没有 background**（Phase 45 `eb2106a` 后逐字复核） |
+| 缺口（一句话） | markdown 行内 code（`` `x` ``）的标准观感是「等宽 + 浅底色块」，而 span 只能覆盖字族/字重/斜体/字号/前景色——**底色块在框架里没有表达方式** |
+| 消费者证据 | 本仓 2026-11-09 落地的 `ParseInlineRuns`（`gui/src/Transcript.cpp`）产出的 code span；渲染侧 `HarnessApp::ApplyInlineText`（`AppTranscript.cpp`）；判据 `--md-probe` 的 `inline-code` / `inline-mixed` / `inline-code-literal` 三相 |
+| 建议修法 | `SpanStyle::background`（`std::optional<Color>`）；绘制侧在文字之前按 run 画底色矩形（`DrawRect` + `PushClip` 既有原语足够，**不需要新原语**）。API 形状由 ECDI 裁，本仓不预设 |
+| 边界（不夸大） | 能力缺口、非缺陷：今天行为自洽（行内 code = 等宽 + 强调色，可读性上已能区分）。★ 无底色**不是错误渲染**，只是与本仓视觉稿有差距 ⇒ 按 11-04「不为采数据挡功能」不挡上线 |
+| 验收判据 | ① ECDI 侧单测：同一 Label 内两种 background 的 run，底色矩形与文字 run 边界对齐（含软折行跨行、跨 DPI）；② 判别力：回退 background ⇒ 恰该用例红；③ 本仓消费后：行内 code 有底色且**选中高亮仍可读**（这是本条的真正难点——底色与选区高亮叠加）；④ 负对照：无 background 的 span 绘制逐字节不变（`a=1` 路径零变化，沿 #71 红线） |
+| 待办 / 开放问题 | ① 是否与 REQ-20 合并为「styled spans 表现力」一条 —— **不合并**：REQ-20 已闭合（能力已落地），本条是**落地后暴露的维度缺口**，分开记才不会让 REQ-20 的闭合记录留下假完备；② 本仓是否等它再上线 —— **不等**（用户 2026-11-09 裁定「先登记」）；③ 若将来做，需先定「底色与选区高亮的叠加顺序」，否则两种实现都自洽但视觉不同 |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -1041,6 +1081,36 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.24（2026-11-09）★ REQ-20 本仓消费落地 + 登记 REQ-21（`SpanStyle` 缺 background）**
+  ① **REQ-20 状态 → 已闭合（本仓消费）**：ECDI `#88` / Phase 44 交付 `TextWidget::SetStyledText`，
+     Phase 45（`eb2106a`）追加 `italic` / `size` 两个维度 ⇒ 11-08 记下的「斜体永远不生效、字号不可变」
+     **口径已过期**，本次逐字复核后订正（凡带「Phase 44 时点」的结论都必须重读一遍头文件，见下③）。
+  ② 本仓消费（用户 2026-11-09 拍板）：**粗体 + 行内 code 上线**；**斜体暂不做**（`*x*` 按原文保留，
+     不解析也不去标记）；**`size` 留位不用**（保版心行高稳定）。实现 = `ParseInlineRuns`（纯函数、
+     三遍式：扫描 → 配对 → 输出）+ `ApplyInlineText`（三路正文入口）+ `--md-probe` 11 个 inline 相
+     （含 `inline-cp-cjk` 码点索引专项与两相渲染侧判据）。落点见 `rich-content-plan.md` §H。
+  ③ **★ 新登记 REQ-21**：`SpanStyle` 只有 family/weight/foreground/italic/size，**无 background**
+     ⇒ 行内 code 画不出底色块。用户裁定「先登记」，行内 code 不等它。与 REQ-20 **不合并**
+     （REQ-20 是能力落地、REQ-21 是落地后暴露的维度缺口；合记会让闭合记录假完备）。
+  ④ 头部 v5.23 → **v5.24**；§2 头部摘要同步（REQ-20 摘要行末补 11-09 消费事实）。
+- **v5.23（2026-11-07）★ REQ-20 裁决已回：重启条件成立、富文本另立项（ECDI deferred #88）**
+  ① ECDI 侧用户澄清「第二消费者」口径本意：当时**完全没有独立开库消费的项目**、需求全来自内部测试 demo，
+     闸门防的是内部自嗨；本仓 = 真实外部消费工程 ⇒ 其转录富渲染需求本身就是闸门等待的信号，重启条件成立。
+  ② 用户拍板 **富文本另立项、不并 #53 群**（体量不匹配：逐段样式 × 测量/折行/命中 × 两链 × 选中复制；
+     沿 phase28「另立项」口径）；#53 群其余项维持不动。ECDI 侧落账 = `roadmap-deferred.md` **v2.81 / #88**（待做区）。
+  ③ 本仓回写：REQ-20 状态行 / 既有裁决行 / 边界行 / 待办①（已裁）+ §2 头部摘要；Phase 号与顺位待 ECDI 排，
+     本仓消费仍不预做、块级全套不受影响先行。
+  ④ 顺带订正：REQ-20 所引三份 ECDI 文档实在 `docs/dev/` 下（原引路径缺前缀）；归属核验结论本身全部属实
+     （代码/公共头 grep 零命中，仅 phase7 需求稿一处文档性提及 RichText）。
+  ⑤ 头部 v5.22 → **v5.23**。
+- **v5.22（2026-11-07）★ 登记 REQ-20：段内内联样式（styled spans）能力缺口**
+  ① 用户裁定「富内容应该把转录全做好」⇒ 范围拆两层：**块级全套先行**（应用层，`rich-content-plan.md` §G）；
+     **内联粗体/斜体/行内 code** 碰到「一控件一套字体」边界，按铁律登记交 ECDI。
+  ② 归属核实到源码仓（§1.1）：安装头 + `D:\Project\ECDI` 全库 grep `RichText/TextRun/InlineStyle/TextSpan/StyleRun/SetRangeFont`
+     零命中；`TextWidget.h:23` 文字视觉唯一来源 = 控件级 TextStyle。
+  ③ 对账 ECDI 既有裁决：富文本 = phase28/29/36/38 一贯非目标、归 **#53 渲染表现力群**（单消费者不立项，
+     重启条件 = 第二消费者）——本仓是否构成重启条件由 ECDI 裁，本仓不预设、不排期。
+  ④ 头部 v5.21 → **v5.22**。
 - **v5.21（2026-11-05）★★ REQ-19-A 闭合：换新库 + 本仓 `SplitterBar` 收敛 + `regress` PASS**
   ① 用户 15:57 交付新 `ECDI.lib`（**11975450 B · `c5208346…`**；旧 `3866a17d…` / 11974558 B 已备份
      `.scratch/ECDI.lib.prev-20261105`），并同步安装头 `Core/CursorShape.h`。

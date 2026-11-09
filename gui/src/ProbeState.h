@@ -277,6 +277,8 @@ struct ProbeState {
     size_t evalProbeAvg = 0;
     std::vector<TableProbeRec> tableProbeLog;
     bool tableProbeDone = false;
+    std::vector<MdProbeRec> mdProbeLog;          // ★ 2026-11-08：块级全套解析判据
+    bool mdProbeDone = false;
     std::vector<CopyProbeRec> copyProbeLog;
     bool copyProbeDone = false;
     std::vector<ModeProbeRec> modeProbeLog;

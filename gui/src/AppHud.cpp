@@ -321,8 +321,11 @@ void HarnessApp::Relayout() {
                     r.conclusion->SetPosition(innerW - cw - 14, 2 + (kHeaderH - ch) / 2);
                 }
             }
-        } else if (r.hasTable) {
-            // 富内容二期：复合 assistant 行的高度由下方 segments 累加计算，不走单气泡 wrap
+        } else if (r.hasMarkdown) {
+            // ★★ 富内容 B+（2026-11-08）：复合 assistant 行的高度由下方 segments 累加计算，
+            //   不走单气泡 wrap（原注释只写「含表格」，现已扩到块级全套）。
+            //   ★ 这里是**早返回分支**：真正的高度与摆放全在下面的段循环里定稿，
+            //     所以此处刻意什么都不做——不是遗漏。
         } else {
             const int maxBubbleW = std::max(120, innerW * 78 / 100);
             const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
@@ -369,7 +372,7 @@ void HarnessApp::Relayout() {
             // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
             r.panel->SetSize(innerW, rowH);
             r.panel->SetPosition(canvasX, y);
-        } else if (r.hasTable) {
+        } else if (r.hasMarkdown) {
             // ★★ 富内容二期：含有 Markdown 表格的复合 assistant 行
             //   T1+T2（2026-11-01）：表格内部布局先按版心宽定稿（折行/行高/列线），
             //   再走下面的 ScrollView 尺寸下发；宽不变不重排（同 lastWrapW 纪律）
@@ -381,14 +384,141 @@ void HarnessApp::Relayout() {
                 }
             }
             int curY = 8;
-            for (ECDI::Widget* w : r.segments) {
+            // ★★ 2026-11-08（富内容 B+）：段间距**按段种**取，不再一律 +10。
+            //   ★ index 与 `r.segMeta` 严格对齐——这就是 BuildAssistantMarkdownWidgets
+            //     里「每种段种都必须推一条 meta」的消费端。少推一条，后面所有段
+            //     的整体间距错位一格，且不报错（只会越排越挤）。
+            for (size_t si = 0; si < r.segments.size(); ++si) {
+                ECDI::Widget* w = r.segments[si];
                 if (!w) continue;
-                if (auto* tw = dynamic_cast<ECDI::TextWidget*>(w)) {
+                RowRec::SegMeta meta;
+                if (si < r.segMeta.size()) meta = r.segMeta[si];
+                // 本段下方间距（画在 curY 推进量里）：标题与代码块留白多，列表项紧凑。
+                int gapAfter = 10;
+                switch (meta.kind) {
+                    case MarkdownSegmentKind::Heading:
+                        // h1 最松，h3 次之；标题下方比上方更需要留白
+                        gapAfter = (meta.level <= 1) ? 12 : (meta.level == 2 ? 10 : 8);
+                        break;
+                    case MarkdownSegmentKind::CodeBlock:
+                        gapAfter = 12;
+                        break;
+                    case MarkdownSegmentKind::ListItem:
+                        // 列表项之间 3px（原型 `gap:3px`）；末项后 10px 收束整组
+                        gapAfter = meta.lastOfList ? 10 : 3;
+                        break;
+                    case MarkdownSegmentKind::Quote:
+                        gapAfter = 10;
+                        break;
+                    case MarkdownSegmentKind::Hr:
+                        gapAfter = 12;
+                        break;
+                    case MarkdownSegmentKind::Table:
+                        gapAfter = 12;
+                        break;
+                    default:
+                        gapAfter = 10;
+                        break;
+                }
+
+                if (meta.kind == MarkdownSegmentKind::Hr) {
+                    // 分隔线：撑满版心、定高 1px（视觉是线，不是块）
+                    w->SetSize(std::max(40, innerW - 2 * kRowPadX), 1);
+                    w->SetPosition(kRowPadX, curY + 4);
+                    curY += 1 + 4 + gapAfter;
+                } else if (meta.kind == MarkdownSegmentKind::ListItem) {
+                    // 列表项：marker 槽 22px + 正文；正文左边界越过槽（悬挂缩进）
+                    //   depth 每级再缩 26px（原型 `padding-left: 26px` 的嵌套口径）
+                    const int indentStep = 26;
+                    const int slotW = 22;
+                    int left = kRowPadX + meta.depth * indentStep;
+                    // 子控件：第 0 个 = marker，第 1 个 = 正文
+                    if (w->GetChildCount() >= 2) {
+                        auto* mk = w->GetChildAt(0);
+                        auto* body = dynamic_cast<ECDI::TextWidget*>(w->GetChildAt(1));
+                        if (!mk || !body) { w->SetPosition(left, curY); curY += w->GetHeight() + gapAfter; continue; }
+                        const int availW = std::max(40, innerW - left - kRowPadX);
+                        // body 是 Label（TextWidget 派生）⇒ SetWordWrap 可用；
+                        // 先钉宽再 AutoSize 求高（wrap 态「宽钉死、高求解」）。
+                        body->SetWordWrap(true);
+                        body->SetSize(std::max(20, availW - slotW), body->GetHeight());
+                        body->AutoSize();
+                        const int h = body->GetHeight();
+                        mk->SetSize(slotW, h);
+                        mk->SetPosition(0, 0);
+                        body->SetPosition(slotW, 0);
+                        w->SetSize(availW, h);
+                        w->SetPosition(left, curY);
+                        curY += h + gapAfter;
+                    } else {
+                        w->SetPosition(left, curY);
+                        curY += w->GetHeight() + gapAfter;
+                    }
+                } else if (meta.kind == MarkdownSegmentKind::CodeBlock) {
+                    // 代码块：卡宽吃版心；内部顶部条定高 + 代码区按内容宽定（可横滚）
+                    if (w->GetChildCount() >= 2) {
+                        auto* bar = w->GetChildAt(0);
+                        auto* sv = w->GetChildAt(1);
+                        const int cardW = std::max(40, innerW - 2 * kRowPadX);
+                        const int barH = 28;
+                        bar->SetSize(cardW - 2, barH);
+                        bar->SetPosition(1, 1);
+                        // 顶部条内：语言标左、复制钮右
+                        if (bar->GetChildCount() >= 2) {
+                            auto* lang = bar->GetChildAt(0);
+                            auto* btn = bar->GetChildAt(1);
+                            lang->AutoSize();
+                            lang->SetPosition(10, (barH - lang->GetHeight()) / 2);
+                            btn->SetSize(48, 20);
+                            btn->SetPosition(cardW - 2 - 48 - 8, (barH - 20) / 2);
+                        }
+                        // 代码区：先量内容宽，超过可视宽才出横条
+                        int contentW = 0;
+                        int contentH = 0;
+                        if (auto* s = dynamic_cast<ECDI::ScrollView*>(sv)) {
+                            contentW = static_cast<int>(s->GetContentExtent().width);
+                            contentH = static_cast<int>(s->GetContentExtent().height);
+                        }
+                        const int viewW = cardW - 2;
+                        // 4 = 代码块横条厚度（与 kCodeBarThickness 同值；本文件取不到那个 constexpr）
+                        const int barFoot = (contentW > viewW) ? (4 + 2) : 0;
+                        sv->SetSize(viewW, contentH + barFoot);
+                        sv->SetPosition(1, 1 + barH);
+                        const int cardH = 1 + barH + contentH + barFoot + 1;
+                        w->SetSize(cardW, cardH);
+                        w->SetPosition(kRowPadX, curY);
+                        curY += cardH + gapAfter;
+                    } else {
+                        w->SetPosition(kRowPadX, curY);
+                        curY += w->GetHeight() + gapAfter;
+                    }
+                } else if (meta.kind == MarkdownSegmentKind::Quote) {
+                    // 引用块：竖条 3px + 正文（左 padding 12px）
+                    if (w->GetChildCount() >= 2) {
+                        auto* bar = w->GetChildAt(0);
+                        auto* body = dynamic_cast<ECDI::TextWidget*>(w->GetChildAt(1));
+                        if (!bar || !body) { w->SetPosition(kRowPadX, curY); curY += w->GetHeight() + gapAfter; continue; }
+                        const int availW = std::max(40, innerW - 2 * kRowPadX);
+                        body->SetWordWrap(true);
+                        body->SetSize(std::max(20, availW - 3 - 12), body->GetHeight());
+                        body->AutoSize();
+                        const int h = body->GetHeight();
+                        bar->SetSize(3, h);
+                        bar->SetPosition(0, 0);
+                        body->SetPosition(3 + 12, 0);
+                        w->SetSize(availW, h);
+                        w->SetPosition(kRowPadX, curY);
+                        curY += h + gapAfter;
+                    } else {
+                        w->SetPosition(kRowPadX, curY);
+                        curY += w->GetHeight() + gapAfter;
+                    }
+                } else if (auto* tw = dynamic_cast<ECDI::TextWidget*>(w)) {
                     tw->SetWordWrap(true);
                     tw->SetSize(std::max(40, innerW - 2 * kRowPadX), tw->GetHeight());
                     tw->AutoSize();
                     tw->SetPosition(kRowPadX, curY);
-                    curY += tw->GetHeight() + 10;
+                    curY += tw->GetHeight() + gapAfter;
                 } else if (auto* sv = dynamic_cast<ECDI::ScrollView*>(w)) {
                     const int contentW = static_cast<int>(sv->GetContentExtent().width);
                     const int contentH = static_cast<int>(sv->GetContentExtent().height);
@@ -402,10 +532,10 @@ void HarnessApp::Relayout() {
                     const int tableH = contentH + barExtraH;
                     sv->SetSize(tableW, tableH);
                     sv->SetPosition(kRowPadX, curY);
-                    curY += tableH + 12;
+                    curY += tableH + gapAfter;
                 } else {
                     w->SetPosition(kRowPadX, curY);
-                    curY += w->GetHeight() + 10;
+                    curY += w->GetHeight() + gapAfter;
                 }
             }
             if (r.copyBtn && r.copyBtn->IsVisible()) {

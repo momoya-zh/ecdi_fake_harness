@@ -142,6 +142,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             options.persistProbe = true;    // ★ 会话持久化与启动恢复判据
         } else if (arg == L"--table-probe") {
             options.tableProbe = true;      // ★ 富内容二期：Markdown 表格渲染判据
+        } else if (arg == L"--md-probe") {
+            options.mdProbe = true;         // ★ 富内容 B+：块级全套解析判据
         } else if (arg == L"--copy-probe") {
             options.copyProbe = true;       // ★ 按块复制与复制全部判据
         } else if (arg == L"--grow-probe") {
