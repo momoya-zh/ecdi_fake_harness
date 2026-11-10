@@ -427,10 +427,10 @@ void HarnessApp::Relayout() {
                     w->SetPosition(kRowPadX, curY + 4);
                     curY += 1 + 4 + gapAfter;
                 } else if (meta.kind == MarkdownSegmentKind::ListItem) {
-                    // 列表项：marker 槽 22px + 正文；正文左边界越过槽（悬挂缩进）
+                    // 列表项：marker 槽 26px + 正文；正文左边界越过槽（悬挂缩进）
                     //   depth 每级再缩 26px（原型 `padding-left: 26px` 的嵌套口径）
                     const int indentStep = 26;
-                    const int slotW = 22;
+                    const int slotW = 26;
                     int left = kRowPadX + meta.depth * indentStep;
                     // 子控件：第 0 个 = marker，第 1 个 = 正文
                     if (w->GetChildCount() >= 2) {
@@ -443,13 +443,21 @@ void HarnessApp::Relayout() {
                         body->SetWordWrap(true);
                         body->SetSize(std::max(20, availW - slotW), body->GetHeight());
                         body->AutoSize();
-                        const int h = body->GetHeight();
-                        mk->SetSize(slotW, h);
+                        // ★ 行盒与底部防裁切余量（2026-11-10 修复数字列表底部裁切问题）：
+                        //   GDI TextOutW 字形高度（TEXTMETRIC.tmHeight）约 21~22px，而 AutoSize
+                        //   向零截断的 LineHeight 只有 20px，导致底层 PushClip 裁剪区切除底部 1~2px。
+                        //   给正文和容器补齐 +2px 抗裁剪余量，并确保单行时不少于 LineBox 高度。
+                        const int singleLineH = uikit::LineBox(harness::kFontBody);
+                        const int bodyH = std::max(singleLineH, body->GetHeight()) + 2;
+                        body->SetSize(body->GetWidth(), bodyH);
+                        // ★ marker 序号（如 1. / 2. / 10.）：高度保持单行行盒高（+2px 抗裁切），
+                        //   锚定在顶部 (0, 0)，避免多行正文时因 Label 默认垂直居中而下漂至中间。
+                        mk->SetSize(slotW, singleLineH + 2);
                         mk->SetPosition(0, 0);
                         body->SetPosition(slotW, 0);
-                        w->SetSize(availW, h);
+                        w->SetSize(availW, bodyH);
                         w->SetPosition(left, curY);
-                        curY += h + gapAfter;
+                        curY += bodyH + gapAfter;
                     } else {
                         w->SetPosition(left, curY);
                         curY += w->GetHeight() + gapAfter;
@@ -502,7 +510,9 @@ void HarnessApp::Relayout() {
                         body->SetWordWrap(true);
                         body->SetSize(std::max(20, availW - 3 - 12), body->GetHeight());
                         body->AutoSize();
-                        const int h = body->GetHeight();
+                        const int singleLineH = uikit::LineBox(harness::kFontBody);
+                        const int h = std::max(singleLineH, body->GetHeight()) + 2;
+                        body->SetSize(body->GetWidth(), h);
                         bar->SetSize(3, h);
                         bar->SetPosition(0, 0);
                         body->SetPosition(3 + 12, 0);

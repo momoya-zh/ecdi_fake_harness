@@ -2061,7 +2061,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildCodeBlockWidget(const MarkdownSeg
     return card;
 }
 
-// 列表项：marker 槽（定宽右对齐）+ 正文。悬挂缩进 = 正文左边界越过 marker。
+// 列表项：marker 槽（定宽）+ 正文。悬挂缩进 = 正文左边界越过 marker。
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildListItemWidget(const std::string& marker,
                                                              const std::string& text, int depth) {
     auto row = std::make_unique<ECDI::Panel>();
@@ -2071,14 +2071,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildListItemWidget(const std::string&
         .borderWidth = 0.0f});
 
     // ★ marker 用 muted 色（原型 `.md-li::marker { color: var(--muted) }`）：
-    //   视觉上退到后面，正文才是主体。槽宽定 22 是为了 `10.` 这类两位数不挤压正文。
+    //   视觉上退到后面，正文才是主体。槽宽定 26 是为了 `10.` 这类两位数不挤压正文。
     auto mk = std::make_unique<ECDI::Label>(marker);
     mk->SetFont(harness::SansFont(harness::kFontBody, 400));
     mk->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
 
-    auto body = std::make_unique<ECDI::Label>(text);
+    auto body = std::make_unique<ECDI::Label>();
     body->SetFont(harness::SansFont(harness::kFontBody, 400));
     body->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+    ApplyInlineText(*body, text);
 
     row->AddChild(std::move(mk));
     row->AddChild(std::move(body));
@@ -2102,9 +2103,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildQuoteWidget(const std::string& te
         .cornerRadius = 0.0f,
         .borderWidth = 0.0f});
 
-    auto body = std::make_unique<ECDI::Label>(text);
+    auto body = std::make_unique<ECDI::Label>();
     body->SetFont(harness::SansFont(harness::kFontBody, 400));
     body->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+    ApplyInlineText(*body, text);
 
     row->AddChild(std::move(bar));
     row->AddChild(std::move(body));

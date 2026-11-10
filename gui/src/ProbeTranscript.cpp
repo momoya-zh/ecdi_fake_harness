@@ -1518,6 +1518,41 @@ void HarnessApp::RunMdProbe() {
         }
     }
 
+    // 26. render-list-headroom：数字列表防裁切与行盒余量（2026-11-10 修复数字列表裁切）
+    //   验证：列表项经过 BuildBlockRow 之后，正文支持行内 Markdown 展开（无原始星号），
+    //   序号 marker 与正文控件正确分离挂载。
+    {
+        Block mockBlock;
+        mockBlock.id = "mock_list_headroom";
+        mockBlock.kind = "assistant";
+        mockBlock.text =
+            "1. **第一步**：测试数字列表项行盒防裁切余量\n"
+            "2. 第二步：测试多行正文悬挂缩进\n"
+            "   这是缩进续行，用来拉长正文高度形成多行效果\n";
+        mockBlock.ended = true;
+
+        RowRec mockRec;
+        auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+        bool ok = false;
+        std::string note;
+        if (mockRec.hasMarkdown && mockRec.segments.size() >= 2) {
+            ECDI::Widget* w0 = mockRec.segments[0];
+            if (w0 && w0->GetChildCount() >= 2) {
+                auto* mk0 = dynamic_cast<ECDI::Label*>(w0->GetChildAt(0));
+                auto* body0 = dynamic_cast<ECDI::TextWidget*>(w0->GetChildAt(1));
+                if (mk0 && body0) {
+                    const bool mkTextOk = (mk0->GetText() == "1.");
+                    const bool bodyTextOk = (body0->GetText().find("第一步") != std::string::npos &&
+                                             body0->GetText().find("**") == std::string::npos);
+                    ok = mkTextOk && bodyTextOk;
+                    note = "mk=" + (mk0 ? mk0->GetText() : "null") +
+                           " bodyHasAsterisk=" + std::to_string(body0->GetText().find("**") != std::string::npos);
+                }
+            }
+        }
+        add("render-list-headroom", ok, note);
+    }
+
     if (m_application) m_application->Exit();
 }
 
