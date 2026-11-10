@@ -204,7 +204,7 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
 |---|---|---|---|
 | 粗体 | `**x**` / `__x__` | `SpanStyle::weight = 700` | ✅ 上线 |
 | 行内 code | `` `x` `` | `family = "Consolas"` + `foreground = 强调蓝` | ✅ 上线（**无底色**，见 REQ-21） |
-| 斜体 | `*x*` / `_x_` | —— | ❌ **不做**（用户 2026-11-09 裁定）；**按原文保留**，不解析、不去标记 |
+| 斜体 | `*x*` / `_x_` | `SpanStyle::italic = true`（Phase 45） | ✅ 上线（含 `***x***` / `___x___` 粗斜体） |
 | 字号覆盖 | `SpanStyle::size` | —— | ⏸️ **留位不用**（保版心行高稳定） |
 | 删除线 / 链接 | `~~x~~` / `[x](y)` | —— | ❌ 不做（无 span 维度 / 等 REQ-19-B） |
 
@@ -217,7 +217,7 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
 | 判据 | `HasInlineStyles(runs)`（`Transcript.cpp`） | 与 `HasMarkdownBlocks` 同一条纪律：唯一实现，渲染侧只调 |
 | 渲染接入 | `HarnessApp::ApplyInlineText`（`AppTranscript.cpp`） | **唯一入口**，三路正文共用：复合渲染的段控件（`makeText`）/ 无块级构造的只读 `TextBox` / `Label` |
 | 流式升级 | `AppStream.cpp` 的 `block_end` 分支 | 只有行内样式（无块级构造）的块，流式期仍是原文；块结束时**就地** `ApplyInlineText` + `Relayout`（不重建整行——行内只换 text/spans，重建会冲掉滚动与选中） |
-| 判据 | `--md-probe` 相 11–21 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` |
+| 判据 | `--md-probe` 相 11–25 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` · `inline-italic` · `inline-bold-italic` · `inline-italic-negative` · `render-inline-italic` |
 
 ### H.3 为什么解析器是「三遍式」而不是「区间查找 + 字符串替换」
 
@@ -249,7 +249,7 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
    **开软折行的只读 TextBox**。⇒ 「行内 code 正好跨折行点」这一情形只能靠本仓实测，
    `--md-probe` 的渲染相不覆盖它（那一相只读 `GetText()`）。**待用户编译后目视确认**。
 3. **行内 code 无底色**——`REQ-21`，等 ECDI。
-4. **斜体 / `size` 未用**——用户裁定（见 §H.1）。若将来要用，本仓解析器只需加两条产出规则。
+4. **`size` 留位不用**——保版心行高稳定（斜体已于 2026-11-10 消费上线）。
 5. **表格单元格 / 引用块内多行 / 代码块**：后两者不走行内解析（代码块本就该保留原文）；
    表格单元格目前是独立 Label/TextBox，未接 `ApplyInlineText`——下一批可铺。
 

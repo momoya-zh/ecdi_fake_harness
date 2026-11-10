@@ -1452,6 +1452,70 @@ void HarnessApp::RunMdProbe() {
             bool ok = mockRec.label != nullptr && got == mockBlock.text && !mockRec.hasMarkdown;
             add("render-inline-negative", ok, "got='" + got + "'");
         }
+
+        // 22. inline-italic：单 `*` 与单 `_` ⇒ 去标记 + italic=true 单维覆盖
+        {
+            const std::string src = "这是*星号斜体*与_下划线斜体_文字";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "这是星号斜体与下划线斜体文字" && r.spans.size() == 2 &&
+                      r.spans[0].startCp == 2 && r.spans[0].cpCount == 4 &&
+                      r.spans[0].style.italic.has_value() && *r.spans[0].style.italic == true &&
+                      !r.spans[0].style.weight.has_value() &&
+                      !r.spans[0].style.family.has_value() &&
+                      r.spans[1].startCp == 7 && r.spans[1].cpCount == 5 &&
+                      r.spans[1].style.italic.has_value() && *r.spans[1].style.italic == true &&
+                      !r.spans[1].style.weight.has_value() &&
+                      !r.spans[1].style.family.has_value();
+            add("inline-italic", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 23. inline-bold-italic：`***` 复合与 `**` 里嵌 `*` 嵌套扁平化
+        {
+            const std::string src = "这是***粗斜体***与**粗体*斜体*结尾**";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "这是粗斜体与粗体斜体结尾" && r.spans.size() == 4 &&
+                      r.spans[0].startCp == 2 && r.spans[0].cpCount == 3 &&
+                      r.spans[0].style.weight.has_value() && *r.spans[0].style.weight == 700 &&
+                      r.spans[0].style.italic.has_value() && *r.spans[0].style.italic == true &&
+                      r.spans[1].startCp == 6 && r.spans[1].cpCount == 2 &&
+                      r.spans[1].style.weight.has_value() && *r.spans[1].style.weight == 700 &&
+                      !r.spans[1].style.italic.has_value() &&
+                      r.spans[2].startCp == 8 && r.spans[2].cpCount == 2 &&
+                      r.spans[2].style.weight.has_value() && *r.spans[2].style.weight == 700 &&
+                      r.spans[2].style.italic.has_value() && *r.spans[2].style.italic == true &&
+                      r.spans[3].startCp == 10 && r.spans[3].cpCount == 2 &&
+                      r.spans[3].style.weight.has_value() && *r.spans[3].style.weight == 700 &&
+                      !r.spans[3].style.italic.has_value();
+            add("inline-bold-italic", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 24. inline-italic-negative：斜体负臂——空白乘号、词内下划线、未闭合与转义
+        {
+            const std::string src = "算式 4 * 5 = 20 与变量 a_b_c，还有未闭合 *星号 与转义 \\*字面\\*";
+            const InlineRuns r = ParseInlineRuns(src, cs);
+            bool ok = r.text == "算式 4 * 5 = 20 与变量 a_b_c，还有未闭合 *星号 与转义 *字面*" &&
+                      r.spans.empty();
+            add("inline-italic-negative", ok,
+                "text='" + r.text + "' spans=" + std::to_string(r.spans.size()));
+        }
+
+        // 25. render-inline-italic：渲染侧控件 GetText() 读取干净文本
+        {
+            Block mockBlock;
+            mockBlock.id = "mock_inline_italic";
+            mockBlock.kind = "assistant";
+            mockBlock.text = "包含*斜体*与***粗斜体***的正文。";
+            mockBlock.ended = true;
+
+            RowRec mockRec;
+            auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+            const std::string got = mockRec.label ? mockRec.label->GetText() : std::string();
+            bool ok = mockRec.label != nullptr && !mockRec.hasMarkdown &&
+                      got == "包含斜体与粗斜体的正文。";
+            add("render-inline-italic", ok, "got='" + got + "'");
+        }
     }
 
     if (m_application) m_application->Exit();

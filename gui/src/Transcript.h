@@ -214,10 +214,11 @@ std::vector<MarkdownSegment> ParseMarkdownSegments(const std::string& text);
 // ═══════════════════════════════════════════════════════════════════════
 // ★★ 能力来源：ECDI `#88` / Phase 44 交付 `TextWidget::SetStyledText(text, spans)`，
 //   span 契约见 `ECDI/Widget/TextSpan.h`（**码点索引空间**，非字节偏移）。
-// ★★ 本仓**只消费**这两个维度（用户 2026-11-09 裁定）：
-//     粗体 `**x**` / `__x__`  → `SpanStyle::weight = 700`
-//     行内 code `` `x` ``      → `SpanStyle::family` + `foreground`
-//   **斜体不做**（`*x*` / `_x_` 按原文保留，不解析也不去掉标记）；
+// ★★ 本仓消费的维度：
+//     粗体 `**x**` / `__x__`      → `SpanStyle::weight = 700`
+//     斜体 `*x*` / `_x_`          → `SpanStyle::italic = true`（Phase 45）
+//     粗斜体 `***x***` / `___x___` → `weight = 700` + `italic = true`
+//     行内 code `` `x` ``          → `SpanStyle::family` + `foreground`
 //   `size` 覆盖虽然 Phase 45 已开，但本批**留位不用**（保版心行高稳定）。
 //   `background` 框架没有（`SpanStyle` 无此字段）⇒ 行内 code 画不出底色，
 //   已登记 `REQ-21`，见 `docs/ecdi-capability-requests.md`。
@@ -234,7 +235,7 @@ struct InlineCodeStyle {
 };
 
 /// 行内解析结果：干净文本 + 已规范化的样式区间
-/// @details `text` 是**剥掉标记后**的文本（`**粗**` → `粗`）；`spans` 与 `text`
+/// @details `text` 是**剥掉标记后**的文本（`**粗**` → `粗`，`*斜*` → `斜`）；`spans` 与 `text`
 ///          同一码点空间、有序、无重叠（相邻同样式已合并）。
 ///          `spans.empty()` ⇔ 没有任何行内构造 ⇔ 调用方应走原 `SetText` 路径。
 struct InlineRuns {
@@ -245,8 +246,8 @@ struct InlineRuns {
 };
 
 /// 纯函数行内解析器（零副作用）
-/// @details 支持：`**b**` / `__b__`（粗体）、`` `c` ``（行内 code）、反斜杠转义
-///          （`\*` `\_` `` \` `` `\\` ⇒ 字面字符，反斜杠本身不保留）。
+/// @details 支持：`**b**` / `__b__`（粗体）、`*i*` / `_i_`（斜体）、`***bi***`（粗斜体）、
+///          `` `c` ``（行内 code）、反斜杠转义（`\*` `\_` `` \` `` `\\` ⇒ 字面字符，反斜杠本身不保留）。
 ///          规则细节见 `Transcript.cpp` 实现处的注释块（flanking / intraword /
 ///          未闭合回落 / code 内不解析），每一条都对应 `--md-probe` 的一个相。
 [[nodiscard]] InlineRuns ParseInlineRuns(const std::string& text, const InlineCodeStyle& codeStyle);

@@ -766,13 +766,14 @@ bool HasMarkdownBlocks(const std::vector<MarkdownSegment>& segs) {
 //      `[粗][粗+code][粗]` 三个不重叠区间，没有专门的扁平化代码。
 //
 // ★ 规则全集（每条都对应 `--md-probe` 的一个 inline-* 相；改规则必须同时改相）：
-//   R1 标记集：`**` / `__`（粗体）、`` ` ``（行内 code）、`\`（转义 `\*` `\_` `` \` `` `\\`）
-//   R2 斜体**不解析**：单 `*` / 单 `_` 一律字面（用户 2026-11-09 裁定「斜体先不纳入」）。
-//      故 `*x*` 显示为 `*x*`，不去标记——「不解析」与「假装支持但无效果」是两件事。
-//   R3 flanking（只对粗体）：开启标记右侧必须非空白；关闭标记左侧必须非空白。
-//      ⇒ `2 ** 3` 里的 `**` 不被吞（右侧是空格 ⇒ 不是开启）。
-//   R4 intraword（只对 `__`）：开启时左侧不得是 ASCII 字母数字；关闭时右侧同。
-//      ⇒ `snake_case_name` 不被吃掉。`**` 无此限制（GFM 亦如此）。
+//   R1 标记集：`**` / `__`（粗体）、`*` / `_`（斜体）、`***` / `___`（粗斜体）、
+//      `` ` ``（行内 code）、`\`（转义 `\*` `\_` `` \` `` `\\`）
+//   R2 斜体解析：单 `*` / 单 `_` 为斜体（`SpanStyle::italic = true`）。
+//      连续 3 个 `***` / `___` 复合为粗体 + 斜体。
+//   R3 flanking：开启标记右侧必须非空白；关闭标记左侧必须非空白。
+//      ⇒ `2 ** 3` 与 `4 * 5` 不被吞（右侧是空格 ⇒ 不是开启）。
+//   R4 intraword（只对 `_` 与 `__`）：开启时左侧不得是 ASCII 字母数字；关闭时右侧同。
+//      ⇒ `snake_case_name` 不被吃掉。`*` 无此限制。
 //   R5 code span 内**不解析**任何其它标记（`` `**x**` `` 里的 `**` 是字面）。
 //   R6 未闭合 ⇒ 该标记按字面输出（`markText` 原样写回），不产生任何样式。
 //   R7 配对必须**同种且栈顶**：`**a `b** c` ` 里那个 `**` 不是关闭（栈顶是 code）⇒ 字面。
@@ -780,14 +781,14 @@ bool HasMarkdownBlocks(const std::vector<MarkdownSegment>& segs) {
 //   R9 行内 code 的族与色由调用方给（`InlineCodeStyle`）——解析器不知道主题。
 namespace {
 
-enum class InlineMark { Bold, Code };
+enum class InlineMark { Bold, Italic, Code };
 
 // 扫描期 token：Text 携带原文片段与码点数；Open/Close 携带原文标记字节
 struct InlineToken {
     enum class Kind { Text, Open, Close } kind = Kind::Text;
     InlineMark  mark = InlineMark::Bold;   // Open/Close 有效
     std::string bytes;                     // Text：原文片段（可含多字节序列）
-    std::string markText;                  // Open/Close：原文标记字节（`**` / `__` / `` ` ``）
+    std::string markText;                  // Open/Close：原文标记字节（`**` / `__` / `*` / `_` / `` ` ``）
     size_t      cpCount = 0;               // Text：该片段码点数
     bool        literal = false;           // 遍 1 结论：这个标记不成立 ⇒ 按字面输出
 };
@@ -825,8 +826,9 @@ InlineRuns ParseInlineRuns(const std::string& text, const InlineCodeStyle& codeS
         tokens.push_back(std::move(t));
     };
 
-    bool inCode = false;   // R5：code span 内的标记一律字面
-    int  boldDepth = 0;    // 扫描期粗体深度（决定 `**` 是开还是关；遍 1 仍会严格复核）
+    bool inCode = false;     // R5：code span 内的标记一律字面
+    int  boldDepth = 0;      // 扫描期粗体深度
+    int  italicDepth = 0;    // 扫描期斜体深度
     size_t i = 0;
     while (i < n) {
         const unsigned char c = static_cast<unsigned char>(text[i]);
@@ -850,47 +852,173 @@ InlineRuns ParseInlineRuns(const std::string& text, const InlineCodeStyle& codeS
             continue;
         }
 
-        // 粗体标记 `**` / `__`（单 `*` / 单 `_` 是斜体 ⇒ R2 不解析，落下面的普通字节分支）
-        const bool isBoldMarker = ((c == '*' || c == '_') && i + 1 < n &&
-                                   static_cast<unsigned char>(text[i + 1]) == c);
-        if (isBoldMarker && !inCode) {
-            const size_t after = i + 2;
-            const bool hasRight = after < n;
-            const bool rightBlank = hasRight && IsBlankByte(static_cast<unsigned char>(text[after]));
-            const bool hasLeft = i > 0;
-            const bool leftBlank = hasLeft && IsBlankByte(static_cast<unsigned char>(text[i - 1]));
-
-            bool canOpen = hasRight && !rightBlank;    // R3
-            bool canClose = hasLeft && !leftBlank;     // R3
-            if (c == '_') {                            // R4 intraword
-                if (hasLeft && IsAsciiAlnum(static_cast<unsigned char>(text[i - 1]))) canOpen = false;
-                if (hasRight && IsAsciiAlnum(static_cast<unsigned char>(text[after]))) canClose = false;
+        // 粗体 / 斜体 / 粗斜体标记：`*` 与 `_` 系列
+        if ((c == '*' || c == '_') && !inCode) {
+            size_t runLen = 0;
+            while (i + runLen < n && static_cast<unsigned char>(text[i + runLen]) == c) {
+                ++runLen;
             }
 
-            // R7：先判关闭（配平优先），再判开启——`**a**b**` 中间那个必须关掉前一段
-            if (canClose && boldDepth > 0) {
-                InlineToken t;
-                t.mark = InlineMark::Bold;
-                t.kind = InlineToken::Kind::Close;
-                t.markText = text.substr(i, 2);
-                --boldDepth;
-                tokens.push_back(std::move(t));
+            // 1. 连续 3 个标记：`***` 或 `___`（粗斜体复合）
+            if (runLen == 3) {
+                const size_t after = i + 3;
+                const bool hasRight = after < n;
+                const bool rightBlank = hasRight && IsBlankByte(static_cast<unsigned char>(text[after]));
+                const bool hasLeft = i > 0;
+                const bool leftBlank = hasLeft && IsBlankByte(static_cast<unsigned char>(text[i - 1]));
+
+                bool canOpen = hasRight && !rightBlank;
+                bool canClose = hasLeft && !leftBlank;
+                if (c == '_') {
+                    if (hasLeft && IsAsciiAlnum(static_cast<unsigned char>(text[i - 1]))) canOpen = false;
+                    if (hasRight && IsAsciiAlnum(static_cast<unsigned char>(text[after]))) canClose = false;
+                }
+
+                if (canClose && boldDepth > 0 && italicDepth > 0) {
+                    // 同时闭合两者：因为开启时先 Bold 后 Italic，栈顶是 Italic
+                    InlineToken tItalic;
+                    tItalic.mark = InlineMark::Italic;
+                    tItalic.kind = InlineToken::Kind::Close;
+                    tItalic.markText = text.substr(i, 1);
+                    --italicDepth;
+                    tokens.push_back(std::move(tItalic));
+
+                    InlineToken tBold;
+                    tBold.mark = InlineMark::Bold;
+                    tBold.kind = InlineToken::Kind::Close;
+                    tBold.markText = text.substr(i + 1, 2);
+                    --boldDepth;
+                    tokens.push_back(std::move(tBold));
+
+                    i += 3;
+                    continue;
+                }
+                if (canClose && boldDepth > 0) {
+                    // 只闭合粗体，消耗 2 字节，剩下的 1 字节下轮循环走单标记
+                    InlineToken t;
+                    t.mark = InlineMark::Bold;
+                    t.kind = InlineToken::Kind::Close;
+                    t.markText = text.substr(i, 2);
+                    --boldDepth;
+                    tokens.push_back(std::move(t));
+                    i += 2;
+                    continue;
+                }
+                if (canClose && italicDepth > 0) {
+                    // 只闭合斜体，消耗 1 字节，剩下的 2 字节下轮循环走粗体
+                    InlineToken t;
+                    t.mark = InlineMark::Italic;
+                    t.kind = InlineToken::Kind::Close;
+                    t.markText = text.substr(i, 1);
+                    --italicDepth;
+                    tokens.push_back(std::move(t));
+                    ++i;
+                    continue;
+                }
+                if (canOpen) {
+                    // 开启粗斜体：先入栈 Bold，再入栈 Italic
+                    InlineToken tBold;
+                    tBold.mark = InlineMark::Bold;
+                    tBold.kind = InlineToken::Kind::Open;
+                    tBold.markText = text.substr(i, 2);
+                    ++boldDepth;
+                    tokens.push_back(std::move(tBold));
+
+                    InlineToken tItalic;
+                    tItalic.mark = InlineMark::Italic;
+                    tItalic.kind = InlineToken::Kind::Open;
+                    tItalic.markText = text.substr(i + 2, 1);
+                    ++italicDepth;
+                    tokens.push_back(std::move(tItalic));
+
+                    i += 3;
+                    continue;
+                }
+                appendText(text.c_str() + i, 3, 3);
+                i += 3;
+                continue;
+            }
+
+            // 2. 连续 2 个标记：`**` 或 `__`（粗体），或 runLen >= 4 的成对粗体处理
+            if (runLen >= 2) {
+                const size_t after = i + 2;
+                const bool hasRight = after < n;
+                const bool rightBlank = hasRight && IsBlankByte(static_cast<unsigned char>(text[after]));
+                const bool hasLeft = i > 0;
+                const bool leftBlank = hasLeft && IsBlankByte(static_cast<unsigned char>(text[i - 1]));
+
+                bool canOpen = hasRight && !rightBlank;    // R3
+                bool canClose = hasLeft && !leftBlank;     // R3
+                if (c == '_') {                            // R4 intraword
+                    if (hasLeft && IsAsciiAlnum(static_cast<unsigned char>(text[i - 1]))) canOpen = false;
+                    if (hasRight && IsAsciiAlnum(static_cast<unsigned char>(text[after]))) canClose = false;
+                }
+
+                // R7：先判关闭（配平优先），再判开启——`**a**b**` 中间那个必须关掉前一段
+                if (canClose && boldDepth > 0) {
+                    InlineToken t;
+                    t.mark = InlineMark::Bold;
+                    t.kind = InlineToken::Kind::Close;
+                    t.markText = text.substr(i, 2);
+                    --boldDepth;
+                    tokens.push_back(std::move(t));
+                    i += 2;
+                    continue;
+                }
+                if (canOpen) {
+                    InlineToken t;
+                    t.mark = InlineMark::Bold;
+                    t.kind = InlineToken::Kind::Open;
+                    t.markText = text.substr(i, 2);
+                    ++boldDepth;
+                    tokens.push_back(std::move(t));
+                    i += 2;
+                    continue;
+                }
+                appendText(text.c_str() + i, 2, 2);        // 两个 ASCII 字符 = 2 码点
                 i += 2;
                 continue;
             }
-            if (canOpen) {
-                InlineToken t;
-                t.mark = InlineMark::Bold;
-                t.kind = InlineToken::Kind::Open;
-                t.markText = text.substr(i, 2);
-                ++boldDepth;
-                tokens.push_back(std::move(t));
-                i += 2;
+
+            // 3. 单个标记：`*` 或 `_`（斜体）
+            if (runLen == 1) {
+                const size_t after = i + 1;
+                const bool hasRight = after < n;
+                const bool rightBlank = hasRight && IsBlankByte(static_cast<unsigned char>(text[after]));
+                const bool hasLeft = i > 0;
+                const bool leftBlank = hasLeft && IsBlankByte(static_cast<unsigned char>(text[i - 1]));
+
+                bool canOpen = hasRight && !rightBlank;    // R3
+                bool canClose = hasLeft && !leftBlank;     // R3
+                if (c == '_') {                            // R4 intraword
+                    if (hasLeft && IsAsciiAlnum(static_cast<unsigned char>(text[i - 1]))) canOpen = false;
+                    if (hasRight && IsAsciiAlnum(static_cast<unsigned char>(text[after]))) canClose = false;
+                }
+
+                if (canClose && italicDepth > 0) {
+                    InlineToken t;
+                    t.mark = InlineMark::Italic;
+                    t.kind = InlineToken::Kind::Close;
+                    t.markText = text.substr(i, 1);
+                    --italicDepth;
+                    tokens.push_back(std::move(t));
+                    ++i;
+                    continue;
+                }
+                if (canOpen) {
+                    InlineToken t;
+                    t.mark = InlineMark::Italic;
+                    t.kind = InlineToken::Kind::Open;
+                    t.markText = text.substr(i, 1);
+                    ++italicDepth;
+                    tokens.push_back(std::move(t));
+                    ++i;
+                    continue;
+                }
+                appendText(text.c_str() + i, 1, 1);
+                ++i;
                 continue;
             }
-            appendText(text.c_str() + i, 2, 2);        // 两个 ASCII 字符 = 2 码点
-            i += 2;
-            continue;
         }
 
         // 普通码点：★ 步进量走 ECDI 的解码口径（非法前导按 1 字节跳，与框架单源）
@@ -941,12 +1069,14 @@ InlineRuns ParseInlineRuns(const std::string& text, const InlineCodeStyle& codeS
 
     auto styleOfLive = [&]() {
         ECDI::SpanStyle st;
-        bool bold = false, code = false;
+        bool bold = false, italic = false, code = false;
         for (InlineMark m : live) {
             if (m == InlineMark::Bold) bold = true;
+            else if (m == InlineMark::Italic) italic = true;
             else code = true;
         }
         if (bold) st.weight = static_cast<std::uint16_t>(700);
+        if (italic) st.italic = true;
         if (code) {
             st.family = codeStyle.family;
             st.foreground = codeStyle.color;
