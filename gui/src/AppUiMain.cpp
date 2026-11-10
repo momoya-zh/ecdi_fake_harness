@@ -1264,6 +1264,9 @@ void HarnessApp::BuildComposer() {
     composer->SetOnContinue([this] {
         ContinueCurrentSession();
     });
+    composer->SetOnImport([this] {
+        HandleImportFile();
+    });
     m_counting->AddChild(std::move(composer));
 }
 

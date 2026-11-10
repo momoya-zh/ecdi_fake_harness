@@ -360,6 +360,8 @@ struct CliOptions {
     bool mdProbe = false;
     bool copyProbe = false;             // --copy-probe：按块复制与复制全部判据
     bool modeProbe = false;             // --mode-probe：开发者视图 ↔ 用户模式分流判据（P4 Phase J 缺口闭合）
+    bool importProbe = false;           // --import-probe：文件导入（富内容 §C）判据
+    std::filesystem::path importProbeFile; // --import-probe-file <path>：探针注入的文件路径
     bool anyProbeSeen = false;          // 命令行解析时任意探针命中（闭合手抄 flag 易遗漏的债务）
 
     [[nodiscard]] bool HasAnyProbe() const {
@@ -371,7 +373,7 @@ struct CliOptions {
                sidebarProbe || answerProbe || themeProbe || historyProbe ||
                workspaceProbe || menuProbe || overlayProbe || resizeProbe || enterProbe ||
                growProbe || valignProbe || hudProbe || legacyPoll || asyncProbe || tableProbe || mdProbe || copyProbe ||
-               agentProbe || proposalProbe || jobProbe || mcpProbe || foldProbe;
+               agentProbe || proposalProbe || jobProbe || mcpProbe || foldProbe || importProbe;
     }
 };
 

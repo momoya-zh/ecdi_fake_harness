@@ -318,7 +318,7 @@ void HarnessApp::RunGrowProbe() {
         const int inputBottom = input->GetY() + input->GetHeight();
         for (size_t i = 0; i < bar->GetChildCount() && why.empty(); ++i) {
             ECDI::Widget* child = bar->GetChildAt(i);
-            if (child == input) continue;
+            if (child == input || !child->IsVisible()) continue;
             if (child->GetY() < inputBottom) {
                 why = "a sibling is overlapped by the taller input (sibling y=" +
                       std::to_string(child->GetY()) + " < input bottom=" +
@@ -509,7 +509,7 @@ void HarnessApp::RunGrowProbe() {
         const int inputBottom = input->GetY() + input->GetHeight();
         for (size_t i = 0; i < bar->GetChildCount() && why.empty(); ++i) {
             ECDI::Widget* child = bar->GetChildAt(i);
-            if (child == input) continue;
+            if (child == input || !child->IsVisible()) continue;
             if (child->GetY() < inputBottom) {
                 why = "a sibling is overlapped by the wrapped input (sibling y=" +
                       std::to_string(child->GetY()) + " < input bottom=" +

@@ -259,6 +259,64 @@ PromptBar::PromptBar() {
     });
     AddChild(std::move(stop));
 
+    // ★ 富内容 §C：文件导入按钮
+    auto imp = std::make_unique<ECDI::Button>("导入");
+    m_import = imp.get();
+    m_import->SetTextColor(harness::kDarkMuted);
+    m_import->SetFont(harness::SansFont(14.0f));
+    m_import->SetStyle(ECDI::ButtonStyleOverride{
+        .background = harness::kInspBg,
+        .border = harness::kLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = 6.0f,
+        .hoverBackground = harness::kPanel2});
+    m_import->SetOnClick([this] {
+        if (m_onImport) m_onImport();
+    });
+    AddChild(std::move(imp));
+
+    // ★ 富内容 §C：文件胶囊卡片（独立 Panel 避开 TextBox::background 限制）
+    auto chip = std::make_unique<ECDI::Panel>();
+    m_chipPanel = chip.get();
+    m_chipPanel->SetStyle(ECDI::PanelStyleOverride{
+        .background = harness::kPanel2,
+        .cornerRadius = 4.0f,
+        .borderWidth = 1.0f,
+        .borderColor = harness::kLine});
+    m_chipPanel->SetVisible(false);
+
+    auto icon = std::make_unique<ECDI::Label>("\xF0\x9F\x93\x84"); // 📄 U+1F4C4
+    m_chipIcon = icon.get();
+    m_chipIcon->SetTextColor(harness::kDarkAccent);
+    m_chipIcon->SetFont(harness::SansFont(12.0f));
+    m_chipIcon->SetSize(16, 18);
+    m_chipIcon->SetPosition(6, 3);
+    m_chipPanel->AddChild(std::move(icon));
+
+    auto label = std::make_unique<ECDI::Label>("");
+    m_chipLabel = label.get();
+    m_chipLabel->SetTextColor(harness::kDarkInk);
+    m_chipLabel->SetFont(harness::SansFont(12.0f));
+    m_chipLabel->SetSize(200, 18);
+    m_chipLabel->SetPosition(26, 3);
+    m_chipPanel->AddChild(std::move(label));
+
+    auto removeBtn = std::make_unique<ECDI::Button>("✕");
+    m_chipRemoveBtn = removeBtn.get();
+    m_chipRemoveBtn->SetTextColor(harness::kDarkMuted);
+    m_chipRemoveBtn->SetFont(harness::SansFont(11.0f));
+    m_chipRemoveBtn->SetStyle(ECDI::ButtonStyleOverride{
+        .background = ECDI::Color(0, 0, 0, 0),
+        .cornerRadius = 3.0f,
+        .hoverBackground = harness::kLine});
+    m_chipRemoveBtn->SetSize(18, 18);
+    m_chipRemoveBtn->SetOnClick([this] {
+        ClearAttachment();
+    });
+    m_chipPanel->AddChild(std::move(removeBtn));
+
+    AddChild(std::move(chip));
+
     auto cont = std::make_unique<ECDI::Button>("继续");
     m_continue = cont.get();
     m_continue->SetTextColor(harness::kBtnPrimaryInk);
@@ -273,6 +331,26 @@ PromptBar::PromptBar() {
     });
     m_continue->SetVisible(false);
     AddChild(std::move(cont));
+}
+
+void PromptBar::SetAttachment(const std::string& displayName, const std::string& relativePath, long long sizeBytes) {
+    m_attachment = StagedAttachment{displayName, relativePath, sizeBytes};
+    if (m_chipLabel) {
+        m_chipLabel->SetText(displayName + " (" + harness::internal::JobHumanBytes(sizeBytes) + ")");
+    }
+    if (m_chipPanel) {
+        m_chipPanel->SetVisible(true);
+    }
+    SyncInputHeight();
+}
+
+void PromptBar::ClearAttachment() {
+    if (!m_attachment.has_value()) return;
+    m_attachment.reset();
+    if (m_chipPanel) {
+        m_chipPanel->SetVisible(false);
+    }
+    SyncInputHeight();
 }
 
 void PromptBar::SetCardFocused(bool focused) {
@@ -341,6 +419,20 @@ void PromptBar::Submit() {
             break;
         }
     }
+
+    // ★ 富内容 §C：随文字一起发送附件；若用户没打字则生成引导 prompt
+    if (m_attachment.has_value()) {
+        std::string finalPrompt;
+        if (!hasContent) {
+            finalPrompt = "请查看已导入的文件：" + m_attachment->relativePath;
+        } else {
+            finalPrompt = text + "\n\n[附件: " + m_attachment->relativePath + "]";
+        }
+        ClearAttachment();
+        if (m_onSend) m_onSend(finalPrompt);
+        return;
+    }
+
     if (!hasContent) return;
     if (m_onSend) m_onSend(text);
 }
@@ -372,6 +464,17 @@ void PromptBar::ApplyStopStyle(bool enabled) {
         .hoverBackground = enabled ? harness::kPanel2 : harness::kInspBg});
 }
 
+void PromptBar::ApplyImportStyle(bool enabled) {
+    if (!m_import) return;
+    m_import->SetTextColor(enabled ? harness::kDarkInk : harness::kBtnDisabledInk);
+    m_import->SetStyle(ECDI::ButtonStyleOverride{
+        .background = harness::kInspBg,
+        .border = enabled ? harness::kLine : harness::kBtnDisabledLine,
+        .borderWidth = 1.0f,
+        .cornerRadius = 6.0f,
+        .hoverBackground = enabled ? harness::kPanel2 : harness::kInspBg});
+}
+
 void PromptBar::SetStateDrivenEnabled(bool enabled) {
     SetButtonStates(enabled, !enabled);
 }
@@ -380,8 +483,10 @@ void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
     // 行为与视觉分开驱动：workspace pending 禁用 Send，但不得启用 Stop。
     if (m_send) m_send->SetEnabled(sendEnabled);
     if (m_stop) m_stop->SetEnabled(stopEnabled);
+    if (m_import) m_import->SetEnabled(sendEnabled);
     ApplySendStyle(sendEnabled);
     ApplyStopStyle(stopEnabled);
+    ApplyImportStyle(sendEnabled);
 }
 
 void PromptBar::SetReadOnlyMode(bool readOnly) {
@@ -389,6 +494,8 @@ void PromptBar::SetReadOnlyMode(bool readOnly) {
     if (m_continue) m_continue->SetVisible(readOnly);
     if (m_send) m_send->SetVisible(!readOnly);
     if (m_stop) m_stop->SetVisible(!readOnly);
+    if (m_import) m_import->SetVisible(!readOnly);
+    if (m_chipPanel) m_chipPanel->SetVisible(!readOnly && m_attachment.has_value());
     if (m_input) {
         m_input->SetReadOnly(readOnly);
         m_input->SetEnabled(!readOnly);
@@ -456,12 +563,16 @@ int PromptBar::DesiredInputHeight() {
 bool PromptBar::SyncInputHeight() {
     if (!m_input) return false;
     const int want = DesiredInputHeight();
-    if (want == m_input->GetHeight()) return false;   // ★ 同值守卫：防每帧重排（本次改动的自激励风险）
+    const int chipAreaH = (m_attachment.has_value() && !m_isReadOnly) ? 30 : 0;
+    const int expectedBarH = want + 8 + chipAreaH + 28 + 8 + 8;
+
+    // ★ 同值守卫：输入框高与总高度均未变时防重排自激励
+    if (want == m_input->GetHeight() && expectedBarH == GetHeight()) return false;
 
     // 高度由本函数写：`LayoutChildren` 不再碰输入框的高（否则两处各写一份会漂移）。
     m_input->SetSize(m_input->GetWidth(), want);
-    // 自身高 = 输入框高 + 上边距 8 + 按钮行 28 + 间隙 8 + 下边距 8
-    SetSize(GetWidth(), want + 8 + 28 + 8 + 8);
+    // 自身高 = 输入框高 + 附件区高 + 上边距 8 + 按钮行 28 + 间隙 8 + 下边距 8
+    SetSize(GetWidth(), expectedBarH);
     LayoutChildren();
 
     // ★★ 必须重排父节点：`counting` 是 `VerticalLayout`、`scroll` 是 `stretch=1`，
@@ -480,16 +591,37 @@ void PromptBar::LayoutChildren() {
     const int buttonW = 64;
     const int padX = 12;
     const int cardInnerPad = 8;
-    // 输入框在上（高由 `SyncInputHeight` 写）、提示行与按钮行在下——**全部由输入框高推导**，
-    // 不再有 44 / 66 / 58 三个硬编码。此前它们是硬编码的：输入框一旦变高，
-    // 提示行与按钮会被输入框压住（一次静默的重叠，没有任何读数会报）。
+
+    const bool hasChip = (m_attachment.has_value() && !m_isReadOnly);
+    const int chipAreaH = hasChip ? 30 : 0;
+    const int inputY = 8 + chipAreaH;
     const int inputH = m_input->GetHeight();
-    const int hintY = 8 + inputH + 6;
-    const int buttonY = 8 + inputH + 6;
+    const int hintY = inputY + inputH + 6;
+    const int buttonY = inputY + inputH + 6;
+
+    if (m_chipPanel) {
+        if (hasChip) {
+            m_chipPanel->SetVisible(true);
+            const int maxChipW = std::max(120, GetWidth() - 2 * padX - 16);
+            m_chipPanel->SetPosition(padX + 4, 8);
+            m_chipPanel->SetSize(maxChipW, 24);
+            if (m_chipIcon) m_chipIcon->SetPosition(6, 3);
+            if (m_chipRemoveBtn) {
+                m_chipRemoveBtn->SetPosition(maxChipW - 22, 3);
+            }
+            if (m_chipLabel) {
+                m_chipLabel->SetPosition(26, 3);
+                m_chipLabel->SetSize(std::max(10, maxChipW - 26 - 26), 18);
+            }
+        } else {
+            m_chipPanel->SetVisible(false);
+            m_chipPanel->SetPosition(padX + 4, buttonY + 30);
+        }
+    }
 
     // 一体化圆角卡片内部布局：左右预留 cardInnerPad，避开外层大圆角
     m_input->SetSize(GetWidth() - 2 * padX - 8, inputH);
-    m_input->SetPosition(padX + 4, 8);
+    m_input->SetPosition(padX + 4, inputY);
     if (m_hint) {
         m_hint->SetPosition(padX + cardInnerPad + 2, hintY + 6);
     }
@@ -504,5 +636,9 @@ void PromptBar::LayoutChildren() {
     if (m_stop) {
         m_stop->SetSize(buttonW, 28);
         m_stop->SetPosition(GetWidth() - padX - cardInnerPad - 2 * buttonW - 8, buttonY);
+    }
+    if (m_import) {
+        m_import->SetSize(buttonW, 28);
+        m_import->SetPosition(GetWidth() - padX - cardInnerPad - 3 * buttonW - 16, buttonY);
     }
 }

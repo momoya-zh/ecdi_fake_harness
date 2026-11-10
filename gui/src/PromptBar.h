@@ -18,20 +18,40 @@
 #include "ECDI/Widget/TextBox.h"
 
 #include <functional>
+#include <optional>
+#include <string>
+
+/// 暂存附件信息（富内容 §C：文件导入）
+struct StagedAttachment {
+    std::string displayName;      // 原始文件名，如 "data.csv"
+    std::string relativePath;     // 工作区相对路径，如 ".ecdi/imports/data-20261110-160129.csv"
+    long long   fileSizeBytes = 0;
+};
 
 class PromptBar : public ECDI::Panel {
 public:
     using Action = std::function<void(const std::string&)>;
     using ContinueAction = std::function<void()>;
+    using ImportAction = std::function<void()>;
 
     PromptBar();
 
     void SetOnSend(Action action) { m_onSend = std::move(action); }
     void SetOnStop(Action action) { m_onStop = std::move(action); }
     void SetOnContinue(ContinueAction action) { m_onContinue = std::move(action); }
+    void SetOnImport(ImportAction action) { m_onImport = std::move(action); }
 
     ECDI::TextBox* input() const { return m_input; }
     ECDI::Button* continueButton() const { return m_continue; }
+    ECDI::Button* importButton() const { return m_import; }
+    ECDI::Panel* chipPanel() const { return m_chipPanel; }
+    ECDI::Button* chipRemoveButton() const { return m_chipRemoveBtn; }
+
+    // ── 附件胶囊接口（富内容 §C）────────────────────────────────
+    void SetAttachment(const std::string& displayName, const std::string& relativePath, long long sizeBytes);
+    void ClearAttachment();
+    [[nodiscard]] bool HasAttachment() const { return m_attachment.has_value(); }
+    [[nodiscard]] const std::optional<StagedAttachment>& GetAttachment() const { return m_attachment; }
 
     void SetReadOnlyMode(bool readOnly);
     [[nodiscard]] bool IsReadOnlyMode() const { return m_isReadOnly; }
@@ -129,15 +149,23 @@ private:
     // 禁用/启用态配色切换（灰化由应用侧自备——框架不提供 disabled 绘制）
     void ApplySendStyle(bool enabled);
     void ApplyStopStyle(bool enabled);
+    void ApplyImportStyle(bool enabled);
 
     ECDI::TextBox* m_input = nullptr;   // 非拥有——树所有
     ECDI::Label* m_hint = nullptr;      // 非拥有——"Enter 发送 / Shift+Enter 换行"
     ECDI::Button* m_send = nullptr;     // 非拥有
     ECDI::Button* m_stop = nullptr;     // 非拥有
     ECDI::Button* m_continue = nullptr; // 非拥有——只读会话继续按钮
+    ECDI::Button* m_import = nullptr;   // 非拥有——"导入" 按钮
+    ECDI::Panel* m_chipPanel = nullptr; // 非拥有——附件胶囊卡片
+    ECDI::Label* m_chipIcon = nullptr;  // 非拥有——图标 "📄"
+    ECDI::Label* m_chipLabel = nullptr; // 非拥有——文件名与大小
+    ECDI::Button* m_chipRemoveBtn = nullptr; // 非拥有——移除按钮 "✕"
     Action m_onSend;
     Action m_onStop;
     ContinueAction m_onContinue;
+    ImportAction m_onImport;
+    std::optional<StagedAttachment> m_attachment;
     bool m_isReadOnly = false;
     bool m_cardFocused = false;
 };

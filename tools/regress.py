@@ -253,6 +253,10 @@ EXTRA_PROBES = [
     #   正向断言 baseline-dev / switch-user / dev-restored 三相；
     #   负对照断言 negative 相（反向断言必红，在 designed-red 中登记）。
     ("--mode-probe", "modeProbe", DEMO, [], ["negative"]),
+    # ★★ 2026-11-10（富内容 §C）：文件导入与暂存胶囊（--import-probe）。
+    #   全链路 5 相：import-stage / import-remove / import-submit / import-oversize / import-no-workspace。
+    #   工作区与样本文件在 %TEMP% 自建，不依赖 Win32 模态对话框；回放模式即可全绿；无 designed-red。
+    ("--import-probe", "importProbe", DEMO, [], []),
 ]
 
 DELPROV_CONFIG = OUT / "_reg-delprov-config.json"

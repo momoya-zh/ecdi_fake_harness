@@ -235,6 +235,9 @@ void HarnessApp::WriteSummary() {
     if (m_options.mdProbe && !m_probeState.mdProbeLog.empty()) {
         AppendMdProbeSummary(json);
     }
+    if (m_options.importProbe && !m_probeState.importProbeLog.empty()) {
+        AppendImportProbeSummary(json);
+    }
     if (m_options.selectProbe && !m_probeState.selectProbeLog.empty()) {
         AppendSelectProbeSummary(json);
     }

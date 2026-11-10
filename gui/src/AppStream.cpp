@@ -385,6 +385,7 @@ void HarnessApp::OnReplayTick() {
                 // ★★ 2026-11-08（富内容 B+）：块级全套解析判据。同步组——8 相全在纯函数上，
                 //   不依赖窗口/帧，跑完即判。
                 {&CliOptions::mdProbe, &ProbeState::mdProbeDone, &HarnessApp::RunMdProbe},
+                {&CliOptions::importProbe, &ProbeState::importProbeDone, &HarnessApp::RunImportProbe},
                 {&CliOptions::copyProbe, &ProbeState::copyProbeDone, &HarnessApp::RunCopyProbe},
                 // ★ 协议 v5（2026-11-04）：子代理缩进。同步组——判据全在跑完后的
                 //   行几何与生命周期表上，不需要等下一帧。

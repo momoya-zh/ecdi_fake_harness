@@ -2003,6 +2003,10 @@ private:
     // ★★ 2026-11-08（富内容 B+）：块级全套解析判据（纯函数，不依赖窗口/夹具）。
     void RunMdProbe();
     void RunCopyProbe();
+    // ★★ 2026-11-10（富内容 §C）：文件导入与探针（实现全在 AppImport.cpp）。
+    void HandleImportFile();
+    void RunImportProbe();
+    void AppendImportProbeSummary(std::string& json);
     // ★★ 协议 v5（2026-11-04）：右栏「代理」卡（实现全在 `AppAgents.cpp`）。
     //   `BuildAgentCard` 由 `BuildInspector` 末尾一行调用；`RebuildAgentList`
     //   在每次 `agent` 生命周期消息到达时重建列表（代理数是动态的）。

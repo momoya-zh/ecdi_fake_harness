@@ -35,6 +35,9 @@
 
 struct ProbeState {
     std::filesystem::path menuProbeExportPath;
+    std::filesystem::path importProbeFilePath; // ★ 富内容 §C：探针注入的文件路径（绕过 Win32 对话框）
+    std::vector<MdProbeRec> importProbeLog;    // --import-probe 记录
+    bool importProbeDone = false;
 
     std::vector<StateProbeRec> stateProbeLog;
     bool stateProbeLastValid = false;            // 是否已有「上次」可比
