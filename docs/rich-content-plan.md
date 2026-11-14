@@ -225,7 +225,7 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
 | 判据 | `HasInlineStyles(runs)`（`Transcript.cpp`） | 与 `HasMarkdownBlocks` 同一条纪律：唯一实现，渲染侧只调 |
 | 渲染接入 | `HarnessApp::ApplyInlineText`（`AppTranscript.cpp`） | **唯一入口**，三路正文共用：复合渲染的段控件（`makeText`）/ 无块级构造的只读 `TextBox` / `Label` |
 | 流式升级 | `AppStream.cpp` 的 `block_end` 分支 | 只有行内样式（无块级构造）的块，流式期仍是原文；块结束时**就地** `ApplyInlineText` + `Relayout`（不重建整行——行内只换 text/spans，重建会冲掉滚动与选中） |
-| 判据 | `--md-probe` 相 11–26 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` · `inline-italic` · `inline-bold-italic` · `inline-italic-negative` · `render-inline-italic` · `render-list-inline`（列表项 marker 分离、正文内联展开与多行缩进续行合并） |
+| 判据 | `--md-probe` 相 11–28 · `--table-probe` 相 1–7 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` · `inline-italic` · `inline-bold-italic` · `inline-italic-negative` · `render-inline-italic` · `render-list-inline` · `render-selectable-rich`（`--selectable-rows` 下列表/引用只读 `TextBox`）· `render-codeblock-extent`（代码块实测高度与长行横滚 extent）· `table-inline-cells`（表头/表体行内样式与去标记自然列宽） |
 
 ### H.3 为什么解析器是「三遍式」而不是「区间查找 + 字符串替换」
 
@@ -258,8 +258,7 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
    `--md-probe` 的渲染相不覆盖它（那一相只读 `GetText()`）。**待用户编译后目视确认**。
 3. **行内 code 无底色**——`REQ-21`，等 ECDI。
 4. **`size` 留位不用**——保版心行高稳定（斜体已于 2026-11-10 消费上线）。
-5. **表格单元格 / 引用块 / 列表项 / 代码块**：引用块与列表项正文已接通 `ApplyInlineText`（支持内联样式解析与渲染）；
-   代码块本就保留原文不解析；表格单元格目前是独立 Label/TextBox，未接 `ApplyInlineText`——下一批可铺。
+5. **表格单元格 / 引用块 / 列表项 / 代码块（断点补齐已关闭）**：引用块与列表项正文已接通 `ApplyInlineText` 及 `--selectable-rows` 只读 `TextBox`；表头与表格单元格已接通 `ApplyInlineText` 并按去标记文本测算自然列宽（保留 `Label` 以维持对齐与斑马线绘制）；代码块保持原文不解析行内语法，且已在 `Relayout` 补齐真实换行测量与 `ScrollView::SetContentExtent` 更新。
 
 
 

@@ -482,14 +482,53 @@ void HarnessApp::Relayout() {
                             btn->SetSize(48, 20);
                             btn->SetPosition(cardW - 2 - 48 - 8, (barH - 20) / 2);
                         }
-                        // 代码区：先量内容宽，超过可视宽才出横条
+                        const int viewW = cardW - 2;
+                        // 代码区：按最长行实测宽（不软折行）+ 按 '\n' 拆行后的真实高度定尺寸并更新 ScrollView extent
                         int contentW = 0;
                         int contentH = 0;
                         if (auto* s = dynamic_cast<ECDI::ScrollView*>(sv)) {
+                            const int padX = 12;
+                            const int padY = 8;
+                            const int minLineH = uikit::LineBox(harness::kFontMicro);
+                            auto& cv = s->GetContentView();
+                            if (cv.GetChildCount() > 0) {
+                                if (auto* codeLabel = dynamic_cast<ECDI::Label*>(cv.GetChildAt(0))) {
+                                    const std::string& raw = codeLabel->GetText();
+                                    const ECDI::Font monoFont = harness::MonoFont(harness::kFontMicro);
+                                    int maxLineW = 1;
+                                    size_t pos = 0;
+                                    while (true) {
+                                        const size_t nl = raw.find('\n', pos);
+                                        const std::string line = (nl == std::string::npos)
+                                            ? raw.substr(pos)
+                                            : raw.substr(pos, nl - pos);
+                                        int lw = 1;
+                                        if (m_window) {
+                                            lw = static_cast<int>(
+                                                m_window->GetTextMeasurer().MeasureText(monoFont, line).width + 0.999f);
+                                        } else {
+                                            lw = static_cast<int>(line.size()) * 7;
+                                        }
+                                        maxLineW = std::max(maxLineW, lw);
+                                        if (nl == std::string::npos) break;
+                                        pos = nl + 1;
+                                    }
+                                    // 开启 wrap 并把宽钉到 maxLineW+2：既让 '\n' 逐行折段，又确保长行绝不软折行
+                                    const int textW = std::max(1, maxLineW + 2);
+                                    codeLabel->SetWordWrap(true);
+                                    codeLabel->SetSize(textW, minLineH);
+                                    codeLabel->AutoSize();
+                                    const int textH = std::max(minLineH, codeLabel->GetHeight());
+                                    codeLabel->SetPosition(padX, padY);
+                                    codeLabel->SetSize(std::max(textW, viewW - 2 * padX), textH);
+                                    contentW = textW + 2 * padX;
+                                    contentH = textH + 2 * padY;
+                                    s->SetContentExtent(contentW, contentH);
+                                }
+                            }
                             contentW = static_cast<int>(s->GetContentExtent().width);
                             contentH = static_cast<int>(s->GetContentExtent().height);
                         }
-                        const int viewW = cardW - 2;
                         // 4 = 代码块横条厚度（与 kCodeBarThickness 同值；本文件取不到那个 constexpr）
                         const int barFoot = (contentW > viewW) ? (4 + 2) : 0;
                         sv->SetSize(viewW, contentH + barFoot);

@@ -1839,6 +1839,36 @@ void HarnessApp::ApplyInlineText(ECDI::TextWidget& widget, const std::string& te
     widget.SetText(text);
 }
 
+// 建一个「正文型」文本控件：Paragraph / Heading / ListItem / Quote 共用，
+// 只有字体、颜色、底色、缩进不同。★ selectable 开关沿用二期裁决（只读 TextBox
+// ⇒ 可选中/复制不需要框架新能力）。
+std::unique_ptr<ECDI::Widget> HarnessApp::MakeAssistantTextWidget(const std::string& text,
+                                                                  const ECDI::Font& font,
+                                                                  const ECDI::Color& color,
+                                                                  const ECDI::Color& bg) const {
+    if (m_options.selectableRows) {
+        auto box = std::make_unique<ECDI::TextBox>();
+        box->SetReadOnly(true);
+        box->SetTextColor(color);
+        box->SetFont(font);
+        box->SetStyle(ECDI::TextBoxStyleOverride{
+            .background = bg,
+            .caretWidth = 0.0f,
+            .padding = 0.0f,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f});
+        // ★ 2026-11-09（§H）：段内样式在这里接进来。**必须在 SetFont 之后**——
+        //   span 只覆盖维度，基字体/基色仍来自控件本身，顺序反了就会有一帧用错基准。
+        ApplyInlineText(*box, text);
+        return box;
+    }
+    auto label = std::make_unique<ECDI::Label>();
+    label->SetTextColor(color);
+    label->SetFont(font);
+    ApplyInlineText(*label, text);
+    return label;
+}
+
 void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
                                               const std::vector<MarkdownSegment>& segs) {
     const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
@@ -1853,32 +1883,9 @@ void HarnessApp::BuildAssistantMarkdownWidgets(ECDI::Panel& panel, RowRec& rec,
         return rec.segMeta.back();
     };
 
-    // 建一个「正文型」文本控件：Paragraph / Heading / ListItem / Quote 共用，
-    // 只有字体、颜色、缩进不同。★ selectable 开关沿用二期裁决（只读 TextBox
-    // ⇒ 可选中/复制不需要框架新能力）。
     auto makeText = [&](const std::string& text, const ECDI::Font& font,
                         const ECDI::Color& color) -> std::unique_ptr<ECDI::Widget> {
-        if (m_options.selectableRows) {
-            auto box = std::make_unique<ECDI::TextBox>();
-            box->SetReadOnly(true);
-            box->SetTextColor(color);
-            box->SetFont(font);
-            box->SetStyle(ECDI::TextBoxStyleOverride{
-                .background = plainBg,
-                .caretWidth = 0.0f,
-                .padding = 0.0f,
-                .cornerRadius = 0.0f,
-                .borderWidth = 0.0f});
-            // ★ 2026-11-09（§H）：段内样式在这里接进来。**必须在 SetFont 之后**——
-            //   span 只覆盖维度，基字体/基色仍来自控件本身，顺序反了就会有一帧用错基准。
-            ApplyInlineText(*box, text);
-            return box;
-        }
-        auto label = std::make_unique<ECDI::Label>();
-        label->SetTextColor(color);
-        label->SetFont(font);
-        ApplyInlineText(*label, text);
-        return label;
+        return MakeAssistantTextWidget(text, font, color, plainBg);
     };
 
     for (size_t si = 0; si < segs.size(); ++si) {
@@ -2076,10 +2083,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildListItemWidget(const std::string&
     mk->SetFont(harness::SansFont(harness::kFontBody, 400));
     mk->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
 
-    auto body = std::make_unique<ECDI::Label>();
-    body->SetFont(harness::SansFont(harness::kFontBody, 400));
-    body->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-    ApplyInlineText(*body, text);
+    const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+    auto body = MakeAssistantTextWidget(
+        text, harness::SansFont(harness::kFontBody, 400),
+        Pick(m_options.probeContrast, kDarkInk, kProbeInk), plainBg);
 
     row->AddChild(std::move(mk));
     row->AddChild(std::move(body));
@@ -2103,10 +2110,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildQuoteWidget(const std::string& te
         .cornerRadius = 0.0f,
         .borderWidth = 0.0f});
 
-    auto body = std::make_unique<ECDI::Label>();
-    body->SetFont(harness::SansFont(harness::kFontBody, 400));
-    body->SetTextColor(Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
-    ApplyInlineText(*body, text);
+    const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+    auto body = MakeAssistantTextWidget(
+        text, harness::SansFont(harness::kFontBody, 400),
+        Pick(m_options.probeContrast, kDarkMuted, kProbeInk), plainBg);
 
     row->AddChild(std::move(bar));
     row->AddChild(std::move(body));
@@ -2165,6 +2172,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     };
 
     const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody, 400);
+    InlineCodeStyle inlineCodeStyle;
+    inlineCodeStyle.family = harness::kMonoFamily;
+    inlineCodeStyle.color = Pick(m_options.probeContrast, kDarkAccent, kProbeInk);
+    auto strippedText = [&](const std::string& raw) -> std::string {
+        const InlineRuns runs = ParseInlineRuns(raw, inlineCodeStyle);
+        return HasInlineStyles(runs) ? runs.text : raw;
+    };
     // 建表时 Label 尚未挂窗，AutoSize 拿不到测量器（preferred 回落当前尺寸=0）⇒ 显式实测设尺寸
     auto measureWidth = [&](const std::string& str) -> int {
         if (!m_window) return estimateWidth(str);
@@ -2178,13 +2192,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     }
 
     for (size_t c = 0; c < numCols; ++c) {
-        int w = measureWidth(table.headers[c]) + 2 * colPadX;
+        int w = measureWidth(strippedText(table.headers[c])) + 2 * colPadX;
         if (w > colWidths[c]) colWidths[c] = w;
     }
 
     for (const auto& r : table.rows) {
         for (size_t c = 0; c < numCols && c < r.size(); ++c) {
-            int w = measureWidth(r[c]) + 2 * colPadX;
+            int w = measureWidth(strippedText(r[c])) + 2 * colPadX;
             if (w > colWidths[c]) colWidths[c] = w;
         }
     }
@@ -2237,10 +2251,11 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     int curColX = 0;
     for (size_t c = 0; c < numCols; ++c) {
         const int colW = colWidths[c];
-        auto hLabel = std::make_unique<ECDI::Label>(table.headers[c]);
+        auto hLabel = std::make_unique<ECDI::Label>();
         hLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         hLabel->SetFont(bodyFont);
-        const int labelW = measureWidth(table.headers[c]);
+        ApplyInlineText(*hLabel, table.headers[c]);
+        const int labelW = measureWidth(hLabel->GetText());
         const int labelH = lineH;
         hLabel->SetSize(labelW, labelH);
         int lx = curColX + colPadX;
@@ -2300,10 +2315,11 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         for (size_t c = 0; c < numCols; ++c) {
             const int colW = colWidths[c];
             const std::string text = (c < rowData.size()) ? rowData[c] : "";
-            auto cLabel = std::make_unique<ECDI::Label>(text);
+            auto cLabel = std::make_unique<ECDI::Label>();
             cLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
             cLabel->SetFont(bodyFont);
-            const int labelW = measureWidth(text);
+            ApplyInlineText(*cLabel, text);
+            const int labelW = measureWidth(cLabel->GetText());
             const int labelH = lineH;
             cLabel->SetSize(labelW, labelH);
             int lx = curColX + colPadX;

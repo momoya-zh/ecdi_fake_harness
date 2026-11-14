@@ -1144,6 +1144,10 @@ private:
     //   ★ 判据仍收在 `Transcript.cpp`（`ParseInlineRuns` / `HasInlineStyles`），
     //     本函数只做「解析结果 → 控件」这一步，不含任何解析规则。
     void ApplyInlineText(ECDI::TextWidget& widget, const std::string& text) const;
+    std::unique_ptr<ECDI::Widget> MakeAssistantTextWidget(const std::string& text,
+                                                          const ECDI::Font& font,
+                                                          const ECDI::Color& color,
+                                                          const ECDI::Color& bg) const;
     void LayoutTableInterior(RowRec::TableRec& t, int availW);
     void UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
                                        const std::vector<MarkdownSegment>& segs);

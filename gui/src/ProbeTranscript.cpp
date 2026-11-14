@@ -1568,6 +1568,92 @@ void HarnessApp::RunMdProbe() {
         add("render-list-inline", ok, note);
     }
 
+    // 27. render-selectable-rich：--selectable-rows 下 ListItem / Quote 正文同步走只读 TextBox + 内联去标记
+    {
+        const bool prevSelectable = m_options.selectableRows;
+        m_options.selectableRows = true;
+
+        Block mockBlock;
+        mockBlock.id = "mock_selectable_rich";
+        mockBlock.kind = "assistant";
+        mockBlock.text =
+            "- **列表项**内容\n\n"
+            "> *引用块*内容\n";
+        mockBlock.ended = true;
+
+        RowRec mockRec;
+        auto rowPanel = BuildBlockRow(mockBlock, mockRec);
+        m_options.selectableRows = prevSelectable;
+
+        bool listIsTextBox = false;
+        bool quoteIsTextBox = false;
+        std::string listText;
+        std::string quoteText;
+        for (size_t i = 0; i < mockRec.segments.size() && i < mockRec.segMeta.size(); ++i) {
+            ECDI::Widget* segW = mockRec.segments[i];
+            if (!segW || segW->GetChildCount() < 2) continue;
+            if (mockRec.segMeta[i].kind == MarkdownSegmentKind::ListItem) {
+                if (auto* tb = dynamic_cast<ECDI::TextBox*>(segW->GetChildAt(1))) {
+                    listIsTextBox = true;
+                    listText = tb->GetText();
+                }
+            } else if (mockRec.segMeta[i].kind == MarkdownSegmentKind::Quote) {
+                if (auto* tb = dynamic_cast<ECDI::TextBox*>(segW->GetChildAt(1))) {
+                    quoteIsTextBox = true;
+                    quoteText = tb->GetText();
+                }
+            }
+        }
+        const bool ok = listIsTextBox && quoteIsTextBox &&
+                        listText == "列表项内容" && quoteText == "引用块内容";
+        add("render-selectable-rich", ok,
+            "listTB=" + std::to_string(listIsTextBox) + " list='" + listText +
+                "' quoteTB=" + std::to_string(quoteIsTextBox) + " quote='" + quoteText + "'");
+    }
+
+    // 28. render-codeblock-extent：Relayout 后代码块 ScrollView 真实测高且长行触发横向滚动
+    {
+        bool ok = false;
+        std::string note = "missing sess/scroll/window";
+        if (m_sess && m_scroll && m_window) {
+            Block mockBlock;
+            mockBlock.id = "mock_code_extent";
+            mockBlock.kind = "assistant";
+            mockBlock.text =
+                "```cpp\n"
+                "int a = 1;\n"
+                "int b = 2;\n"
+                "std::string very_long_identifier_for_horizontal_scroll_probe_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ = \"ok\";\n"
+                "```";
+            mockBlock.ended = true;
+
+            RowRec rec;
+            auto panel = BuildBlockRow(mockBlock, rec);
+            rec.panel = panel.get();
+            m_scroll->GetContentView().AddChild(std::move(panel));
+            m_sess->rows.push_back(std::move(rec));
+            Relayout();
+
+            const RowRec& added = m_sess->rows.back();
+            for (size_t i = 0; i < added.segments.size() && i < added.segMeta.size(); ++i) {
+                if (added.segMeta[i].kind != MarkdownSegmentKind::CodeBlock) continue;
+                ECDI::Widget* card = added.segments[i];
+                if (!card || card->GetChildCount() < 2) break;
+                auto* sv = dynamic_cast<ECDI::ScrollView*>(card->GetChildAt(1));
+                if (!sv) break;
+                const int extW = static_cast<int>(sv->GetContentExtent().width);
+                const int extH = static_cast<int>(sv->GetContentExtent().height);
+                const int svW = sv->GetWidth();
+                const int cardH = card->GetHeight();
+                ok = (extW > svW && extH > 40 && cardH > 60);
+                note = "ext=" + std::to_string(extW) + "x" + std::to_string(extH) +
+                       " svW=" + std::to_string(svW) + " cardH=" + std::to_string(cardH);
+                break;
+            }
+        }
+        add("render-codeblock-extent", ok, note);
+    }
+
     if (m_application) m_application->Exit();
 }
 
@@ -1734,6 +1820,42 @@ void HarnessApp::RunTableProbe() {
         }
         rec.matched = ok;
         if (!ok) rec.note = "wide table content extent must exceed transcript layout max width";
+        m_probeState.tableProbeLog.push_back(std::move(rec));
+    }
+
+    // 7. table-inline-cells：表头与单元格接通 ApplyInlineText 且按去标记文本量自然列宽
+    {
+        TableProbeRec rec;
+        rec.phase = "table-inline-cells";
+        MarkdownTable styled;
+        styled.headers = {"**指令**", "`状态`"};
+        styled.alignments = {MarkdownAlign::Left, MarkdownAlign::Center};
+        styled.rows = {{"运行 `git status`", "*正常*"}};
+
+        MarkdownTable plain;
+        plain.headers = {"指令", "状态"};
+        plain.alignments = {MarkdownAlign::Left, MarkdownAlign::Center};
+        plain.rows = {{"运行 git status", "正常"}};
+
+        RowRec::TableRec sRec;
+        auto sW = BuildTableWidget(styled, sRec);
+        RowRec::TableRec pRec;
+        auto pW = BuildTableWidget(plain, pRec);
+        (void)sW;
+        (void)pW;
+
+        const bool textOk =
+            sRec.headerLabels.size() == 2 && sRec.headerLabels[0] && sRec.headerLabels[1] &&
+            sRec.headerLabels[0]->GetText() == "指令" &&
+            sRec.headerLabels[1]->GetText() == "状态" &&
+            sRec.cellLabels.size() == 1 && sRec.cellLabels[0].size() == 2 &&
+            sRec.cellLabels[0][0] && sRec.cellLabels[0][1] &&
+            sRec.cellLabels[0][0]->GetText() == "运行 git status" &&
+            sRec.cellLabels[0][1]->GetText() == "正常";
+        const bool widthOk = (sRec.naturalW == pRec.naturalW);
+        rec.matched = textOk && widthOk;
+        rec.note = "textOk=" + std::to_string(textOk) +
+                   " widthOk=" + std::to_string(widthOk);
         m_probeState.tableProbeLog.push_back(std::move(rec));
     }
 
