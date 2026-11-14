@@ -239,6 +239,11 @@ void HarnessApp::OnReplayTick() {
     //   数据源无关；而放在重建块之后，是因为 `RebuildTranscriptView` 会换掉
     //   整批 `RowRec`（旧 spinner 指针随之作废）⇒ 新行的首帧必须在重建之后判。
     AdvanceThinkingSpinners();
+    if (m_focusedAgentPulse > 0 && !m_options.HasAnyProbe()) {
+        if (--m_focusedAgentPulse == 0) {
+            ClearFocusedAgentHighlight();
+        }
+    }
     if (!m_sess->source) {
         if (m_options.workspaceProbe && !m_probeState.workspaceProbeDone) RunWorkspaceProbe();
         return;   // 源启动失败（Run 已报错退出路径）/ 0d 空会话：无可拉取

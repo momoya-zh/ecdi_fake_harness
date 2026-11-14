@@ -97,8 +97,10 @@ void HarnessApp::BuildUi(ECDI::Window& window) {
     // ★★ 2026-10-26（按模式分流）：首帧与重建都在 root.Arrange() 之前把
     //   `m_devMode` 投影到所有开发者专属控件上——在开发者模式下所有控件本身已是
     //   可见的，同值守卫下零额外 Arrange、零额外 Invalidate。
+    m_sidebarCompactVert = false;
     ApplyDevModeVisibility();
     root.Arrange();
+    SyncResponsiveColumns();
 
     // ★★ 2026-11-03（P0）：列表在**布局跑完之后**才建。
     //   行的宽度是从 ScrollView 的**实际**宽度算出来的（`curRowW = f(GetWidth())`），
@@ -264,6 +266,7 @@ void HarnessApp::RebuildUi() {
     }
 
     // ⑪ 收尾：环进度条的颜色级别缓存要作废（新控件 + 新令牌），HUD 全量刷一次。
+    SyncResponsiveColumns(true);
     m_ctxRingLevel = -1;
     ++m_uiRebuilds;
     Relayout();
@@ -428,7 +431,8 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     //   60px 会把「代理」两个字裁掉（Label 单行裁剪）——而裁掉的恰好是
     //   **唯一新信息**。加宽的 44px 由顶栏中段的 stretch 吸收，右侧只用
     //   平移不改序（顶栏最窄窗口下仍有余量）。
-    state->SetSize(104, 20);
+    //   预留「N后台」并显时的宽度（与 RefreshHud 的 stateChip 后缀配套）。
+    state->SetSize(116, 20);
     bar->AddChild(std::move(state));
 
     // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip（`提供商 › 模型 · N% ▾`）。

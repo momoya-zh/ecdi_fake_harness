@@ -21,6 +21,7 @@
 // ============================================================
 
 #include "App.h"
+#include "AppInternal.h"
 #include "ThemeUsing.h"
 #include "UiKit.h"
 
@@ -28,6 +29,7 @@
 #include "ECDI/Theme/ButtonStyle.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Widget/Button.h"
+#include "ECDI/Widget/Panel.h"
 #include "ECDI/Widget/ScrollView.h"
 
 #include <algorithm>
@@ -194,18 +196,87 @@ void HarnessApp::RebuildAgentList() {
     RequestRepaint();
 }
 
+// ── 定位高亮（点击右栏代理卡跳转时同步标亮首行边框与整段归属竖线）────
+void HarnessApp::ApplyFocusedAgentHighlight() {
+    if (!m_sess) return;
+    bool firstVisibleMarked = false;
+    const ECDI::Color normalGutter =
+        harness::internal::Pick(m_options.probeContrast, kLine, harness::internal::kProbeInk);
+    for (RowRec& r : m_sess->rows) {
+        const bool match = !m_focusedAgentId.empty() && r.agentTag == m_focusedAgentId;
+        if (r.gutter && r.gutterHighlight != match) {
+            r.gutterHighlight = match;
+            r.gutter->SetStyle(ECDI::PanelStyleOverride{
+                .background = match ? kDarkAccent : normalGutter,
+                .cornerRadius = 1.0f});
+        }
+        bool wantPanel = false;
+        if (match && !r.foldHidden && r.panel && !firstVisibleMarked) {
+            firstVisibleMarked = true;
+            wantPanel = true;
+        }
+        if (auto* p = dynamic_cast<ECDI::Panel*>(r.panel)) {
+            if (wantPanel && !r.focusHighlight) {
+                r.focusHighlight = true;
+                p->SetStyle(ECDI::PanelStyleOverride{
+                    .borderWidth = 1.5f,
+                    .borderColor = kDarkAccent});
+            } else if (!wantPanel && r.focusHighlight) {
+                r.focusHighlight = false;
+                p->SetStyle(ECDI::PanelStyleOverride{
+                    .borderWidth = r.baseBorderW,
+                    .borderColor = r.baseBorderColor});
+            }
+        }
+    }
+}
+
+void HarnessApp::ClearFocusedAgentHighlight() {
+    if (m_focusedAgentId.empty() && m_focusedAgentPulse == 0) return;
+    m_focusedAgentId.clear();
+    m_focusedAgentPulse = 0;
+    ApplyFocusedAgentHighlight();
+    Relayout();
+    RequestRepaint();
+}
+
 // ── 定位（点卡上某一行）──────────────────────────────────────────────
 void HarnessApp::FocusAgent(const std::string& agentId) {
     if (agentId.empty() || !m_scroll || !m_sess) return;
-    for (const RowRec& r : m_sess->rows) {
-        if (r.agentTag != agentId) continue;
-        // 留 8px 余量：目标行贴着视口上沿时读不出"它是谁的下一层"。
-        m_scroll->SetContentOffset(0, std::max(0, r.y - 8));
-        RefreshJumpButton();
-        return;
-    }
+    auto findAgentRow = [&]() -> const RowRec* {
+        for (const RowRec& r : m_sess->rows) {
+            if (r.agentTag == agentId) return &r;
+        }
+        return nullptr;
+    };
+    const RowRec* first = findAgentRow();
     // 没找到 = 这个代理的块还没建（start 刚到、首个块还没到）⇒ 什么都不做。
-    //   ★ 不提示：这是正常时序，不是错误，弹提示反而像是出了问题。
+    if (!first) return;
+    // 若目标行所在回合处于折叠态，先展开该回合再定位。
+    if (first->foldHidden && first->timelineIdx < m_sess->timeline.size()) {
+        for (size_t i = first->timelineIdx + 1; i > 0; --i) {
+            const size_t ti = i - 1;
+            if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
+                if (!m_sess->timeline[ti].expanded) {
+                    ToggleTurn(ti);
+                }
+                break;
+            }
+        }
+        first = findAgentRow();
+        if (!first) return;
+    }
+    m_focusedAgentId = agentId;
+    m_focusedAgentPulse = 60;
+    ApplyFocusedAgentHighlight();
+    Relayout();
+    first = findAgentRow();
+    if (!first) return;
+    // 留 8px 余量：目标行贴着视口上沿时读不出"它是谁的下一层"。
+    const int scrollY = std::min(std::max(0, first->y - 8), m_scroll->GetMaxOffsetY());
+    m_scroll->SetContentOffset(0, scrollY);
+    RefreshJumpButton();
+    RequestRepaint();
 }
 
 // ── 活跃代理数（顶栏胶囊用）────────────────────────────────────────────
@@ -214,6 +285,15 @@ size_t HarnessApp::ActiveAgentCount() const {
     size_t n = 0;
     for (const auto& kv : m_sess->transcript.Agents()) {
         if (kv.second.started && !kv.second.ended) ++n;
+    }
+    return n;
+}
+
+size_t HarnessApp::ActiveJobCount() const {
+    if (!m_sess) return 0;
+    size_t n = 0;
+    for (const auto& kv : m_sess->jobsByCall) {
+        if (kv.second.status == "running") ++n;
     }
     return n;
 }

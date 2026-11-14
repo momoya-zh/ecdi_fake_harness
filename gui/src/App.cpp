@@ -350,6 +350,7 @@ void HarnessApp::SetSidebarVisible(bool visible) {
 
     m_sidebarVisible = visible;          // ① 模型侧先落（重建后按它恢复）
     m_hud.sidebar->SetVisible(visible);  // ② 值变化时才 Invalidate（Widget.cpp:427-446）
+    SyncResponsiveColumns();
 
     // ③ 重排父容器：布局**只在 Arrange 时**跳过隐藏子（C-VIS-1）把它们停泊到负区、
     //    并且不占主轴槽位与间隙 ⇒ 不 Arrange，中栏就吃不到那 200px。
@@ -406,6 +407,7 @@ void HarnessApp::ToggleInspector() {
     //   ★ 顺序仍是先 `Arrange` 再 `Relayout`：宽度由布局分配，必须在父容器重排之后
     //     才能读到新的 `m_scroll` 宽（版心正是读它算出来的）。
     ApplyInspectorVisibility();
+    SyncResponsiveColumns();
     if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
     Relayout();
     // ★★ 2026-10-27 修复（实测反馈「点详情后那三个键没了」）：
@@ -824,6 +826,7 @@ void HarnessApp::OnWindowResized(int width, int height) {
         root.SetSize(effW, effH);
     }
     root.Arrange();
+    SyncResponsiveColumns(true);
 
     // ③ 重测每一行（内容宽变了 ⇒ 折行位置变了）
     //   ★ 空会话（回放模式下新建的）`rows` 为空，`Relayout` 内部对空表安全；

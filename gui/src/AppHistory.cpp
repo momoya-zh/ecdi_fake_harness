@@ -158,7 +158,14 @@ void HarnessApp::RebuildHistoryList() {
         y += static_cast<int>(rowStride);
     }
     const int totalH = n > 0 ? static_cast<int>(n * rowStride) - kSidebarRowGap : 0;
-    const int visibleH = std::min(totalH, kHistoryMaxRows * static_cast<int>(rowStride)
+    const int rootH = m_window ? static_cast<int>(m_window->GetRootWidget().GetHeight()) : 0;
+    int maxHistRows = kHistoryMaxRows;
+    if (rootH > 0 && rootH < 540) {
+        maxHistRows = 1;
+    } else if (rootH > 0 && rootH < 640) {
+        maxHistRows = std::min(maxHistRows, 2);
+    }
+    const int visibleH = std::min(totalH, maxHistRows * static_cast<int>(rowStride)
                                               - kSidebarRowGap);
     const int listW = m_hud.historyList ? std::max(kSidebarListW, m_hud.historyList->GetWidth()) : kSidebarListW;
     const int curRowW = SidebarRowW(listW);

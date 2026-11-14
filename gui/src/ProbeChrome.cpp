@@ -731,6 +731,48 @@ void HarnessApp::RunResizeProbe() {
             //   露出"整列贴左"的一档（旧算式在这里实测左 16 / 右 48）。
             const std::string geo = geometry(rec);
             if (!geo.empty()) add(geo);
+            // ★ 窄/短最小窗口（880×460）响应式边界核查：
+            //   顶栏/会话头操作按钮不得溢出父宽，左侧栏可见子项不得溢出侧栏底边。
+            if (m_hud.modelChip && m_hud.modelChip->GetWidth() != 168) {
+                add("modelChip width at 880 != 168 (got " +
+                    std::to_string(m_hud.modelChip->GetWidth()) + ")");
+            }
+            if (m_hud.themeToggle && m_hud.themeToggle->GetParent()) {
+                const ECDI::Widget* bar = m_hud.themeToggle->GetParent();
+                for (size_t i = 0; i < bar->GetChildCount(); ++i) {
+                    const ECDI::Widget* c = bar->GetChildAt(i);
+                    if (c && c->IsVisible() && c->GetX() + c->GetWidth() > bar->GetWidth()) {
+                        add("topBar child overflow at 880: right=" +
+                            std::to_string(c->GetX() + c->GetWidth()) + " > barW=" +
+                            std::to_string(bar->GetWidth()));
+                        break;
+                    }
+                }
+            }
+            if (m_hud.exportToggle && m_hud.exportToggle->GetParent()) {
+                const ECDI::Widget* head = m_hud.exportToggle->GetParent();
+                for (size_t i = 0; i < head->GetChildCount(); ++i) {
+                    const ECDI::Widget* c = head->GetChildAt(i);
+                    if (c && c->IsVisible() && c->GetX() + c->GetWidth() > head->GetWidth()) {
+                        add("head child overflow at 880: right=" +
+                            std::to_string(c->GetX() + c->GetWidth()) + " > headW=" +
+                            std::to_string(head->GetWidth()));
+                        break;
+                    }
+                }
+            }
+            if (m_hud.sidebar && m_hud.sidebar->IsVisible()) {
+                for (size_t i = 0; i < m_hud.sidebar->GetChildCount(); ++i) {
+                    const ECDI::Widget* c = m_hud.sidebar->GetChildAt(i);
+                    if (c && c->IsVisible() &&
+                        c->GetY() + c->GetHeight() > m_hud.sidebar->GetHeight()) {
+                        add("sidebar child overflow at 460: bottom=" +
+                            std::to_string(c->GetY() + c->GetHeight()) + " > sideH=" +
+                            std::to_string(m_hud.sidebar->GetHeight()));
+                        break;
+                    }
+                }
+            }
             rec.matched = bad.empty();
             rec.firstDivergence = bad;
         }
@@ -770,6 +812,92 @@ void HarnessApp::RunResizeProbe() {
         ProbeResizeClient(base.width, base.height);
         m_window->GetRootWidget().Arrange();
         Relayout();
+
+        // ③ 加宽记忆列宽（320 / 300）后压回最小窗 880×460：必须保底 midW >= 444、
+        //    左侧栏不纵向溢出、且不覆写用户记忆值（回到 1120×720 后原值恢复）。
+        {
+            const int savedSideW = m_sidebarWidth;
+            const int savedInspW = m_inspectorWidth;
+            const bool savedSideVis = m_sidebarVisible;
+            const bool savedInspVis = m_inspectorVisible;
+
+            m_sidebarWidth = 320;
+            m_inspectorWidth = 300;
+            if (!m_sidebarVisible) SetSidebarVisible(true);
+            if (!m_inspectorVisible) {
+                m_inspectorVisible = true;
+                ApplyInspectorVisibility();
+            }
+            ProbeResizeClient(900, 480);
+            ProbeResizeClient(kMinClientW, kMinClientH);
+            expect("min-size-clamped-panels", {{true, ""}});
+            {
+                ResizeProbeRec& rec = m_probeState.resizeProbeLog.back();
+                std::string bad = rec.firstDivergence;
+                auto add = [&](const std::string& s) {
+                    if (!bad.empty()) bad += "; ";
+                    bad += s;
+                };
+                constexpr int kHeadNeed = 2 * 14 + 300 + 3 * 28 + 4 * 8;   // = 444
+                if (rec.midW < kHeadNeed) {
+                    add("clamped midW " + std::to_string(rec.midW) + " < " +
+                        std::to_string(kHeadNeed));
+                }
+                if (m_sidebarWidth != 320 || m_inspectorWidth != 300) {
+                    add("responsive clamp overwrote stored widths (" +
+                        std::to_string(m_sidebarWidth) + "/" +
+                        std::to_string(m_inspectorWidth) + ")");
+                }
+                if (m_hud.exportToggle && m_hud.exportToggle->GetParent()) {
+                    const ECDI::Widget* head = m_hud.exportToggle->GetParent();
+                    for (size_t i = 0; i < head->GetChildCount(); ++i) {
+                        const ECDI::Widget* c = head->GetChildAt(i);
+                        if (c && c->IsVisible() && c->GetX() + c->GetWidth() > head->GetWidth()) {
+                            add("clamped head overflow at 880");
+                            break;
+                        }
+                    }
+                }
+                if (m_hud.sidebar && m_hud.sidebar->IsVisible()) {
+                    for (size_t i = 0; i < m_hud.sidebar->GetChildCount(); ++i) {
+                        const ECDI::Widget* c = m_hud.sidebar->GetChildAt(i);
+                        if (c && c->IsVisible() &&
+                            c->GetY() + c->GetHeight() > m_hud.sidebar->GetHeight()) {
+                            add("clamped sidebar vertical overflow at 460");
+                            break;
+                        }
+                    }
+                }
+                // 拉回宽窗口，验证用户记忆列宽与顶栏 modelChip 复原。
+                ProbeResizeClient(base.width, base.height);
+                if (m_hud.sidebar && m_hud.sidebar->GetWidth() != 320) {
+                    add("sidebar failed to restore 320 on widen (got " +
+                        std::to_string(m_hud.sidebar->GetWidth()) + ")");
+                }
+                if (m_hud.inspector && m_hud.inspector->GetWidth() != 300) {
+                    add("inspector failed to restore 300 on widen (got " +
+                        std::to_string(m_hud.inspector->GetWidth()) + ")");
+                }
+                if (m_hud.modelChip && m_hud.modelChip->GetWidth() != 200) {
+                    add("modelChip failed to restore 200 on widen (got " +
+                        std::to_string(m_hud.modelChip->GetWidth()) + ")");
+                }
+                rec.matched = bad.empty();
+                rec.firstDivergence = bad;
+            }
+
+            m_sidebarWidth = savedSideW;
+            m_inspectorWidth = savedInspW;
+            if (m_sidebarVisible != savedSideVis) SetSidebarVisible(savedSideVis);
+            if (m_inspectorVisible != savedInspVis) {
+                m_inspectorVisible = savedInspVis;
+                ApplyInspectorVisibility();
+            }
+            SyncResponsiveColumns(true);
+            ProbeResizeClient(base.width, base.height);
+            m_window->GetRootWidget().Arrange();
+            Relayout();
+        }
     }
 
     m_probeState.resizeProbeDone = true;

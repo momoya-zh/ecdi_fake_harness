@@ -15,6 +15,7 @@
 
 #include "App.h"
 #include "AppInternal.h"
+#include "SplitterBar.h"
 #include "ThemeUsing.h"
 #include "UiKit.h"
 
@@ -31,6 +32,7 @@
 #include "ECDI/Window/OverlayTypes.h"       // ★ 2026-10-30：tooltip 走浮层根（OverlayOptions）
 #include "ECDI/Window/Window.h"             // ★ 同上：ShowOverlay / HideOverlay / GetOverlayRoot
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Layout/VerticalLayout.h"
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/ProgressBar.h"
 #include "ECDI/Widget/RingProgressBar.h"
@@ -212,6 +214,9 @@ void HarnessApp::Relayout() {
                 //   纵向 y 不参与（不可见、不占位），所以这里只下发横坐标；
                 //   `y` 照旧不推进。
                 r.panel->SetPosition(canvasX0 + r.indent, y);
+            }
+            if (r.gutter && !m_options.rowModeList) {
+                r.gutter->SetVisible(false);
             }
             continue;
         }
@@ -617,23 +622,31 @@ void HarnessApp::Relayout() {
         }
         r.y = y;   // ★ v5：「代理」卡点击定位要用（见 `AppAgents.cpp::FocusAgent`）
         // ★ v5：归属竖线跟着**本行行高**走（建行期给不出高度，测量后才定）。
-        //   x 恒 0：行已整体右移，竖线因此落在"根行左边界 + 24"处，读作子层级。
+        //   autosize 模式下竖线挂在画布层（m_content）于 (canvasX, y)，下一可见行
+        //   同属该代理时多画 kRowGap 10px 无缝衔接成一条连续竖线；list 模式保留行内挂法。
         if (r.gutter) {
-            // ★★ 2026-11-04（实测记录，别再来一遍）：竖线**只能按行分段**。
-            //   试过「下一行同属该代理时把高度补上 kRowGap(10) 让两段在行距里
-            //   对接」，结果**一点效果都没有**——像素读数仍是「段长 36、间隔 10」。
-            //   根因：`Widget::Paint` 基类管线为**每个控件**发 `PushClip`
-            //   （`ECDI/src/Widget/Panel.cpp:45` 的注释明写），子控件超出父矩形
-            //   的部分一律不可见。故那 10px 是**死代码**，已撤。
-            //   ⇒ 想要一条连续的归属轨道，必须把竖线**提到画布层**（作为内容容器
-            //     的子控件按绝对 y 摆放），不能挂在行里。那会改动建行路径
-            //     （`CreateBlockRow`）与本函数"不改树结构"的既有纪律，
-            //     故列为待办而**不是**本轮顺手做。
-            r.gutter->SetSize(kAgentGutterW, rowH);
-            r.gutter->SetPosition(0, 0);
+            if (m_options.rowModeList) {
+                r.gutter->SetSize(kAgentGutterW, rowH);
+                r.gutter->SetPosition(0, 0);
+            } else {
+                r.gutter->SetVisible(true);
+                size_t nextVis = rowIdx + 1;
+                while (nextVis < m_sess->rows.size() && m_sess->rows[nextVis].foldHidden) {
+                    ++nextVis;
+                }
+                const bool connectNext =
+                    (nextVis < m_sess->rows.size() && !r.agentTag.empty() &&
+                     m_sess->rows[nextVis].agentTag == r.agentTag);
+                const bool focused = (!m_focusedAgentId.empty() && r.agentTag == m_focusedAgentId);
+                const int gw = kAgentGutterW + (focused ? 1 : 0);
+                const int gh = rowH + (connectNext ? kRowGap : 0);
+                r.gutter->SetSize(gw, gh);
+                r.gutter->SetPosition(canvasX, y);
+            }
         }
         y += rowH + kRowGap;
     }
+    ApplyFocusedAgentHighlight();
     for (PendingPromptView& view : m_pendingPromptViews) {
         RowRec& r = view.row;
         if (!r.panel) continue;
@@ -894,7 +907,19 @@ void HarnessApp::AdvanceThinkingSpinners() {
     bool needsPaint = false;
     for (RowRec& r : m_sess->rows) {
         if (!r.spinner) continue;
-        const bool want = r.reasoning && !r.ended;
+        bool want = false;
+        if (r.reasoning) {
+            want = !r.ended;
+        } else if (r.tool) {
+            bool jobRunning = false;
+            if (!r.blockId.empty()) {
+                auto jit = m_sess->jobsByCall.find(r.blockId);
+                if (jit != m_sess->jobsByCall.end() && jit->second.status == "running") {
+                    jobRunning = true;
+                }
+            }
+            want = !r.ended || jobRunning;
+        }
         if (r.spinner->IsSpinning() != want) {
             r.spinner->SetSpinning(want);
             needsPaint = true;   // 开/停各补一帧：停也要把弧擦掉
@@ -1062,11 +1087,15 @@ void HarnessApp::SyncHeadTitlesWidth() {
     //   仍用它的 10px 占位 ⇒ 必须留出来，否则到头来还是差 10px 把末钮挤出去。
     const int btnW = m_devMode ? 28 : 44;
     const int cap = m_devMode ? 300 : 480;
-    const int reserved = 2 * harness::kPadFrame + btnW * 3 + 8 * 4 + 10;
+    const int contExtra = (m_hud.continueBtn && m_hud.continueBtn->IsVisible())
+                              ? (m_hud.continueBtn->GetWidth() + 8)
+                              : 0;
+    const int reserved = 2 * harness::kPadFrame + btnW * 3 + 8 * 4 + 10 + contExtra;
 
     int tw = head->GetWidth() - reserved;
     if (tw > cap) tw = cap;
-    if (tw < 120) tw = 120;   // 兜底：宁可标题被裁，也不让三钮消失
+    const int minTw = std::max(48, std::min(120, head->GetWidth() - reserved));
+    if (tw < minTw) tw = minTw;   // 兜底：宁可标题被裁，也不让三钮/继续按钮消失
 
     bool dirty = false;
     if (m_hud.convTitle && m_hud.convTitle->GetWidth() != tw) {
@@ -1087,6 +1116,121 @@ void HarnessApp::SyncHeadTitlesWidth() {
     head->Arrange();                 // 再让 HorizontalLayout 按新 titles 宽排三钮
 }
 
+void HarnessApp::SyncResponsiveColumns(bool allowListRebuild) {
+    if (!m_window) return;
+    ECDI::Widget& root = m_window->GetRootWidget();
+    const int rootW = root.GetWidth();
+    const int rootH = root.GetHeight();
+    if (rootW <= 0 || rootH <= 0) return;
+
+    // 1) 顶栏模型胶囊窄窗适度收缩（<960 → 168，恢复 ≥960 → 200）。
+    if (m_hud.modelChip) {
+        const int wantChipW = (rootW < 960) ? 168 : 200;
+        if (m_hud.modelChip->GetWidth() != wantChipW) {
+            m_hud.modelChip->SetSize(wantChipW, m_hud.modelChip->GetHeight());
+            if (ECDI::Widget* bar = m_hud.modelChip->GetParent()) {
+                bar->Arrange();
+            }
+        }
+    }
+
+    // 2) 左右栏宽度按中栏保底宽（444px）响应式让位，绝不覆写 m_sidebarWidth / m_inspectorWidth。
+    constexpr int kMinMidW = 444;
+    constexpr int kMinSideW = 150;
+    constexpr int kMinInspW = 180;
+    const bool sideVis = m_hud.sidebar && m_hud.sidebar->IsVisible();
+    const bool inspVis = m_hud.inspector && m_hud.inspector->IsVisible();
+    const int splitW =
+        ((m_hud.leftSplitter && m_hud.leftSplitter->IsVisible()) ? m_hud.leftSplitter->GetWidth() : 0) +
+        ((m_hud.rightSplitter && m_hud.rightSplitter->IsVisible()) ? m_hud.rightSplitter->GetWidth() : 0);
+
+    int effSideW = sideVis ? std::max(kMinSideW, m_sidebarWidth) : 0;
+    int effInspW = inspVis ? std::max(kMinInspW, m_inspectorWidth) : 0;
+    const int availForSides = std::max(0, rootW - splitW - kMinMidW);
+    if (sideVis && inspVis) {
+        if (effSideW + effInspW > availForSides) {
+            const int excess = (effSideW + effInspW) - availForSides;
+            const int sideSlack = std::max(0, effSideW - kMinSideW);
+            const int inspSlack = std::max(0, effInspW - kMinInspW);
+            const int totalSlack = sideSlack + inspSlack;
+            if (totalSlack > 0) {
+                int cutSide = std::min(sideSlack, (excess * sideSlack + totalSlack / 2) / totalSlack);
+                int cutInsp = std::min(inspSlack, excess - cutSide);
+                int rem = excess - cutSide - cutInsp;
+                if (rem > 0 && sideSlack > cutSide) {
+                    const int extra = std::min(rem, sideSlack - cutSide);
+                    cutSide += extra;
+                    rem -= extra;
+                }
+                if (rem > 0 && inspSlack > cutInsp) {
+                    cutInsp += std::min(rem, inspSlack - cutInsp);
+                }
+                effSideW -= cutSide;
+                effInspW -= cutInsp;
+            }
+            if (effSideW + effInspW > availForSides) {
+                const int sum = effSideW + effInspW;
+                if (sum > 0) {
+                    effSideW = std::max(0, (availForSides * effSideW) / sum);
+                    effInspW = std::max(0, availForSides - effSideW);
+                }
+            }
+        }
+    } else if (sideVis && effSideW > availForSides) {
+        effSideW = std::max(0, availForSides);
+    } else if (inspVis && effInspW > availForSides) {
+        effInspW = std::max(0, availForSides);
+    }
+
+    bool mainDirty = false;
+    bool sideLayoutDirty = false;
+    bool inspDirty = false;
+    if (sideVis && m_hud.sidebar->GetWidth() != effSideW) {
+        m_hud.sidebar->SetSize(effSideW, m_hud.sidebar->GetHeight());
+        mainDirty = true;
+        sideLayoutDirty = true;
+    }
+    if (inspVis && m_hud.inspector->GetWidth() != effInspW) {
+        m_hud.inspector->SetSize(effInspW, m_hud.inspector->GetHeight());
+        mainDirty = true;
+        inspDirty = true;
+    }
+
+    // 3) 短窗口（rootH < 540，如 880×460）收紧侧栏竖向间距与内边距，恢复 ≥540 后还原。
+    const bool wantCompactVert = (rootH < 540);
+    if (m_hud.sidebar && m_sidebarCompactVert != wantCompactVert) {
+        m_sidebarCompactVert = wantCompactVert;
+        if (wantCompactVert) {
+            m_hud.sidebar->SetLayout(std::make_unique<ECDI::VerticalLayout>(2, true, 6));
+        } else {
+            m_hud.sidebar->SetLayout(std::make_unique<ECDI::VerticalLayout>(
+                harness::kRowGapSide, true, harness::kSidebarPad));
+        }
+        m_hud.sidebar->Arrange();
+        sideLayoutDirty = true;
+    }
+
+    if (mainDirty) {
+        if (ECDI::Widget* main = m_hud.sidebar ? m_hud.sidebar->GetParent()
+                                               : (m_hud.inspector ? m_hud.inspector->GetParent() : nullptr)) {
+            main->Arrange();
+        }
+    }
+    if (inspDirty) {
+        SyncInspectorLayout();
+    }
+    if (sideLayoutDirty) {
+        if (allowListRebuild && m_sess) {
+            RebuildSessionList();
+            RebuildHistoryList();
+            if (m_hud.sidebar) m_hud.sidebar->Arrange();
+        } else {
+            m_sidebarDirty = true;
+            m_historyDirty = true;
+        }
+    }
+}
+
 void HarnessApp::SetDevMode(bool dev) {
     if (m_devMode == dev) return;
     m_devMode = dev;
@@ -1095,6 +1239,7 @@ void HarnessApp::SetDevMode(bool dev) {
     // ★★ 2026-10-27：显隐改走唯一落地口（模型态与控件永远同进同退）。
     //   排版宽不放这里管——那是 `TranscriptLayoutWidth()` 的账，Relayout 会跟着算。
     ApplyInspectorVisibility();
+    SyncResponsiveColumns();
     if (m_hud.inspector) {
         if (ECDI::Widget* parent = m_hud.inspector->GetParent()) parent->Arrange();
     }
@@ -1304,7 +1449,12 @@ void HarnessApp::RefreshHud() {
     const bool stopEnabled = live ? (liveReady && active) : active;
     const bool isJournalReadOnly = (m_sess && m_sess->originKind == "journal");
     if (m_hud.continueBtn) {
+        const bool wasVis = m_hud.continueBtn->IsVisible();
         m_hud.continueBtn->SetVisible(isJournalReadOnly);
+        if (wasVis != isJournalReadOnly) {
+            if (ECDI::Widget* head = m_hud.continueBtn->GetParent()) head->Arrange();
+            SyncHeadTitlesWidth();
+        }
     }
     if (m_promptBar) {
         m_promptBar->SetReadOnlyMode(isJournalReadOnly);
@@ -1465,6 +1615,9 @@ void HarnessApp::RefreshHud() {
         //     改格式必须同批复核宽度）。
         if (size_t activeAgents = ActiveAgentCount(); activeAgents > 0) {
             chipText += " " + std::to_string(activeAgents) + "代理";
+        }
+        if (size_t activeJobs = ActiveJobCount(); activeJobs > 0) {
+            chipText += " " + std::to_string(activeJobs) + "后台";
         }
         m_hud.stateChip->SetText(chipText);
         m_hud.stateChip->SetTextColor(kDarkMuted);

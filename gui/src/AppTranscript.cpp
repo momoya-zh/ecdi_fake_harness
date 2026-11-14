@@ -73,8 +73,19 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     if (m_options.rowModeList) {
         stored.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
     }
-    m_sess->rows.push_back(stored);
     m_content->AddChild(std::move(row));
+    if (!m_options.rowModeList && stored.indent > 0 && m_content) {
+        // ★★ 把连续归属竖线提到画布层（m_content）：Panel 会 PushClip 到自身矩形，
+        //   挂在 row 内会被裁掉行间距里的那 10px；作为 m_content 的同级子控件并在 row
+        //   之后插入，才能跨 kRowGap 连续衔接且不被 UpgradeAssistantRowToMarkdown 清掉。
+        auto gutter = std::make_unique<ECDI::Panel>();
+        stored.gutter = gutter.get();
+        gutter->SetStyle(ECDI::PanelStyleOverride{
+            .background = Pick(m_options.probeContrast, kLine, kProbeInk),
+            .cornerRadius = 1.0f});
+        m_content->AddChild(std::move(gutter));
+    }
+    m_sess->rows.push_back(stored);
     // ★★ 2026-11-01（TODO-07 第二步）：存**下标**，不再存 `&rows.back()`。
     //   指向 deque 元素的指针在 push_back 后确实还有效（那条不变量成立），但它把
     //   「行表被清空」变成了一个**静默悬垂指针**；下标配合越界检查只会变成
@@ -166,6 +177,9 @@ void HarnessApp::ApplyJobToRow(RowRec& row, const std::string& callId) {
                                    JobStatusLabel(v.status));
         }
     }
+    if (row.spinner) {
+        row.spinner->SetSpinning(v.status == "running" && !m_options.HasAnyProbe());
+    }
     if (!row.label) return;
 
     std::string body;
@@ -204,20 +218,24 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     if (!block.agentId.empty()) {
         rec.indent = harness::internal::kAgentIndent;
         rec.agentTag = block.agentId;
-        auto gutter = std::make_unique<ECDI::Panel>();
-        rec.gutter = gutter.get();
-        gutter->SetStyle(ECDI::PanelStyleOverride{
-            .background = Pick(m_options.probeContrast, kLine, kProbeInk),
-            .cornerRadius = 1.0f});
-        panel->AddChild(std::move(gutter));
+        if (m_options.rowModeList) {
+            auto gutter = std::make_unique<ECDI::Panel>();
+            rec.gutter = gutter.get();
+            gutter->SetStyle(ECDI::PanelStyleOverride{
+                .background = Pick(m_options.probeContrast, kLine, kProbeInk),
+                .cornerRadius = 1.0f});
+            panel->AddChild(std::move(gutter));
+        }
     }
 
     if (block.kind == "user") {
         rec.alignRight = true;
+        rec.baseBorderW = m_options.probeContrast ? 0.0f : 1.0f;
+        rec.baseBorderColor = kUserBorder;
         panel->SetStyle(ECDI::PanelStyleOverride{
             .background = Pick(m_options.probeContrast, kUserBg, kProbeBg),
             .cornerRadius = kRadiusCard,
-            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .borderWidth = rec.baseBorderW,
             .borderColor = kUserBorder});
         // ★★ P4 G：user 行同款只读 TextBox 化（见下方 assistant 分支注释）。
         if (m_options.selectableRows) {
@@ -251,6 +269,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         //   （底色对齐画布 kContentBg、0 描边、0 圆角）。同一刀随后把工具行与权限门
         //   也拍平 ⇒ 整份转录里**只有用户消息**保留气泡（那是"我说的"，需要区分）。
         const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+        rec.baseBorderW = 0.0f;
+        rec.baseBorderColor = plainBg;
         panel->SetStyle(ECDI::PanelStyleOverride{
             .background = plainBg,
             .cornerRadius = 0.0f,
@@ -342,6 +362,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
         rec.ended = block.ended;
         rec.blockId = block.id;
         const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+        rec.baseBorderW = 0.0f;
+        rec.baseBorderColor = plainBg;
         panel->SetStyle(ECDI::PanelStyleOverride{
             .background = plainBg,
             .cornerRadius = 0.0f,
@@ -414,10 +436,12 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     //     给它一个**一等公民的位置**需要协议 v2（`kind:"reasoning"`），
     //     在那之前，中性渲染是「不误导」的最小正确行为。
     if (block.unknownKind) {
+        rec.baseBorderW = m_options.probeContrast ? 0.0f : 1.0f;
+        rec.baseBorderColor = kWarn;
         panel->SetStyle(ECDI::PanelStyleOverride{
             .background = Pick(m_options.probeContrast, kCardBg, kProbeBg),
             .cornerRadius = kRadiusCard,
-            .borderWidth = m_options.probeContrast ? 0.0f : 1.0f,
+            .borderWidth = rec.baseBorderW,
             .borderColor = kWarn});   // 琥珀描边：视觉上明确「这不是普通助手文本」
         // 前缀显式标出不认识的 kind；正文仍按原样展示（不丢内容）
         std::string shown = UnknownKindText(block);
@@ -442,6 +466,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     rec.tool = true;
     rec.blockId = block.id;
     const ECDI::Color toolPlainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+    rec.baseBorderW = 0.0f;
+    rec.baseBorderColor = toolPlainBg;
     panel->SetStyle(ECDI::PanelStyleOverride{
         .background = toolPlainBg,
         .cornerRadius = 0.0f,
@@ -458,13 +484,14 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     const Block* call = (block.kind == "tool_result")
                             ? m_sess->transcript.FindBlock(block.forId)
                             : nullptr;
-    // ★★ 2026-11-03 C 批（同思维链头）：Button → TipButton + 悬停/按下梯级。
-    //   根因同一条：整条 header 可点（BindCollapsible → ToggleRow）却零反馈。
-    auto header = std::make_unique<uikit::TipButton>(
+    // ★★ 运行中工具 / 长耗时 MCP / 后台作业：复用 SpinnerButton 在标题右侧画出运转指示
+    //   （开停由 AdvanceThinkingSpinners 与 ApplyJobToRow 统一驱动，探针模式静态关闭）。
+    auto header = std::make_unique<uikit::SpinnerButton>(
         ToolTitle(block, call), "点击展开 / 收起",
         [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
         [this](uikit::TipButton*) { HideTooltip(); });
     rec.headerBtn = header.get();
+    rec.spinner = header.get();
     // 结束且失败 ⇒ 标题转错误色（增量路径在 `block_end` 做，重建在这里做，同一判据）
     header->SetTextColor((block.ended && !block.ok)
                              ? kErrorDark
@@ -472,6 +499,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     {
         ECDI::Font f = harness::SansFont(14.0f);
         header->SetFont(f);
+        header->SetSpinFont(f);
     }
     header->SetStyle(ECDI::ButtonStyleOverride{
         .background = toolPlainBg,
@@ -1143,6 +1171,7 @@ void HarnessApp::ApplyFoldVisibility() {
         r.foldHidden = e.foldHidden;
         r.foldBar = (e.kind == TimelineEntry::Kind::Fold);
         if (r.panel) r.panel->SetVisible(!e.foldHidden);
+        if (r.gutter && !m_options.rowModeList) r.gutter->SetVisible(!e.foldHidden);
     }
 }
 

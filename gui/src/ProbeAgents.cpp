@@ -40,10 +40,13 @@
 #include <vector>
 
 #include "ECDI/Widget/Panel.h"
+#include "ECDI/Widget/ScrollView.h"
 
 // 跨 TU 共享符号（定义见 AppInternal.h）
+using harness::internal::kAgentGutterW;
 using harness::internal::kAgentIndent;
 using harness::internal::kCanvasPadX;
+using harness::internal::kRowGap;
 
 void HarnessApp::RunAgentProbe() {
     if (!m_sess) {
@@ -52,6 +55,7 @@ void HarnessApp::RunAgentProbe() {
     }
 
     AgentProbeRec rec;
+    rec.phase = "agent-layout";
     rec.rows = m_sess->rows.size();
 
     // 画布几何：整栏左边界与整栏内宽（与 Relayout 同源，各算一次而不是抄数）
@@ -148,7 +152,159 @@ void HarnessApp::RunAgentProbe() {
         rec.note = note;
     }
 
+    const int baseIndentPx = rec.indentPx;
     m_probeState.agentProbeLog.push_back(std::move(rec));
+
+    // ★ 相位 ②（正对照专享：有 agents cap ∧ 有真实代理块）：
+    //   验证连续归属竖线（跨 kRowGap 衔接）与代理卡定位高亮（含折叠自动展开与清理）。
+    if (m_sess->hasAgentsCap && !m_sess->transcript.Agents().empty()) {
+        std::map<std::string, size_t> counts;
+        std::string targetId;
+        for (const RowRec& r : m_sess->rows) {
+            if (!r.agentTag.empty()) ++counts[r.agentTag];
+        }
+        for (const auto& kv : counts) {
+            if (kv.second >= 2) { targetId = kv.first; break; }
+        }
+        if (targetId.empty() && !counts.empty()) {
+            targetId = counts.begin()->first;
+        }
+        AgentProbeRec rec2;
+        rec2.phase = "agent-gutter-and-focus";
+        rec2.rows = m_sess->rows.size();
+        rec2.attributedBlocks = m_sess->transcript.AgentBlocks();
+        rec2.agentViolations = m_sess->transcript.AgentViolations();
+        rec2.unknownTypes = m_sess->transcript.UnknownTypes();
+        rec2.cardRows = m_hud.agentList ? m_hud.agentList->GetChildCount() : 0;
+        rec2.cardVisible = m_hud.inspAgentCard && m_hud.inspAgentCard->IsVisible();
+        const AgentProbeRec& baseRec = m_probeState.agentProbeLog.front();
+        rec2.agentLines = baseRec.agentLines;
+        rec2.agents = baseRec.agents;
+        rec2.agentsEnded = baseRec.agentsEnded;
+        rec2.agentsOk = baseRec.agentsOk;
+
+        std::string detail;
+        auto fail = [&](const std::string& msg) {
+            if (!detail.empty()) detail += "; ";
+            detail += msg;
+        };
+        if (targetId.empty()) {
+            fail("no attributed agent rows found");
+        } else {
+            size_t foldIdx = static_cast<size_t>(-1);
+            bool wasExpanded = true;
+            for (const RowRec& r : m_sess->rows) {
+                if (r.agentTag != targetId) continue;
+                if (r.timelineIdx < m_sess->timeline.size()) {
+                    for (size_t i = r.timelineIdx + 1; i > 0; --i) {
+                        const size_t ti = i - 1;
+                        if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
+                            foldIdx = ti;
+                            wasExpanded = m_sess->timeline[ti].expanded;
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+            if (foldIdx != static_cast<size_t>(-1) && wasExpanded) {
+                ToggleTurn(foldIdx);  // 先人工折起，实测 FocusAgent 的自动展开链路
+            }
+            FocusAgent(targetId);
+
+            if (m_focusedAgentId != targetId) {
+                fail("m_focusedAgentId did not match " + targetId);
+            }
+            size_t focusBorders = 0;
+            size_t continuousBridges = 0;
+            size_t targetVisible = 0;
+            const RowRec* firstVis = nullptr;
+            for (size_t i = 0; i < m_sess->rows.size(); ++i) {
+                const RowRec& r = m_sess->rows[i];
+                if (!r.panel) continue;
+                if (r.agentTag == targetId) {
+                    if (r.foldHidden) fail("agent row stayed foldHidden after FocusAgent");
+                    if (!firstVis) firstVis = &r;
+                    ++targetVisible;
+                    if (r.focusHighlight) ++focusBorders;
+                    if (!r.gutter) {
+                        fail("target agent row missing gutter");
+                    } else if (!m_options.rowModeList) {
+                        if (r.gutter->GetParent() != m_content) {
+                            fail("gutter parent is not m_content");
+                        }
+                        if (!r.gutter->IsVisible()) fail("gutter not visible after FocusAgent");
+                        if (r.gutter->GetWidth() != kAgentGutterW + 1) {
+                            fail("focused gutter width != kAgentGutterW+1");
+                        }
+                        size_t nextVis = i + 1;
+                        while (nextVis < m_sess->rows.size() && m_sess->rows[nextVis].foldHidden) {
+                            ++nextVis;
+                        }
+                        if (nextVis < m_sess->rows.size() && m_sess->rows[nextVis].agentTag == targetId) {
+                            ++continuousBridges;
+                            if (r.gutter->GetHeight() != r.panel->GetHeight() + kRowGap) {
+                                fail("continuous gutter height != rowH+kRowGap");
+                            }
+                        } else if (r.gutter->GetHeight() != r.panel->GetHeight()) {
+                            fail("terminal agent gutter height != rowH");
+                        }
+                    }
+                } else if (r.focusHighlight) {
+                    fail("non-target row has focusHighlight");
+                }
+            }
+            if (targetVisible == 0) fail("no visible rows for target agent");
+            if (focusBorders != 1) {
+                fail("expected focusBorders==1 got " + std::to_string(focusBorders));
+            }
+            if (!m_options.rowModeList && counts[targetId] >= 2 && continuousBridges == 0) {
+                fail("expected >=1 continuous gutter bridge for multi-row agent");
+            }
+            if (firstVis && !firstVis->focusHighlight) {
+                fail("focusHighlight not on first visible row of target agent");
+            }
+            if (m_scroll && firstVis) {
+                const int maxY = m_scroll->GetMaxOffsetY();
+                const int wantOff = std::min(std::max(0, firstVis->y - 8), maxY);
+                if (m_scroll->GetScrollOffsetY() != wantOff) {
+                    fail("scrollOffsetY mismatch after FocusAgent");
+                }
+            }
+
+            ClearFocusedAgentHighlight();
+            if (!m_focusedAgentId.empty()) fail("m_focusedAgentId not cleared");
+            for (const RowRec& r : m_sess->rows) {
+                if (r.focusHighlight || r.gutterHighlight) {
+                    fail("highlight flag remained after ClearFocusedAgentHighlight");
+                }
+                if (r.gutter && !r.foldHidden && !m_options.rowModeList &&
+                    r.gutter->GetWidth() != kAgentGutterW) {
+                    fail("gutter width not restored to kAgentGutterW");
+                }
+            }
+            if (foldIdx != static_cast<size_t>(-1) && foldIdx < m_sess->timeline.size() &&
+                m_sess->timeline[foldIdx].expanded != wasExpanded) {
+                ToggleTurn(foldIdx);
+            }
+        }
+        for (const RowRec& r : m_sess->rows) {
+            if (!r.panel) continue;
+            if (r.indent > 0) {
+                ++rec2.indentRows;
+                if (r.gutter) ++rec2.gutterRows;
+                const int right = r.panel->GetX() + r.panel->GetWidth();
+                rec2.maxRight = std::max(rec2.maxRight, right);
+                if (right > colRight) ++rec2.overflowRows;
+            } else {
+                ++rec2.rootRows;
+            }
+        }
+        rec2.indentPx = baseIndentPx;
+        rec2.matched = detail.empty();
+        rec2.note = detail;
+        m_probeState.agentProbeLog.push_back(std::move(rec2));
+    }
     m_probeState.agentProbeDone = true;
 }
 

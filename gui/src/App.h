@@ -607,6 +607,10 @@ private:
         //     ★ 别名不给赋值：写路径只有 `hasMarkdown` 一个，避免两份状态各自漂移。
         bool hasMarkdown = false;                 // 本行是否走了复合 markdown 渲染
         [[nodiscard]] bool hasTable() const noexcept { return hasMarkdown; }
+        bool focusHighlight = false;              // 代理卡定位高亮态（Clear 时据此精确还原描边）
+        bool gutterHighlight = false;             // 归属竖线当前是否已涂成强调色（避免 Relayout 重复 SetStyle）
+        float baseBorderW = 0.0f;
+        ECDI::Color baseBorderColor{};
         std::vector<ECDI::Widget*> segments;      // 富内容段落/表格控件列表（非拥有）
         // ★★ 2026-11-08（富内容 B+）：**段元数据**（与 `segments` 一一对应）。
         //   ★ 为什么必须有：`Relayout` 原来的段间距是写死的（段落 +10、表格 +12），
@@ -1476,6 +1480,7 @@ private:
     //     文字就不会越过 titles 边界——本次的观感问题正是「Label 宽仍是自然宽」。
     //   ★ 自己 Arrange（变化时才）：调用方不必记得补，同值守卫保证稳态零成本。
     void SyncHeadTitlesWidth();
+    void SyncResponsiveColumns(bool allowListRebuild = false);
     void WriteSummary();
 
     // ★ 2026-10-25（Stage 4）：摘要各段搬进对应的 Probe*.cpp。
@@ -1729,6 +1734,9 @@ private:
     //     它们同步转 —— 那是期望行为（同一轮思考），也省掉每行一个阈值。
     static constexpr int kSpinStepTicks = 3;
     int m_spinTick = 0;
+    std::string m_focusedAgentId;
+    int m_focusedAgentPulse = 0;                   // 定位高亮剩余 tick（非探针态倒计时熄灭）
+    bool m_sidebarCompactVert = false;             // 左侧栏短窗口竖向紧凑态缓存
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
 
@@ -2035,8 +2043,13 @@ private:
     void AppendModeProbeSummary(std::string& json);
     // 已 start 且未 end 的子代理数（顶栏胶囊的「N代理」与卡片的"进行中"同源）。
     size_t ActiveAgentCount() const;
+    // 已 start 且未 end 的后台作业数（顶栏状态胶囊的「N后台」读数来源）。
+    size_t ActiveJobCount() const;
     // 把转录滚到某个子代理的第一行（`agentId` 空 = 不做任何事）。
     void FocusAgent(const std::string& agentId);
+    // 高亮指定子代理的第一条可见行及其连续归属竖线（点击右栏代理卡跳转时触发）。
+    void ApplyFocusedAgentHighlight();
+    void ClearFocusedAgentHighlight();
     // ★★ 协议 v5（2026-11-04）：子代理缩进/生命周期。判据与负对照见 ProbeAgents.cpp 头注。
     void RunAgentProbe();
     // ★★ 协议 v5（2026-11-05）：ask 提案卡。判据与负对照见 ProbeProposal.cpp 头注。

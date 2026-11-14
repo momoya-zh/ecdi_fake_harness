@@ -138,6 +138,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     leftSplitter->SetOnResize([this, mainPtr = main.get()](int newW) {
         m_sidebarWidth = newW;
         if (mainPtr) mainPtr->Arrange();
+        SyncResponsiveColumns();
         // ★★ 2026-11-03（P0，用户反馈「左侧栏过于紧凑」的根因之一）：
         //   列表里的行是**绝对定位**的子控件，`fillCrossAxis` 只拉 ScrollView 自身，
         //   不碰行 ⇒ 宽度一变就必须重建那一层的行，否则行宽永远停在首次建行时的值。
@@ -151,6 +152,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     });
     leftSplitter->SetOnDragEnd([this](int finalW) {
         m_sidebarWidth = finalW;
+        SyncResponsiveColumns();
         m_sidebarDirty = true;
         m_historyDirty = true;
         Relayout();
@@ -201,12 +203,14 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     rightSplitter->SetOnResize([this, mainPtr = main.get()](int newW) {
         m_inspectorWidth = newW;
         if (mainPtr) mainPtr->Arrange();
+        SyncResponsiveColumns();
         SyncInspectorLayout();
         SyncHeadTitlesWidth();
         RequestRepaint();
     });
     rightSplitter->SetOnDragEnd([this](int finalW) {
         m_inspectorWidth = finalW;
+        SyncResponsiveColumns();
         Relayout();
         SyncHeadTitlesWidth();
         RequestRepaint();

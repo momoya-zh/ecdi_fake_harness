@@ -576,6 +576,8 @@ void HarnessApp::SwitchToSession(size_t index) {
     // ⑤ HUD / 进度 / 使能全部跟着新会话刷新
     // ★ Step 1：活动项变了 ⇒ 侧栏的选中态也变了。同样只置脏、不在这里重建
     //   （本函数可能从行点击的回调里进来，那时拆列表 = 拆掉正在执行回调的那个 Button）。
+    m_focusedAgentId.clear();
+    m_focusedAgentPulse = 0;
     m_sidebarDirty = true;
     m_hudDirty = true;
     RefreshHud();
@@ -964,7 +966,12 @@ void HarnessApp::RebuildSessionList(const std::vector<size_t>* orderOverride) {
     //   ★ 探针零扰动：`--sidebar-probe`/`--sidebarGeom` 断的是「建了哪些行 + 行高 +
     //     行宽」，不钉视口高度；且探针跑在固定窗口高下，读数确定。
     const int rootH = m_window ? static_cast<int>(m_window->GetRootWidget().GetHeight()) : 0;
-    const int maxRows = std::min(10, kSidebarMaxRows + std::max(0, (rootH - 700) / 44));
+    int maxRows = std::min(10, kSidebarMaxRows + std::max(0, (rootH - 700) / 44));
+    if (rootH > 0 && rootH < 540) {
+        maxRows = 1;
+    } else if (rootH > 0 && rootH < 640) {
+        maxRows = std::min(maxRows, 2);
+    }
     const int visibleH = std::min(totalH, maxRows * (kSidebarRowH + kSidebarRowGap)
                                               - kSidebarRowGap);
     // ★ 先 SetSize（决定 viewport）再 SetContentExtent（决定要不要出条）：

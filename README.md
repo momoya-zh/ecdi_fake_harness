@@ -610,8 +610,8 @@ MCP 可见性与 HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`
    成立——这是把仓库变成可自证的第一步。
 3. **agent 质量读数**：12–20 任务 × 可判定验收的矩阵（不是只报成功率）。
 4. **TODO-06 门可信度**：`out.exists()` → 源行调用链（见上表）。
-5. 功能侧：`notifications/progress` 的 token 往返 + GUI 进度面、OAuth 动态注册、
-   连续归属竖线、代理卡定位高亮。
+5. 功能侧：`notifications/progress` 的 token 往返 + GUI 进度面、OAuth 动态注册
+   （~~连续归属竖线、代理卡定位高亮~~已补齐：画布层连续归属轨道 + 点击展开定位高亮 + 窄短最小窗自适应）。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
 ★ 命名说明：仓库名里的 `fake` 是历史产物（它出生时只有假 core）。改名会带来链接重定向与
