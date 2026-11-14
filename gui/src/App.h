@@ -318,6 +318,7 @@ private:
         //   ★ 句柄进 Hud 的理由同 `sidebarToggle`：重建后要能被探针摸到并合成点击。
         ECDI::Button* themeToggle = nullptr;    // 顶栏：深色/浅色切换
         ECDI::Panel* inspector = nullptr;       // 右栏检查器容器（可切换显隐）
+        ECDI::ScrollView* inspectorSv = nullptr; // 右栏检查器内部滚动区
         SplitterBar* rightSplitter = nullptr;  // 右分割条（跟随检查器显隐）
         // ★★ 2026-10-20：中栏头 `≡` = 检查器显隐钮。此前它是**无判据**的装饰回调：
         //   一旦 `parent->Arrange()` 漏掉，屏幕会把检查器留在原位而探针全绿。
@@ -1442,6 +1443,7 @@ private:
     void ApplyUiStateToView(Session& s);
 
     void Relayout();
+    void SyncInspectorLayout();
     void FollowTailIfPinned();
     // ★★ P4 Phase C（2026-10-25）：空状态引导。RefreshEmptyGuide 幂等——
     //   空且无 → 建；非空且有 → 拆（RemoveChild 丢弃所有权）；空且有 → 宽度跟随。
@@ -2010,13 +2012,13 @@ private:
     // ★★ 协议 v5（2026-11-04）：右栏「代理」卡（实现全在 `AppAgents.cpp`）。
     //   `BuildAgentCard` 由 `BuildInspector` 末尾一行调用；`RebuildAgentList`
     //   在每次 `agent` 生命周期消息到达时重建列表（代理数是动态的）。
-    void BuildAgentCard(ECDI::Panel& insp, int rowH);
+    void BuildAgentCard(ECDI::Widget& insp, int rowH);
     void RebuildAgentList();
     // ★★ 2026-11-06：右栏「MCP」卡与副标（实现全在 `AppMcp.cpp`）。
     //   状态来源：`hello.mcp`（启动快照）+ `t:"mcp"`（运行期权威覆盖，2026-11-07
     //   §3.14）——两者以最近一次收到的为准；空载荷 ⇒ `RebuildMcpCard` 隐藏卡片、
     //   `McpStatusText` 返回空串（副标不拼 MCP 段）。
-    void BuildMcpCard(ECDI::Panel& insp, int rowH);
+    void BuildMcpCard(ECDI::Widget& insp, int rowH);
     void RebuildMcpCard();
     std::string McpStatusText() const;
     // ★ 2026-11-07（§3.14）：把承载 MCP 状态字段的对象（hello 的 `mcp` 子对象，

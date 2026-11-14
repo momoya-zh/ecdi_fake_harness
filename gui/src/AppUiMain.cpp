@@ -201,6 +201,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
     rightSplitter->SetOnResize([this, mainPtr = main.get()](int newW) {
         m_inspectorWidth = newW;
         if (mainPtr) mainPtr->Arrange();
+        SyncInspectorLayout();
         SyncHeadTitlesWidth();
         RequestRepaint();
     });
@@ -1267,6 +1268,9 @@ void HarnessApp::BuildComposer() {
     composer->SetOnImport([this] {
         HandleImportFile();
     });
+    composer->SetOnImportTip(
+        [this](uikit::TipButton* tb) { ShowTooltipFor(tb, tb->tip()); },
+        [this](uikit::TipButton*) { HideTooltip(); });
     m_counting->AddChild(std::move(composer));
 }
 
@@ -1280,11 +1284,22 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     insp->SetStyle(ECDI::PanelStyleOverride{
         .background = kInspBg,
         .borderWidth = 1.0f, .borderColor = kLine});
+    // ★ UI #1：检视栏容器外层留 1px 描边内边距，内部铺满 ScrollView；
+    //   各卡片摆进 ScrollView::GetContentView()，小屏/展开多卡时竖向可滚，
+    //   宽度随 SyncInspectorLayout() 扣掉 kScrollBarThickness 自动回弹。
+    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true, 1));
+    auto sv = std::make_unique<ECDI::ScrollView>();
+    m_hud.inspectorSv = sv.get();
+    sv->SetSize(std::max(1, m_inspectorWidth - 2), 100);
+    sv->SetStretch(1);
+    sv->SetScrollStep(32);
+    ApplyCompactScrollBars(*sv);
+    ECDI::Widget& body = sv->GetContentView();
     // ★ 2026-11-02 疏松（用户实测「右侧栏过于紧凑」）：卡片间距 14→16；
     //   卡内边距 10→12、卡内行距 6→8；行盒统一 kInspRowH=22
     //   （原 16/14 经 uikit::Row 兜底实为 19，行间净距仅 6px）。
     //   六张卡的硬编码高已按新几何逐张重算（算式见各卡注释）。
-    insp->SetLayout(std::make_unique<ECDI::VerticalLayout>(16, true, harness::kPadFrame));
+    body.SetLayout(std::make_unique<ECDI::VerticalLayout>(16, true, harness::kPadFrame - 1));
     constexpr int kInspRowH = 22;
 
     auto makeCard = [](int h) {
@@ -1318,7 +1333,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         kvRow(*card, "重绘", &m_hud.evalPaints);
         kvRow(*card, "命令/帧", &m_hud.probeCmds);
         kvRow(*card, "执行", &m_hud.probeExec);
-        insp->AddChild(std::move(card));
+        body.AddChild(std::move(card));
     }
 
     {
@@ -1337,7 +1352,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
             list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
             card->AddChild(std::move(list));
         }
-        insp->AddChild(std::move(card));
+        body.AddChild(std::move(card));
     }
 
     {
@@ -1427,27 +1442,14 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         }
         urow("输入", &m_hud.usageInV, &m_usageBarIn, harness::kDarkAccent);
         urow("输出", &m_hud.usageOutV, &m_usageBarOut, harness::kDarkAccent);
-        insp->AddChild(std::move(card));
+        body.AddChild(std::move(card));
     }
 
-    // ★★ 协议 v5（2026-11-04）：右栏「代理」卡。**就这一行**——实现全在
-    //   `AppAgents.cpp`（见方案 §约束：本文件只允许这一处变动）。
-    //   ★ 位置：紧跟「用量」之后，**不是**方案原文说的"BuildInspector 末尾"。
-    //     改位置的理由是实测出来的：检视栏是固定列高、**不滚动**（`VerticalLayout`
-    //     直接排在 `insp` 上），加在末尾时整张卡落在窗口下边界之下——截图实证
-    //     只剩「代理」标题与「主代理」一行露头，两个子代理行全在视野外
-    //     （`.scratch/agents_inspector.png`，1920×960 窗口）。而探针读的是
-    //     `cardRows`/`cardVisible`，**看不见"被挤出可视区"这件事**——它是
-    //     "跑过 ≠ 判过"的又一例，只能靠看图发现。
-    //   ★ 放在这里的代价：开发者模式下它后面还有「协议健康」「权限历史」两张
-    //     诊断卡，窗口高度不足时被挤下去的是它们（用户模式下「渲染探针」与
-    //     「协议健康」默认隐藏，一屏放得下）。检视栏该不该可滚动是另一个议题，
-    //     已登记为待办，不在本轮顺手改。
-    BuildAgentCard(*insp, kInspRowH);
+    BuildAgentCard(body, kInspRowH);
 
     // ★★ 2026-11-06：右栏「MCP」卡（hello.mcp，协议 §3.1 可选字段）。
     //   数据只来自 core；默认隐藏，有状态时由 RebuildMcpCard 显形。
-    BuildMcpCard(*insp, kInspRowH);
+    BuildMcpCard(body, kInspRowH);
 
     {
         // ── ★★ L3（2026-10-28）：记忆卡片（docs/session-persistence-decisions.md §8）──
@@ -1462,7 +1464,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         list->SetSize(190, 50);
         list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
         card->AddChild(std::move(list));
-        insp->AddChild(std::move(card));
+        body.AddChild(std::move(card));
     }
 
     {
@@ -1490,7 +1492,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         hrow(&m_hud.healthSeq);
         hrow(&m_hud.healthViol);
         hrow(&m_hud.healthKind, "未知 kind · 0");
-        insp->AddChild(std::move(card));
+        body.AddChild(std::move(card));
     }
 
     {
@@ -1508,8 +1510,9 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
             row->AddChild(std::move(what));
             card->AddChild(std::move(row));
         }
-        insp->AddChild(std::move(card));
+        body.AddChild(std::move(card));
     }
 
+    insp->AddChild(std::move(sv));
     main.AddChild(std::move(insp));
 }

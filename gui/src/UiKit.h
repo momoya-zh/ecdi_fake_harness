@@ -367,7 +367,7 @@ private:
 //   按钮的圆角底 / hover 120ms 色过渡 / pressed 态 / 点击消费 全在 Button 里实现了，
 //   纯 Widget 派生要把这些重写一遍（ThemedCaptionButton 那么做是因为系统 CaptionButton
 //   是 final 且无样式 API，它必须整体替换——**不是**通用范式）。
-enum class Icon { None, Hamburger, PanelLeft, PanelRight, Share, Dots, Sun, Moon, ChevronDown };
+enum class Icon { None, Hamburger, PanelLeft, PanelRight, Share, Dots, Sun, Moon, ChevronDown, Plus };
 
 class IconButton : public TipButton {
 public:
@@ -390,7 +390,10 @@ protected:
     void OnPaint(ECDI::PaintContext& ctx, int x, int y) override {
         TipButton::OnPaint(ctx, x, y);   // 底色 / 圆角 / 焦点框 / 文本 全归基类
         if (m_icon == Icon::None || !GetText().empty()) return;
-        DrawGlyph(ctx, x, y, m_hovered ? m_inkHot : m_ink);
+        const ECDI::Color& ink = !IsEnabled()
+                                     ? harness::kBtnDisabledInk
+                                     : (m_hovered ? m_inkHot : m_ink);
+        DrawGlyph(ctx, x, y, ink);
     }
 
     // ★ Button 的 m_pressed / m_hovered 是 private ⇒ 图标色只能自己记
@@ -450,6 +453,10 @@ private:
         case Icon::ChevronDown:
             line(-4, -1.5f, 0, 2.5f); line(0, 2.5f, 4, -1.5f);
             break;
+        case Icon::Plus:
+            line(-5.0f, 0.0f, 5.0f, 0.0f);
+            line(0.0f, -5.0f, 0.0f, 5.0f);
+            break;
         case Icon::None:
             break;
         }
@@ -459,6 +466,33 @@ private:
     bool m_hovered = false;
     ECDI::Color m_ink    = harness::kDarkMuted;   // 常态
     ECDI::Color m_inkHot = harness::kDarkInk;     // hover
+};
+
+// ── 附件胶囊矢量文档图标（替代 emoji 📄，全字体后端一致清晰）─────────────────
+class FileBadge : public ECDI::Widget {
+public:
+    FileBadge() { SetSize(16, 18); }
+
+protected:
+    void OnPaint(ECDI::PaintContext& ctx, int x, int y) override {
+        const ECDI::Color ink = harness::kDarkAccent;
+        const float cx = static_cast<float>(x) + GetWidth() * 0.5f;
+        const float cy = static_cast<float>(y) + GetHeight() * 0.5f;
+        auto pt = [&](float dx, float dy) { return ECDI::Point{ cx + dx, cy + dy }; };
+        auto line = [&](float x1, float y1, float x2, float y2) {
+            ctx.DrawLine(pt(x1, y1), pt(x2, y2), 1.0f, ink);
+        };
+        // 10x12 折角文档外框 + 两条内容线
+        line(-4.5f, -6.0f,  1.5f, -6.0f);
+        line( 1.5f, -6.0f,  4.5f, -3.0f);
+        line( 4.5f, -3.0f,  4.5f,  6.0f);
+        line( 4.5f,  6.0f, -4.5f,  6.0f);
+        line(-4.5f,  6.0f, -4.5f, -6.0f);
+        line( 1.5f, -6.0f,  1.5f, -3.0f);
+        line( 1.5f, -3.0f,  4.5f, -3.0f);
+        line(-2.5f,  0.0f,  2.5f,  0.0f);
+        line(-2.5f,  3.0f,  2.0f,  3.0f);
+    }
 };
 
 } // namespace uikit

@@ -268,12 +268,37 @@ void HarnessApp::RunModeProbe() {
             }
             m_probeState.modeProbeLog.push_back(std::move(rec));
 
-            // 复原默认偏好
+            // 复原默认偏好并验证检视栏竖向可滚、零横向溢出
             m_devInspectorVisible = true;
             m_userInspectorVisible = false;
             m_inspectorVisible = true;
             ApplyInspectorVisibility();
             SetDevMode(true);
+            if (m_hud.inspector) {
+                if (ECDI::Widget* p = m_hud.inspector->GetParent()) p->Arrange();
+            }
+            Relayout();
+
+            {
+                ModeProbeRec srec = snap("inspector-scroll");
+                bool sok = false;
+                std::string snote;
+                if (!m_hud.inspectorSv) {
+                    snote = "FAIL: inspectorSv is null";
+                } else {
+                    const int maxY = m_hud.inspectorSv->GetMaxOffsetY();
+                    const int maxX = m_hud.inspectorSv->GetMaxOffsetX();
+                    m_hud.inspectorSv->SetContentOffset(0, maxY);
+                    const int scrolledY = m_hud.inspectorSv->GetScrollOffsetY();
+                    m_hud.inspectorSv->SetContentOffset(0, 0);
+                    sok = (maxY > 0 && maxX == 0 && scrolledY == maxY);
+                    snote = "maxY=" + std::to_string(maxY) + " maxX=" + std::to_string(maxX) +
+                            " scrolledY=" + std::to_string(scrolledY);
+                }
+                srec.matched = sok;
+                srec.note = snote;
+                m_probeState.modeProbeLog.push_back(std::move(srec));
+            }
 
             m_probeState.modeProbeDone = true;
             if (m_application) {

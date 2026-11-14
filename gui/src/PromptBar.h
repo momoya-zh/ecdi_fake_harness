@@ -28,11 +28,16 @@ struct StagedAttachment {
     long long   fileSizeBytes = 0;
 };
 
+namespace uikit {
+class TipButton;
+}
+
 class PromptBar : public ECDI::Panel {
 public:
     using Action = std::function<void(const std::string&)>;
     using ContinueAction = std::function<void()>;
     using ImportAction = std::function<void()>;
+    using ImportTipFn = std::function<void(uikit::TipButton*)>;
 
     PromptBar();
 
@@ -40,8 +45,13 @@ public:
     void SetOnStop(Action action) { m_onStop = std::move(action); }
     void SetOnContinue(ContinueAction action) { m_onContinue = std::move(action); }
     void SetOnImport(ImportAction action) { m_onImport = std::move(action); }
+    void SetOnImportTip(ImportTipFn onEnter, ImportTipFn onLeave) {
+        m_onImportEnter = std::move(onEnter);
+        m_onImportLeave = std::move(onLeave);
+    }
 
     ECDI::TextBox* input() const { return m_input; }
+    ECDI::Label* hintLabel() const { return m_hint; }
     ECDI::Button* continueButton() const { return m_continue; }
     ECDI::Button* importButton() const { return m_import; }
     ECDI::Panel* chipPanel() const { return m_chipPanel; }
@@ -145,6 +155,7 @@ protected:
 
 private:
     void LayoutChildren();
+    void UpdateHintLayout(int hintX, int hintY, int buttonsLeft);
 
     // 禁用/启用态配色切换（灰化由应用侧自备——框架不提供 disabled 绘制）
     void ApplySendStyle(bool enabled);
@@ -152,19 +163,22 @@ private:
     void ApplyImportStyle(bool enabled);
 
     ECDI::TextBox* m_input = nullptr;   // 非拥有——树所有
-    ECDI::Label* m_hint = nullptr;      // 非拥有——"Enter 发送 / Shift+Enter 换行"
+    ECDI::Label* m_hint = nullptr;      // 非拥有——"Enter 发送 · Shift+Enter 换行"
     ECDI::Button* m_send = nullptr;     // 非拥有
     ECDI::Button* m_stop = nullptr;     // 非拥有
     ECDI::Button* m_continue = nullptr; // 非拥有——只读会话继续按钮
-    ECDI::Button* m_import = nullptr;   // 非拥有——"导入" 按钮
+    ECDI::Button* m_import = nullptr;   // 非拥有——紧凑矢量 "+" 导入按钮
     ECDI::Panel* m_chipPanel = nullptr; // 非拥有——附件胶囊卡片
-    ECDI::Label* m_chipIcon = nullptr;  // 非拥有——图标 "📄"
+    ECDI::Widget* m_chipIcon = nullptr; // 非拥有——矢量文档徽标
     ECDI::Label* m_chipLabel = nullptr; // 非拥有——文件名与大小
     ECDI::Button* m_chipRemoveBtn = nullptr; // 非拥有——移除按钮 "✕"
     Action m_onSend;
     Action m_onStop;
     ContinueAction m_onContinue;
     ImportAction m_onImport;
+    ImportTipFn m_onImportEnter;
+    ImportTipFn m_onImportLeave;
+    std::string m_fullHintText = "Enter 发送 · Shift+Enter 换行";
     std::optional<StagedAttachment> m_attachment;
     bool m_isReadOnly = false;
     bool m_cardFocused = false;

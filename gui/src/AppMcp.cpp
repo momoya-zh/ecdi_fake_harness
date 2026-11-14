@@ -70,7 +70,7 @@ std::string HarnessApp::McpStatusText() const {
 }
 
 // ── 建卡（由 `BuildInspector` 在「代理」卡之后调用）──────────────────
-void HarnessApp::BuildMcpCard(ECDI::Panel& insp, int rowH) {
+void HarnessApp::BuildMcpCard(ECDI::Widget& insp, int rowH) {
     auto card = std::make_unique<ECDI::Panel>();
     m_hud.inspMcpCard = card.get();
     card->SetVisible(false);   // 有 hello.mcp 时才显形（见 RebuildMcpCard）
@@ -103,7 +103,7 @@ void HarnessApp::RebuildMcpCard() {
     const bool show = s && s->mcp.has;
     if (m_hud.inspMcpCard->IsVisible() != show) {
         m_hud.inspMcpCard->SetVisible(show);
-        if (m_hud.inspector) m_hud.inspector->Arrange();
+        SyncInspectorLayout();
     }
     if (!show) return;
 
@@ -150,6 +150,6 @@ void HarnessApp::RebuildMcpCard() {
     m_hud.inspMcpCard->SetSize(200, 49 + listH);
     m_hud.mcpList->SetSize(190, listH);
     m_hud.inspMcpCard->Arrange();
-    if (m_hud.inspector) m_hud.inspector->Arrange();
+    SyncInspectorLayout();
     RequestRepaint();
 }

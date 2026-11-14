@@ -178,6 +178,7 @@ void HarnessApp::Relayout() {
         }
         m_content->Arrange();
         m_scroll->UpdateContentExtent();
+        SyncInspectorLayout();
         return;
     }
 
@@ -650,6 +651,43 @@ void HarnessApp::Relayout() {
     //   scroll 子表里，视口坐标不随窗口变，所以没有这条需求）。
     //   `SetPosition` 有同值守卫 ⇒ 空闲帧零代价（不会置脏、不会多一次重绘）。
     RepositionModelPopup();
+    SyncInspectorLayout();
+}
+
+void HarnessApp::SyncInspectorLayout() {
+    if (!m_hud.inspector || !m_hud.inspectorSv || !m_hud.inspector->IsVisible()) return;
+    m_hud.inspector->Arrange();
+    ECDI::ScrollView* sv = m_hud.inspectorSv;
+    ECDI::Widget& body = sv->GetContentView();
+    const int availW = std::max(1, sv->GetWidth());
+    const int availH = std::max(1, sv->GetHeight());
+    constexpr int kBodyPad = harness::kPadFrame - 1;
+
+    auto measureBottom = [&]() -> int {
+        int maxBottom = 0;
+        const size_t n = body.GetChildCount();
+        for (size_t i = 0; i < n; ++i) {
+            const ECDI::Widget* child = body.GetChildAt(i);
+            if (!child || !child->IsVisible()) continue;
+            maxBottom = std::max(maxBottom, child->GetY() + child->GetHeight());
+        }
+        return (maxBottom > 0) ? (maxBottom + kBodyPad) : 0;
+    };
+
+    body.SetSize(availW, availH);
+    body.Arrange();
+    const int initialH = measureBottom();
+    // 垂直条实际占位 = kScrollBarThickness + 2（kBarInset，见 UiCommon.cpp）。
+    constexpr int kVBarFootprint = harness::internal::kScrollBarThickness + 2;
+    const int finalW = (initialH > availH)
+                           ? std::max(1, availW - kVBarFootprint)
+                           : availW;
+    if (finalW != availW) {
+        body.SetSize(finalW, availH);
+        body.Arrange();
+    }
+    const int contentH = measureBottom();
+    sv->SetContentExtent(finalW, contentH);
 }
 
 void HarnessApp::FollowTailIfPinned() {
@@ -933,8 +971,8 @@ void HarnessApp::ApplyDevModeVisibility() {
                                            m_sess->transcript.UnknownTypes() > 0 ||
                                            m_sess->transcript.UnknownKinds() > 0);
     setVis(m_hud.inspHealthCard, m_devMode || hasHealthIssue, inspDirty);
-    if (inspDirty && m_hud.inspector) {
-        m_hud.inspector->Arrange();
+    if (inspDirty) {
+        SyncInspectorLayout();
     }
 
     // ⑤ 中栏头部操作钮与 ··· 菜单项：用户模式下给更直观的中文标签。
@@ -1482,7 +1520,7 @@ void HarnessApp::RefreshHud() {
                                m_sess->transcript.UnknownKinds() > 0);
         if (m_hud.inspHealthCard->IsVisible() != hasIssue) {
             m_hud.inspHealthCard->SetVisible(hasIssue);
-            if (m_hud.inspector) m_hud.inspector->Arrange();
+            SyncInspectorLayout();
         }
     }
     if (HudTouch("evalPaints"), m_hud.evalPaints) {
@@ -1642,7 +1680,7 @@ void HarnessApp::RebuildMemoryList() {
     if (m_hud.inspMemoryCard) {
         if (m_hud.inspMemoryCard->IsVisible() != hasMemories) {
             m_hud.inspMemoryCard->SetVisible(hasMemories);
-            if (m_hud.inspector) m_hud.inspector->Arrange();
+            SyncInspectorLayout();
         }
     }
     if (!hasMemories) return;
@@ -1689,9 +1727,7 @@ void HarnessApp::RebuildMemoryList() {
         m_hud.memoryList->SetSize(190, static_cast<int>(s->memories.size()) * 20);
         m_hud.inspMemoryCard->Arrange();
     }
-    if (m_hud.inspector) {
-        m_hud.inspector->Arrange();
-    }
+    SyncInspectorLayout();
     RequestRepaint();
 }
 

@@ -306,6 +306,39 @@ void HarnessApp::RunImportProbe() {
         add("import-utf8-name", ok, "name='" + displayName + "' rel='" + relPath + "' fileExists=" + std::to_string(fileExists));
     }
 
+    // 7. import-narrow-layout：紧凑导入钮 + 窄宽下提示自适应且不碰撞按钮
+    if (m_promptBar && m_promptBar->importButton() && m_promptBar->hintLabel()) {
+        const int origW = m_promptBar->GetWidth();
+        const int origH = m_promptBar->GetHeight();
+        ECDI::Button* imp = m_promptBar->importButton();
+        ECDI::Label* hint = m_promptBar->hintLabel();
+
+        const bool compactW = (imp->GetWidth() == 28);
+
+        m_promptBar->SetSize(340, origH);
+        const bool midVisible = hint->IsVisible();
+        const bool midNoOverlap = (hint->GetX() + hint->GetWidth() + 4 <= imp->GetX());
+        const bool midShortText = (hint->GetText() == "Enter 发送");
+
+        m_promptBar->SetSize(220, origH);
+        const bool narrowHidden = !hint->IsVisible();
+
+        m_promptBar->SetSize(std::max(origW, 600), origH);
+        const bool wideVisible = hint->IsVisible();
+        const bool wideFullText = (hint->GetText() == "Enter 发送 · Shift+Enter 换行");
+        const bool wideNoOverlap = (hint->GetX() + hint->GetWidth() + 4 <= imp->GetX());
+
+        m_promptBar->SetSize(origW, origH);
+
+        const bool ok = compactW && midVisible && midNoOverlap && midShortText &&
+                        narrowHidden && wideVisible && wideFullText && wideNoOverlap;
+        add("import-narrow-layout", ok,
+            "impW=" + std::to_string(imp->GetWidth()) +
+            " mid=" + std::to_string(midVisible && midNoOverlap && midShortText) +
+            " narrowHidden=" + std::to_string(narrowHidden) +
+            " wide=" + std::to_string(wideVisible && wideFullText && wideNoOverlap));
+    }
+
     // 恢复状态并清理临时目录
     if (m_sess) m_sess->workspacePath = origWs;
     m_probeState.importProbeFilePath.clear();

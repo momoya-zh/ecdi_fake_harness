@@ -18,6 +18,7 @@
 
 #include "AppInternal.h"   // harness::internal::kScrollBarThickness（全仓条宽唯一真相源）
 #include "Theme.h"
+#include "UiKit.h"
 
 #include <algorithm>
 #include <cmath>
@@ -222,7 +223,7 @@ PromptBar::PromptBar() {
 
     // ★ 2026-10-21：提示行如实写出手册（改前写「点击发送提交」，只描述了当时
     //   唯一的发送方式，等于把缺陷当说明）。
-    auto hint = std::make_unique<ECDI::Label>("Enter 发送 · Shift+Enter 换行");
+    auto hint = std::make_unique<ECDI::Label>(m_fullHintText);
     m_hint = hint.get();
     m_hint->SetTextColor(harness::kDarkMuted);
     m_hint->SetFont(harness::SansFont(12.5f));
@@ -259,8 +260,15 @@ PromptBar::PromptBar() {
     });
     AddChild(std::move(stop));
 
-    // ★ 富内容 §C：文件导入按钮
-    auto imp = std::make_unique<ECDI::Button>("导入");
+    // ★ 富内容 §C：文件导入按钮（紧凑矢量 "+" + tooltip）
+    auto imp = std::make_unique<uikit::IconButton>(
+        uikit::Icon::Plus, "导入文件到工作区（最大 10MB）",
+        [this](uikit::TipButton* tb) {
+            if (m_onImportEnter) m_onImportEnter(tb);
+        },
+        [this](uikit::TipButton* tb) {
+            if (m_onImportLeave) m_onImportLeave(tb);
+        });
     m_import = imp.get();
     m_import->SetTextColor(harness::kDarkMuted);
     m_import->SetFont(harness::SansFont(14.0f));
@@ -285,11 +293,8 @@ PromptBar::PromptBar() {
         .borderColor = harness::kLine});
     m_chipPanel->SetVisible(false);
 
-    auto icon = std::make_unique<ECDI::Label>("\xF0\x9F\x93\x84"); // 📄 U+1F4C4
+    auto icon = std::make_unique<uikit::FileBadge>();
     m_chipIcon = icon.get();
-    m_chipIcon->SetTextColor(harness::kDarkAccent);
-    m_chipIcon->SetFont(harness::SansFont(12.0f));
-    m_chipIcon->SetSize(16, 18);
     m_chipIcon->SetPosition(6, 3);
     m_chipPanel->AddChild(std::move(icon));
 
@@ -500,18 +505,18 @@ void PromptBar::SetReadOnlyMode(bool readOnly) {
         m_input->SetReadOnly(readOnly);
         m_input->SetEnabled(!readOnly);
     }
+    LayoutChildren();
 }
 
 void PromptBar::SetHint(const std::string& text, const ECDI::Color& color) {
+    m_fullHintText = text;
     if (!m_hint) return;
-    if (m_hint->GetText() != text) {
-        m_hint->SetText(text);
-    }
     // ★★ 缺口 4 闭合：SetTextColor 底层调 SetStyle，会无条件 Invalidate；
     //   加同值守卫避免 RefreshHud 每 tick 触发无谓重绘。
     if (m_hint->GetTextColor() != color) {
         m_hint->SetTextColor(color);
     }
+    LayoutChildren();
 }
 
 int PromptBar::MaxInputHeight() {
@@ -586,11 +591,32 @@ bool PromptBar::SyncInputHeight() {
     return true;
 }
 
+void PromptBar::UpdateHintLayout(int hintX, int hintY, int buttonsLeft) {
+    if (!m_hint) return;
+    const int availW = buttonsLeft - 8 - hintX;
+    if (availW < 40) {
+        if (m_hint->IsVisible()) m_hint->SetVisible(false);
+        return;
+    }
+    if (!m_hint->IsVisible()) m_hint->SetVisible(true);
+    m_hint->SetPosition(hintX, hintY);
+    m_hint->SetSize(std::min(340, availW), 16);
+    static constexpr const char* kDefaultHint = "Enter 发送 · Shift+Enter 换行";
+    const std::string shown = (availW < 210 && m_fullHintText == kDefaultHint)
+                                  ? std::string("Enter 发送")
+                                  : m_fullHintText;
+    if (m_hint->GetText() != shown) {
+        m_hint->SetText(shown);
+    }
+}
+
 void PromptBar::LayoutChildren() {
     if (!m_input) return;
-    const int buttonW = 64;
-    const int padX = 12;
-    const int cardInnerPad = 8;
+    constexpr int buttonW = 64;
+    constexpr int importW = 28;
+    constexpr int btnH = 28;
+    constexpr int padX = 12;
+    constexpr int cardInnerPad = 8;
 
     const bool hasChip = (m_attachment.has_value() && !m_isReadOnly);
     const int chipAreaH = hasChip ? 30 : 0;
@@ -622,23 +648,28 @@ void PromptBar::LayoutChildren() {
     // 一体化圆角卡片内部布局：左右预留 cardInnerPad，避开外层大圆角
     m_input->SetSize(GetWidth() - 2 * padX - 8, inputH);
     m_input->SetPosition(padX + 4, inputY);
-    if (m_hint) {
-        m_hint->SetPosition(padX + cardInnerPad + 2, hintY + 6);
-    }
+
+    const int rightEdge = GetWidth() - padX - cardInnerPad;
+    const int sendX = rightEdge - buttonW;
+    const int stopX = sendX - 8 - buttonW;
+    const int importX = stopX - 8 - importW;
+    const int buttonsLeft = m_isReadOnly ? sendX : importX;
+
+    UpdateHintLayout(padX + cardInnerPad + 2, hintY + 6, buttonsLeft);
     if (m_send) {
-        m_send->SetSize(buttonW, 28);
-        m_send->SetPosition(GetWidth() - padX - cardInnerPad - buttonW, buttonY);
+        m_send->SetSize(buttonW, btnH);
+        m_send->SetPosition(sendX, buttonY);
     }
     if (m_continue) {
-        m_continue->SetSize(buttonW, 28);
-        m_continue->SetPosition(GetWidth() - padX - cardInnerPad - buttonW, buttonY);
+        m_continue->SetSize(buttonW, btnH);
+        m_continue->SetPosition(sendX, buttonY);
     }
     if (m_stop) {
-        m_stop->SetSize(buttonW, 28);
-        m_stop->SetPosition(GetWidth() - padX - cardInnerPad - 2 * buttonW - 8, buttonY);
+        m_stop->SetSize(buttonW, btnH);
+        m_stop->SetPosition(stopX, buttonY);
     }
     if (m_import) {
-        m_import->SetSize(buttonW, 28);
-        m_import->SetPosition(GetWidth() - padX - cardInnerPad - 3 * buttonW - 16, buttonY);
+        m_import->SetSize(importW, btnH);
+        m_import->SetPosition(importX, buttonY);
     }
 }

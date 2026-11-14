@@ -56,8 +56,8 @@ std::string ElapsedText(long long ms) {
 
 }  // namespace
 
-// ── 建卡（由 `BuildInspector` 末尾一行调用）────────────────────────────
-void HarnessApp::BuildAgentCard(ECDI::Panel& insp, int rowH) {
+// ── 建卡（由 `BuildInspector` 调用）────────────────────────────────────
+void HarnessApp::BuildAgentCard(ECDI::Widget& insp, int rowH) {
     auto card = std::make_unique<ECDI::Panel>();
     m_hud.inspAgentCard = card.get();
     card->SetVisible(false);   // 有代理时才显形（见 `RebuildAgentList`）
@@ -98,7 +98,7 @@ void HarnessApp::RebuildAgentList() {
     const bool hasAgents = s && s->hasAgentsCap && !s->transcript.Agents().empty();
     if (m_hud.inspAgentCard->IsVisible() != hasAgents) {
         m_hud.inspAgentCard->SetVisible(hasAgents);
-        if (m_hud.inspector) m_hud.inspector->Arrange();
+        SyncInspectorLayout();
     }
     if (!hasAgents) return;
 
@@ -190,7 +190,7 @@ void HarnessApp::RebuildAgentList() {
     m_hud.inspAgentCard->SetSize(200, 49 + listH);
     m_hud.agentList->SetSize(176, listH);
     m_hud.inspAgentCard->Arrange();
-    if (m_hud.inspector) m_hud.inspector->Arrange();
+    SyncInspectorLayout();
     RequestRepaint();
 }
 
