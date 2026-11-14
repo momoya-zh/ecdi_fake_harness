@@ -4,16 +4,66 @@
 > 的**外部消费者**：GUI 是**协议的渲染器**，对着手写/录制的 JSONL 就能跑完整个界面
 > （**不需要**真模型）。
 >
-> ★ **两个目的都是第一等的**：① 对 ECDI 的**评估数据 + 能力需求账本**；
-> ② **一个真正能用的 agent GUI**。
-> ② 不是 ① 的副产品——**只做展示的话，本项目就该待在 ECDI 的 `examples/` 里，不该单独成仓**。
-> 详见 [`docs/positioning.md`](docs/positioning.md)（定位与信任模型）。
+> ★ 名字里的 `fake` 指的是那份**假 core**——脚本化、零第三方、专做确定性回归的**对照实现**；
+> 真 agent 在 `core/cmd/ecdi-core`。**不是说这个仓库是假的。**
 >
-> ★★ **现状（2026-10-24 核对）**：协议、假 core、GUI 三侧**都已到 v3 并收口**，界面可以拿回放夹具
-> 跑完整流程、也能真起子进程。但 **`core/` 里只有假 core**——**接真 agent（P3）尚未开始**，
-> 所以「能拿它干活」目前还只是设计方案而非既成事实。P3 是本项目的主线（`positioning.md` §2/§6）。
+> ★ **两个目的都是第一等的**：① 对 ECDI 的**评估数据 + 能力需求账本**；
+> ② **一个真正能用的 agent GUI**。② 不是 ① 的副产品——**只做展示的话，本项目就该待在
+> ECDI 的 `examples/` 里，不该单独成仓**。
+> 详见 [`docs/positioning.md`](docs/positioning.md)（定位与信任模型）。
 
----
+## What this is — 30 seconds, in English
+
+A **tool-using LLM agent runtime in Go**: streaming replies, `tool_calls` aggregated and fed back
+to the model, permission gates with per-action approval, path-restricted file tools, a Windows
+sandbox for shell commands (Job Object + restricted token), parallel sub-agents with
+turn/time/depth budgets, background jobs with incremental output, an MCP host over stdio and
+HTTP/SSE, and multi-provider switching with credentials kept in the OS credential store.
+~9.8k lines of Go, 14 test files, **zero third-party dependencies**.
+
+The client is a native Windows desktop app — C++20 on **ECDI**, my own GUI framework. The two
+halves never share memory: they speak a **versioned JSONL protocol** (v6, 14 invariants, an
+executable validator) — one JSON object per line, independent sequence numbers per direction,
+explicit "message lost" reporting on gaps.
+
+That protocol is also what makes the whole thing testable without a model: a **scripted fake
+core** drives the same client, so every UI behaviour has a deterministic regression fixture.
+**Every behavioural claim below is backed by a probe (with a negative control wherever one is
+possible), a machine-readable reading under `evals/`, or both** — 39 probes, 20 fixtures, 157 round-level readings.
+
+**Honest limits.** The GUI needs a self-built ECDI install prefix (ECDI is *not* vendored, by
+design: `find_package(ECDI CONFIG REQUIRED)`), so building *the client* takes more than five
+minutes. The agent core and the protocol validator need neither ECDI nor an API key — that is
+the five-minute path below. Live model runs need an OpenAI-compatible endpoint plus a key.
+
+**Five-minute path (no ECDI, no key):**
+
+```bat
+python protocol/validate.py
+cd core && go test ./... && go build -o bin/ecdi-core.exe ./cmd/ecdi-core && cd ..
+```
+
+`validate.py` 退出码 = 未通过预期的夹具数（`0` = 全绿）。20 份夹具里有 10 份是**必须失败**的
+hostile——「什么都没触发」算失败，不算是通过。
+
+## 现状快照（**唯一口径**，时点 2026-11-10）
+
+一句话：**协议 v6、真 agent core、GUI 三侧全部落地并在用**——假 core 退到「确定性对照臂」的位置。
+
+- **agent core**（`core/cmd/ecdi-core`）：工具循环 · ask 权限门 · 路径约束 · L1 沙盒 ·
+  子代理（v5）· 后台作业（v6）· MCP host（stdio / HTTP / SSE）· 多提供商热切换 · 上下文三级压缩。
+- **GUI**（`gui/`）：流式转录 · 回合折叠 · 子代理归属 · 作业卡 · ask 提案卡（unified diff）·
+  MCP 状态面 · 富内容（markdown 块级 + 行内强调）· 文件导入暂存 · 会话持久化与恢复 ·
+  双主题运行期整树重建。**39 个探针进门**（门里分 designed-red / skipped-* / INSTRUMENT / UNEXPECTED 四类，
+  关键判据都配负对照）。
+- **契约**：`PROTOCOL.md` **v6**（I1–I14）+ `validate.py` + **20 份**夹具；`evals/` **157 份**轮级读数。
+
+逐项读数与依据见 **§当前状态**；机器向的逐轮进度在 `status.txt`。
+
+★ **这一节是唯一的现状口径**：本文件其它位置只描述「能做什么」，不重复「做到哪了」。
+历史上顶部曾挂着一行 `2026-10-24` 的时点快照写着「接真 agent（P3）尚未开始」，而 P3 / v5 / v6 /
+MCP / 沙盒早已收口——它滞后了三周没人回收，成了本仓库最贵的一次文档漂移。**现状只写一处，
+写在这一节。**
 
 ## 这是什么 / 不是什么
 
@@ -21,7 +71,8 @@
 |---|---|
 | ECDI 的**外部消费者**：`find_package(ECDI CONFIG REQUIRED)` + `ECDI::ECDI` | 不是 ECDI 的一部分，不随框架一起构建 |
 | **协议先于两侧实现**：`protocol/` 是唯一契约，GUI 只看它就能跑 | 不是「先写实现、事后补协议」 |
-| **假 core**（Go，零第三方）：真子进程 + 双向管道，但不调模型 | 不是真 agent；不接任何 LLM（真 core = **P3**，会用另一个程序替换它，协议不变） |
+| **假 core**（Go，零第三方）：真子进程 + 双向管道，脚本化回放，**不调模型** | 不是 agent 本体——真 agent 在 `core/cmd/ecdi-core`；两者**协议相同、二进制可互换** |
+| **真 agent core**（Go，零第三方）：工具循环 / ask 门 / 子代理 / 作业 / MCP host | 不是托管服务：单进程、单用户、无远端执行 |
 | **评估数据**的产线：`evals/` 下机器可读读数 | 不是「为展示而存在」——**展示品不该单独成仓** |
 | **一个能真用的 agent GUI**：接上真 agent 后能拿它干活 | 不是**商业产品**（无 roadmap / 无支持承诺 / 无工期） |
 
@@ -30,22 +81,56 @@
 受控对照**支撑。（这条纪律是被代价换来的：`REQ-01`/`REQ-03`/`REQ-04` 三条都曾误判为 ECDI 缺陷，
 复核后全部反转为 harness 侧。）
 
+## Agent core 能做什么（以及它自己的边界）
+
+| 能力 | 落点 | 边界 / 判据 |
+|---|---|---|
+| **工具循环** | `session.go` / `agent.go` · `llm.go` | 流式 `delta` 聚合为 `tool_calls`，结果回灌模型；一轮可以有多个工具调用 |
+| **ask 权限门** | `tools.go` | 默认**全 ask**（只读三件 `read_file`/`list_dir`/`grep` 可豁免）；提案卡带 unified diff 与完整作用域。★ **它是合作性契约，不是安全边界**（`docs/positioning.md` §4.2） |
+| **路径约束** | `tools.go` | 按**解析后的真实路径**钉在工作区内：`..` 逃逸、根外绝对路径、指向外部的符号链接/junction 全拒 |
+| **命令沙盒** | `sandbox_windows.go` | Windows Job Object + 受限令牌：整树强杀、内存 ≤1GB、进程 ≤32、特权剥离；令牌/作业初始化任一步失败即**拒绝执行**（fail-closed）；非 Windows 退守进程组 |
+| **子代理** | `agent.go`（协议 v5） | `task` 工具；并行 ≤8（默认 2）/ 每代理 8 轮 / 120s / **深度固定 1** / 上下文隔离（主历史只落一条结论）/ 子代理拿不到 MCP 外部工具；**委派即授权**（一次 ask 覆盖其全部只读工具） |
+| **后台作业** | `jobs.go`（协议 v6） | `job start/output/end`；256KB 环窗、200ms 合批、30min 上限、并发 4；`job_output` / `job_kill` / `job_list` 不过 ask 门；会话退出全杀 |
+| **MCP host** | `mcp*.go` | stdio JSON-RPC 2.0 + Streamable HTTP（`2025-06-18`）+ legacy HTTP+SSE；工具名 `mcp__<srv>__<tool>`；24KB 输出上限；崩溃显式提示 + 按需重启（≤3 次）；取消真发 `notifications/cancelled` |
+| **多提供商** | `session.go` + 设置面板（协议 v4） | OpenAI 兼容端点；**热切换等本轮跑完再切**（历史不丢）；凭据只进 Windows 凭据管理器，配置文件**类型层面放不下** key |
+| **上下文管理** | `session.go` | 三级压缩：旧工具载荷折叠（无 LLM）→ LLM 摘要 → 确定性兜底；`context.jsonl` 留 `compact` 记录 |
+| **会话** | `core/internal/{memory,contextlog}` | 持久化 + 启动恢复 + 归档 + 冻结时钟 |
+
+★ 一处诚实的命名：MCP 工具名会被压进 provider 的 `function.name` 空间（`[A-Za-z0-9_-]`、≤64、
+超长带哈希），入参 schema 先规约再上交（递归删 `$schema`、本地 `$ref` 就地展开）——MCP 规范不管
+这些，OpenAI 兼容端点管，不压就是**整轮 400**。规则与诚实边界见 `docs/mcp-host-plan.md` §二.9 / §七。
+
 ## 仓库结构
 
 | 目录 | 职责 |
 |---|---|
-| `protocol/` | **唯一契约**。`PROTOCOL.md`（**v6**）+ `fixtures/`（**17 份夹具**）+ `validate.py`（**可执行规格**） |
-| `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。**25 个源文件 / 14,178 行**（`App.cpp` 一直是大头，~0.5 MB） |
-| `core/` | **假 core**（Go，零第三方）：`main.go` / `script.go` / `session.go`，3 文件 / **839 行** |
-| `evals/` | 机器可读评估读数（JSON）——评估产出的落点（口径见 §当前状态） |
-| `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 规格 · **能力需求账本** · **variant-c 落地对照**（`variant-c-ecdi-mapping.md`）· GUI 原型（单文件 HTML） |
-| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级 83 条断言，六臂（A–F）含 Streamable HTTP 与 legacy SSE，已进 `regress.py` §2f） |
+| `protocol/` | **唯一契约**。`PROTOCOL.md`（**v6**）+ `fixtures/`（**20 份**夹具）+ `validate.py`（**可执行规格**）+ 3 个确定性生成器 |
+| `gui/` | 独立 CMake 工程 `harness_gui`——外部消费 ECDI。**71 个源文件 / 35,373 行**（`App.cpp` 拆分后按主题分文件） |
+| `core/` | `cmd/ecdi-core` = **真 core**（**9,817 行**）+ `internal/{wire,memory,contextlog}`；根目录 `main.go`/`script.go`/`session.go` = **假 core**（**1,005 行**） |
+| `evals/` | 机器可读评估读数（JSON，**157 份**）——评估产出的唯一落点（口径见 §当前状态） |
+| `docs/` | **定位与信任模型**（`positioning.md`）· P1 / P1.5 / P3 规格 · **能力需求账本** · P4 可用性计划 · `variant-c-ecdi-mapping.md` · 各专项方案（MCP / 子代理 / 作业 / 持久化 / 富内容）· GUI 原型（单文件 HTML） |
+| `tools/` | `precommit-check.py`（BOM / 行尾 / 夹具校验，已接入 git hook）· `regress.py`（全量回归门）· `mcp-smoke/`（真链路 MCP 冒烟：调用级断言，八臂（A–H），含 Streamable HTTP 与 legacy SSE，已进 `regress.py` §2f） |
+
+## 交付物在哪
+
+| 想要什么 | 去哪看 |
+|---|---|
+| ★ **定位与信任模型** | `docs/positioning.md`（**两个目的** · 协议不是安全边界 · MCP 决策） |
+| **ECDI 能力需求 / 缺陷登记** | `docs/ecdi-capability-requests.md`（**唯一账本**） |
+| **评估读数**（机器可读 JSON） | `evals/`（口径见 §当前状态）· 工作读数在 `.scratch/`（gitignored） |
+| **协议契约** | `protocol/PROTOCOL.md`（v6） |
+| **agent core 规格** | `docs/P3-real-core-spec.md`（含 ask 授权模型 §4.4、多提供商 §9） |
+| **预编译包（不想装 MSVC / ECDI 时）** | `docs/release-v0.1.0.md` + `tools/make-dist.py`（打包、体检、sha256；上传由人执行） |
+| 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/P4-gui-usability-plan.md` |
+| 专项方案 | `docs/mcp-host-plan.md` · `docs/subagent-v5-plan.md` · `docs/background-job-plan.md` · `docs/l1-sandbox-plan.md` · `docs/rich-content-plan.md` |
+| **会话持久化方案与实施** | `docs/session-persistence-decisions.md`（已定稿并落地：L1 会话持久 + L2 延续模型/工作区 + `--persist-probe` 7 相验收）· `docs/session-persistence-plan.md`（架构分析与事实账本） |
+| GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
 
 ## 协议要点
 
 - **分帧**：一行一个 JSON，`\n` 结尾；EOF 截断的最后一行**必须报错**，不得静默丢弃。
 - **信封**：`{t, seq, ts}`；`seq` 每方向独立、从 0 起、严格递增。
-- **不变量 I1–I10**。★ **I4（`seq` 缺口必须显式提示「消息丢失」）是本项目的核心评估钩子**——
+- **不变量 I1–I14**。★ **I4（`seq` 缺口必须显式提示「消息丢失」）是本项目的核心评估钩子**——
   它对应 `Application::PostToUi` 的乱序/丢失语义，是「靠它才看得见」的那一类失败。
   ★ **I8**（v2 新增）：未知 `kind` 必须**中性渲染 + 显式提示**，不得伪装成有语义的形态。
   ★ **I9/I10**（v3 新增，只约束声明 `protocol >= 3` 的流）：`kind:"user"` 块必须带**唯一**
@@ -71,13 +156,13 @@
   未决期间 GUI **必须禁用发送**，core 也**必须拒绝**交错的 `prompt` / 第二个 `workspace`。
   成功后 GUI 只认 core 回的**实际路径**（规范化：绝对 / `/` 分隔 / 无尾随 `/` / 无 `.`·`..`）。
 - **回放两模式**：`instant`（一次性灌入，测稳态渲染）/ `timed`（按 `ts` 真实间隔，测流式刷新）。
-- **版本门的三个不对称**（`AppInternal.h:290` `kProtocolMaxSupported = 6`，随版本逐版上调）：① core 声明的主版本**高于**上限才拒连，
+- **版本门的三个不对称**（`AppInternal.h` `kProtocolMaxSupported = 6`，随版本逐版上调）：① core 声明的主版本**高于**上限才拒连，
   且拒连 = **停止消费**（`--instant` 下不 break 就会「边抱怨边照做」）；② **低于**上限从不拒连；
   ③ 缺 `caps["workspace"]` **不是**拒连条件，只隐藏工作区交互（v3 §3.1）——早前版本把 ① 和 ③ 混成一个条件，
   导致两份 hostile 夹具的 `hello` 一行都没被解析，I1/I4/I5 的负对照全部空转。
 - ★ **`ask` 权限门是合作性契约，不是安全边界**（详见 `docs/positioning.md` §4.2）。
 
-## 怎么跑
+## 构建与运行
 
 **① 校验协议夹具**（不需要构建任何东西）
 
@@ -121,7 +206,7 @@ cmake --install build --config Release --prefix <此仓库>/third_party/ecdi
 harness_gui.exe --replay protocol/fixtures/demo-session.jsonl --instant --out eval.json
 ```
 
-**④ 拉起真子进程**（P1.5 通道）
+**④ 拉起假 core**（P1.5 通道）
 
 先构建假 core（纯 Go、**零第三方**，标准库即可）：
 
@@ -161,7 +246,7 @@ harness_gui.exe --core core/bin/ecdi-core.exe \
 三件全只读，且路径按**解析后的真实路径**钉在工作区内（`..` 逃逸、根外绝对路径、
 工作区内的符号链接/junction 指向外部——全部拒绝）⇒ 逐次确认没有增量保护，只剩摩擦。
 `--allow-tools=<a,b>` 整体改写名单，`--allow-tools=`（显式空）恢复全 ask；写工具必须留在 ask 门内侧。
-★ **内置 L1 沙盒隔离（2026-11-05）**：Windows 平台下 run_command 默认运行在 Job Object + 受限令牌中（整树强杀防孤儿残留、内存≤1GB、进程≤32、特权剥离），提案卡两行透明呈现；令牌/作业初始化任一步失败即**拒绝执行**（fail-closed），只有 --sandbox=false 能显式降级；非 Windows 退守进程组（整组 SIGKILL，无内存/进程硬上限）。更高层级的物理网络/全盘隔离仍建议由运行者保证（docs/positioning.md §4.3）。
+★ **内置 L1 沙盒隔离（2026-11-05）**：Windows 平台下 run_command 默认运行在 Job Object + 受限令牌中（整树强杀防孤儿残留、内存≤1GB、进程≤32、特权剥离），提案卡两行透明呈现；令牌/作业初始化任一步失败即**拒绝执行**（fail-closed），只有 `--sandbox=false` 能显式降级；非 Windows 退守进程组（整组 SIGKILL，无内存/进程硬上限）。更高层级的物理网络/全盘隔离仍建议由运行者保证（`docs/positioning.md` §4.3）。
 ★ **子代理委派（协议 v5，`--agents`，2026-11-04）**：GUI 拉起 core 时**默认注入** `--agents`
 （`AppSettings.cpp` `kCoreAgentArgs`，两处 coreArgs 装配点同加；core 自己默认**关**——那是
 「关闭时逐字节退回 v4」判据的对照臂，手动 `--core-args` 跑法要自己带）。开启后根代理的工具表
@@ -205,10 +290,13 @@ stdio 行文案不变——用户才分得清「配的是本地进程还是远�
 ★ **单次调用超时（2026-11-06 八版）**：`--mcp-timeout`（默认 60s；0 不限）控制单个 MCP
 调用的墙钟上限；`mcp.json` 支持服务级细粒度覆盖 `"timeout": <sec>`（0 针对该服务禁用）。
 超时真发取消通知，且通知未能送达（如 stdio 彻底死锁）的主动清退并触发下次按需 respawn。
+★ **服务端通知流（2026-11-07）**：Streamable HTTP 的 GET 通知流（`notifications/*` → hub 分发；
+405 = 不支持即停；断流带 `Last-Event-ID` 退避重连）+ `tools/list_changed` 真兑现（重拉工具表，
+新工具免重启可调）+ legacy SSE 断流自愈（重连 5 次耗尽才判死）+ stdio 同口径。
 ★ 真链路冒烟：`python tools/mcp-smoke/drive.py`——真 core 二进制 + 真 stdio server + 真
-HTTP/SSE server + 脚本化 SSE 端点，六臂（A–F）**83 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
-状态与传输标识、参数穿越、bye 后无残留、HTTP 不可达降级，以及 F 臂的
-`--mcp-env=minimal` 不泄漏与崩溃后按需重启）；读数与边界见方案 §四.5 / §十；已接进
+HTTP/SSE server + 脚本化 SSE 端点，八臂（A–H）**119 条断言**（含 ask 门、提案卡 detail、`hello.mcp`
+状态与传输标识、参数穿越、bye 后无残留、HTTP 不可达降级、`--mcp-env=minimal` 不泄漏、
+崩溃后按需重启、通知流与 `Last-Event-ID` 复原）；读数与边界见方案 §四.5 / §十 / §十三；已接进
 `regress.py` §2f（缺二进制 SKIP / 陈旧 FAILED）。
 
 **④c 无参数启动**（P3.5，2026-10-24）
@@ -231,14 +319,16 @@ harness_gui.exe        # 双击即可：读 %APPDATA%\ecdi-fake-harness\config.j
 **⑤ 回归门**（改完必跑；全绿才算收口）
 
 ```bash
-python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（REQ-03）+ validate.py
+python tools/regress.py     # 夹具结构基线 + 39 个探针 + live 各臂（协议声明 / REQ-03 A/B / 会话 / MCP 冒烟）+ validate.py
 ```
 
 读数落 `.scratch/`（gitignored）。★ 判据口径：夹具基线只钉 `blocks/deltas/messages`，
 不钉 `paints/frames`（后者随字体与实现变化，钉死它会把一次合法收敛判成回归）。
-★ 2b 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
+★ live 节要真子进程（`core/bin/fake-core.exe`）：没有就 **SKIP**，不是 PASS——跳过必须说出来。
 
-### 探针（**38 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
+## 验证：39 个探针 + 回归门
+
+### 探针（**39 个 `--*-probe`，默认全关** —— 关闭时既有路径逐位不变）
 
 | 探针 | 读什么 |
 |---|---|
@@ -263,18 +353,19 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `--key-probe` | 全局快捷键：Ctrl+B / I / , / N + Esc 逐层退出 |
 | `--empty-probe` | 空状态引导：回放负对照 + firstRun 正对照（含「卡在树里却被 `extent=0` 裁掉」这一相） |
 | `--model-probe` | 模型浮窗（Ctrl+M）+ v4 上下文分母上屏 |
-| `--select-probe` | 转录正文选中复制（**配 `--selectable-rows` 用**，否则自述 `skipped-no-selectable-row`） |
+| `--select-probe` | 转录正文选中复制（**配 `--selectable-rows` 用**，否则自述 `skipped-no-selectable-row`；含 tool 折叠体「展开 → 全选复制 → 剪贴板 == 体部全文」相） |
 | `--delprov-probe` | 删除提供商：拒绝删最后一个（需一份有 provider 的 `--config`） |
 | `--settings-probe` | 设置面板 + 凭据注入 + 模型热切换回执（★ **强制要求 `--config`**，见下） |
 | `--persist-probe` | 会话持久化与启动恢复（7 相覆盖：元数据发现、会话反序列化与转录复原、只读 UI 置灰、发送拦截守卫、新会话继承工作区/模型上下文、残损容错、测试隔离清理；★ **强制要求 `--config`**） |
 | `--reasoning-probe` | 思维链折叠行为取证 |
 | `--async-probe` | **REQ-03**：投递 vs 轮询的 A/B（**live**）——`blockedUs` / 唤醒承载占比 / 单回调预算 / 送达延迟分位 |
-| `--overlay-probe` | 浮层拓扑与 Light Dismiss（模态遮罩 / 下拉 / tooltip 全走注册式浮层口，11 相含 tooltip **配色**判据） |
+| `--overlay-probe` | 浮层拓扑与 Light Dismiss（模态遮罩 / 下拉 / tooltip 全走注册式浮层口，11 相含 tooltip **配色**判据）；核心读数是 `overlayRootChildren` = 3 + 已挂载数（「在」与「只有一套在」是两件事） |
 | `--table-probe` | Markdown 表格渲染（富内容二期）判据 |
 | `--md-probe` | **富内容 B+**：markdown **块级全套**判据（10 相：heading / fence / fence-unclosed / list / quote / hr / no-construct-identity / mixed-order / **render-blocks** / **render-negative**）。前 8 相纯函数、后 2 相真走 `BuildBlockRow` 数落地的控件——只测解析会漏掉「解析对了但入口开关没开、屏幕上一个字都没变」那种失败。夹具用专用的 `protocol/fixtures/markdown/blocks-session.jsonl`（既有七份夹具里 headings/quotes/hr/links 出现次数全是 0，块级在它们上面跑得通只证明不崩）。★ 与 `--table-probe` **刻意分开**——表格 6 相是二期既有基线，混跑会让两条线的回归互相掩盖 |
 | `--copy-probe` | 按块复制与复制全部判据 |
 | `--valign-probe` | 单行输入框垂直居中（**REQ-14**：caret 几何公开判据 + Top→Center 翻转臂 / 恢复臂） |
 | `--preview-probe` | I 路径可点 + 只读预览（8 相） |
+| `--import-probe` | **文件导入 × 暂存附件条**（2026-11-10，5 相）：`import-stage`（元数据名/大小、chip 可见、输入区真长高、物理拷贝在 `<ws>/.ecdi/imports/` 下真存在）· `import-remove`（移除后 `HasAttachment()` 归零、高度还原）· `import-submit`（带文字提交自动附相对路径并清空胶囊）· `import-oversize`（>10MB 拒绝、胶囊不变）· `import-no-workspace`（无工作区拒绝） |
 | `--agent-probe` | 子代理缩进 / 归属 / 代理卡（**协议 v5**：缩进行数=归属块数、竖线行数=缩进行数、缩进吃宽、卡行数=代理数+1 且随有无代理显隐；★ **负对照另跑一支**——无 agent 夹具上缩进恒 0，见 `tools/regress.py`） |
 | `--job-probe` | 后台作业卡（**协议 v6** `job` 消息）：卡片挂在发起它的 `run_command` 工具行，标题含 job id+状态、正文含 start.command 与尾部输出，模型/视图两路对齐；★ **负对照另跑一支**——无 `job` 的 demo 夹具上不得出现任何「后台」字样 |
 | `--proposal-probe` | ask 提案卡（**协议 v5** `detail`，2026-11-05）：diff 行数/±行数与模型侧重切行数两路对齐、无空提案体；★ **负对照另跑一支**——无 detail 夹具（demo）上提案行恒 0（回落路径完好） |
@@ -283,28 +374,19 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 
 另有模式开关：`--legacy-poll`（**REQ-03 对照世界**：逐字复原每 tick 等 8ms 的旧路径）·
 `--probe-contrast`（探针专用白底黑字）· `--row-mode autosize|listlayout`（布局 A/B）·
-`--scroll-sweep`。
+`--scroll-sweep` · `--selectable-rows`（可选中层）· `--agents`（子代理开关）。
 
 ★ **2026-10-26：25 个探针全部接入 `tools/regress.py`**（此前 13/25）。门里分四类，
 不是「绿了 / 红了」两类：`designed-red`（结构上不可达，理由写在 `EXTRA_PROBES` 注释）·
 `skipped-*`（探针自述该跑法下不适用）· `UNEXPECTED`（其余一切 = 真回归）· `INSTRUMENT`
 （`--cull-probe` 只记读数、无断言面，显式声明而不是默默漏掉）。
+★ **2026-11-10 重数**：`main.cpp` 解析 **39** 个 `--*-probe`，`regress.py` 中出现 **39** 个同名 flag——
+数字变了不是「新接了一批」，是这半年陆陆续续真加了 14 个探针（`--md-probe` / `--proposal-probe` /
+`--job-probe` / `--fold-probe` / `--import-probe` / `--valign-probe` / `--copy-probe` / `--preview-probe` …）。
 
 ★ **`--settings-probe` 必须带 `--config <隔离路径>`**，否则**拒绝启动**（exit 2）。原因：
 它的 cleanup 相会删掉本轮跑的配置文件，没隔离时那就是用户真实的
 `%APPDATA%\ecdi-fake-harness\config.json`（2026-10-26 修，见 `status.txt`）。
-
-## 交付物在哪
-
-| 想要什么 | 去哪看 |
-|---|---|
-| ★ **定位与信任模型** | `docs/positioning.md`（**两个目的** · 协议不是安全边界 · MCP 决策） |
-| **ECDI 能力需求 / 缺陷登记** | `docs/ecdi-capability-requests.md`（**唯一账本**） |
-| **评估读数**（机器可读 JSON） | `evals/`（口径见 §当前状态）· 工作读数在 `.scratch/`（gitignored） |
-| **协议契约** | `protocol/PROTOCOL.md`（v6） |
-| 阶段规格 | `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` |
-| **会话持久化方案与实施** | `docs/session-persistence-decisions.md`（**已定稿并完成落地**：L1 会话持久 + L2 延续模型/工作区 + `--persist-probe` 7相验收）· `docs/session-persistence-plan.md`（架构分析与事实账本） |
-| GUI 设计原型 | `docs/prototype/`（单文件 HTML） |
 
 ## 能力账本现状
 
@@ -319,15 +401,22 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `REQ-07` | （候选）折叠面板仍测量隐藏内容 | ❌ **复核否决**（ECDI 的 Layout 已跳过不可见子节点）——归属 harness 侧 |
 | `REQ-08` | 环形进度条需**圆弧原语**（`DrawArc` 不存在） | ✅ **闭合（2026-10-16）**：ECDI **Phase 33** 落地 `DrawArc` + `RingProgressBar`，本项目作为**首个真实消费者**兑现（右栏上下文环，`commandMix.arc > 0` 机读证据） |
 | `REQ-09` | `Font::family` **双链语义矛盾**（GDI=族名 / GL=文件名） | ✅ **已闭合（2026-10-17）**：ECDI `Win32FontSource` 补族名反查（禁子串匹配、文件名直查保留且优先）；验收 8 族名 **8/8 两链同 face**，`ecdi_tests` **465/465**。⇒ 我方 `kMonoFamily="Consolas"` **无需改动即恢复等宽** |
-| `REQ-10` | `Font` **表达力**不足——字重 / face index / 复合族名第二项**三者皆不可达** | 🔄 **开放（等 ECDI 立项排期）**：`Font` 只有 `size`+`family`，两处硬编码 `FW_NORMAL`，`FT_New_Face(..., 0, ...)` 恒取 face 0。实测 `lfWeight=FW_BOLD` 在 GDI 侧对 5 个真实族全部 ≥1.29× 墨迹，但 **GL 无字段**；CJK 加粗**两链无公共解** ⇒ 当前唯一同时可用的是「不加粗」。★ **2026-10-24 ECDI 对码核验三条全部属实**，登记 `roadmap-deferred` **#70**（登记不立项） |
+| `REQ-10` | `Font` **表达力**不足——字重 / face index / 复合族名第二项**三者皆不可达** | ✅ **已闭合（2026-10-24，ECDI Phase 36）**：`Font{family,weight}` 落地、库外验收 **14/14**，harness 已消费；剩余视觉层级缺口（半透明文本等）转由 `REQ-11` 管辖 |
 | `REQ-11` | `Color.a` **双链覆盖面不对等**（GDI 的 `DrawText` / `DrawFocusRect` 恒丢 alpha）+ 无虚线 | 📋 **已登记推后**：**当前零消费者**（`Theme.h` 全表 alpha=255）；实测 GDI 侧四档 alpha（255/128/64/16）输出**逐位相同**。★ **2026-10-24 ECDI 核验属实**，登记 `roadmap-deferred` **#71**，并改写 `Color.h` 的 alpha 注释声明双链发散 |
 | `REQ-12` | 多行 `TextBox` 的 `GetPreferredSize` 返回**当前尺寸**（与 `TextWidget` 的 wrap 分支自相矛盾） | ✅ **已闭合（2026-10-21）**：ECDI 采纳「订正语义」而非「加查询」⇒ `TextBox::MultilinePreferred` 落地；本仓组合实现**同日收敛回框架**，`--grow-probe` 七相读数逐位不变。★ 负对照 4 条变异全 RED |
 | `REQ-13` | 窗口**最小尺寸**约束（无 API，只能事后钳制 ⇒ 可见回弹） | ✅ **已闭合（2026-10-23）**：ECDI 落地 `Window::SetMinimumSize`（`WM_GETMINMAXINFO` + `WM_WINDOWPOSCHANGING` 两路拦截，客户区 DIP 口径）；本仓删除 `ClampToMinimum` 绕行。★ ECDI 测试 487 → **490** |
+| `REQ-14` | 单行 `TextBox` 无垂直对齐；`padding` 同时定 X / Y 内缩与裁切高 | ✅ **已闭合（ECDI Phase 37 `verticalAlign` / Phase 38 wrap）**：composer 与搜索框已消费，`--valign-probe` 顶/中翻转臂 + 恢复臂进门 |
+| `REQ-15` / `REQ-16` | 编辑器内软折行；按钮快速进出导致 hover 残留 | ✅ 均闭合（ECDI Phase 38 / `AnimateBackgroundTo` 补 Cancel，2026-11-01） |
+| `REQ-17` | IME「无组合直插」（中文全角标点）在 ECDI 侧无通路 | ✅ **闭合（2026-11-04，ECDI #86）**：翻译器补 `WM_IME_CHAR`（return 0 防拆包）· F8 判据收窄为「无组合 ∧ 空结果」· 吞字计数器同时认 `WM_IME_CHAR` |
+| `REQ-18` | `ForgetSubtree` 清捕获登记时未同步释放 OS 捕获（摘树路径的 `::SetCapture` 泄漏） | ❌ **撤单（2026-11-05）**：归属**反转 harness 侧**——根因是本仓为绕开 `CursorShape` 缺口自己写的 44 行光标辅助（见 `REQ-19`）。**第 5 次归属误判**（前四次 `REQ-01/03/04/07`），ECDI 零改动 |
+| `REQ-19` | 应用侧「无合规通路」两例：光标形态值域（19-A）/ shell 打开文件（19-B） | 🔄 **开放（记作能力缺口，不是缺陷）**：`CursorShape` 只有 `Arrow`/`IBeam`，没有「左右拉伸」；要自述只能直接操作 Win32。ECDI 侧裁定「只追加值域，不补通用逃生舱」，**等排期** |
 
 ★ 三条路径值得对照着读：`REQ-12` 是「**同一框架两条规则矛盾**」（修答案即可），`REQ-13` 是
 「**框架根本没有这条能力**」（只能加 API），`REQ-11` 是「**两后端行为发散**」（零消费者，先记账）。
 判别方法随之不同：分别是**分支对读** · **公开 API 全表核对** · **逐原语 alpha 覆盖扫描**。
 ★ **harness 侧待办**（`F7` 夹具真缺口 / `F8` 数据处理卫生）不在本表，见账本 §4。
+★ **账本当前 v5.24（2026-11-09）**，逐条证据与复核订正都在 `docs/ecdi-capability-requests.md`；
+本表是人读摘要，**以账本为准**（表头与账本冲突时按账本改表，别反过来）。
 
 ### 思维链：协议 v2 已闭合（原「协议空白」）
 
@@ -343,27 +432,33 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 点击展开箭头翻 `︿`）。另增 `hello.context`（用量百分比的分母）与 `block_end.tokens`。
 详见 `protocol/PROTOCOL.md` §3.3 / §5 / §7 与账本 §2。
 
-## 夹具
+## 夹具（**20 份**：10 份正向/基线 + 10 份负向）
 
 | 文件 | 用途 |
 |---|---|
 | `fixtures/demo-session.jsonl` | 正常路径：完整一场会话（43 条消息） |
 | `fixtures/hostile/seq-gap.jsonl` | **I4 负向**：`seq` 缺口 + 未知 `t` + 悬空 `block_end` + 迟到 `delta` |
 | `fixtures/hostile/truncated-final-line.jsonl` | **§1.2 负向**：最后一行被截断 |
+| `fixtures/hostile/no-trailing-lf.jsonl` | **§1.2 正反同型（F7）**：末行**缺尾 LF**——分帧靠 `\n`，缺了必须报 `ENC` 而不是被当成完整行 |
 | `fixtures/hostile/missing-client-id.jsonl` | **I9 负向（v3）**：`kind:"user"` 块没有 `client_id`——GUI 无处确认自己的临时气泡 |
 | `fixtures/hostile/duplicate-client-id.jsonl` | **I9 负向（v3）**：两个用户块共用同一 `client_id`——确认会错位到其中任意一个 |
 | `fixtures/hostile/workspace-bad-ack.jsonl` | **I10 负向（v3）**：`ok:false` 无 `message` + 重复 `request_id` + `ok:"yes"`（真值字符串会被当成成功） |
-| `fixtures/realistic/realistic-session.jsonl` | 真实编码会话形态（Markdown / 长日志 / 1213 条消息） |
-| `fixtures/scale/scale-transcript-2000.jsonl` | 规模基线（2000 块 / 8906 条消息 / **921 KB**） |
+| `fixtures/realistic/realistic-session.jsonl` | 真实编码会话形态（Markdown / 长日志 / 11 个权限门 / 220 块 / 1213 条消息） |
+| `fixtures/scale/scale-transcript-2000.jsonl` | 规模基线（2000 块 / 8906 条消息 / **921 KB**，建议 `instant` 回放） |
 | `fixtures/cot/cot-session.jsonl` | **思维链**：长 + 流式 + **默认折叠**（1044 条消息 / 44 块）。★ `hello` 带 `context`、思维链 `block_end` 带 `tokens` |
 | `fixtures/subagent/parallel-two-agents.jsonl` | **v5 子代理正向**：两个 `task` 并行，`delta` 在 a1/a2 间交错 |
-| `fixtures/proposal/write-edit-run-asks.jsonl` | **v5/v6 提案卡正向**：四个 `ask` 各带 `detail`（write/edit diff + run 键值 + **mcp 服务/工具/argsKv**，2026-11-06 增补，声明升 `6`） |
-| `fixtures/mcp/status.jsonl` | **2026-11-06 MCP 状态正向**：`hello.mcp` 2 个正常服务（fs/smoke）+ 1 个失败 + 1 个禁用，随后一条 `[MCP] 服务 broken 启动失败` `system` 块；负对照 = demo（无 `mcp` 字段） |
+| `fixtures/subagent/agent-cap-missing.jsonl` | **v5 能力门**：声明 `protocol:5` 但 `caps` **缺 `"agents"`** ⇒ 代理卡/缩进/`task` 整段不得出现 |
+| `fixtures/hostile/agent-undeclared.jsonl` | **I12 负向**：块携带一个从未 `start` 的 `agent`——子行会挂在不存在的代理上 |
+| `fixtures/hostile/agent-after-end.jsonl` | **I12 负向**：`phase=end` 之后仍有该代理的块——代理已收尾，界面还在长行 |
+| `fixtures/hostile/parent-dangling.jsonl` | **I13 负向**：`parent` 指向不存在的块——归属竖线无处可连 |
+| `fixtures/proposal/write-edit-run-asks.jsonl` | **v5/v6 提案卡正向**：四个 `ask` 各带 `detail`（write/edit diff + run 键值 + **mcp 服务/工具/argsKv**），声明 `6` |
+| `fixtures/mcp/status.jsonl` | **MCP 状态正向**：`hello.mcp` 3 个正常服务（含 `transport:"http"`）+ 1 个失败 + 1 个禁用，随后一条 `[MCP] 服务 broken 启动失败` |
 | `fixtures/jobs/background-task.jsonl` | **v6 后台作业正向**：`job start/output/end` + `job_output`/`job_kill` 控制链 |
 | `fixtures/hostile/job-output-before-start.jsonl` | **v6 / I14 负向**：`output` 出现在 `start` 之前 |
+| `fixtures/markdown/blocks-session.jsonl` | **富内容块级**：heading / fence / list / quote / hr / 混合顺序齐全（`--md-probe` 的落点夹具） |
 
-★ **十八份夹具的版本声明**：低版本夹具声明 `protocol:3`（I9/I10 只约束 v3 流）；v5 夹具声明 `5`
-（子代理 + 三份 hostile）；v6 夹具声明 `6`（后台作业正向 + 一份 I14 hostile + 提案卡 + MCP 状态）。
+★ **二十份夹具的版本声明**：低版本夹具声明 `protocol:3`（I9/I10 只约束 v3 流）；v5 夹具声明 `5`
+（子代理正向 + 能力门 + 三份 hostile）；v6 夹具声明 `6`（后台作业正向 + 一份 I14 hostile + 提案卡 + MCP 状态）。
 **hostile 必须与其针对的不变量同版本**——若停在低版本，负向用例会被版本门豁免成空转。
 
 三个生成器都是**确定性**的（同参 ⇒ 逐字节相同），所以 2000 / 5000 / 20000 是**旋钮**，不是砖：
@@ -392,7 +487,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 | `README.md` · `status.txt` · `core/*.go` | `.gitattributes` · `.gitignore` · `LICENSE` · `core/go.mod` |
 | `docs/positioning.md` · `docs/P1-gui-implementation-spec.md` · `docs/P1.5-child-process-spec.md` · `docs/prototype/*.html`（**8 个中 5 个**） | `docs/ecdi-capability-requests.md` · `docs/variant-c-ecdi-mapping.md` · `docs/P4-gui-usability-plan.md` · `docs/session-persistence-plan.md` · `docs/prototype/harness-hifi-variant-a.html` · `docs/prototype/gui-v4-ux-mockup.html` · `docs/prototype/session-restore-mockup.html` |
 | `gui/src/` 的 19 个文件：`ChildSource.*` · `CountingPanel.*` · `Json.*` · `MeasureProbe.*` · `MessageSource.h` · `PaintProbe.*` · `PromptBar.h` · `ProtocolWriter.*` · `ReplaySource.*` · `Transcript.*` · `UiKit.h` | `gui/src/` 的 6 个文件：`App.cpp` · `App.h` · `PromptBar.cpp` · `Theme.h` · `ThemedCaptionBar.h` · `main.cpp` |
-| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（十九份夹具）· 全部 `evals/*.json`（157 份） |
+| `protocol/PROTOCOL.md` · `protocol/validate.py` | 三个 `gen_*.py` · **全部 `*.jsonl`**（20 份夹具）· 全部 `evals/*.json`（157 份） |
 
 ★ **2026-10-24 复核订正两处**（原表面描述与 `HEAD` 不符）：① 三个 `gen_*.py` **无** BOM（原表把它们列在 BOM 侧）；
 ② `docs/prototype/` 现有 **6** 份 HTML（原表写「5 个中 4 个」）。其余逐文件重验一致。
@@ -403,7 +498,7 @@ python tools/regress.py     # 6 夹具结构基线 + 13 探针 + 2b live A/B（R
 ④ 顺带立一条纪律：**文档里出现 `C:\` 绝对路径算缺陷**，原型一律用 `docs/prototype/` 仓库相对路径引用
 （`docs/P4-gui-usability-plan.md` 原引的是机器路径，已改）。
 
-★ **BOM 在本仓库不是编译正确性问题，别把它说成问题。** `gui/CMakeLists.txt:20` 给
+★ **BOM 在本仓库不是编译正确性问题，别把它说成问题。** `gui/CMakeLists.txt` 给
 `harness_gui` 传了 `/utf-8`（自初始提交 `f243579` 起），MSVC 不看 BOM 也知道源文件是 UTF-8——
 证据是 `gui/src/App.cpp` 带 **31692 个非 ASCII 字符、无 BOM**，编译干净。
 （`C4819` 那类教训属于**没有** `/utf-8` 的构建，比如 ECDI 自己的工程。）
@@ -435,25 +530,28 @@ PY
 
 ## 当前状态
 
-> 时点：**2026-11-07**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
+> 时点：**2026-11-10**。逐轮进度摘要（机器向）在 `status.txt`；本 README 是人向入口。
+> ★ **现状口径只有两处**：本节（人向）与 `status.txt`（机器向）。其它章节若与本节冲突，**以本节为准**，
+> 并把冲突改掉——不要在两处各写一份「做到哪了」。
 
 ### 已收口
 
 | 项 | 读数 / 依据 |
 |---|---|
 | P1（GUI 骨架）· P1.5（子进程真路径，含反向通道） | 已收口 |
-| **协议 v3 基线 + v4 增补** | 契约层（`PROTOCOL.md` + `validate.py` + **9 份夹具** + 3 个生成器）· core（真 core `hello protocol:4` + `caps=[tools,ask,workspace,model]`；**假 core 恒 `protocol:3`**，回归基线不动）· GUI（`kProtocolMaxSupported = 4`，接受 ≤4；cap 缺失则隐藏切换器）。九份夹具全部声明 `protocol:3`，`validate.py` 退出码 **0** |
+| **协议 v3 基线 + v4 增补** | 契约层（`PROTOCOL.md` + `validate.py` + 9 份夹具 + 3 个生成器）· core（真 core `hello protocol:4` + `caps=[tools,ask,workspace,model]`；**假 core 恒 `protocol:3`**，回归基线不动）· GUI（版本门接受 ≤ 上限；cap 缺失则隐藏切换器） |
 | ECDI 消费前缀 | **`0.1.0` MSVC Release 静态**，安装于 2026-10-23 21:09；对应 ECDI 仓 **`096991b`**（含 `REQ-13` 的 `Window::SetMinimumSize`）；`ECDI.lib` **11,063,564 B** / sha256 `68247cd0…` |
 | ECDI 自带套件 | `490 passed / 0 failed`（`REQ-13` 闭合时点；早期 `445/445` 见 `status.txt`） |
-| **P3 真 core + P3.5 无参启动 + P3.6 多提供商** | `core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 `read_file`/`list_dir`/`grep` + 默认全 ask）+ `core/internal/wire` 线层下沉（假 core 逐位回归 PASS）。**两个真端点全链验收**：云知声 `u2-flash`（`evals/p3-u2flash-live-1.json`）与 DeepSeek 官方**无参启动**（`evals/p35-deepseek-noarg-live-1.json`）。协议 v4 = 模型热切换（等当前轮跑完再切）+ `usage.context` 逐轮分母 + 容量挡位；凭据只进 Windows 凭据管理器，配置文件**没有** key 字段（类型层面放不下） |
-| 回归门 | `python tools/regress.py` = 6 夹具结构基线 + **25 个探针**（13 原有 + 11 补齐 + 1 MCP 可见性）+ 1 个仪器声明 + 3 段 live（REQ-03 A/B · workspace · 无 core 时显式 SKIP）+ `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
+| **P3 真 core + P3.5 无参启动 + P3.6 多提供商** | `core/cmd/ecdi-core`（OpenAI 兼容端点 + 只读三件 + 默认免 ask + 写工具留在 ask 门内）+ `core/internal/wire` 线层下沉（假 core 逐位回归 PASS）。**两个真端点全链验收**：云知声 `u2-flash`（`evals/p3-u2flash-live-1.json`）与 DeepSeek 官方**无参启动**（`evals/p35-deepseek-noarg-live-1.json`）。协议 v4 = 模型热切换（等当前轮跑完再切）+ `usage.context` 逐轮分母 + 容量挡位；凭据只进 Windows 凭据管理器，配置文件**没有** key 字段（类型层面放不下） |
+| **回归门** | `python tools/regress.py` = 夹具结构基线 + **39 个探针** + live 各臂（协议声明 / REQ-03 A/B / 会话 / MCP 冒烟 / 设置面板）+ `validate.py`；`tools/precommit-check.py` 已接 git hook（BOM 漂移 / `*.jsonl` 行尾 / 残留 lock） |
 | **P4 可用性（A–J）** | 跳到最新 / 全局快捷键 / 空状态引导 / ask 已答留痕 / 设置改模态浮层（**半透明遮罩 = ECDI 首个半透明绘制消费者**）/ tooltip / 顶栏模型 chip + 用量常驻 / 转录可选中（尖峰）/ **I 路径可点 + 只读预览**（`--preview-probe` 8/8）/ **J 开发者视图 ↔ 用户模式分流**（无参启动=用户模式，`--replay`/`--core`/任一探针=开发者模式，`Ctrl+Shift+D` 或 `···` 切换。方案 §12） |
 | **取数通路（REQ-03）** | 读线程经 `Application::PostToUi` 投递**唤醒**，UI 线程在消息循环里 drain；tick 只做**非阻塞**兜底。实测 UI 线程阻塞 `11599µs → 0`、唤醒承载 **99.8%** 的行、节奏化流下送达 p50 **49µs**（同口径轮询 14774µs）。单回调预算在 `--burst` 下恰好顶到 **256**（去掉预算 430）。`--legacy-poll` 逐字复原旧路径（对照 + 回滚） |
-| **协议 v5 子代理（2026-11-04）** | **只加字段与控制消息，不加 kind**：`block_start` 可选 `agent`/`parent` + `agent` 生命周期消息 + **I12/I13**（`validate.py` 已查）。夹具 **14 份**（v5 增 1 正向并行 + 1 cap 缺失 + 3 hostile）。core：`agent.go`（`task` 特判走 ask 门、semaphore 并行 `--max-agents=2`、独立 history、逐子代理 delta 合批；`wire.Out` 加锁保 I4）、深度 1、`--agent-max-turns=8` / `--agent-timeout=120s`、**委派即授权**（`docs/P3-real-core-spec.md` §4.4.2）。GUI：缩进行 + 2px 归属竖线、检视栏「代理」卡（点击定位）、状态胶囊活跃数、`--agent-probe` 正/负对照进门。全量回归 **PASS** + `validate.py` 绿。已声明未做：连续归属竖线（ECDI 逐控件 PushClip，另批）、代理卡定位无高亮、GUI 侧 `--agents` 默认注入 |
-| **协议 v6 后台长任务（2026-11-05）** | **只加控制面消息，不加 kind**：`job start/output/end` + **I14**（`validate.py` 已查，只约束 `protocol>=6`）。core：`jobs.go`（jobHub / 256KB 环窗 / 200ms 合批 / 30min 上限 / 并发 4 / ask 期缓冲即 I3）；`run_command background=true` + `job_output` / `job_kill` / `job_list`（控制工具不过 ask 门）；会话退出全杀。GUI：作业状态贴在发起它的 `run_command` 工具卡（标题 `j1 状态`、折叠体尾部输出），重建从 `jobsByCall` 重放；`kProtocolMaxSupported=6`。★ 同日补齐**子进程输出转码**：GBK 控制台 → UTF-8（前台整段判定、后台流式增量，切点对齐字符边界），协议 §1.3。夹具 **17 份**（v6 增 1 正向 + 1 hostile）；`--job-probe` 正/负对照进门。 |
-| **MCP Host（2026-11-05/06）** | stdio JSON-RPC 2.0 + Streamable HTTP（`2025-06-18`）/ legacy HTTP+SSE（`transport:"sse"` + `url/headers`）；工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 · 24KB 输出上限 · 整树清退 · 崩溃显式提示与按需重启（上限 3 次）· 取消真发 `notifications/cancelled` · `--mcp-env=minimal` 白名单 · per-call 超时 `--mcp-timeout`（默认 60s）+ 服务级 `"timeout"`（送达则保留复用，未送达才清退 respawn）；产品面：`hello.mcp` + 会话头副标 + 检视栏「MCP」卡 + 启动失败 `system` 块 + GUI 侧提案卡（`detail.tool:"mcp"`）。六臂（A–F）冒烟 **83 条**；方案与诚实边界 `docs/mcp-host-plan.md` |
-| **回合级折叠（2026-11-07）** | 描述见下「现在能做什么」；`--fold-probe` 正/负对照进门（正向 realistic folds=31 / 负向「过程行不足两条 ⇒ 一行不折」folds=0）。折叠态挂 `user` 条目（`RetagTurns` 每轮重建摘要条，挂摘要条必丢——0c 缺陷同型）；展开走无重建快路径（文本测量缓存不失效）。四项跟进缺口同日闭合（2026-11-07 第二批） |
-
+| **协议 v5 子代理（2026-11-04）** | **只加字段与控制消息，不加 kind**：`block_start` 可选 `agent`/`parent` + `agent` 生命周期消息 + **I12/I13**（`validate.py` 已查）。core：`agent.go`（`task` 特判走 ask 门、semaphore 并行 `--max-agents=2`、独立 history、逐子代理 delta 合批；`wire.Out` 加锁保 I4）、深度 1、`--agent-max-turns=8` / `--agent-timeout=120s`、**委派即授权**。GUI：缩进行 + 2px 归属竖线、检视栏「代理」卡（点击定位）、状态胶囊活跃数、`--agent-probe` 正/负对照进门。已声明未做：连续归属竖线（ECDI 逐控件 PushClip，另批）、代理卡定位无高亮 |
+| **协议 v6 后台长任务（2026-11-05）** | **只加控制面消息，不加 kind**：`job start/output/end` + **I14**。core：`jobs.go`（jobHub / 256KB 环窗 / 200ms 合批 / 30min 上限 / 并发 4 / ask 期缓冲即 I3）；`run_command background=true` + `job_output` / `job_kill` / `job_list`（控制工具不过 ask 门）；会话退出全杀。GUI：作业状态贴在发起它的 `run_command` 工具卡（标题 `j1 状态`、折叠体尾部输出），重建从 `jobsByCall` 重放。★ 同日补齐**子进程输出转码**：GBK 控制台 → UTF-8（前台整段判定、后台流式增量，切点对齐字符边界），协议 §1.3。`--job-probe` 正/负对照进门 |
+| **MCP Host（2026-11-05/06/07）** | stdio JSON-RPC 2.0 + Streamable HTTP（`2025-06-18`）/ legacy HTTP+SSE；工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 · 24KB 输出上限 · 整树清退 · 崩溃显式提示与按需重启（上限 3 次）· 取消真发 `notifications/cancelled` · `--mcp-env=minimal` 白名单 · per-call 超时 `--mcp-timeout`（默认 60s）+ 服务级 `"timeout"` · 服务端通知流与 `tools/list_changed` 真兑现（2026-11-07）；产品面：`hello.mcp` + 会话头副标 + 检视栏「MCP」卡 + 启动失败 `system` 块 + 提案卡（`detail.tool:"mcp"`）。八臂（A–H）冒烟 **119 条**；方案与诚实边界 `docs/mcp-host-plan.md` |
+| **回合级折叠（2026-11-07）** | 描述见下「现在能做什么」；`--fold-probe` 正/负对照进门（正向 realistic folds=31 / 负向「过程行不足两条 ⇒ 一行不折」folds=0）。折叠态挂 `user` 条目（`RetagTurns` 每轮重建摘要条，挂摘要条必丢——0c 缺陷同型）；展开走无重建快路径（文本测量缓存不失效） |
+| **富内容 B+（2026-11-09/10）** | markdown **块级**（heading / fence / list / quote / hr / 混合顺序）与**行内**强调（`*italic*` / `***bold italic***` / 行内 code / bold）进转录；有序列表裁切与首行标记对齐同日修；`--md-probe` 10 相（前 8 相纯函数、后 2 相真走 `BuildBlockRow` 数落地的控件）。原有 `--table-probe` 6 相基线不动 |
+| **文件导入 / 暂存附件（2026-11-10）** | 中栏导入文件进**暂存区**（chip 显示名字与大小，物理拷贝进 `<ws>/.ecdi/imports/`），提交时自动附相对路径并清空胶囊；>10MB 与无工作区两种情形**拒绝且胶囊不变**；`--import-probe` 5 相 |
 
 ### 现在能做什么（都有探针与负对照）
 
@@ -462,117 +560,62 @@ PY
 临时会话 · 会话归档 · 转录导出 · `···` 内联菜单 · 窗口缩放 + **最小尺寸 880×460**（框架拦，不回弹）·
 Enter 发送 / Shift+Enter 换行 · Composer 随内容**自动长高**（封顶后内部滚动）·
 思维链默认折叠 · 上下文用量环 · **转录可选中**（`--selectable-rows`：user/assistant/system/
-error/markdown/tool 折叠体全可选中复制，`--select-probe` 三相进门）· 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
+error/markdown/tool 折叠体全可选中复制）· 子代理并行委派（`task` 缩进转录 + 代理卡，**委派即授权**）·
 **回合级折叠**（回答结束即把本回合的过程行收成一条「› 已完成 · N 步 · X.Xs」摘要，
 `user` 与最终回答保持可见；点摘要条展开／再收起，**行数不变**）·
+**富内容**（markdown 块级 + 行内强调 + 表格）· **文件导入暂存** ·
 ask **提案卡**（write/edit 审批前看 unified diff、run/task 看完整作用域）·
 run_command 默认 **L1 沙盒**（Job Object 整树强杀 / 内存≤1GB / 进程≤32 / 特权剥离，提案卡两行展示边界）·
 后台长任务（协议 v6 `job`，job_id / 增量回读 / 取消 / GBK 控制台转码）·
 MCP Host（stdio JSON-RPC 2.0 + HTTP/SSE，工具命名空间 `mcp__<srv>__<tool>`，ask 门默认拦截 ·
-24KB 输出上限 · 整树清退 · 崩溃显式提示与**按需重启** · 取消通知 `notifications/cancelled` ·
-`--mcp-env=minimal` 白名单 · **启动状态副标/检视栏卡/失败告警**）·
-I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示**
+24KB 输出上限 · 整树清退 · 崩溃显式提示与**按需重启** · 取消通知 · 白名单环境 ·
+**启动状态副标/检视栏卡/失败告警**）·
+I4（`seq` 缺口）/ I8（未知 `kind`）**显式提示** ·
+会话持久化 + 启动恢复（L1 会话 / L2 模型与工作区延续）
 
 ### **还**不能做什么（★ 这是下一步的输入）
 
 | 缺什么 | 状态 |
 |---|---|
-| ~~★ **长会话上下文管理（截断/摘要）**~~ **已落地（2026-10-28）** | Stage 1 旧工具载荷折叠（无 LLM）/ Stage 2 LLM 摘要 / Stage 3 确定性兜底（`summaryMaxRunes=2000` · `summaryInputRatio=0.60`，`core/cmd/ecdi-core/session.go:48`）；`context.jsonl` 留 `compact` 记录；`--fail-summarize` 注入失败路径。方案与验收：`docs/session-persistence-decisions.md` §7 |
-| ~~**MCP HTTP 的服务端通知流**~~ **已落地（2026-11-07）** | Streamable HTTP 的 GET 通知流（`notifications/*` → hub 分发；405=不支持即停；断流带 `Last-Event-ID` 退避重连）+ `tools/list_changed` 真兑现（重拉工具表，新工具免重启可调）+ legacy SSE 断流自愈（重连 5 次耗尽才判死）+ stdio 通知同口径。`scanSSE` 透传 `id`。判据：Go 5 用例 + 冒烟 G 臂 18 条（83→101）。**仍未做**：OAuth 动态注册；`notifications/progress` 的 token 往返与 GUI 进度面（真 MCP server 跑几十秒的「卡住感」要靠它，另批） |
-| ~~**MCP 单次调用超时**~~ **已落地（2026-11-06）** | `--mcp-timeout`（默认 60s；0 不限）+ 服务级 `mcp.json` `"timeout": <sec>`；超时真发取消通知——送达则保留连接复用，未送达（stdio 僵死）才清退并触发按需 respawn。规则与诚实边界见方案 §十一 |
-| ~~★ **用户模式的机器判据**~~ **已落地（2026-11-06）** | `--mode-probe` 五相进门（`baseline-dev` / `switch-user` / `dev-restored` / `negative` 负对照 / `inspector-memory`）：顶栏胶囊、26px 底栏、侧栏回放区、检视栏探针卡、中栏三按钮尺寸文案、视图切换菜单项、检视栏手动开关双槽记忆，负对照带确认过的牙。闭合记录：`docs/P4-gui-usability-plan.md` §12 |
-| ~~**转录可选中：只到尖峰**~~ **已落地（2026-11-07）** | **订正：这行的「user/system 未铺」本身是漂移**——user/system/error/markdown 段落在 G 之后的批次里已 TextBox 化，真正的缺口只有 tool 行。本批铺完：`--selectable-rows` 下 tool_call/tool_result 折叠体换只读 TextBox（mono/wrap 同形，header 保持折叠钮，作业增量 SetText 路径不受只读影响），探针新增 `tool-select-and-copy` 相（ToggleRow 展开 → Ctrl+A/C → 剪贴板 == 体部全文，变异体实测会红）。**reasoning 折叠体刻意不进**（思维链默认折叠、复制场景弱）。默认关不变 ⇒ 基线路径零变化（REALISTIC A/B：invalidations 29=29 逐位同） |
-| 字重 / 视觉层级 | `REQ-10` **已闭合**（2026-10-24，ECDI Phase 36：`Font{family,weight}` + 库外验收 14/14，harness 已消费）；剩余视觉层级缺口（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
-| ~~**`--settings-probe` 的 4 相**~~ **已机判（2026-10-27 起）** | 四相在回放跑法下结构上不可达（designed-red 登记，理由见 `regress.py` EXTRA_PROBES 注释）；由 **§2e live 设置探针真跑真断**——真 core 重建 + 首启分支（配置必须不存在），必判九相含上述四相，另带 `protocolDeclared == 6` 身份判据 ⇒ **不是人工验收** |
+| **演示物料**（GIF / 三张截图 / 在线 demo） | ⬜ **未上线**。仓库里 0 张图；`.scratch/` 有 20+ 张实拍（`agents_inspector.png` / `crossmon/*.png`）但被 gitignore 挡住。★ 这是外部读者最难自行补上的一格 |
+| **零凭据演示路径** | ⬜ 真 core 必须给 `--base-url/--model/--key`；没有「不给 key 也能看完整工具循环」的跑法（假 core 是回放，不是 agent）。候选修法：`--provider=script` 复用假 core 的剧本引擎（两侧共用 `internal/wire`） |
+| **agent 质量读数** | ⬜ 现在全是**机制**读数（探针正反对照），没有**任务成功率**这类端到端质量读数。样本 12–20 个任务 + 每任务可判定验收（文件真写了？命令真跑了？ask 拒绝后真没执行？）+ 明示成本 |
+| 连续归属竖线 | 📋 已声明未做：ECDI 的 `Widget::Paint` 对每个控件发 `PushClip`，子控件越界不可见——连续轨道须把竖线**提到画布层**（另批） |
+| 代理卡定位高亮 | 📋 点击能定位到行，但不高亮 |
+| MCP OAuth 动态注册 / `notifications/progress` | 📋 未做：真 MCP server 跑几十秒的「卡住感」要靠进度往返，另批 |
+| TODO-06 门自身可信度 | 📋 `regress.py` live 分支判据仍含 `out.exists()`（写盘后崩也绿）；拿到 PDB 后把 F1/F2 调用链落到源行——**归属定不了之前不开新功能** |
+| 字重 / 视觉层级 | `REQ-10` 已闭合；剩余（半透明文本等）受 `REQ-11` 影响（ECDI `#71`，**登记推后**，零消费者） |
 
 ### `evals/` 的口径（**已拍板 2026-11-07：② 全部读数**）
 
 `evals/` 是评估数据的**唯一落点**：每轮工作收口时，把当轮的正/负对照读数（机器可读 JSON，
 **轮级**粒度）从 `.scratch/` 归档进来；中间调试件（`_b3_*`、`_asan_*` 这类）不进。
-**现状欠账（2026-11-07 已清）**：10-24 以来各轮的收口读数已按轮归档 **68 份**
-（总量 84 → **152**，最新 2026-11-07）：App.cpp 拆分 before/after 全套含四阶段指纹
-（`split-*`）· 10-26 的 25 探针进门横评（`probes25-*`）· P4 逐相位基线链 + G 尖峰
-可选中 A/B 对 + H 模型浮窗（`p4-*`）· P3.6 设置探针 live/replay 双臂（`p36-*`）·
-#71 换库 GL 回放（`lib71-*`）· 会话持久化（`session-persist-*`）· REQ-14（`req14-*`）·
-v5 子代理正/负/cap 门（`v5-agent-*`）· ask 提案卡正/负（`v5-ask-*`）· MCP 可见性与
-HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协议声明臂三件 +
-83 断言冒烟（`protoarm-*` / `mcp-smoke-83assert`）。逐份来源映射见 `status.txt`
-2026-11-07 EVALS-BACKFILL 条目。**不进**：被门反复覆盖的 `_reg*`（每轮重 derive）、
-调查中间件（重试链/变异探索）。今后每轮收口即按本口径归档。
+**现状（2026-11-10 实测）**：`ls evals/*.json | wc -l` = **157** 份。10-24 以来各轮已按轮归档 **68 份**
+（84 → 152，2026-11-07）：App.cpp 拆分 before/after 全套含四阶段指纹（`split-*`）·
+10-26 的 25 探针进门横评（`probes25-*`）· P4 逐相位基线链 + G 尖峰可选中 A/B 对 + H 模型浮窗（`p4-*`）·
+P3.6 设置探针 live/replay 双臂（`p36-*`）· #71 换库 GL 回放（`lib71-*`）· 会话持久化（`session-persist-*`）·
+REQ-14（`req14-*`）· v5 子代理正/负/cap 门（`v5-agent-*`）· ask 提案卡正/负（`v5-ask-*`）·
+MCP 可见性与 HTTP/SSE 正/负 + death-race 牙齿对（`mcp-*`）· P4 J（`p4j-*`）· 协议声明臂三件 +
+冒烟（`protoarm-*` / `mcp-smoke-*`）。逐份来源映射见 `status.txt` 2026-11-07 EVALS-BACKFILL 条目。
+**不进**：被门反复覆盖的 `_reg*`（每轮重 derive）、调查中间件（重试链/变异探索）。
+今后每轮收口即按本口径归档。
 
 ### 下一步（按依赖顺序，不按诱人程度）
 
-**2026-10-26 这批收的是债务，不是功能**：25 个探针全部进门（13/25 → 25/25）· 门面文档按
-`git show | wc -l` 实测重建（`App.h` 的账此前**加减不闭合**）· 关闭「`--settings-probe` 会删
-用户真实配置」的缺陷（现在无 `--config` 直接拒绝启动）。
-
-其后的顺序（2026-11-05 对齐）——**已全部收完**：
-
-1. ~~**③ 后台长任务**——`run_command` 拆出后台作业（job_id / 输出回读 / 取消），
-   复用 L1 的 Job Object 句柄~~ **已落地（2026-11-05）**（见「已收口」协议 v6 行）。
-2. ~~**P4 Phase I：路径可点 + 只读预览**~~ **已落地**（见「已收口」P4 A–J 行）。
-3. ~~**MCP host**~~ **已落地（2026-11-05）**：stdio 传输 + 整树清退 + ask 门 + 24KB 输出上限，
-   见 `docs/mcp-host-plan.md`。~~产品面可见性~~ **已落地（2026-11-06）**：
-   `hello.mcp` + 会话头副标 + 检视栏「MCP」卡 + 启动失败 `system` 块 + `--mcp-probe` 正反对照。
-   ~~GUI 侧提案卡~~ **已落地（2026-11-06）**：`detail.tool:"mcp"` 判别值 +
-   渲染分支 core/GUI/协议/测试同批放开（server/toolName/argsKv，问句同批改真实工具名）。
-   ~~HTTP/SSE 传输~~ **已落地（2026-11-06）**：Streamable HTTP（`2025-06-18`）+ legacy
-   HTTP+SSE（`transport:"sse"`）+ `url/headers` 配置 + 状态里的传输标识。
-   ~~运行期语义~~ **已落地（2026-11-06）**：`--mcp-env=minimal`、崩溃后按需重启（上限 3 次）、
-   取消时真发 `notifications/cancelled`；六臂（A–F）冒烟 **83 条**。
-
-**2026-11-07 对齐**：
-
-1. ~~**protocol 覆盖洞**：假 core 恒发 `"protocol": 3`，全部 live 支线只跑 fake-core ⇒
-   2026-11-06「无参启动点『选择文件夹』无反应」（`AppHud` 的 `liveReady` 守卫 `== 3` 未随
-   v4 迁移）自动化语料 100% 看不见（`status.txt` 登记 COVERAGE HOLE）。做法：假 core 加
-   `--protocol=N`（默认 3 ⇒ 既有基线逐字节不动）+ 门里 live 臂声明 4/6，断言
-   `sendEnabled`/`pickerEnabled` 在 idle 真转真、caps 缺 `workspace`/`model` 时对应交互隐藏。
-   真 core 现声明 **6**（`core/cmd/ecdi-core/session.go:277`），洞在变宽。~~
-   **已落地（2026-11-07）**：假 core `--protocol/--caps`（默认逐字节不变）+ 门 2d-b 三臂
-   （v4-full / v6-full / v6-no-workspace），判据建立在 `--state-probe` 新增的同点回读字段上
-   （pickerEnabled/pickerVisible/workspaceCap/protocolVer——判 GUI 的解析结果，不判传参；
-   身份判据钉死「GUI 眼中的 protocolVer == 声明值」防钳位洗绿）。牙齿实测：守卫退回
-   `== 3` 的变异体上 v6 臂三判据全红。范围边界：caps 缺 `model` 的热切换拒绝是交互门
-   （state-probe 观测不到）——**已由十版第四臂闭合**（`v6-no-model`，拒绝分支经同一
-   入口触发并断言，见 2026-11-07 对齐第 4 条）。
-2. ~~**evals/ 补库**：按上面已拍板的口径，把 2026-10-24 以来各轮收口读数从 `.scratch/`
-   归档进 `evals/`（每轮挑正/负对照，不搬中间调试件）。~~ **已落地（2026-11-07）**：
-   68 份按轮归档（84 → 152），映射见 `status.txt` EVALS-BACKFILL 条目；今后每轮收口即归档。
-3. **TODO-06 门自身可信度**：`regress.py` live 分支判据仍是 `out.exists()`（写盘后崩也绿）；
-   若能拿到 PDB（gui 目标 `/Zi+/DEBUG` 或 `/MAP`）先把 F1/F2 调用链落到源行——拿得到就排
-   第 2 条之前：「归属定不了之前不开新功能」。
-
-4. ~~**MCP 小修包**（通知流落地后排队的产品短板）：hello.mcp 快照 respawn 后不跟手 /
-   切工作区不重发现 `mcp.json` / HUD 脏位修复进门 / model-cap 拒绝侧 live 断言~~
-   **四项中三项已落地（2026-11-07 十版）**：协议 §3.14 控制面消息 `t:"mcp"`（状态
-   权威覆盖，空载荷 = 收卡）+ `status.Services` 重导（构造期冻结是冒烟抓的第二处）+
-   工作区切换重发现（idle 门后重跑发现链，旧工具清空有「幽灵工具调不通」行为级
-   判据）+ `--mcp-probe` ⑦ 判据（夹具中段带 `t:"mcp"`）+ 2d-b 第四臂
-   `v6-no-model`（拒绝分支 live 断言）。冒烟 101 → **119**（F/G① 各 +1、H 臂 16 条），
-   方案 `docs/mcp-host-plan.md` §十三。**第四项（HUD 脏位门）未落**：造门时挖出
-   新缺陷——live 多会话一拉起第二个会话，全部 `WM_TIMER` 停摆（见下）。
-5. ~~**★ 新缺陷登记（2026-11-07，归属未定）**：live 拉起第二个会话后全部
-   `WM_TIMER` 停摆~~ **已归因并修复（2026-11-07 晚，WorkBuddy 侧核对源码定案）**。
-   **真根因在 harness 自己**（ECDI 三条失效出口经静态核对均单趟/有界，排除）：
-   `DrainActiveLive` 尾部对**所有** live 会话 `RearmWake()`（2026-10-30 那笔
-   「复位所有 live 源」），而 `RearmWake` 的语义含「队列有积压就立刻再投」；
-   drain 只抽活动会话 ⇒ **「非活动且有积压的冻结会话」成为无限自投源**——每次
-   投递 drain 的仍是活动会话，冻结会话的积压永远在 ⇒ `PostToUi` 普通优先级线程
-   消息洪泛 ⇒ `WM_TIMER`/`WM_PAINT`（低优先级合成消息，仅在队列空窗生成）永不
-   出现：一个核烧满、caret/tooltip/auto-close 全哑、0 paint、闭包照跑——五个
-   症状一个原因。**修法（最小）**：drain 尾部只对活动会话 `RearmWake`，冻结会话
-   只 `ClearWakeFlag()`（旗标复位仍必要，防陈旧旗标压住激活后的真唤醒；激活
-   路径 `AppSession.cpp:507` 本就自带 `RearmWake`，积压不丢）。ECDI 零改动。
-   **门随根因落地**：2d-c live 臂（侧栏计数文本跟手 + `wakePosts` 有界机读面）
-   重进 regress——修前该臂连跑完都不可能（TIMEOUT），修后三相全真、wakePosts
-   0→2→1。**与 2026-10-27「删除后 HUD 冻结」同根坐实**：多会话 live 一开，
-   tick 死了，脏位消费无从谈起——那笔修复本身没错，只是被本缺陷挡住进不了门。
-
-功能侧（`notifications/progress` 的 token 往返 + GUI 进度面、OAuth 动态注册、
-TODO-06 crash.dmp 归属）等下一轮再挑。
+1. ~~**对外入口**：README 顶部英文口径 + 现状单一来源；预编译包让「没有 ECDI / 没有 MSVC」的人也能跑起来。~~
+   **已落地（2026-11-10）**：README 顶部重写（英文 30 秒口径 + 现状单一来源 + 数字重数）；
+   `tools/make-dist.py` 出 `dist/ecdi-harness-0.1.0-win64.zip`（8.66 MB，解压实测 `blocks=8 /
+   messages=43 / seqGaps=0 / violations=0`、退出码 0）。**上传 Release 仍未做**——那是对外动作，等用户。
+2. **零凭据演示路径**：`--provider=script`（复用假 core 剧本引擎），让「不花钱跑一遍 agent 循环」
+   成立——这是把仓库变成可自证的第一步。
+3. **agent 质量读数**：12–20 任务 × 可判定验收的矩阵（不是只报成功率）。
+4. **TODO-06 门可信度**：`out.exists()` → 源行调用链（见上表）。
+5. 功能侧：`notifications/progress` 的 token 往返 + GUI 进度面、OAuth 动态注册、
+   连续归属竖线、代理卡定位高亮。
 
 ★ **P3（真 agent core）是主线，不是可选收尾**——见 `docs/positioning.md` §2 / §6。
+★ 命名说明：仓库名里的 `fake` 是历史产物（它出生时只有假 core）。改名会带来链接重定向与
+克隆地址变更，属对外动作，**由用户自己决定**；本文件先把「这是什么」写清楚。
 
 ## 许可证
 
