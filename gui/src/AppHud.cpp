@@ -443,16 +443,17 @@ void HarnessApp::Relayout() {
                         body->SetWordWrap(true);
                         body->SetSize(std::max(20, availW - slotW), body->GetHeight());
                         body->AutoSize();
-                        // ★ 行盒与底部防裁切余量（2026-11-10 修复数字列表底部裁切问题）：
-                        //   GDI TextOutW 字形高度（TEXTMETRIC.tmHeight）约 21~22px，而 AutoSize
-                        //   向零截断的 LineHeight 只有 20px，导致底层 PushClip 裁剪区切除底部 1~2px。
-                        //   给正文和容器补齐 +2px 抗裁剪余量，并确保单行时不少于 LineBox 高度。
+                        // ★ 列表行盒与布局锚定（2026-11-10 修复数字列表裁切与对齐）：
+                        //   1. 序号点裁切真因：slotW=22 过窄导致两位数序号（如 "10."）超宽被 PushClip 裁除，
+                        //      扩展至 slotW=26 彻底解决；
+                        //   2. marker 垂直下沉真因：原 mk->SetSize(slotW, h) 误用多行正文高度，导致 Label
+                        //      在多行盒内垂直居中下沉；现固定单行行盒高 singleLineH 并锚定在顶部 (0, 0)；
+                        //   3. 高度截断说明：框架 Widget::AutoSize 向零截断浮点高度已登记 REQ-22；
+                        //      此处不堆硬编码 +2 余量，保持单行保底 LineBox 并遵循统一 AutoSize 语义。
                         const int singleLineH = uikit::LineBox(harness::kFontBody);
-                        const int bodyH = std::max(singleLineH, body->GetHeight()) + 2;
+                        const int bodyH = std::max(singleLineH, body->GetHeight());
                         body->SetSize(body->GetWidth(), bodyH);
-                        // ★ marker 序号（如 1. / 2. / 10.）：高度保持单行行盒高（+2px 抗裁切），
-                        //   锚定在顶部 (0, 0)，避免多行正文时因 Label 默认垂直居中而下漂至中间。
-                        mk->SetSize(slotW, singleLineH + 2);
+                        mk->SetSize(slotW, singleLineH);
                         mk->SetPosition(0, 0);
                         body->SetPosition(slotW, 0);
                         w->SetSize(availW, bodyH);
@@ -511,7 +512,7 @@ void HarnessApp::Relayout() {
                         body->SetSize(std::max(20, availW - 3 - 12), body->GetHeight());
                         body->AutoSize();
                         const int singleLineH = uikit::LineBox(harness::kFontBody);
-                        const int h = std::max(singleLineH, body->GetHeight()) + 2;
+                        const int h = std::max(singleLineH, body->GetHeight());
                         body->SetSize(body->GetWidth(), h);
                         bar->SetSize(3, h);
                         bar->SetPosition(0, 0);

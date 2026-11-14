@@ -76,9 +76,18 @@
 **备选 C1**：协议新入站 `attachment`——动 KNOWN_TYPES/wire/ProtocolWriter/processLine/§4 全套，
 且文件内容不进 context 的话与 staged 等价，不进的话又漂移；后置。
 
+### C.1 落地记录（2026-11-10/11，文件导入与暂存胶囊）
+
+1. **入口与界面**：PromptBar 增加导入按钮（`+` 胶囊），点击调起 Win32 原生 `GetOpenFileNameW`，支持选择任意文件；已暂存文件在输入框上方渲染为附件胶囊（含文件名、大小、删除按钮 `×`）。
+2. **复制落点与防污染**：选中的文件被复制到 `<工作区>/.ecdi/imports/<timestamp>_<filename>`；重名自动加时间戳前缀；`<ws>/.ecdi/.gitignore` 自动写入 `*`，严格保证不污染用户 Git 仓库。
+3. **协议零改动与消费闭环**：发送 prompt 时将附件相对路径拼入提示词文本末尾（如 `[附带文件: .ecdi/imports/xxx]`），模型侧通过标准 `read_file` 读取，协议与 journal 完全零改动。
+4. **UTF-8 与跨语言支持**：采用 `Utf8FromWidePath` / `WideFromUtf8Path` 与宽字符直接传递，消除 MSVC CP936(GBK) 导致的中文文件名乱码。
+5. **验证探针**：`--import-probe` 6 相全绿（`import-stage`、`import-remove`、`import-submit`、`import-oversize`、`import-no-workspace`、`import-utf8-name`）。
+
 ## D. 建议顺序
 A（核对，半小时级）→ B（原型先行，过目后实施）→ C（实施小）。
 理由：B 用户可感知收益最大且有明确的探针冲击面需要设计；C 独立且改动最小；A 可能无事可做。
+（★ 2026-11-10 现状：A、B、B+、C 全部完成闭环。）
 
 ## E. 待裁决
 | # | 问题 | 选项 |
@@ -111,7 +120,7 @@ E1=渲染期解析；E2=复制进 `.ecdi/imports/`；E3=A→B→C；E4=先由用
    已按铁律登记 `ecdi-capability-requests.md` **REQ-20**（对账 ECDI #53 群 / 富文本另立项既有裁决，
    不排期、不阻断块级）。**不在应用层拆控件绕行**——会打破「一 block 一 TextBox」选中/复制假设。
 
-**顺序更新**：A ✅ → B ✅ → **B+（块级全套，本项）** → C（文件导入）。C 独立且小，B+ 过目实施后再收。
+**顺序更新**：A ✅ → B ✅ → **B+ ✅（块级全套与内联样式）** → **C ✅（文件导入与暂存胶囊，已于 2026-11-10 闭环）**。全部就绪。
 
 ### G.1 批 1 落地记录（2026-11-08）：解析器 + 纯函数判据
 
@@ -184,11 +193,10 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
 
 ### G.3 仍然开放
 
-1. ✅ **`REQ-20` 内联样式**——**2026-11-09 本仓已消费**（粗体 + 行内 code；斜体按用户裁定暂不做、
-   `size` 留位），见 **§H**。★ 本节下文（§G.1 末段）「斜体永远不会生效」的结论**已过期**：
-   那是按 Phase 44 头文件写的，Phase 45（`eb2106a`）已开 `italic` / `size` 两个维度。
+1. ✅ **`REQ-20` 内联样式**——**2026-11-09/10 本仓已消费**（粗体 + 行内 code + 斜体 + 粗斜体均已上线；
+   `size` 留位），见 **§H**。
 2. **链接**——等 `REQ-19-B`（OpenExternal）。`[x](y)` 当前按原文显示。
-3. **C 项（文件导入）**——§G 顺序里排在 B+ 之后，未动。
+3. ✅ **C 项（文件导入与暂存胶囊）**——**2026-11-10/11 已闭环**：见 **§C.1**。
 4. **`REQ-21`（新）**——`SpanStyle` 缺 `background` ⇒ 行内 code 无底色块。已登记、不等它。
 
 ---
@@ -217,7 +225,7 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
 | 判据 | `HasInlineStyles(runs)`（`Transcript.cpp`） | 与 `HasMarkdownBlocks` 同一条纪律：唯一实现，渲染侧只调 |
 | 渲染接入 | `HarnessApp::ApplyInlineText`（`AppTranscript.cpp`） | **唯一入口**，三路正文共用：复合渲染的段控件（`makeText`）/ 无块级构造的只读 `TextBox` / `Label` |
 | 流式升级 | `AppStream.cpp` 的 `block_end` 分支 | 只有行内样式（无块级构造）的块，流式期仍是原文；块结束时**就地** `ApplyInlineText` + `Relayout`（不重建整行——行内只换 text/spans，重建会冲掉滚动与选中） |
-| 判据 | `--md-probe` 相 11–25 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` · `inline-italic` · `inline-bold-italic` · `inline-italic-negative` · `render-inline-italic` |
+| 判据 | `--md-probe` 相 11–26 | `inline-bold` · `inline-code` · `inline-mixed`（嵌套扁平化）· `inline-unclosed` · `inline-escape` · `inline-negative`（flanking/intraword/零内容三合一负臂）· `inline-cp-cjk`（★ 码点索引专项）· `inline-code-literal` · `inline-identity`（基线）· `render-inline` · `render-inline-negative` · `inline-italic` · `inline-bold-italic` · `inline-italic-negative` · `render-inline-italic` · `render-list-inline`（列表项 marker 分离、正文内联展开与多行缩进续行合并） |
 
 ### H.3 为什么解析器是「三遍式」而不是「区间查找 + 字符串替换」
 
@@ -250,8 +258,8 @@ ECDI 侧链路已核对可用（`TextWidget::SetStyledText` 在 `ECDI.lib` 符�
    `--md-probe` 的渲染相不覆盖它（那一相只读 `GetText()`）。**待用户编译后目视确认**。
 3. **行内 code 无底色**——`REQ-21`，等 ECDI。
 4. **`size` 留位不用**——保版心行高稳定（斜体已于 2026-11-10 消费上线）。
-5. **表格单元格 / 引用块内多行 / 代码块**：后两者不走行内解析（代码块本就该保留原文）；
-   表格单元格目前是独立 Label/TextBox，未接 `ApplyInlineText`——下一批可铺。
+5. **表格单元格 / 引用块 / 列表项 / 代码块**：引用块与列表项正文已接通 `ApplyInlineText`（支持内联样式解析与渲染）；
+   代码块本就保留原文不解析；表格单元格目前是独立 Label/TextBox，未接 `ApplyInlineText`——下一批可铺。
 
 
 

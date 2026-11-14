@@ -163,12 +163,11 @@ AGENT_CAP_MISSING = "protocol/fixtures/subagent/agent-cap-missing.jsonl"
 EXTRA_PROBES = [
     ("--table-probe", "tableProbe", DEMO, [], []),
     # ★★ 2026-11-08（富内容 B+）：块级全套**解析 + 渲染**判据，10 相。
-    # ★★ 2026-11-09（富内容 §H）：同一探针追加**段内内联样式** 11 相 ⇒ 共 21 相。
-    #   新增的 inline-* 相里也有两相走真实 BuildBlockRow（render-inline /
-    #   render-inline-negative），同理需要真夹具才能证明「屏幕上确实没有星号」。
-    #   ★ 配 MD_BLOCKS（专用夹具）而不是 DEMO：前 8 相是纯函数、任何夹具都能跑，
-    #     但后两相（render-blocks / render-negative）走真实 BuildBlockRow，
-    #     用专用夹具才顺便验证「整份夹具回放时块级真的渲染」这条端到端读法。
+    # ★★ 2026-11-09（富内容 §H）：追加**段内内联样式**（粗体/code 11 相 + 斜体/粗斜体 4 相）与列表内联渲染 1 相 ⇒ 共 26 相。
+    #   其中 render-blocks / render-negative / render-inline / render-inline-negative /
+    #   render-inline-italic / render-list-inline 走真实 BuildBlockRow，证明屏幕上构造与内联样式正确落地。
+    #   ★ 配 MD_BLOCKS（专用夹具）而不是 DEMO：纯函数相任何夹具都能跑，
+    #     走真实 BuildBlockRow 的相用专用夹具顺便验证「整份夹具回放时块级真的渲染」这条端到端读法。
     ("--md-probe", "mdProbe", MD_BLOCKS, [], []),
     ("--copy-probe", "copyProbe", REALISTIC, [], []),
     ("--empty-probe", "emptyProbe", DEMO, [], []),
@@ -254,7 +253,7 @@ EXTRA_PROBES = [
     #   负对照断言 negative 相（反向断言必红，在 designed-red 中登记）。
     ("--mode-probe", "modeProbe", DEMO, [], ["negative"]),
     # ★★ 2026-11-10（富内容 §C）：文件导入与暂存胶囊（--import-probe）。
-    #   全链路 5 相：import-stage / import-remove / import-submit / import-oversize / import-no-workspace。
+    #   全链路 6 相：import-stage / import-remove / import-submit / import-oversize / import-no-workspace / import-utf8-name。
     #   工作区与样本文件在 %TEMP% 自建，不依赖 Win32 模态对话框；回放模式即可全绿；无 designed-red。
     ("--import-probe", "importProbe", DEMO, [], []),
 ]

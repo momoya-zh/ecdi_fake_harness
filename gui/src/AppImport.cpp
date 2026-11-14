@@ -61,7 +61,7 @@ void HarnessApp::HandleImportFile() {
             // 用户取消：静默返回，不污染转录视图
             return;
         }
-        srcPath = Utf8FromWidePath(fileBuf);
+        srcPath = fileBuf;
     }
 
     // 3. 校验源文件存在性与体积上限
@@ -94,8 +94,10 @@ void HarnessApp::HandleImportFile() {
     fs::create_directories(importsDir, ec);
 
     // 5. 生成目标文件名（加时间戳防覆盖）并复制
-    const std::string stem = srcPath.stem().string();
-    const std::string ext = srcPath.extension().string();
+    // ★ 统一走 PathToUtf8（WideCharToMultiByte CP_UTF8），严禁裸 .string() 走 MSVC 系统的
+    //   ACP（Windows 936 / GBK），否则中文文件名在前端胶囊与发往 core 的 JSON 中全乱码。
+    const std::string stem = PathToUtf8(srcPath.stem());
+    const std::string ext = PathToUtf8(srcPath.extension());
     std::string stamp;
     {
         std::time_t now = std::time(nullptr);
@@ -110,7 +112,7 @@ void HarnessApp::HandleImportFile() {
         stamp = buf;
     }
     const std::string destName = stem + "-" + stamp + ext;
-    const fs::path destPath = importsDir / destName;
+    const fs::path destPath = importsDir / WideFromUtf8Path(destName);
 
     fs::copy_file(srcPath, destPath, fs::copy_options::overwrite_existing, ec);
     if (ec) {
@@ -122,7 +124,7 @@ void HarnessApp::HandleImportFile() {
 
     // 6. 装配相对路径（规范化使用正斜杠）并呈现胶囊
     const std::string relPath = ".ecdi/imports/" + destName;
-    const std::string displayName = srcPath.filename().string();
+    const std::string displayName = PathToUtf8(srcPath.filename());
 
     if (m_promptBar) {
         m_promptBar->SetAttachment(displayName, relPath, static_cast<long long>(sz));
@@ -155,12 +157,14 @@ void HarnessApp::RunImportProbe() {
     const fs::path oversizeFile = tempDir / "oversize_test_data.bin";
     {
         std::ofstream ofs(oversizeFile, std::ios::binary);
-        // 写入 10MB + 1 字节
-        const std::string chunk(1024 * 1024, 'A');
-        for (int i = 0; i < 10; ++i) {
-            ofs.write(chunk.data(), chunk.size());
-        }
         ofs.put('B');
+    }
+    fs::resize_file(oversizeFile, 10 * 1024 * 1024 + 1, ec);
+
+    const fs::path cjkFile = tempDir / WideFromUtf8Path("测试导入_数据样本.txt");
+    {
+        std::ofstream ofs(cjkFile, std::ios::binary);
+        ofs << "hello cjk content\n第二行中文数据样本\n";
     }
 
     // 备份原有会话与 PromptBar 状态
@@ -169,7 +173,7 @@ void HarnessApp::RunImportProbe() {
 
     // 1. import-stage：正常暂存测试
     {
-        if (m_sess) m_sess->workspacePath = tempDir.string();
+        if (m_sess) m_sess->workspacePath = PathToUtf8(tempDir);
         m_probeState.importProbeFilePath = sampleFile;
 
         HandleImportFile();
@@ -189,7 +193,7 @@ void HarnessApp::RunImportProbe() {
         // 验证物理文件确实拷贝至 <ws>/.ecdi/imports/
         bool fileExists = false;
         if (!relPath.empty()) {
-            const fs::path targetPhysics = tempDir / relPath;
+            const fs::path targetPhysics = tempDir / WideFromUtf8Path(relPath);
             fileExists = fs::exists(targetPhysics, ec);
         }
 
@@ -247,15 +251,59 @@ void HarnessApp::RunImportProbe() {
         add("import-oversize", ok, "hasAtt=" + std::to_string(hasAtt));
     }
 
-    // 5. import-no-workspace：无工作区拒绝导入
+    // 5. import-no-workspace：无工作区拒绝导入（前置暂存有效附件，验证无工作区调用时守卫拦截且原有附件不被冲掉）
     {
-        if (m_sess) m_sess->workspacePath = "";
+        // 先设一个已知有效附件
         m_probeState.importProbeFilePath = sampleFile;
         HandleImportFile();
+        const bool preStaged = m_promptBar && m_promptBar->HasAttachment();
 
-        const bool hasAtt = m_promptBar && m_promptBar->HasAttachment();
-        const bool ok = !hasAtt;
-        add("import-no-workspace", ok, "hasAtt=" + std::to_string(hasAtt));
+        // 移除非法工作区，再尝试导入另一个文件
+        if (m_sess) m_sess->workspacePath = "";
+        m_probeState.importProbeFilePath = cjkFile;
+        HandleImportFile();
+
+        // 断言：原有附件未被冲掉（证明非法导入被早退 guard 拦截，且未替换成 cjkFile）
+        bool keptOrig = false;
+        if (m_promptBar && m_promptBar->HasAttachment()) {
+            const auto& att = m_promptBar->GetAttachment();
+            if (att.has_value() && att->displayName == "sample_test_data.txt") {
+                keptOrig = true;
+            }
+        }
+        // 恢复工作区并清理附件供下一相使用
+        if (m_sess) m_sess->workspacePath = PathToUtf8(tempDir);
+        if (m_promptBar) m_promptBar->ClearAttachment();
+
+        const bool ok = preStaged && keptOrig;
+        add("import-no-workspace", ok, "preStaged=" + std::to_string(preStaged) + " keptOrig=" + std::to_string(keptOrig));
+    }
+
+    // 6. import-utf8-name：中文文件名导入全链路（显示名、相对路径、物理复制落盘均正常且无 GBK 乱码）
+    {
+        m_probeState.importProbeFilePath = cjkFile;
+        HandleImportFile();
+
+        bool stagedOk = false;
+        std::string displayName;
+        std::string relPath;
+        if (m_promptBar && m_promptBar->HasAttachment()) {
+            const auto& att = m_promptBar->GetAttachment();
+            if (att.has_value()) {
+                displayName = att->displayName;
+                relPath = att->relativePath;
+                stagedOk = (displayName == "测试导入_数据样本.txt" && att->fileSizeBytes > 0);
+            }
+        }
+        // 验证物理文件在 <ws>/.ecdi/imports/ 真实存在且文件名保持正确的 Unicode
+        bool fileExists = false;
+        if (!relPath.empty()) {
+            const fs::path targetPhysics = tempDir / WideFromUtf8Path(relPath);
+            fileExists = fs::exists(targetPhysics, ec);
+        }
+        const bool relPathHasCjk = (relPath.find("测试导入_数据样本") != std::string::npos);
+        const bool ok = stagedOk && fileExists && relPathHasCjk;
+        add("import-utf8-name", ok, "name='" + displayName + "' rel='" + relPath + "' fileExists=" + std::to_string(fileExists));
     }
 
     // 恢复状态并清理临时目录

@@ -1518,39 +1518,54 @@ void HarnessApp::RunMdProbe() {
         }
     }
 
-    // 26. render-list-headroom：数字列表防裁切与行盒余量（2026-11-10 修复数字列表裁切）
-    //   验证：列表项经过 BuildBlockRow 之后，正文支持行内 Markdown 展开（无原始星号），
-    //   序号 marker 与正文控件正确分离挂载。
+    // 26. render-list-inline：列表项 marker 分离、正文内联展开与多行缩进续行合并
+    //   验证：
+    //   ① 列表项经 BuildBlockRow 真实落成两层控件结构（第 0 孩子为 marker Label，第 1 孩子为正文 TextWidget）；
+    //   ② 第一项正文（**第一步**）正确展开内联样式（文字含「第一步」、无原始星号「**」）；
+    //   ③ 第二项正文合并缩进续行（包含换行符与续行正文「这是缩进续行」）；
+    //   ④ 序号 marker 文本分别为 "1." 与 "2."，与正文分离挂载，且元数据 ordered/marker 对应。
     {
         Block mockBlock;
-        mockBlock.id = "mock_list_headroom";
+        mockBlock.id = "mock_list_inline";
         mockBlock.kind = "assistant";
         mockBlock.text =
-            "1. **第一步**：测试数字列表项行盒防裁切余量\n"
-            "2. 第二步：测试多行正文悬挂缩进\n"
-            "   这是缩进续行，用来拉长正文高度形成多行效果\n";
+            "1. **第一步**：测试列表项行内样式展开与分离结构\n"
+            "2. 第二步：测试多行正文缩进续行合并\n"
+            "   这是缩进续行，用来拉长正文形成多行\n";
         mockBlock.ended = true;
 
         RowRec mockRec;
         auto rowPanel = BuildBlockRow(mockBlock, mockRec);
         bool ok = false;
         std::string note;
-        if (mockRec.hasMarkdown && mockRec.segments.size() >= 2) {
+        if (mockRec.hasMarkdown && mockRec.segments.size() == 2 && mockRec.segMeta.size() == 2) {
             ECDI::Widget* w0 = mockRec.segments[0];
-            if (w0 && w0->GetChildCount() >= 2) {
+            ECDI::Widget* w1 = mockRec.segments[1];
+            if (w0 && w0->GetChildCount() >= 2 && w1 && w1->GetChildCount() >= 2) {
                 auto* mk0 = dynamic_cast<ECDI::Label*>(w0->GetChildAt(0));
                 auto* body0 = dynamic_cast<ECDI::TextWidget*>(w0->GetChildAt(1));
-                if (mk0 && body0) {
-                    const bool mkTextOk = (mk0->GetText() == "1.");
-                    const bool bodyTextOk = (body0->GetText().find("第一步") != std::string::npos &&
-                                             body0->GetText().find("**") == std::string::npos);
-                    ok = mkTextOk && bodyTextOk;
-                    note = "mk=" + (mk0 ? mk0->GetText() : "null") +
-                           " bodyHasAsterisk=" + std::to_string(body0->GetText().find("**") != std::string::npos);
+                auto* mk1 = dynamic_cast<ECDI::Label*>(w1->GetChildAt(0));
+                auto* body1 = dynamic_cast<ECDI::TextWidget*>(w1->GetChildAt(1));
+                if (mk0 && body0 && mk1 && body1) {
+                    const bool mk0Ok = (mk0->GetText() == "1.");
+                    const bool mk1Ok = (mk1->GetText() == "2.");
+                    const bool body0Ok = (body0->GetText().find("第一步") != std::string::npos &&
+                                          body0->GetText().find("**") == std::string::npos);
+                    const bool body1Ok = (body1->GetText().find("第二步") != std::string::npos &&
+                                          body1->GetText().find("这是缩进续行") != std::string::npos &&
+                                          body1->GetText().find("\n") != std::string::npos);
+                    const bool meta0Ok = (mockRec.segMeta[0].kind == MarkdownSegmentKind::ListItem &&
+                                          mockRec.segMeta[0].ordered && mockRec.segMeta[0].marker == 1);
+                    const bool meta1Ok = (mockRec.segMeta[1].kind == MarkdownSegmentKind::ListItem &&
+                                          mockRec.segMeta[1].ordered && mockRec.segMeta[1].marker == 2);
+                    ok = mk0Ok && mk1Ok && body0Ok && body1Ok && meta0Ok && meta1Ok;
+                    note = "mk0=" + mk0->GetText() + " mk1=" + mk1->GetText() +
+                           " b0NoAsterisk=" + std::to_string(body0->GetText().find("**") == std::string::npos) +
+                           " b1HasCont=" + std::to_string(body1->GetText().find("这是缩进续行") != std::string::npos);
                 }
             }
         }
-        add("render-list-headroom", ok, note);
+        add("render-list-inline", ok, note);
     }
 
     if (m_application) m_application->Exit();

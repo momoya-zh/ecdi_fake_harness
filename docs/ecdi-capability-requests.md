@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.24**（2026-11-09；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.25**（2026-11-11；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）；**REQ-20 🔄 开放（2026-11-07 登记：段内内联样式 styled spans 能力缺口；★ 同日 ECDI 裁决已回：重启条件成立、富文本另立项 = ECDI deferred **#88**，Phase 号待排；块级全套先行见 rich-content-plan §G）**；**★ 2026-11-08 ECDI 侧已交付、本仓待消费**：ECDI `#88` / Phase 44（`008daff` batch2）落地 `TextWidget::SetStyledText(const std::string&, const std::vector<TextSpan>&)` + `SpanStyle` + `TextSpan`（`third_party/ecdi/include/ECDI/Widget/TextSpan.h`）。**★★ 验收口径必须收窄**：`SpanStyle` 只有 `family`/`weight`/`foreground` 三个 optional，头注释明文「严禁包含 size（闸门 3）或**斜体**（闸门 2 / L44-8）」⇒ 本仓能兑现的是**粗体**（`weight=700`）与**行内 code**（`family=Consolas`+`foreground`）两件，**斜体永远不生效**、**字号不可变**。§G 原文「粗体/斜体/行内 code 三件套」须按此改写。链路已核验：`ECDI.lib` 符号表含 `SetStyledText` 与 `ClampAndValidateSpans`，安装头与 ECDI 源树 **102/102 逐字节相同**，重链 35/35 成功、demo 基线 8/19/43 不变。**本仓尚未改任何与 styled spans 相关的代码。** ★★ **2026-11-09 更新**：本仓**已消费**——粗体（`**x**` / `__x__`）与行内 code（`` `x` ``）上线（`ParseInlineRuns` + `--md-probe` 11 个 inline 相 + `ApplyInlineText` 三路接入），**斜体按用户裁定暂不做**（`*x*` 按原文保留），`size` 留位不用；同批登记 **REQ-21**（`SpanStyle` 缺 `background` ⇒ 行内 code 无底色）。详见 `rich-content-plan.md` §H。
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）；**REQ-20 🔄 开放（2026-11-07 登记：段内内联样式 styled spans 能力缺口；★ 同日 ECDI 裁决已回：重启条件成立、富文本另立项 = ECDI deferred **#88**，Phase 号待排；块级全套先行见 rich-content-plan §G）**；**★ 2026-11-08 ECDI 侧已交付、本仓待消费**：ECDI `#88` / Phase 44（`008daff` batch2）落地 `TextWidget::SetStyledText(const std::string&, const std::vector<TextSpan>&)` + `SpanStyle` + `TextSpan`（`third_party/ecdi/include/ECDI/Widget/TextSpan.h`）。**★★ 验收口径必须收窄**：`SpanStyle` 只有 `family`/`weight`/`foreground` 三个 optional，头注释明文「严禁包含 size（闸门 3）或**斜体**（闸门 2 / L44-8）」⇒ 本仓能兑现的是**粗体**（`weight=700`）与**行内 code**（`family=Consolas`+`foreground`）两件，**斜体永远不生效**、**字号不可变**。§G 原文「粗体/斜体/行内 code 三件套」须按此改写。链路已核验：`ECDI.lib` 符号表含 `SetStyledText` 与 `ClampAndValidateSpans`，安装头与 ECDI 源树 **102/102 逐字节相同**，重链 35/35 成功、demo 基线 8/19/43 不变。**本仓尚未改任何与 styled spans 相关的代码。** ★★ **2026-11-09 更新**：本仓**已消费**——粗体（`**x**` / `__x__`）与行内 code（`` `x` ``）上线（`ParseInlineRuns` + `--md-probe` 11 个 inline 相 + `ApplyInlineText` 三路接入），**斜体按用户裁定暂不做**（`*x*` 按原文保留），`size` 留位不用；同批登记 **REQ-21**（`SpanStyle` 缺 `background` ⇒ 行内 code 无底色）。详见 `rich-content-plan.md` §H；**REQ-22 🔄 开放（2026-11-11 登记：`Widget::AutoSize` 浮点高度 `static_cast<int>` 向零截断导致的亚像素裁切风险 / 框架欠缺 rounding policy）**。
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -932,6 +932,25 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 
 ---
 
+### REQ-22 🔄 `Widget::AutoSize` 浮点高度向零截断导致亚像素裁切风险（欠缺 rounding policy）
+
+> 立案：2026-11-10/11（排查数字列表项多行与引用块底部裁切时暴露与定性）。
+> 归属核实：ECDI 侧框架层缺陷/策略缺失。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-10 富文本多行列表项/段落裁切排查时暴露（`rich-content-plan.md` §H） |
+| 状态 | 🔄 **开放**（框架层设计缺陷 / 欠缺 rounding policy；**不阻断**应用层运行） |
+| 归属 | **ECDI 侧（框架实现）**。已按 §1.1 核实到 ECDI 源码仓：<br>① `Widget.cpp:574-589`：`Widget::AutoSize` 计算控件尺寸，实现通过 `static_cast<int>(preferred.height)` 向零截断，其源码注释自承「v1 无 rounding policy」；<br>② `TextWidget.cpp:625`：`totalHeight = lineHeight * lines.size()`（`float` 类型）；<br>③ `TextWidget.cpp:697-703`：`DrawTextContent` 绘制时按同一个 float `lineHeight` 逐行向下推进 |
+| 缺口（一句话） | 当文本行高落到小数（如在高 DPI / 非整数缩放或特定字号/字族下），`totalHeight` 会有非零小数部分；`Widget::AutoSize` 用 `static_cast<int>` 向零截断使盒高比内容小不到 1px，底层 `PushClip` 导致末行底部被自裁 |
+| 消费者证据 | 本仓转录区渲染 `AppHud.cpp:445`（列表正文）、`:512`（引用正文）、`:529`（段落/标题正文）的 `body->AutoSize()`。在 96 DPI / 整数行高下通常为整数而不触发；但在非整数行高下存在亚像素裁切 |
+| 建议修法 | ECDI 框架层应为 `Widget::AutoSize` 或 `TextWidget::CalculatePreferredSize` 制定明确的 rounding policy：尺寸应当使用 `std::ceil`（或向正无穷取整）确保容器高度覆盖所有内容，而不是向零截断 `static_cast<int>` |
+| 边界（不夸大） | 边界：在 96 DPI / 整数行高下该问题通常不触发；列表项数字 `10.` 裁切的真因是 `slotW 22->26` 槽宽不足，而非本条。harness 侧此前曾猜测为 tmHeight 差异并给列表/引用硬加 `+2` 余量，现已撤销硬编码余量，统一走标准 AutoSize 并登记本条 |
+| 验收判据 | ① ECDI 侧单测：当 `preferred.height` 为带有小数的浮点数时（如 `20.4f * 3 = 61.2f`），`AutoSize()` 后的控件高度为 `62`（ceil）而非 `61`（trunc）；② 负对照：整数行高下尺寸不受影响；③ 本仓消费后：跨 DPI 与不同缩放下多行富文本末行无亚像素裁切 |
+| 待办 / 开放问题 | ① 是否在应用层用 helper 统一包装 `ceil` —— **不建议**：框架基类 `Widget::AutoSize` 是全库所有控件的公用入口，框架层修口径是正道；② 优先级：低，非整数 DPI 下才暴露，当前不阻断 |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -1081,6 +1100,15 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.25（2026-11-11）★ 登记 REQ-22（`Widget::AutoSize` 浮点高度向零截断亚像素裁切风险）+ 撤回 harness 侧硬编码 +2 余量**
+  ① **新登记 REQ-22**：排查富文本数字列表裁切时确认真因为 `slotW 22->26` 与 marker 置顶，
+     此前对行高 tmHeight 的猜测不成立（tmHeight 早在 Phase 31 弃用）；真正的垂直裁切隐患
+     在于 ECDI `Widget.cpp:574-589` 的 `AutoSize` 用 `static_cast<int>` 向零截断浮点高度，
+     而绘制逐行推进导致在浮点行高下末行盒高不足 1px 被 PushClip 裁剪。
+     已登记 REQ-22 要求 ECDI 框架层制定 rounding policy（如 ceil）。
+  ② **harness 侧收敛**：撤销 `AppHud.cpp` 中 ListItem 与 Quote 分支硬编码的 `+ 2` 余量，
+     消除列表/引用与普通段落/标题的口径分裂，统一保持纯净 `AutoSize()`。
+  ③ 头部 v5.24 → **v5.25**；§2 头部摘要同步。
 - **v5.24（2026-11-09）★ REQ-20 本仓消费落地 + 登记 REQ-21（`SpanStyle` 缺 background）**
   ① **REQ-20 状态 → 已闭合（本仓消费）**：ECDI `#88` / Phase 44 交付 `TextWidget::SetStyledText`，
      Phase 45（`eb2106a`）追加 `italic` / `size` 两个维度 ⇒ 11-08 记下的「斜体永远不生效、字号不可变」
