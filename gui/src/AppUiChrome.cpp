@@ -343,15 +343,15 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
     title->SetSize(72, 20);
     bar->AddChild(std::move(title));
 
-    // chip = 药丸 Panel + 内嵌 Label；accent 变体描边用 --accent、字用 #cfe1ff
-    auto makeChip = [](std::unique_ptr<ECDI::Label> label, int width, bool accent) {
+    // ★ 2026-11-18（Codex 风格）：顶栏调试胶囊去边框、去底色，退化为安静的内联元信息标签。
+    auto makeChip = [](std::unique_ptr<ECDI::Label> label, int width, bool /*accent*/) {
         auto pill = std::make_unique<ECDI::Panel>();
         pill->SetSize(width, 20);
         pill->SetStyle(ECDI::PanelStyleOverride{
-            .background = kDarkPillBg,
-            .cornerRadius = kRadiusPill,
-            .borderWidth = 1.0f,
-            .borderColor = accent ? harness::kDarkAccent : kLine});
+            .background = harness::kDarkTopBg,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f,
+            .borderColor = harness::kDarkTopBg});
         pill->AddChild(std::move(label));
         return pill;
     };
@@ -364,7 +364,7 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
         return uikit::Centered(text, width, 22, color, 13.0f, /*mono=*/true);
     };
 
-    auto sessChipLabel = chipLabel("s-____", kAccentInk, 92);
+    auto sessChipLabel = chipLabel("s-____", kDarkMuted, 92);
     m_hud.sessChip = sessChipLabel.get();
     {
         auto pill = makeChip(std::move(sessChipLabel), 92, true);
@@ -437,23 +437,8 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
 
     // ★★ P4 Phase H（2026-10-25）：顶栏模型 chip（`提供商 › 模型 · N% ▾`）。
     //   数据常驻（RefreshHud 里 UpdateModelChip）；点击开下拉浮窗（Ctrl+M 同）。
-    auto modelChip = std::make_unique<uikit::TipButton>(
-        "— ﹀", "模型切换（Ctrl+M）——仅 idle 发出，运行中自动排队",
-        [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
-        [this](uikit::TipButton*) { HideTooltip(); });
-    m_hud.modelChip = modelChip.get();
-    modelChip->SetTextColor(kDarkInk);
-    modelChip->SetFont(harness::SansFont(harness::kFontSmall));
-    modelChip->SetStyle(ECDI::ButtonStyleOverride{
-        .background = kPanel2,
-        .border = kLine,
-        .borderWidth = 1.0f,
-        .cornerRadius = harness::kRadiusBtn,
-        .pressedBackground = kToolHeaderPressed,
-        .hoverBackground = kToolHeaderHover});
-    modelChip->SetSize(200, 22);
-    modelChip->SetOnClick([this] { SetModelPopupOpen(!m_modelPopupOpen); });
-    bar->AddChild(std::move(modelChip));
+    // ★ 2026-11-18（Codex 风格）：模型 chip 已迁入 Composer 左下角（见 `BuildComposer`），
+    //   顶栏不再创建它；`m_hud.modelChip` 由 BuildComposer 赋值。
 
     // ★★ Step 4 / 0e（2026-10-19）：运行期主题切换控件。
     //   【为什么必须放在顶栏】它是**全局**状态的中枢，不是某个面板的属性；
@@ -469,15 +454,14 @@ void HarnessApp::BuildTopBar(ECDI::Widget& root) {
         [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
         [this](uikit::TipButton*) { HideTooltip(); });
     m_hud.themeToggle = themeBtn.get();
-    themeBtn->SetTextColor(kDarkInk);
+    themeBtn->SetTextColor(kDarkMuted);
     themeBtn->SetStyle(ECDI::ButtonStyleOverride{
-        .background = kPanel2,
-        .border = kLine,
-        .borderWidth = 1.0f,
-        .cornerRadius = kRadiusBtn,
+        .background = ECDI::Color(0, 0, 0, 0),
+        .borderWidth = 0.0f,
+        .cornerRadius = 11.0f,
         .pressedBackground = kToolHeaderPressed,
         .hoverBackground = kToolHeaderHover});
-    themeBtn->SetSize(48, 20);
+    themeBtn->SetSize(48, 22);
     themeBtn->SetFont(harness::SansFont(harness::kFontSmall));
     themeBtn->SetOnClick([this] {
         // 真翻转在回调里做（只改 `g_theme` 与 `g_themeLight`，不碰任何控件）。

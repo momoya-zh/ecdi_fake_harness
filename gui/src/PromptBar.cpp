@@ -72,7 +72,7 @@ public:
         //   FONT-UNIFIED（同日）刚刚统一了主题字体，输入框是唯一被漏掉的那个。
         //   ★ 这不只是观感：自动长高的行高正是由字体算出来的（见 `PromptBar::
         //     DesiredInputHeight`）——字体未钉死时，长高量测的是一个与用户所见不同的 face。
-        SetFont(harness::SansFont(harness::kFontBody, 400));   // ★ 2026-11-03：输入框是长文正文档（UI 默认 700，正文显式 400）
+        SetFont(PromptBar::InputFont());   // ★ 2026-11-03：输入框是长文正文档（UI 默认 700，正文显式 400）
         // ★★ 2026-10-27：文字色从未 Set ⇒ ECDI TextStyle 缺省黑；叠加下方 ApplyBorder
         //   的 kPanel2 深灰底后黑字不可读。输入框文字与 Label 同族，吃 kDarkInk
         //   （深色≈白字，浅色仍是深墨）。SetTextColor 内部走 TextStyleOverride，
@@ -167,7 +167,7 @@ private:
         SetStyle(ECDI::TextBoxStyleOverride{
             // ★ 2026-11-02：与外层大圆角卡片一体化——输入框本身透明无独立边框，
             //   卡片外框负责统一的圆角、底色（kPanel2）与获焦高亮描边。
-            .background = harness::kPanel2,
+            .background = ECDI::Color(0, 0, 0, 0),   // 外层 OnPaint 已画卡片底；不透明会盖住 R=18 圆角弧
             .caretColor = harness::kInputCaret,
             .padding = 6.0f,
             .cornerRadius = 0.0f,
@@ -181,6 +181,10 @@ private:
 };
 
 }  // namespace
+
+ECDI::Font PromptBar::InputFont() {
+    return harness::SansFont(harness::kFontBody, 400);
+}
 
 PromptBar::PromptBar() {
     SetStyle(ECDI::PanelStyleOverride{
@@ -239,7 +243,7 @@ PromptBar::PromptBar() {
     m_send->SetFont(harness::SansFont(14.0f));
     m_send->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .pressedBackground = harness::kBtnPrimaryPressed,
         .hoverBackground = harness::kBtnPrimaryHover});
     m_send->SetOnClick([this] { Submit(); });
@@ -253,7 +257,7 @@ PromptBar::PromptBar() {
         .background = harness::kInspBg,
         .border = harness::kLine,
         .borderWidth = 1.0f,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .hoverBackground = harness::kPanel2});
     m_stop->SetOnClick([this] {
         if (m_onStop) m_onStop(std::string());
@@ -276,7 +280,7 @@ PromptBar::PromptBar() {
         .background = harness::kInspBg,
         .border = harness::kLine,
         .borderWidth = 1.0f,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .hoverBackground = harness::kPanel2});
     m_import->SetOnClick([this] {
         if (m_onImport) m_onImport();
@@ -328,7 +332,7 @@ PromptBar::PromptBar() {
     m_continue->SetFont(harness::SansFont(14.0f));
     m_continue->SetStyle(ECDI::ButtonStyleOverride{
         .background = harness::kBtnPrimary,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .pressedBackground = harness::kBtnPrimaryPressed,
         .hoverBackground = harness::kBtnPrimaryHover});
     m_continue->SetOnClick([this] {
@@ -358,6 +362,12 @@ void PromptBar::ClearAttachment() {
     SyncInputHeight();
 }
 
+void PromptBar::AdoptModelChip(std::unique_ptr<ECDI::Button> chip) {
+    m_modelChip = chip.get();
+    AddChild(std::move(chip));
+    LayoutChildren();
+}
+
 void PromptBar::SetCardFocused(bool focused) {
     if (m_cardFocused != focused) {
         m_cardFocused = focused;
@@ -377,9 +387,9 @@ void PromptBar::OnPaint(ECDI::PaintContext& ctx, int x, int y) {
     const int cardH = GetHeight() - 8;
     if (cardW <= 0 || cardH <= 0) return;
 
-    const float radius = 10.0f;
+    const float radius = 18.0f;
     const float bw = 1.0f;
-    const ECDI::Color& borderColor = m_cardFocused ? harness::kDarkAccent : harness::kInputBorder;
+    const ECDI::Color& borderColor = m_cardFocused ? harness::kDarkMuted : harness::kInputBorder;
     const ECDI::Color& cardBg = harness::kPanel2;
 
     // 外层边框（双矩形描边环：外层 borderColor 圆角矩形 + 内层 cardBg 背景圆角矩形）
@@ -452,7 +462,7 @@ void PromptBar::ApplySendStyle(bool enabled) {
     m_send->SetTextColor(enabled ? harness::kBtnPrimaryInk : harness::kBtnDisabledInk);
     m_send->SetStyle(ECDI::ButtonStyleOverride{
         .background = enabled ? harness::kBtnPrimary : harness::kBtnDisabledBg,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .pressedBackground = enabled ? harness::kBtnPrimaryPressed : harness::kBtnDisabledBg,
         .hoverBackground = enabled ? harness::kBtnPrimaryHover : harness::kBtnDisabledBg});
 }
@@ -465,7 +475,7 @@ void PromptBar::ApplyStopStyle(bool enabled) {
         .background = harness::kInspBg,
         .border = enabled ? harness::kLine : harness::kBtnDisabledLine,
         .borderWidth = 1.0f,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .hoverBackground = enabled ? harness::kPanel2 : harness::kInspBg});
 }
 
@@ -476,7 +486,7 @@ void PromptBar::ApplyImportStyle(bool enabled) {
         .background = harness::kInspBg,
         .border = enabled ? harness::kLine : harness::kBtnDisabledLine,
         .borderWidth = 1.0f,
-        .cornerRadius = 6.0f,
+        .cornerRadius = 14.0f,
         .hoverBackground = enabled ? harness::kPanel2 : harness::kInspBg});
 }
 
@@ -594,7 +604,7 @@ bool PromptBar::SyncInputHeight() {
 void PromptBar::UpdateHintLayout(int hintX, int hintY, int buttonsLeft) {
     if (!m_hint) return;
     const int availW = buttonsLeft - 8 - hintX;
-    if (availW < 40) {
+    if (availW < 90) {
         if (m_hint->IsVisible()) m_hint->SetVisible(false);
         return;
     }
@@ -628,8 +638,8 @@ void PromptBar::LayoutChildren() {
     if (m_chipPanel) {
         if (hasChip) {
             m_chipPanel->SetVisible(true);
-            const int maxChipW = std::max(120, GetWidth() - 2 * padX - 16);
-            m_chipPanel->SetPosition(padX + 4, 8);
+            const int maxChipW = std::max(120, GetWidth() - 2 * padX - 28);
+            m_chipPanel->SetPosition(padX + 10, 8);
             m_chipPanel->SetSize(maxChipW, 24);
             if (m_chipIcon) m_chipIcon->SetPosition(6, 3);
             if (m_chipRemoveBtn) {
@@ -646,8 +656,8 @@ void PromptBar::LayoutChildren() {
     }
 
     // 一体化圆角卡片内部布局：左右预留 cardInnerPad，避开外层大圆角
-    m_input->SetSize(GetWidth() - 2 * padX - 8, inputH);
-    m_input->SetPosition(padX + 4, inputY);
+    m_input->SetSize(GetWidth() - 2 * padX - 20, inputH);
+    m_input->SetPosition(padX + 10, inputY);
 
     const int rightEdge = GetWidth() - padX - cardInnerPad;
     const int sendX = rightEdge - buttonW;
@@ -655,7 +665,14 @@ void PromptBar::LayoutChildren() {
     const int importX = stopX - 8 - importW;
     const int buttonsLeft = m_isReadOnly ? sendX : importX;
 
-    UpdateHintLayout(padX + cardInnerPad + 2, hintY + 6, buttonsLeft);
+    // 模型 chip：卡片左下角（Codex 风格），提示行让到它右侧。
+    int hintX = padX + cardInnerPad + 2;
+    if (m_modelChip) {
+        const int chipH = m_modelChip->GetHeight();
+        m_modelChip->SetPosition(padX + cardInnerPad + 2, buttonY + (btnH - chipH) / 2);
+        hintX = m_modelChip->GetX() + m_modelChip->GetWidth() + 10;
+    }
+    UpdateHintLayout(hintX, hintY + 6, buttonsLeft);
     if (m_send) {
         m_send->SetSize(buttonW, btnH);
         m_send->SetPosition(sendX, buttonY);

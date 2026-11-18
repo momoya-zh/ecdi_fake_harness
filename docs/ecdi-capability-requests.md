@@ -2,7 +2,7 @@
 
 > **定位**：本项目对 ECDI 的**能力需求 / 缺陷登记**的唯一落点。
 > 依据项目铁律——**任何对 ECDI 框架的修改都不在本仓库做**，这里只登记需求、只给证据、只判归属（见 `P1-gui-implementation-spec.md` §1.2）。
-> 状态：**v5.25**（2026-11-11；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
+> 状态：**v5.26**（2026-11-14；v1.0 建立于 2026-10-08。★ 订正：本行自 v2.9 起就落后于 §6，v2.9/v3.0 均未回写此处，见 §6 v3.1 ⑧）。
 > ★ 建立缘由：`P1-gui-implementation-spec.md:243` 与 `P1.5-child-process-spec.md` 都写「登记进账本」，
 >   但**该账本此前并不存在**——P1 期的 8 条发现（F1–F8）只散在 `.workbuddy/memory/` 的当日日志里。本文件补齐这一缺失的交付物。
 
@@ -38,7 +38,7 @@
 
 ---
 
-## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）；**REQ-20 🔄 开放（2026-11-07 登记：段内内联样式 styled spans 能力缺口；★ 同日 ECDI 裁决已回：重启条件成立、富文本另立项 = ECDI deferred **#88**，Phase 号待排；块级全套先行见 rich-content-plan §G）**；**★ 2026-11-08 ECDI 侧已交付、本仓待消费**：ECDI `#88` / Phase 44（`008daff` batch2）落地 `TextWidget::SetStyledText(const std::string&, const std::vector<TextSpan>&)` + `SpanStyle` + `TextSpan`（`third_party/ecdi/include/ECDI/Widget/TextSpan.h`）。**★★ 验收口径必须收窄**：`SpanStyle` 只有 `family`/`weight`/`foreground` 三个 optional，头注释明文「严禁包含 size（闸门 3）或**斜体**（闸门 2 / L44-8）」⇒ 本仓能兑现的是**粗体**（`weight=700`）与**行内 code**（`family=Consolas`+`foreground`）两件，**斜体永远不生效**、**字号不可变**。§G 原文「粗体/斜体/行内 code 三件套」须按此改写。链路已核验：`ECDI.lib` 符号表含 `SetStyledText` 与 `ClampAndValidateSpans`，安装头与 ECDI 源树 **102/102 逐字节相同**，重链 35/35 成功、demo 基线 8/19/43 不变。**本仓尚未改任何与 styled spans 相关的代码。** ★★ **2026-11-09 更新**：本仓**已消费**——粗体（`**x**` / `__x__`）与行内 code（`` `x` ``）上线（`ParseInlineRuns` + `--md-probe` 11 个 inline 相 + `ApplyInlineText` 三路接入），**斜体按用户裁定暂不做**（`*x*` 按原文保留），`size` 留位不用；同批登记 **REQ-21**（`SpanStyle` 缺 `background` ⇒ 行内 code 无底色）。详见 `rich-content-plan.md` §H；**REQ-22 🔄 开放（2026-11-11 登记：`Widget::AutoSize` 浮点高度 `static_cast<int>` 向零截断导致的亚像素裁切风险 / 框架欠缺 rounding policy）**。
+## §2 条目（★ REQ-01/02/03/04 = harness 侧，**均已闭合**；**REQ-03 于 2026-10-24 以「推 + 拉兜底」落地——`PostToUi` 首个框架外真实消费者**；REQ-05 已闭合；**REQ-08 已闭合（2026-10-16，Phase 33）**；**REQ-06 已裁决结案（2026-10-17，③ 记为已知现状）**；**REQ-09 已闭合（2026-10-17，ECDI 当日修复 + 验收 8/8）**；**REQ-10 ✅ **已闭合（2026-10-24 当日：ECDI Phase 36 全链收口——三批 `762c483`/`e394514`/`e163357` + 五链 497/497 + 五处台账同步；`Font` 表达力；★ 2026-10-24 ECDI 侧核验属实并登记 deferred #70）**；**REQ-11 ✅ 已闭合（2026-10-30 对账补记：ECDI 侧 `#71` 已于 2026-10-25 实施——GDI 链 `DrawText` / `DrawFocusRect` 补 alpha 消费；★ 原「推后」判据**未触发**即被 ECDI 侧主动关闭，如实留痕）**；**REQ-12 已闭合（2026-10-21 当日：ECDI 订正多行 preferred 语义 + 本仓收敛回框架）**；**REQ-13 已闭合（2026-10-23，ECDI 落地 `Window::SetMinimumSize` + 本仓收敛删回弹绕行）**；**REQ-14 ✅ 已闭合（2026-10-27 当日：ECDI Phase 37 `VerticalAlignment`/`TextBoxStyle::verticalAlign`/`GetTextTopInset` 落地 + 本仓 7 框收敛 + `--valign-probe` 7/7 进门；★ 判据走公开 `GetCaretClientGeometry`，padding 代数消去）**；**REQ-15 ✅ 已闭合（2026-10-31 当日：ECDI Phase 38 兑现编辑器内软折行 + 本仓两处开启 SetWordWrap(true) + --grow-probe 三相 12/12 进门闭合）**；**REQ-16 ✅ 已闭合（2026-11-01 当日：ECDI Button::AnimateBackgroundTo 修正快速移出时漏 Cancel 旧动画导致 hover 残留缺陷 + ECDI 侧单测 Widget.ButtonFastHoverLeaveCancelsAnimation 闭合）**）；**REQ-20 🔄 开放（2026-11-07 登记：段内内联样式 styled spans 能力缺口；★ 同日 ECDI 裁决已回：重启条件成立、富文本另立项 = ECDI deferred **#88**，Phase 号待排；块级全套先行见 rich-content-plan §G）**；**★ 2026-11-08 ECDI 侧已交付、本仓待消费**：ECDI `#88` / Phase 44（`008daff` batch2）落地 `TextWidget::SetStyledText(const std::string&, const std::vector<TextSpan>&)` + `SpanStyle` + `TextSpan`（`third_party/ecdi/include/ECDI/Widget/TextSpan.h`）。**★★ 验收口径必须收窄**：`SpanStyle` 只有 `family`/`weight`/`foreground` 三个 optional，头注释明文「严禁包含 size（闸门 3）或**斜体**（闸门 2 / L44-8）」⇒ 本仓能兑现的是**粗体**（`weight=700`）与**行内 code**（`family=Consolas`+`foreground`）两件，**斜体永远不生效**、**字号不可变**。§G 原文「粗体/斜体/行内 code 三件套」须按此改写。链路已核验：`ECDI.lib` 符号表含 `SetStyledText` 与 `ClampAndValidateSpans`，安装头与 ECDI 源树 **102/102 逐字节相同**，重链 35/35 成功、demo 基线 8/19/43 不变。**本仓尚未改任何与 styled spans 相关的代码。** ★★ **2026-11-09 更新**：本仓**已消费**——粗体（`**x**` / `__x__`）与行内 code（`` `x` ``）上线（`ParseInlineRuns` + `--md-probe` 11 个 inline 相 + `ApplyInlineText` 三路接入），**斜体按用户裁定暂不做**（`*x*` 按原文保留），`size` 留位不用；同批登记 **REQ-21**（`SpanStyle` 缺 `background` ⇒ 行内 code 无底色）。详见 `rich-content-plan.md` §H；**REQ-22 🔄 开放（2026-11-11 登记：`Widget::AutoSize` 浮点高度 `static_cast<int>` 向零截断导致的亚像素裁切风险 / 框架欠缺 rounding policy）**；**REQ-23 🔄 开放（2026-11-14 登记：GDI 链混合字体 `RunSlice` 未按基线对齐，行内 code `Consolas` 相对 `Noto Sans SC` 偏高 ~2–3px）**；**REQ-24 🔄 开放（2026-11-14 登记：GDI 链 `Noto Sans SC @ 15` 的 `tmHeight(21) > LineHeight(18)` 导致单行/末行字母下伸部 `g/j/p/q/y` 被 `PushClip` 裁切）**。
 > ★ 2026-10-13 晚补记：思维链（reasoning）暴露的**协议空白**与一条**候选 ECDI 需求被复核否决**（见 §2 末尾「思维链与未知 kind」小节）。
 > ★★ 2026-10-14 更新：该**协议空白已由协议 v2 闭合**（`kind:"reasoning"` 一等公民 + I8 + §7 渲染形态）；
 > 同时**首次测得**「折叠省下多少」（收起 vs 可见 = 65.0 vs 139.2 文本命令/帧，**2.14×**）。详见同一小节。
@@ -951,6 +951,44 @@ ApplyBorder，焦点两态共用一入口）· 设置 BaseURL/API-key/模型名 
 
 ---
 
+### REQ-23 🔄 GDI 链混合字体 `RunSlice` 未按基线对齐（行内 code 偏高 ~2–3px）
+
+> 立案：2026-11-14（用户目视反馈「输出文本的蓝字比正常输出文本高了 2px 的样子」）。
+> 归属核实：ECDI 侧 GDI 文本绘制路径。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-14 富内容行内 code 视觉排查（`ApplyInlineText`） |
+| 状态 | 🔄 **开放**（GDI 链排版视觉缺陷；**不阻断**使用） |
+| 归属 | **ECDI 侧（GDI `TextWidget` / `RunSlice` 绘制）**。已按 §1.1 核实公共头与双后端对照：<br>① `third_party/ecdi/include/ECDI/Widget/TextSpan.h:15-23` 的 `SpanStyle` 仅含 `family`/`weight`/`foreground`/`italic`/`size` 五个 optional，无基线或垂直偏移维度；<br>② 同一二进制 `harness_gui.exe` + 同一含行内 code 夹具：默认 GDI 链显式偏高，切 `--backend gl`（FreeType 链）基线基本对齐 |
+| 缺口（一句话） | 同一行内混排不同字族的 `RunSlice` 时，GDI 链按 `TA_TOP` 从同一行顶落笔而未按跨字体 `ascent` 差做基线对齐，导致 `tmAscent` 较小的字体视觉上浮 |
+| 实测度量（96 DPI GDI） | `GetOutlineTextMetricsW` 实测：<br>· 正文 `Noto Sans SC @ 15`：`tmAscent=17, tmDescent=4, tmHeight=21`，`otmMacAscent=15, otmMacDescent=-3, lh_mac=18`；<br>· 行内 code `Consolas @ 15`：`tmAscent=14, tmDescent=4, tmHeight=18`，`otmMacAscent=11, otmMacDescent=-4, lh_mac=18`。<br>两者 `lh_mac` 同为 `18`，但 `tmAscent` 相差 **3px**（125% DPI 下约 2.4 DIP），与用户目测「高了 2px 的样子」一致 |
+| 消费者证据 | `gui/src/AppTranscript.cpp:1858-1869`（`ApplyInlineText`：`codeStyle.family = kMonoFamily ("Consolas")`、`codeStyle.color = kDarkAccent`），在 `Label` 与 `--selectable-rows` 只读 `TextBox` 下均复现 |
+| 建议修法 | ECDI 在绘制同一行内多 `RunSlice` 时，以行基准字体（或行内最大 `ascent`）为锚点计算基线偏移（例如 GDI 链按基线坐标绘制或给 `RunSlice` 加 `baselineDy`），使不同字族共享基线 |
+| 边界（不夸大） | 仅在**同框/同行混排不同 `tmAscent` 字族**时出现；纯单字体行不受影响。不建议在应用层改成 `SpanStyle::size` 放大（既会让等宽代码字号失真，也会触发 `LineBoxGuardActive` 抬高整行行高），亦不宜回退取消行内 code 等宽字族 |
+| 验收判据 | ① ECDI 侧：GDI 链下 `Noto Sans SC @ 15` 与 `Consolas @ 15` 同行混排时基线对齐（垂直偏差 ≤1px）；② 与 `--backend gl` 行为一致；③ 负对照：纯单字体文本绘制逐像素不变 |
+
+---
+
+### REQ-24 🔄 GDI 链 `Noto Sans SC` `tmHeight > LineHeight` 导致 `AutoSize` + `PushClip` 裁切字母下伸部
+
+> 立案：2026-11-14（用户截图反馈「还有就是字母的下半部分会被裁切」，复现于 `protocol/fixtures/hostile/seq-gap.jsonl` 的 `seq 4`）。
+> 归属核实：ECDI 侧（`LineHeight` 的 `hhea` 口径与 GDI `TEXTMETRIC` 绘制高度存在 3px 裂口）。
+
+| 项 | 内容 |
+|---|---|
+| 原编号 | 2026-11-14 用户实拍复现（`protocol/fixtures/hostile/seq-gap.jsonl`） |
+| 状态 | 🔄 **开放**（GDI 链垂直裁切缺陷；与 `REQ-22` 成因独立——`REQ-22` 为小数向零截断 `<1px`，本条在 96 DPI 整数行高下即存在 `3px` 差值） |
+| 归属 | **ECDI 侧（`LineHeight` 与 GDI 落墨高度未闭合）**。同一二进制 + `seq-gap.jsonl` 受控对照：<br>· 默认 GDI 链（无论 `Label` 还是 `--selectable-rows` 只读 `TextBox`）均把 `seq` 的 `q` 下伸部底部裁平；<br>· 切换 `--backend gl` 后 `q` 下伸部完整无裁切 |
+| 缺口（一句话） | ECDI `LineHeight()` 统一采用 `hhea` 口径（`otmMacAscent - otmMacDescent + otmMacLineGap`），而 GDI `TextOutW` 按 `TEXTMETRIC.tmAscent + tmDescent` 落墨；对于 `tmHeight > LineHeight` 的字体（如 `Noto Sans SC`），`AutoSize()` 定出的盒高小于实际字形高度，随后 `Widget::Paint` 的 `PushClip` 裁掉底部下伸部 |
+| 实测度量（96 DPI GDI） | `GetOutlineTextMetricsW` 实测：<br>· `Noto Sans SC @ 15`：`lh_mac = 15 - (-3) + 0 = 18`，但 `tmAscent=17, tmDescent=4` ⇒ **`tmHeight = 21`**（超出行盒 **3px**）；<br>· `Noto Sans SC @ 13/14/16` 同型：`lh_mac = 16/17/19` vs `tmHeight = 19/20/24`（分别差 **3/3/5px**）；<br>· 对照 `Microsoft YaHei @ 15`：`lh_mac = 20 == tmHeight = 20`（差 0px，不裁）；`Consolas @ 15`：`lh_mac = 18 == tmHeight = 18`（差 0px，不裁） |
+| 消费者证据 | `gui/src/AppTranscript.cpp:317-325`（`Label`）/ `:297-316`（`TextBox`）使用 `Theme.h:201` 指定的 `Noto Sans SC`，在 `AppHud.cpp:344-366` 经 `AutoSize()` 定高后复现于 `protocol/fixtures/hostile/seq-gap.jsonl` 的 `seq 4` |
+| 建议修法 | 由 ECDI 侧择一闭合（同时保 `REQ-05` 的 GDI/GL 行距一致性）：<br>ⓐ GDI 绘制侧将字形垂直定位对齐到 `hhea` 基线/盒内（消除 `tmAscent` 多出的上空隙——注意这同时也有助于收敛 `REQ-23` 与 `REQ-06`）；或<br>ⓑ `AutoSize()` / `TextWidget` 在 GDI 链下为外包矩形与 `PushClip` 预留 `max(0, tmHeight - LineHeight)` 下伸保护余量（不改多行 `lineHeight` 步进） |
+| 边界（不夸大） | 仅触发于 `TEXTMETRIC.tmHeight > hhea LineHeight` 的字体（典型为 Google `Noto Sans SC` 等 `WinMetrics` 大于 `hhea` 的字库）在单行或多行末行；`Microsoft YaHei` / `Consolas` 不触发。本仓遵循 `REQ-22` 确立的「不在 `AppHud.cpp` 堆硬编码余量」原则，不自行加 `+3/+6` 补丁 |
+| 验收判据 | ① ECDI 侧：GDI 链用 `Noto Sans SC @ 15` 渲染含 `g/j/p/q/y` 的单行与多行 `Label`/`TextBox` 时，底部下伸部无裁切；② 回归门：`REQ-05` 的 GDI/GL 行距一致性与既有夹具结构读数不退化；③ 负对照：`Microsoft YaHei` 布局高度不变 |
+
+---
+
 ### ★ 三条 harness 侧闭合记录（2026-10-13 落地）
 
 > 三条均为**纯 harness 侧**修复（不需要 ECDI 任何改动）；已实现、已重建、已实机复测。
@@ -1100,6 +1138,10 @@ I8 管的是 `thinking` / `analysis` / 拼错的名字 / **缺失字段**——�
 ---
 
 ## §6 修订记录（新在前）
+- **v5.26（2026-11-14）★ 登记 REQ-23（GDI 混合字体 `RunSlice` 基线未对齐）+ REQ-24（GDI `Noto Sans SC` `tmHeight > LineHeight` 裁切下伸部）**
+  ① **新登记 REQ-23**：实测 `Noto Sans SC @ 15`（`tmAscent=17`）与行内 code `Consolas @ 15`（`tmAscent=14`）`lh_mac` 同为 `18`，但 GDI 链按 `TA_TOP` 从同一行顶绘制未做基线对齐，导致蓝字行内 code 偏高 `3px`（125% DPI 下约 2.4 DIP）；`--backend gl` 下基线基本对齐。
+  ② **新登记 REQ-24**：实测 `Noto Sans SC @ 15` 的 `hhea LineHeight=18` 小于 GDI `tmHeight=21`（13/14/16 档分别为 `16/17/19` vs `19/20/24`），`AutoSize()` + `PushClip` 裁掉单行/末行 `g/j/p/q/y` 下伸部（`seq-gap.jsonl` 在 `Label` 与 `--selectable-rows` `TextBox` 均复现，`--backend gl` 无裁切）。
+  ③ 头部 v5.25 → **v5.26**；§2 头部摘要同步。
 - **v5.25（2026-11-11）★ 登记 REQ-22（`Widget::AutoSize` 浮点高度向零截断亚像素裁切风险）+ 撤回 harness 侧硬编码 +2 余量**
   ① **新登记 REQ-22**：排查富文本数字列表裁切时确认真因为 `slotW 22->26` 与 marker 置顶，
      此前对行高 tmHeight 的猜测不成立（tmHeight 早在 Phase 31 弃用）；真正的垂直裁切隐患

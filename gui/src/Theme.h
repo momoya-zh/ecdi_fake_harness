@@ -122,17 +122,17 @@ struct Theme {
 inline Theme MakeDark() {
     Theme t{};
     // 框架面
-    t.darkTopBg  = ECDI::Color::FromRGBA8(30, 33, 40, 255);
-    t.sidebarBg  = ECDI::Color::FromRGBA8(30, 33, 40, 255);
-    t.inspBg     = ECDI::Color::FromRGBA8(30, 33, 40, 255);
-    t.contentBg  = ECDI::Color::FromRGBA8(22, 24, 29, 255);
-    t.panel2     = ECDI::Color::FromRGBA8(35, 38, 47, 255);
-    t.line       = ECDI::Color::FromRGBA8(46, 51, 62, 255);
+    t.darkTopBg  = ECDI::Color::FromRGBA8(21, 21, 23, 255);
+    t.sidebarBg  = ECDI::Color::FromRGBA8(21, 21, 23, 255);
+    t.inspBg     = ECDI::Color::FromRGBA8(27, 27, 29, 255);
+    t.contentBg  = ECDI::Color::FromRGBA8(24, 24, 26, 255);
+    t.panel2     = ECDI::Color::FromRGBA8(37, 37, 40, 255);
+    t.line       = ECDI::Color::FromRGBA8(46, 46, 50, 255);
     // 文字
-    t.darkInk    = ECDI::Color::FromRGBA8(230, 233, 239, 255);
-    t.darkMuted  = ECDI::Color::FromRGBA8(154, 162, 177, 255);
-    t.darkAccent = ECDI::Color::FromRGBA8(91, 157, 255, 255);
-    t.accentInk  = ECDI::Color::FromRGBA8(207, 225, 255, 255);
+    t.darkInk    = ECDI::Color::FromRGBA8(236, 236, 238, 255);
+    t.darkMuted  = ECDI::Color::FromRGBA8(150, 150, 158, 255);
+    t.darkAccent = ECDI::Color::FromRGBA8(110, 160, 255, 255);
+    t.accentInk  = ECDI::Color::FromRGBA8(205, 222, 255, 255);
     // 状态
     t.okDark     = ECDI::Color::FromRGBA8(63, 191, 127, 255);
     t.runDark    = ECDI::Color::FromRGBA8(91, 157, 255, 255);
@@ -140,24 +140,24 @@ inline Theme MakeDark() {
     t.warn       = ECDI::Color::FromRGBA8(224, 163, 60, 255);
     t.warnInk    = ECDI::Color::FromRGBA8(34, 26, 12, 255);
     // 卡片
-    t.cardBg       = ECDI::Color::FromRGBA8(30, 33, 40, 255);
-    t.cardBorder   = ECDI::Color::FromRGBA8(46, 51, 62, 255);
-    t.userBg       = ECDI::Color::FromRGBA8(38, 52, 73, 255);
-    t.userBorder   = ECDI::Color::FromRGBA8(58, 80, 110, 255);
-    t.userInk      = ECDI::Color::FromRGBA8(232, 238, 247, 255);
-    t.toolBg       = ECDI::Color::FromRGBA8(32, 36, 44, 255);
-    t.toolBorder   = ECDI::Color::FromRGBA8(46, 51, 62, 255);
-    t.toolHeaderBg      = ECDI::Color::FromRGBA8(38, 42, 52, 255);
-    t.toolHeaderHover   = ECDI::Color::FromRGBA8(42, 46, 56, 255);
-    t.toolHeaderPressed = ECDI::Color::FromRGBA8(46, 51, 62, 255);
-    t.toolHeaderBorder  = ECDI::Color::FromRGBA8(46, 51, 62, 255);
+    t.cardBg       = ECDI::Color::FromRGBA8(29, 29, 31, 255);
+    t.cardBorder   = ECDI::Color::FromRGBA8(46, 46, 50, 255);
+    t.userBg       = ECDI::Color::FromRGBA8(42, 42, 46, 255);
+    t.userBorder   = ECDI::Color::FromRGBA8(54, 54, 59, 255);
+    t.userInk      = ECDI::Color::FromRGBA8(240, 240, 242, 255);
+    t.toolBg       = ECDI::Color::FromRGBA8(30, 30, 33, 255);
+    t.toolBorder   = ECDI::Color::FromRGBA8(46, 46, 50, 255);
+    t.toolHeaderBg      = ECDI::Color::FromRGBA8(36, 36, 39, 255);
+    t.toolHeaderHover   = ECDI::Color::FromRGBA8(41, 41, 45, 255);
+    t.toolHeaderPressed = ECDI::Color::FromRGBA8(46, 46, 51, 255);
+    t.toolHeaderBorder  = ECDI::Color::FromRGBA8(46, 46, 50, 255);
     // 思维链
-    t.reasoningBg       = ECDI::Color::FromRGBA8(28, 31, 38, 255);
-    t.reasoningBorder   = ECDI::Color::FromRGBA8(40, 45, 55, 255);
-    t.reasoningHeaderBg = ECDI::Color::FromRGBA8(33, 37, 45, 255);
-    t.reasoningHover    = ECDI::Color::FromRGBA8(38, 43, 52, 255);
-    t.reasoningPressed  = ECDI::Color::FromRGBA8(42, 48, 58, 255);   // hover +4/+5/+6，同 tool 梯级
-    t.reasoningInk      = ECDI::Color::FromRGBA8(154, 162, 177, 255);
+    t.reasoningBg       = ECDI::Color::FromRGBA8(27, 27, 29, 255);
+    t.reasoningBorder   = ECDI::Color::FromRGBA8(40, 40, 44, 255);
+    t.reasoningHeaderBg = ECDI::Color::FromRGBA8(32, 32, 35, 255);
+    t.reasoningHover    = ECDI::Color::FromRGBA8(37, 37, 41, 255);
+    t.reasoningPressed  = ECDI::Color::FromRGBA8(42, 42, 46, 255);   // hover +4/+5/+6，同 tool 梯级
+    t.reasoningInk      = ECDI::Color::FromRGBA8(150, 150, 158, 255);
     // ask
     t.askBg     = ECDI::Color::FromRGBA8(58, 47, 29, 255);
     t.askBorder = ECDI::Color::FromRGBA8(138, 109, 59, 255);
@@ -166,22 +166,22 @@ inline Theme MakeDark() {
     t.denyHover = ECDI::Color::FromRGBA8(83, 64, 57, 255);
     t.allowHover = ECDI::Color::FromRGBA8(240, 183, 92, 255);   // 既有值，原样保留
     // 按钮
-    t.btnPrimary        = ECDI::Color::FromRGBA8(91, 157, 255, 255);
-    t.btnPrimaryHover   = ECDI::Color::FromRGBA8(124, 177, 255, 255);
-    t.btnPrimaryPressed = ECDI::Color::FromRGBA8(74, 138, 240, 255);
-    t.btnPrimaryInk     = ECDI::Color::FromRGBA8(11, 18, 32, 255);
-    t.btnNeutralBg      = ECDI::Color::FromRGBA8(35, 38, 47, 255);
-    t.btnNeutralBorder  = ECDI::Color::FromRGBA8(46, 51, 62, 255);
+    t.btnPrimary        = ECDI::Color::FromRGBA8(236, 236, 238, 255);
+    t.btnPrimaryHover   = ECDI::Color::FromRGBA8(255, 255, 255, 255);
+    t.btnPrimaryPressed = ECDI::Color::FromRGBA8(200, 200, 205, 255);
+    t.btnPrimaryInk     = ECDI::Color::FromRGBA8(20, 20, 22, 255);
+    t.btnNeutralBg      = ECDI::Color::FromRGBA8(37, 37, 40, 255);
+    t.btnNeutralBorder  = ECDI::Color::FromRGBA8(46, 46, 50, 255);
     t.btnDenyBg         = ECDI::Color::FromRGBA8(58, 47, 29, 255);
-    t.btnDisabledBg     = ECDI::Color::FromRGBA8(38, 41, 50, 255);
-    t.btnDisabledInk    = ECDI::Color::FromRGBA8(96, 102, 114, 255);
-    t.btnDisabledLine   = ECDI::Color::FromRGBA8(52, 57, 68, 255);
+    t.btnDisabledBg     = ECDI::Color::FromRGBA8(40, 40, 43, 255);
+    t.btnDisabledInk    = ECDI::Color::FromRGBA8(100, 100, 108, 255);
+    t.btnDisabledLine   = ECDI::Color::FromRGBA8(52, 52, 57, 255);
     // 进度条 / 输入框
-    t.trackBg     = ECDI::Color::FromRGBA8(35, 38, 47, 255);
-    t.ringTrack   = ECDI::Color::FromRGBA8(46, 51, 62, 255);   // = line，既有值原样保留
-    t.darkPillBg  = ECDI::Color::FromRGBA8(35, 38, 47, 255);
-    t.inputBorder = ECDI::Color::FromRGBA8(46, 51, 62, 255);
-    t.inputCaret  = ECDI::Color::FromRGBA8(91, 157, 255, 255);
+    t.trackBg     = ECDI::Color::FromRGBA8(37, 37, 40, 255);
+    t.ringTrack   = ECDI::Color::FromRGBA8(46, 46, 50, 255);   // = line，既有值原样保留
+    t.darkPillBg  = ECDI::Color::FromRGBA8(37, 37, 40, 255);
+    t.inputBorder = ECDI::Color::FromRGBA8(52, 52, 57, 255);
+    t.inputCaret  = ECDI::Color::FromRGBA8(236, 236, 238, 255);
     // ★★ 2026-10-21（用户裁决）：深色也换成雅黑，与浅色**同族**。
     //   改前是 `""` = ECDI 默认 face（SimSun），原注释写的是「深色是回归基线，
     //   不动字形」。这条基线被用户报告打破了：中栏头那三个 `·`(U+00B7) 在
@@ -201,10 +201,10 @@ inline Theme MakeDark() {
     t.sansFamily  = "Noto Sans SC";
     // 自绘标题栏 —— 与 ECDI 原生 caption 同值（CaptionBar.cpp:31/37 · CaptionButton.cpp:14-27），
     // 保证深色主题下外观与接入本仓之前逐字节一致。
-    t.captionBg            = ECDI::Color::FromRGBA8(38, 40, 45, 255);
-    t.captionInk           = ECDI::Color::FromRGBA8(235, 236, 240, 255);
-    t.captionGlyph         = ECDI::Color::FromRGBA8(220, 222, 226, 255);
-    t.captionGlyphHot      = ECDI::Color::FromRGBA8(235, 236, 240, 255);
+    t.captionBg            = ECDI::Color::FromRGBA8(21, 21, 23, 255);
+    t.captionInk           = ECDI::Color::FromRGBA8(236, 236, 238, 255);
+    t.captionGlyph         = ECDI::Color::FromRGBA8(200, 200, 206, 255);
+    t.captionGlyphHot      = ECDI::Color::FromRGBA8(236, 236, 238, 255);
     t.captionHover         = ECDI::Color::FromRGBA8(255, 255, 255, 26);
     t.captionPressed       = ECDI::Color::FromRGBA8(255, 255, 255, 45);
     t.captionCloseHover    = ECDI::Color::FromRGBA8(196, 43, 28, 255);
@@ -220,17 +220,17 @@ inline Theme MakeDark() {
 inline Theme MakeLight() {
     Theme t{};
     // 框架面（--panel #f8f9fb / --surface #fff / --line #e7e9ee）
-    t.darkTopBg  = ECDI::Color::FromRGBA8(248, 249, 251, 255);
-    t.sidebarBg  = ECDI::Color::FromRGBA8(248, 249, 251, 255);
-    t.inspBg     = ECDI::Color::FromRGBA8(252, 252, 253, 255);
+    t.darkTopBg  = ECDI::Color::FromRGBA8(247, 247, 248, 255);
+    t.sidebarBg  = ECDI::Color::FromRGBA8(247, 247, 248, 255);
+    t.inspBg     = ECDI::Color::FromRGBA8(250, 250, 251, 255);
     t.contentBg  = ECDI::Color::FromRGBA8(255, 255, 255, 255);
-    t.panel2     = ECDI::Color::FromRGBA8(241, 243, 247, 255);
-    t.line       = ECDI::Color::FromRGBA8(231, 233, 238, 255);
+    t.panel2     = ECDI::Color::FromRGBA8(243, 243, 245, 255);
+    t.line       = ECDI::Color::FromRGBA8(232, 232, 236, 255);
     // 文字（--ink #23262e / --muted #6b7078 / --blue #596de8）
-    t.darkInk    = ECDI::Color::FromRGBA8(35, 38, 46, 255);
-    t.darkMuted  = ECDI::Color::FromRGBA8(107, 112, 120, 255);
-    t.darkAccent = ECDI::Color::FromRGBA8(89, 109, 232, 255);
-    t.accentInk  = ECDI::Color::FromRGBA8(76, 96, 215, 255);
+    t.darkInk    = ECDI::Color::FromRGBA8(32, 32, 36, 255);
+    t.darkMuted  = ECDI::Color::FromRGBA8(105, 105, 113, 255);
+    t.darkAccent = ECDI::Color::FromRGBA8(40, 40, 46, 255);
+    t.accentInk  = ECDI::Color::FromRGBA8(40, 40, 46, 255);
     // 状态（--green #28966b；error 取深一档保证白底可读）
     t.okDark     = ECDI::Color::FromRGBA8(36, 125, 89, 255);
     t.runDark    = ECDI::Color::FromRGBA8(89, 109, 232, 255);
@@ -246,25 +246,25 @@ inline Theme MakeLight() {
     //     `tool` 5.88 → `toolHeader` 8.82），即 1.8 / 2.4 / 3.5 / 5.7。
     //   ★ 为何不把 cardBg 压到 `#f1f3f7`（L* 4.2，数值上更接近深色）：那是右栏卡片的
     //     底色，助手气泡在正文区若用同值会与侧栏/右栏抢层级——正文区必须最亮。
-    t.cardBg       = ECDI::Color::FromRGBA8(247, 248, 251, 255);   // #f7f8fb，dL* -2.4
-    t.cardBorder   = ECDI::Color::FromRGBA8(226, 229, 236, 255);   // #e2e5ec（原 #e7e9ee 压白卡上太淡）
-    t.userBg       = ECDI::Color::FromRGBA8(238, 240, 255, 255);   // --blue-soft
-    t.userBorder   = ECDI::Color::FromRGBA8(216, 221, 250, 255);
-    t.userInk      = ECDI::Color::FromRGBA8(35, 38, 46, 255);
-    t.toolBg       = ECDI::Color::FromRGBA8(243, 245, 249, 255);   // #f3f5f9，dL* -3.5
-    t.toolBorder   = ECDI::Color::FromRGBA8(224, 228, 236, 255);
-    t.toolHeaderBg      = ECDI::Color::FromRGBA8(235, 239, 245, 255);   // #ebeff5，dL* -5.7
-    t.toolHeaderHover   = ECDI::Color::FromRGBA8(228, 233, 241, 255);
-    t.toolHeaderPressed = ECDI::Color::FromRGBA8(220, 226, 236, 255);
-    t.toolHeaderBorder  = ECDI::Color::FromRGBA8(224, 228, 236, 255);
+    t.cardBg       = ECDI::Color::FromRGBA8(248, 248, 250, 255);   // #f7f8fb，dL* -2.4
+    t.cardBorder   = ECDI::Color::FromRGBA8(228, 228, 233, 255);   // #e2e5ec（原 #e7e9ee 压白卡上太淡）
+    t.userBg       = ECDI::Color::FromRGBA8(242, 242, 245, 255);   // --blue-soft
+    t.userBorder   = ECDI::Color::FromRGBA8(231, 231, 236, 255);
+    t.userInk      = ECDI::Color::FromRGBA8(32, 32, 36, 255);
+    t.toolBg       = ECDI::Color::FromRGBA8(245, 245, 247, 255);   // #f3f5f9，dL* -3.5
+    t.toolBorder   = ECDI::Color::FromRGBA8(228, 228, 233, 255);
+    t.toolHeaderBg      = ECDI::Color::FromRGBA8(238, 238, 242, 255);   // #ebeff5，dL* -5.7
+    t.toolHeaderHover   = ECDI::Color::FromRGBA8(231, 231, 236, 255);
+    t.toolHeaderPressed = ECDI::Color::FromRGBA8(223, 223, 229, 255);
+    t.toolHeaderBorder  = ECDI::Color::FromRGBA8(228, 228, 233, 255);
     // 思维链（比工具卡更弱 ⇒ 更接近白：dL* -1.8）
     // ★ 原值 `#fbfbfc` 只有 dL* -1.3，且**比助手卡还暗**（层级颠倒）。
-    t.reasoningBg       = ECDI::Color::FromRGBA8(249, 250, 252, 255);   // #f9fafc
-    t.reasoningBorder   = ECDI::Color::FromRGBA8(226, 230, 238, 255);   // #e2e6ee
-    t.reasoningHeaderBg = ECDI::Color::FromRGBA8(242, 244, 248, 255);   // #f2f4f8，dL* -3.9
-    t.reasoningHover    = ECDI::Color::FromRGBA8(235, 238, 244, 255);
-    t.reasoningPressed  = ECDI::Color::FromRGBA8(227, 231, 239, 255);   // hover −8/−7/−5，同 tool 梯级
-    t.reasoningInk      = ECDI::Color::FromRGBA8(107, 112, 120, 255);
+    t.reasoningBg       = ECDI::Color::FromRGBA8(250, 250, 251, 255);   // #f9fafc
+    t.reasoningBorder   = ECDI::Color::FromRGBA8(230, 230, 235, 255);   // #e2e6ee
+    t.reasoningHeaderBg = ECDI::Color::FromRGBA8(244, 244, 247, 255);   // #f2f4f8，dL* -3.9
+    t.reasoningHover    = ECDI::Color::FromRGBA8(237, 237, 241, 255);
+    t.reasoningPressed  = ECDI::Color::FromRGBA8(229, 229, 234, 255);   // hover −8/−7/−5，同 tool 梯级
+    t.reasoningInk      = ECDI::Color::FromRGBA8(105, 105, 113, 255);
     // ask（--amber-bg #fdf7ea / --amber-line #ecdcb6 / --amber-ink #7a5a1e）
     t.askBg     = ECDI::Color::FromRGBA8(253, 247, 234, 255);
     t.askBorder = ECDI::Color::FromRGBA8(236, 220, 182, 255);
@@ -273,26 +273,26 @@ inline Theme MakeLight() {
     t.denyHover = ECDI::Color::FromRGBA8(246, 236, 216, 255);
     t.allowHover = ECDI::Color::FromRGBA8(116, 84, 26, 255);   // 比常态**深**一档：白字要一直读得清
     // 按钮
-    t.btnPrimary        = ECDI::Color::FromRGBA8(76, 96, 215, 255);   // #4c60d7，白字 5.30:1
-    t.btnPrimaryHover   = ECDI::Color::FromRGBA8(91, 110, 224, 255);
-    t.btnPrimaryPressed = ECDI::Color::FromRGBA8(63, 82, 196, 255);
+    t.btnPrimary        = ECDI::Color::FromRGBA8(24, 24, 27, 255);   // #4c60d7，白字 5.30:1
+    t.btnPrimaryHover   = ECDI::Color::FromRGBA8(55, 55, 60, 255);
+    t.btnPrimaryPressed = ECDI::Color::FromRGBA8(10, 10, 12, 255);
     t.btnPrimaryInk     = ECDI::Color::FromRGBA8(255, 255, 255, 255);
-    t.btnNeutralBg      = ECDI::Color::FromRGBA8(241, 243, 247, 255);
-    t.btnNeutralBorder  = ECDI::Color::FromRGBA8(231, 233, 238, 255);
+    t.btnNeutralBg      = ECDI::Color::FromRGBA8(243, 243, 245, 255);
+    t.btnNeutralBorder  = ECDI::Color::FromRGBA8(232, 232, 236, 255);
     t.btnDenyBg         = ECDI::Color::FromRGBA8(253, 247, 234, 255);
-    t.btnDisabledBg     = ECDI::Color::FromRGBA8(241, 243, 247, 255);
-    t.btnDisabledInk    = ECDI::Color::FromRGBA8(168, 173, 184, 255);
-    t.btnDisabledLine   = ECDI::Color::FromRGBA8(231, 233, 238, 255);
+    t.btnDisabledBg     = ECDI::Color::FromRGBA8(240, 240, 243, 255);
+    t.btnDisabledInk    = ECDI::Color::FromRGBA8(170, 170, 178, 255);
+    t.btnDisabledLine   = ECDI::Color::FromRGBA8(232, 232, 236, 255);
     // 进度条 / 输入框
-    t.trackBg     = ECDI::Color::FromRGBA8(238, 240, 244, 255);
+    t.trackBg     = ECDI::Color::FromRGBA8(238, 238, 242, 255);
     // ★★ 2026-10-18 修：环形进度条轨道原先复用 `kLine`（`App.cpp:667` 的注释
     //   「不用 kTrackBg（与卡片同值 ⇒ 看不见整圆）」），但 `kLine #e7e9ee` 压在白卡
     //   `kPanel2` 上只有 **1.09:1** ⇒ 浅色下整圈轨道消失（`v7-light-insp.png` 可见）。
     //   深色同一对是 1.19:1，勉强可见。浅色需独立更深的轨道色：1.24:1。
-    t.ringTrack   = ECDI::Color::FromRGBA8(216, 220, 230, 255);   // #d8dce6
-    t.darkPillBg  = ECDI::Color::FromRGBA8(241, 243, 247, 255);
-    t.inputBorder = ECDI::Color::FromRGBA8(224, 227, 233, 255);
-    t.inputCaret  = ECDI::Color::FromRGBA8(76, 96, 215, 255);
+    t.ringTrack   = ECDI::Color::FromRGBA8(218, 218, 224, 255);   // #d8dce6
+    t.darkPillBg  = ECDI::Color::FromRGBA8(243, 243, 245, 255);
+    t.inputBorder = ECDI::Color::FromRGBA8(224, 224, 230, 255);
+    t.inputCaret  = ECDI::Color::FromRGBA8(24, 24, 27, 255);
     // ★ 2026-11-03：浅色与深色同族（Noto Sans SC，= 思源黑体同设计）——沿用
     //   「同一份 UI 在两种主题下是同一套字形」的既定原则（见深色 init 注释）。
     //   两链解析依据 `docs/variant-c-ecdi-mapping.md` §2.3；GDI 实探读数见深色处。
@@ -305,10 +305,10 @@ inline Theme MakeLight() {
     //   hover/pressed 反过来用**黑**预混（深色用白预混）——浅色面上提亮即隐形；
     //   close 的红两主题同值（Windows 惯例，且浅色 kErrorDark (180,66,58) 作 hover 底会与
     //   glyph 失去反差）。
-    t.captionBg            = ECDI::Color::FromRGBA8(248, 249, 251, 255);
-    t.captionInk           = ECDI::Color::FromRGBA8(35, 38, 46, 255);
-    t.captionGlyph         = ECDI::Color::FromRGBA8(95, 101, 113, 255);
-    t.captionGlyphHot      = ECDI::Color::FromRGBA8(35, 38, 46, 255);
+    t.captionBg            = ECDI::Color::FromRGBA8(247, 247, 248, 255);
+    t.captionInk           = ECDI::Color::FromRGBA8(32, 32, 36, 255);
+    t.captionGlyph         = ECDI::Color::FromRGBA8(95, 95, 104, 255);
+    t.captionGlyphHot      = ECDI::Color::FromRGBA8(32, 32, 36, 255);
     t.captionHover         = ECDI::Color::FromRGBA8(0, 0, 0, 26);
     t.captionPressed       = ECDI::Color::FromRGBA8(0, 0, 0, 45);
     t.captionCloseHover    = ECDI::Color::FromRGBA8(196, 43, 28, 255);

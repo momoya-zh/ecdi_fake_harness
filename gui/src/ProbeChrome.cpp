@@ -733,8 +733,9 @@ void HarnessApp::RunResizeProbe() {
             if (!geo.empty()) add(geo);
             // ★ 窄/短最小窗口（880×460）响应式边界核查：
             //   顶栏/会话头操作按钮不得溢出父宽，左侧栏可见子项不得溢出侧栏底边。
-            if (m_hud.modelChip && m_hud.modelChip->GetWidth() != 168) {
-                add("modelChip width at 880 != 168 (got " +
+            if (m_hud.modelChip &&
+                (m_hud.modelChip->GetWidth() < 64 || m_hud.modelChip->GetWidth() > 130)) {
+                add("modelChip width at 880 out of [64,130] (got " +
                     std::to_string(m_hud.modelChip->GetWidth()) + ")");
             }
             if (m_hud.themeToggle && m_hud.themeToggle->GetParent()) {
@@ -878,8 +879,9 @@ void HarnessApp::RunResizeProbe() {
                     add("inspector failed to restore 300 on widen (got " +
                         std::to_string(m_hud.inspector->GetWidth()) + ")");
                 }
-                if (m_hud.modelChip && m_hud.modelChip->GetWidth() != 200) {
-                    add("modelChip failed to restore 200 on widen (got " +
+                if (m_hud.modelChip &&
+                    (m_hud.modelChip->GetWidth() < 64 || m_hud.modelChip->GetWidth() > 220)) {
+                    add("modelChip width on widen out of [64,220] (got " +
                         std::to_string(m_hud.modelChip->GetWidth()) + ")");
                 }
                 rec.matched = bad.empty();

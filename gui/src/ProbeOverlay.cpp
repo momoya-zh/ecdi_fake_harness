@@ -558,12 +558,13 @@ void HarnessApp::RunOverlayProbe() {
                          {popW == harness::internal::kModelPopupW &&
                               popH == harness::internal::kModelPopupH,
                           "popup size != spec (geometry never laid out?)"},
-                         {std::abs(popR - chipR) <= 1,
-                          "popup right edge is not aligned with the model chip's right edge"},
-                         {popT >= chipB,
-                          "popup top overlaps the top bar (it must hang below the chip)"},
-                         {popT - chipB <= harness::internal::kModelPopupDropGap + 1,
-                          "popup hangs too far below the model chip"},
+                         // 2026-11-18：chip 迁入输入卡片左下角 ⇒ 弹窗左缘对齐 chip、向上展开。
+                         {std::abs(popL - chipL) <= 1,
+                          "popup left edge is not aligned with the model chip's left edge"},
+                         {popT + popH <= chipT,
+                          "popup bottom overlaps the model chip (it must open upward above the chip)"},
+                         {chipT - (popT + popH) <= harness::internal::kModelPopupDropGap + 1,
+                          "popup floats too far above the model chip"},
                          // ★ 负对照：注册式浮层**必须**让这个读数为真——否则 ① 里
                          //   "托管挂载不注册"那条就成了空真（读数恒 false 时它也通过）。
                          {m_window->HasActiveOverlay(),

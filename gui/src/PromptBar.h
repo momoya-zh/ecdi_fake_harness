@@ -11,6 +11,7 @@
 //   caretColor 样式化落地前输入框保持浅底"浅井"。
 // 子控件所有权归 Widget 树（AddChild 转移），成员只存非拥有指针。
 
+#include "ECDI/Core/Font.h"
 #include "ECDI/Render/PaintContext.h"
 #include "ECDI/Widget/Button.h"
 #include "ECDI/Widget/Label.h"
@@ -18,6 +19,7 @@
 #include "ECDI/Widget/TextBox.h"
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -51,6 +53,7 @@ public:
     }
 
     ECDI::TextBox* input() const { return m_input; }
+    static ECDI::Font InputFont();
     ECDI::Label* hintLabel() const { return m_hint; }
     ECDI::Button* continueButton() const { return m_continue; }
     ECDI::Button* importButton() const { return m_import; }
@@ -62,6 +65,10 @@ public:
     void ClearAttachment();
     [[nodiscard]] bool HasAttachment() const { return m_attachment.has_value(); }
     [[nodiscard]] const std::optional<StagedAttachment>& GetAttachment() const { return m_attachment; }
+
+    // Codex 风格：模型 chip 内嵌在卡片左下角（所有权转入 Widget 树，成员仅存非拥有指针）。
+    void AdoptModelChip(std::unique_ptr<ECDI::Button> chip);
+    [[nodiscard]] ECDI::Button* modelChip() const { return m_modelChip; }
 
     void SetReadOnlyMode(bool readOnly);
     [[nodiscard]] bool IsReadOnlyMode() const { return m_isReadOnly; }
@@ -168,6 +175,7 @@ private:
     ECDI::Button* m_stop = nullptr;     // 非拥有
     ECDI::Button* m_continue = nullptr; // 非拥有——只读会话继续按钮
     ECDI::Button* m_import = nullptr;   // 非拥有——紧凑矢量 "+" 导入按钮
+    ECDI::Button* m_modelChip = nullptr; // 非拥有——左下角模型 chip
     ECDI::Panel* m_chipPanel = nullptr; // 非拥有——附件胶囊卡片
     ECDI::Widget* m_chipIcon = nullptr; // 非拥有——矢量文档徽标
     ECDI::Label* m_chipLabel = nullptr; // 非拥有——文件名与大小

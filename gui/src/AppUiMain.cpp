@@ -471,7 +471,7 @@ void HarnessApp::BuildConversationHead() {
         contBtn->SetTextColor(kBtnPrimaryInk);
         contBtn->SetStyle(ECDI::ButtonStyleOverride{
             .background = kBtnPrimary,
-            .cornerRadius = kRadiusBtn,
+            .cornerRadius = 12.0f,
             .pressedBackground = kBtnPrimaryPressed,
             .hoverBackground = kBtnPrimaryHover});
         contBtn->SetOnClick([this] { ContinueCurrentSession(); });
@@ -501,10 +501,10 @@ void HarnessApp::BuildConversationHead() {
             //   foreground）。MSVC 对乱序 designated init 报 C7560，且 GCC/Clang 的
             //   C++20 扩展也不保证顺序 ⇒ 一律按声明序写。
             b->SetStyle(ECDI::ButtonStyleOverride{
-                .background = kPanel2,
-                .border = kLine,
-                .borderWidth = 1.0f,
-                .cornerRadius = kRadiusBtn,
+                .background = ECDI::Color(0, 0, 0, 0),
+                .border = ECDI::Color(0, 0, 0, 0),
+                .borderWidth = 0.0f,
+                .cornerRadius = 8.0f,
                 .pressedBackground = kToolHeaderPressed,
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(28, 24);
@@ -577,10 +577,10 @@ void HarnessApp::BuildMoreMenu() {
             //   Bold 观感比雅黑更重，菜单项降半档，仍比正文 400 略强调。
             b->SetFont(harness::SansFont(harness::kFontSmall, 500));
             b->SetStyle(ECDI::ButtonStyleOverride{
-                .background = kPanel2,
-                .border = kLine,
-                .borderWidth = 1.0f,
-                .cornerRadius = kRadiusBtn,
+                .background = ECDI::Color(0, 0, 0, 0),
+                .border = ECDI::Color(0, 0, 0, 0),
+                .borderWidth = 0.0f,
+                .cornerRadius = 8.0f,
                 .pressedBackground = kToolHeaderPressed,
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(84, 24);
@@ -621,10 +621,10 @@ void HarnessApp::BuildMoreMenu() {
             b->SetTextColor(kDarkInk);
             b->SetFont(harness::SansFont(harness::kFontSmall, 500));   // 同上：菜单项半档 Medium
             b->SetStyle(ECDI::ButtonStyleOverride{
-                .background = kPanel2,
-                .border = kLine,
-                .borderWidth = 1.0f,
-                .cornerRadius = kRadiusBtn,
+                .background = ECDI::Color(0, 0, 0, 0),
+                .border = ECDI::Color(0, 0, 0, 0),
+                .borderWidth = 0.0f,
+                .cornerRadius = 8.0f,
                 .pressedBackground = kToolHeaderPressed,
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(96, 24);
@@ -722,10 +722,10 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSettingsSheet() {
             b->SetTextColor(kDarkInk);
             b->SetFont(harness::SansFont(harness::kFontSmall));
             b->SetStyle(ECDI::ButtonStyleOverride{
-                .background = kPanel2,
-                .border = kLine,
-                .borderWidth = 1.0f,
-                .cornerRadius = kRadiusBtn,
+                .background = ECDI::Color(0, 0, 0, 0),
+                .border = ECDI::Color(0, 0, 0, 0),
+                .borderWidth = 0.0f,
+                .cornerRadius = 8.0f,
                 .pressedBackground = kToolHeaderPressed,
                 .hoverBackground = kToolHeaderHover});
             b->SetSize(w, h);
@@ -1275,6 +1275,26 @@ void HarnessApp::BuildComposer() {
     composer->SetOnImportTip(
         [this](uikit::TipButton* tb) { ShowTooltipFor(tb, tb->tip()); },
         [this](uikit::TipButton*) { HideTooltip(); });
+    // ★ 2026-11-18（Codex 风格）：模型 chip 住进输入卡片左下角（原在顶栏）。
+    //   句柄仍存 `m_hud.modelChip`，数据/点击/Ctrl+M/弹窗锚点全部沿用。
+    {
+        auto modelChip = std::make_unique<uikit::TipButton>(
+            "— ﹀", "模型切换（Ctrl+M）——仅 idle 发出，运行中自动排队",
+            [this](uikit::TipButton* b) { ShowTooltipFor(b, b->tip()); },
+            [this](uikit::TipButton*) { HideTooltip(); });
+        m_hud.modelChip = modelChip.get();
+        modelChip->SetTextColor(kDarkMuted);
+        modelChip->SetFont(harness::SansFont(harness::kFontSmall));
+        modelChip->SetStyle(ECDI::ButtonStyleOverride{
+            .background = ECDI::Color(0, 0, 0, 0),   // 幽灵按钮：无底无框，悬停才显形
+            .borderWidth = 0.0f,
+            .cornerRadius = 11.0f,
+            .pressedBackground = kToolHeaderPressed,
+            .hoverBackground = kToolHeaderHover});
+        modelChip->SetSize((m_window && m_window->GetRootWidget().GetWidth() < 960) ? 130 : 150, 22);
+        modelChip->SetOnClick([this] { SetModelPopupOpen(!m_modelPopupOpen); });
+        composer->AdoptModelChip(std::move(modelChip));
+    }
     m_counting->AddChild(std::move(composer));
 }
 

@@ -564,7 +564,13 @@ void HarnessApp::OnSettingsSave() {
     }
     if (!renamed) m_appConfig.Upsert(pc);
     m_appConfig.defaultProviderId = providerId;
+    // ★ 2026-11-18：记录 API Key 是否实际变更。running 中的 core 凭据仅在 spawn 时
+    //   从 ECDI_PROVIDER_<SAN>_KEY 注入；若 key 改了还走 RequestModelSwitch 热切换，
+    //   既会被"已是当前模型"拦掉，core 进程里也仍是旧 key ⇒ 必须重起会话注入新 key。
+    bool keyChanged = false;
     if (!key.empty()) {
+        auto prevIt = m_providerKeys.find(providerId);
+        keyChanged = (prevIt == m_providerKeys.end() || prevIt->second != key);
         m_providerKeys[providerId] = key;
     } else if (migratedKey) {
         m_providerKeys[providerId] = migrated;
@@ -640,7 +646,7 @@ void HarnessApp::OnSettingsSave() {
     //   （新 core 用新 id 起）——规格 9.5.3 第 5 步的「按 cap 决定」在这里
     //   由"改名"直接决定，不看 cap。
     const bool liveOnRenamed = !oldId.empty() && m_sess && m_sess->providerId == oldId;
-    if (hasLive && m_sess->hasModelCap && !liveOnRenamed) {
+    if (hasLive && m_sess->hasModelCap && !liveOnRenamed && !keyChanged) {
         auto keyIt = m_providerKeys.find(providerId);
         if (keyIt != m_providerKeys.end()) {
             m_coreApiKey = keyIt->second;   // 新 provider 成为默认 ⇒ ECDI_CORE_KEY 跟随
@@ -654,7 +660,7 @@ void HarnessApp::OnSettingsSave() {
         RequestModelSwitch(providerId, model);
         return;
     }
-    if (hasLive && !m_sess->hasModelCap && !liveOnRenamed) {
+    if (hasLive && !m_sess->hasModelCap && !liveOnRenamed && !keyChanged) {
         setHint(keyFromEnv
                     ? "已保存；core 不支持热切换，重启后生效（key 来自环境变量）"
                     : "已保存；当前 core 不支持热切换（cap 未声明），重启会话后生效",
@@ -687,6 +693,10 @@ void HarnessApp::OnSettingsSave() {
     // ★ 放在**切到新会话之后**：通知行写的是活动会话的转录，切走前写会落到
     //   用户已经离开的那个会话里（等于没看见）。
     emitRenameNotice();
+    if (keyChanged && hasLive) {
+        AddNoticeRow("[API Key 已更新，已用新凭据重连：" + providerId + " / " + model + "]",
+                     kDarkMuted);
+    }
 }
 
 std::string HarnessApp::ProviderDisplayName(const ProviderConfig& pc) {
@@ -853,9 +863,9 @@ void HarnessApp::RepositionModelPopup() {
     int y = 0;
     if (m_hud.modelChip) {
         const ECDI::Point c = m_hud.modelChip->GetAbsolutePosition();
-        x = static_cast<int>(c.x) + m_hud.modelChip->GetWidth() - pw;   // 右缘对齐 chip
-        y = static_cast<int>(c.y) + m_hud.modelChip->GetHeight() +
-            harness::internal::kModelPopupDropGap;                      // 挂在 chip 下沿
+        // Codex 风格：chip 在输入卡片左下角 ⇒ 弹窗左缘对齐 chip、向上展开（挂在 chip 上沿）。
+        x = static_cast<int>(c.x);
+        y = static_cast<int>(c.y) - ph - harness::internal::kModelPopupDropGap;
     } else if (m_scroll) {
         // chip 缺失只可能发生在建树中途；退回旧口径，保底不把弹窗丢到 (0,0)。
         const ECDI::Point s = m_scroll->GetAbsolutePosition();
@@ -1050,12 +1060,16 @@ void HarnessApp::RebuildModelPopupList() {
 
 void HarnessApp::UpdateModelChip() {
     if (!m_hud.modelChip || !m_sess) return;
-    // ★ §9.5：chip 显示**显示名**（空回落 id）。chip 定宽 200px，显示名比
-    //   派生 id（一长串域名）短得多——这条改动顺带修好了「chip 文字被裁」。
-    std::string text = m_sess->providerId.empty()
-                           ? "—"
-                           : (ClampDisplay(ProviderDisplayLabel(m_sess->providerId), 18) +
-                              " › " + (m_sess->modelName.empty() ? "?" : m_sess->modelName));
+    // ★ 2026-11-18（Codex 风格）：优先显示模型名（无模型名回落提供商显示名，去掉「 › ?」）；
+    //   配合 ECDI AutoSize() 自适应胶囊宽度，并按窗口宽度上限夹取。
+    std::string text;
+    if (m_sess->providerId.empty()) {
+        text = m_sess->modelName.empty() ? "—" : ClampDisplay(m_sess->modelName, 22);
+    } else if (m_sess->modelName.empty()) {
+        text = ClampDisplay(ProviderDisplayLabel(m_sess->providerId), 18);
+    } else {
+        text = ClampDisplay(m_sess->modelName, 22);
+    }
     // ★ 用量常驻（v4 分母 ctxCapacity——P3.6 只写不读的接线在这里补上）：
     //   分子与右栏百分比同口径（usageIn）。
     if (m_sess->ctxCapacity > 0 && m_sess->usageIn >= 0) {
@@ -1065,7 +1079,20 @@ void HarnessApp::UpdateModelChip() {
     }
     // ★ 用 `﹀`(U+FE40，与思维链卡同款，Microsoft YaHei 有字形，不画 `□` 缺字块)。
     text += " \xEF\xB9\x80";
-    m_hud.modelChip->SetText(text);
+    if (m_hud.modelChip->GetText() != text) {
+        m_hud.modelChip->SetText(text);
+    }
+    const int prevW = m_hud.modelChip->GetWidth();
+    m_hud.modelChip->AutoSize();
+    const int rootW = m_window ? m_window->GetRootWidget().GetWidth() : 1200;
+    const int maxChipW = (rootW > 0 && rootW < 960) ? 130 : 220;
+    const int wantW = std::clamp(m_hud.modelChip->GetWidth() + 12, 64, maxChipW);
+    if (wantW != m_hud.modelChip->GetWidth() || m_hud.modelChip->GetHeight() != 22) {
+        m_hud.modelChip->SetSize(wantW, 22);
+    }
+    if (wantW != prevW && m_promptBar) {
+        m_promptBar->SetSize(m_promptBar->GetWidth(), m_promptBar->GetHeight());
+    }
 }
 
 void HarnessApp::RebuildSettingsProviderList() {

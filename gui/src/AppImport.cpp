@@ -315,7 +315,8 @@ void HarnessApp::RunImportProbe() {
 
         const bool compactW = (imp->GetWidth() == 28);
 
-        m_promptBar->SetSize(340, origH);
+        // 2026-11-18：左下角迁入 modelChip（150+10px），中等宽度相应从 340 → 500（availW=118 ∈ [90,210)）。
+        m_promptBar->SetSize(500, origH);
         const bool midVisible = hint->IsVisible();
         const bool midNoOverlap = (hint->GetX() + hint->GetWidth() + 4 <= imp->GetX());
         const bool midShortText = (hint->GetText() == "Enter 发送");

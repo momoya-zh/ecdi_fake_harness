@@ -1123,15 +1123,9 @@ void HarnessApp::SyncResponsiveColumns(bool allowListRebuild) {
     const int rootH = root.GetHeight();
     if (rootW <= 0 || rootH <= 0) return;
 
-    // 1) 顶栏模型胶囊窄窗适度收缩（<960 → 168，恢复 ≥960 → 200）。
+    // 1) 模型胶囊自适应内容宽，窄窗上限 130，宽窗上限 220。
     if (m_hud.modelChip) {
-        const int wantChipW = (rootW < 960) ? 168 : 200;
-        if (m_hud.modelChip->GetWidth() != wantChipW) {
-            m_hud.modelChip->SetSize(wantChipW, m_hud.modelChip->GetHeight());
-            if (ECDI::Widget* bar = m_hud.modelChip->GetParent()) {
-                bar->Arrange();
-            }
-        }
+        UpdateModelChip();
     }
 
     // 2) 左右栏宽度按中栏保底宽（444px）响应式让位，绝不覆写 m_sidebarWidth / m_inspectorWidth。

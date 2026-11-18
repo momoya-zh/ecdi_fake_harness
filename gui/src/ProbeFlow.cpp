@@ -37,6 +37,7 @@
 #include "ECDI/EventSystem/Input/Mouse/MouseWheelEvent.h"
 #include "ECDI/Layout/Layout.h"
 #include "ECDI/Platform/PlatformWindow.h"
+#include "ECDI/Render/TextMeasurer.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Theme/TextBoxStyle.h"
 #include "ECDI/Widget/Button.h"
@@ -627,7 +628,7 @@ void HarnessApp::RunValignProbe() {
         return static_cast<int>(std::lround(g.rect.y - abs.y));
     };
     auto record = [&](const char* phase, const char* name, ECDI::TextBox* box,
-                      bool withFlip) {
+                      const ECDI::Font& font, bool withFlip) {
         ValignProbeRec rec;
         rec.phase = phase;
         rec.box = name;
@@ -640,16 +641,23 @@ void HarnessApp::RunValignProbe() {
             if (rec.relYCenter < 0) {
                 bad = "caret geometry unavailable";
             } else {
+                ECDI::TextMeasurer& measurer = m_window->GetTextMeasurer();
+                const float exactLineH = measurer.LineHeight(font);
+                const float overhang = (std::max)(
+                    0.0f,
+                    measurer.Ascent(font) + measurer.Descent(font) - exactLineH);
                 rec.lineH = static_cast<int>(std::lround(
                     box->GetCaretClientGeometry().rect.height));
-                // ★ 2026-11-05：整数下取整，不用 lround。
-                //   框架公式是 `p + (H-2p-lineH)/2`（C++ 整数除法），padding 代数
-                //   消去后 = floor((H-lineH)/2)。当 H-lineH 为奇数（如 composer
-                //   在 150% DPI 下 H=31、lineH=18）时 lround 得 7、交付值 6，
-                //   会红成"差 1px"的假阴性；floor 才是同一算式。
-                rec.expectedCenter = (rec.boxH - rec.lineH) / 2;
+                // ★ 2026-11-16：对齐 ECDI #92（TextBox::GetTextTopInset）：
+                //   框架公式是 `p + max(0, (H - 2p - (lineH + overhang)) / 2)`，
+                //   padding 消去后 = `(H - (lineH + overhang)) / 2`（浮点 DIP，不提前把
+                //   lineH 舍入再做整数除法，与 GetCaretClientGeometry 一致取 lround）。
+                //   GDI 下 Noto Sans SC 存在 3px 下伸溢出（lineH=18, tmHeight=21），
+                //   GL 下 overhang=0，两者由同一条 TextMeasurer 公式自动覆盖。
+                rec.expectedCenter = static_cast<int>(std::lround(
+                    (static_cast<float>(rec.boxH) - (exactLineH + overhang)) / 2.0f));
                 if (rec.relYCenter != rec.expectedCenter) {
-                    bad = "delivered reading != (H-lineH)/2";
+                    bad = "delivered reading != (H-(lineH+overhang))/2";
                 }
             }
             if (withFlip && bad.empty()) {
@@ -675,25 +683,29 @@ void HarnessApp::RunValignProbe() {
     };
 
     // ① composer：翻转臂（恰满盒子两臂预期相等——相等即居中事实）。
-    if (m_promptBar) record("composer-flip", "composer", m_promptBar->input(), true);
+    if (m_promptBar) {
+        record("composer-flip", "composer", m_promptBar->input(),
+               PromptBar::InputFont(), true);
+    }
     // ② 设置面板（产品唯一入口真开真关）：三个字段框（30 高）。
     {
         const bool was = m_hud.settingsPanel && m_hud.settingsPanel->IsVisible();
         SetSettingsVisible(true);
-        record("settings-fields", "base-url", m_hud.settingsBase, false);
-        record("settings-fields", "api-key", m_hud.settingsKey, false);
-        record("settings-fields", "model-name", m_hud.settingsModel, false);
+        const ECDI::Font defaultFont{};
+        record("settings-fields", "base-url", m_hud.settingsBase, defaultFont, false);
+        record("settings-fields", "api-key", m_hud.settingsKey, defaultFont, false);
+        record("settings-fields", "model-name", m_hud.settingsModel, defaultFont, false);
         // ③ 挡位框（26 高）：翻转臂放这里——内容不超屏，Top/Center 必然分离，
         //    剂量对照（0 → 4.5）由本相给出。
-        record("settings-steppers", "ctx", m_hud.settingsContext, true);
-        record("settings-steppers", "max-out", m_hud.settingsMaxOut, false);
+        record("settings-steppers", "ctx", m_hud.settingsContext, defaultFont, true);
+        record("settings-steppers", "max-out", m_hud.settingsMaxOut, defaultFont, false);
         SetSettingsVisible(was);
     }
     // ④ 模型浮窗搜索框（26 高；隐藏态下相对读数同样成立——绝对坐标相消）。
     {
         const bool was = m_hud.modelPopup && m_hud.modelPopup->IsVisible();
         SetModelPopupOpen(true);
-        record("model-search", "search", m_hud.modelSearch, false);
+        record("model-search", "search", m_hud.modelSearch, ECDI::Font{}, false);
         SetModelPopupOpen(was);
     }
 

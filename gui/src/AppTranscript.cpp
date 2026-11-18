@@ -1358,9 +1358,16 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
     //     `kAskBg / kRadiusTool / 1px kAskBorder`（token 仍在 Theme.h 里）。
     auto panel = std::make_unique<ECDI::Panel>();
     const ECDI::Color askPlainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
-    panel->SetStyle(ECDI::PanelStyleOverride{
-        .background = askPlainBg, .cornerRadius = 0.0f,
-        .borderWidth = 0.0f, .borderColor = askPlainBg});
+    // ★ 2026-11-18（Codex 风格）：未答权限门用安静的圆角卡片承接决策；已答后由 ApplyAnsweredLook 退回平铺。
+    if (!entry.answered && !m_options.probeContrast) {
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = kCardBg, .cornerRadius = 12.0f,
+            .borderWidth = 1.0f, .borderColor = kCardBorder});
+    } else {
+        panel->SetStyle(ECDI::PanelStyleOverride{
+            .background = askPlainBg, .cornerRadius = 0.0f,
+            .borderWidth = 0.0f, .borderColor = askPlainBg});
+    }
     rec.ask = true;
     rec.askId = entry.id;   // P1.5：answer 回执要带 id
 
@@ -1376,20 +1383,15 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
 
     auto header = std::make_unique<ECDI::Button>(AskTitle(entry.text, rec.expanded, foldable));
     rec.headerBtn = header.get();
-    header->SetTextColor(kAskQInk);
+    header->SetTextColor(entry.answered ? kDarkMuted : kDarkInk);
     header->SetFont(harness::SansFont(15.0f));
     header->SetStyle(ECDI::ButtonStyleOverride{
-        .background = askPlainBg,
-        .border = askPlainBg,
+        .background = ECDI::Color(0, 0, 0, 0),
+        .border = ECDI::Color(0, 0, 0, 0),
         .borderWidth = 0.0f,
-        .cornerRadius = kRadiusBtn,
-        // ★ 去卡片化后**保留** hover/pressed 的暖色（与工具行不同）：
-        //   权限门是"必须决策"的阻断点，hover 一亮等于再说一次"这里要你点"；
-        //   而工具行的点击反馈是展开体出现，不需要靠变色。
-        //   借用同色系的 `kAskBorder`：换成 `kPanel2` 那种冷灰，hover 一瞬整行
-        //   会从暖色跳成冷色——色相跳比"没有 hover"更刺眼。
-        .pressedBackground = kAskBorder,
-        .hoverBackground = kAskBorder,
+        .cornerRadius = 8.0f,
+        .pressedBackground = kToolHeaderPressed,
+        .hoverBackground = kToolHeaderHover,
         .textAlignment = ECDI::TextAlignment::Left});
     // ★ 短问句：没有折叠体可开合 ⇒ 头**不可点**。否则它是个「按下去有反馈、
     //   松开什么都不发生」的假按钮——比不可点更让人困惑。
@@ -1403,13 +1405,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
         body->SetExpandDirection(ECDI::ExpandDirection::Down);
         // ★ 同工具行：折叠体自带主题默认底，不抹平就会在平铺的转录里露一块异色。
         body->SetStyle(ECDI::PanelStyleOverride{
-            .background = askPlainBg,
+            .background = ECDI::Color(0, 0, 0, 0),
             .cornerRadius = 0.0f,
             .borderWidth = 0.0f,
-            .borderColor = askPlainBg});
+            .borderColor = ECDI::Color(0, 0, 0, 0)});
         auto label = std::make_unique<ECDI::Label>("权限 " + entry.text);
         rec.label = label.get();
-        label->SetTextColor(kAskQInk);
+        label->SetTextColor(kDarkInk);
         label->SetFont(harness::SansFont(15.0f, 400));   // ★ 问句是折叠长文（正文档 400），头仍是 UI 700
         label->SetWordWrap(true);   // ★ 换行是本轮改造的核心：原来这条路径上完全没有
         // 内容容器（裸 Widget，不画底），与工具卡/思维链同一挂法
@@ -1429,31 +1431,31 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildAskRow(const TimelineEntry& entry
 
     auto allow = std::make_unique<ECDI::Button>("允许");
     rec.allowBtn = allow.get();
-    allow->SetTextColor(kWarnInk);
+    allow->SetTextColor(kBtnPrimaryInk);
     {
         ECDI::Font f = harness::SansFont(14.0f);
         allow->SetFont(f);
     }
     allow->SetStyle(ECDI::ButtonStyleOverride{
-        .background = kWarn,
-        .cornerRadius = kRadiusBtn,
-        .pressedBackground = kWarn,
-        .hoverBackground = kAllowHover});
+        .background = kBtnPrimary,
+        .cornerRadius = 14.0f,
+        .pressedBackground = kBtnPrimaryPressed,
+        .hoverBackground = kBtnPrimaryHover});
     panel->AddChild(std::move(allow));
 
     auto deny = std::make_unique<ECDI::Button>("拒绝");
     rec.denyBtn = deny.get();
-    deny->SetTextColor(kDenyInk);
+    deny->SetTextColor(kDarkInk);
     {
         ECDI::Font f = harness::SansFont(14.0f);
         deny->SetFont(f);
     }
     deny->SetStyle(ECDI::ButtonStyleOverride{
-        .background = kBtnDenyBg,
-        .border = kAskBorder,
+        .background = kPanel2,
+        .border = kLine,
         .borderWidth = 1.0f,
-        .cornerRadius = kRadiusBtn,
-        .hoverBackground = kDenyHover});
+        .cornerRadius = 14.0f,
+        .hoverBackground = kToolHeaderHover});
     panel->AddChild(std::move(deny));
 
     // ★★ P4 Phase D：已答结论行（预建、隐藏；ApplyAnsweredLook 填充并显示）。
@@ -1622,6 +1624,15 @@ void HarnessApp::ApplyAnsweredLook(RowRec& rec, const std::string& choice,
     if (rec.denyBtn) {
         rec.denyBtn->SetEnabled(false);
         rec.denyBtn->SetVisible(false);
+    }
+    // 已答后退回平铺底色并弱化问句文字（与未答的圆角卡片区分，首答与重建同形）
+    if (auto* p = dynamic_cast<ECDI::Panel*>(rec.panel); p && !m_options.probeContrast) {
+        p->SetStyle(ECDI::PanelStyleOverride{
+            .background = kContentBg, .cornerRadius = 0.0f,
+            .borderWidth = 0.0f, .borderColor = kContentBg});
+    }
+    if (rec.headerBtn) {
+        rec.headerBtn->SetTextColor(kDarkMuted);
     }
     if (!rec.conclusion) return;
     // 记下视图侧结论（`SnapshotRows` 只读 RowRec，不回查模型——见字段注释）

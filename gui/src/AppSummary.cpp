@@ -301,7 +301,7 @@ void HarnessApp::WriteSummary() {
     }
     // ★★ REQ-14（2026-10-27）：单行 TextBox 垂直居中的机读证据（--valign-probe）。
     //   判据（跑批脚本执行，见 `RunValignProbe` 头注）：
-    //     · 每相 matched == true：交付态（Center）读数 == (H − lineH)/2
+    //     · 每相 matched == true：交付态（Center）读数 == (H − (lineH + overhang))/2
     //     · 翻转臂/恢复臂：Top 读数为剂量对照，恢复读数必须与首测一致
     //   ★ 默认关闭 ⇒ 摘要里连 `valignProbe` 键都不出现（本仓铁律）。
     if (m_options.valignProbe && !m_probeState.valignProbeLog.empty()) {
