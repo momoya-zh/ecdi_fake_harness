@@ -26,6 +26,10 @@ func (cfg SandboxConfig) platformSandboxNote() string {
 	return "L1 沙盒（进程组）：整组 SIGKILL · 无内存/进程硬上限 · 未剥离特权"
 }
 
+func shellPromptHint() string {
+	return "要执行的命令行（POSIX sh 语法；一次只跑一条，多步请分次调用）"
+}
+
 func runCommandInSandbox(ctx context.Context, command string, root string, timeoutS int, cfg SandboxConfig) toolResult {
 	if !cfg.Enabled {
 		return runCommandUnsandboxed(ctx, command, root, timeoutS)

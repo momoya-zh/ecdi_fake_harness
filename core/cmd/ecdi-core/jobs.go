@@ -409,12 +409,16 @@ func (j *job) terminate() {
 
 func (h *jobHub) toolStart(args map[string]any, root, callID string, cfg SandboxConfig) toolResult {
 	command, _ := args["command"].(string)
-	j, err := h.start(command, root, callID, cfg)
+	cwd, err := resolveCommandCwd(args, root)
+	if err != nil {
+		return toolResult{OK: false, Output: err.Error()}
+	}
+	j, err := h.start(command, cwd, callID, cfg)
 	if err != nil {
 		return toolResult{OK: false, Output: err.Error()}
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "后台任务 %s 已启动（运行中）。\n命令：%s\n目录：%s\n", j.id, command, root)
+	fmt.Fprintf(&sb, "后台任务 %s 已启动（运行中）。\n命令：%s\n目录：%s\n", j.id, command, cwd)
 	fmt.Fprintf(&sb, "用 job_output 取增量输出（{\"job_id\":%q}）；job_kill 终止。", j.id)
 	return toolResult{OK: true, Output: sb.String()}
 }

@@ -274,6 +274,48 @@ func startSandboxed(cmd *exec.Cmd, hJob syscall.Handle) error {
 	return nil
 }
 
+// resolveWindowsShell 按 auto（pwsh → powershell → cmd）或显式指定返回可执行文件、参数与类型。
+func resolveWindowsShell(shellMode, command string) (string, []string, string) {
+	mode := strings.ToLower(strings.TrimSpace(shellMode))
+	if mode == "" || mode == "auto" {
+		if _, err := exec.LookPath("pwsh"); err == nil {
+			mode = "pwsh"
+		} else if _, err := exec.LookPath("powershell"); err == nil {
+			mode = "powershell"
+		} else {
+			mode = "cmd"
+		}
+	}
+	switch mode {
+	case "pwsh":
+		return "pwsh", []string{"-NoProfile", "-NonInteractive", "-Command", command}, "pwsh"
+	case "powershell":
+		return "powershell", []string{"-NoProfile", "-NonInteractive", "-Command", command}, "powershell"
+	default:
+		return "cmd", []string{"/c", command}, "cmd"
+	}
+}
+
+func buildShellCommand(ctx context.Context, shellMode, command string) *exec.Cmd {
+	bin, args, _ := resolveWindowsShell(shellMode, command)
+	if ctx != nil {
+		return exec.CommandContext(ctx, bin, args...)
+	}
+	return exec.Command(bin, args...)
+}
+
+func shellPromptHint() string {
+	_, _, kind := resolveWindowsShell(getSandboxConfig().Shell, "")
+	switch kind {
+	case "pwsh":
+		return "要执行的命令行（Windows: PowerShell 7 / pwsh 语法；一次只跑一条，多步请分次调用）"
+	case "powershell":
+		return "要执行的命令行（Windows: PowerShell 5.1 语法，多步请用 ; 而非 &&；一次只跑一条）"
+	default:
+		return "要执行的命令行（Windows: CMD 语法；一次只跑一条，多步请分次调用）"
+	}
+}
+
 // startBackgroundProcess：后台作业（协议 v6）的启动原语。
 //
 // 与 runCommandInSandbox 同源（同一套令牌 / 作业 / 挂起→挂接→恢复），区别只在
@@ -281,7 +323,7 @@ func startSandboxed(cmd *exec.Cmd, hJob syscall.Handle) error {
 // 失败语义同为 fail-closed：调用方拿到 error 时命令没有在裸权限下跑。
 func startBackgroundProcess(command, root string, cfg SandboxConfig, sink io.Writer) (*bgProcess, error) {
 	if !cfg.Enabled {
-		cmd := exec.Command("cmd", "/c", command)
+		cmd := buildShellCommand(nil, cfg.Shell, command)
 		cmd.Dir = root
 		cmd.Env = childEnv()
 		cmd.Stdout, cmd.Stderr = sink, sink
@@ -316,7 +358,7 @@ func startBackgroundProcess(command, root string, cfg SandboxConfig, sink io.Wri
 		return nil, fmt.Errorf("L1 沙盒初始化失败（Job Object）：%w", err)
 	}
 
-	cmd := exec.Command("cmd", "/c", command)
+	cmd := buildShellCommand(nil, cfg.Shell, command)
 	cmd.Dir = root
 	cmd.Env = childEnv()
 	cmd.Stdout, cmd.Stderr = sink, sink
@@ -382,7 +424,7 @@ func runCommandInSandbox(ctx context.Context, command string, root string, timeo
 	}
 	defer syscall.CloseHandle(hJob)
 
-	cmd := exec.Command("cmd", "/c", command)
+	cmd := buildShellCommand(nil, cfg.Shell, command)
 	cmd.Dir = root
 	cmd.Env = childEnv()
 	sysAttr := &syscall.SysProcAttr{
@@ -445,7 +487,7 @@ func runCommandInSandbox(ctx context.Context, command string, root string, timeo
 
 // runCommandUnsandboxed 无沙盒回退路径（仅 --sandbox=false 时可达）。
 func runCommandUnsandboxed(ctx context.Context, command string, root string, timeoutS int) toolResult {
-	cmd := exec.CommandContext(ctx, "cmd", "/c", command)
+	cmd := buildShellCommand(ctx, getSandboxConfig().Shell, command)
 	cmd.Dir = root
 	cmd.Env = childEnv()
 	hideChildWindow(cmd)

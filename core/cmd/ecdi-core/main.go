@@ -71,17 +71,24 @@ func main() {
 	sandboxMemMB := flag.Int("sandbox-memory-mb", 1024, "L1 沙盒作业内存上限（MB）")
 	sandboxMaxProcs := flag.Int("sandbox-max-procs", 32, "L1 沙盒作业最大活跃进程数（防 fork 炸弹）")
 	sandboxDropPrivs := flag.Bool("sandbox-drop-privs", true, "是否通过受限令牌剥离管理员/调试高危特权")
+	shellMode := flag.String("shell", "auto", "run_command 默认 shell：auto（pwsh→powershell→cmd）| pwsh | powershell | cmd")
 	mcpConfig := flag.String("mcp-config", "", "MCP 配置文件路径（缺省在工作区或全局配置目录自动发现）")
 	mcpEnv := flag.String("mcp-env", mcpEnvInherit, "MCP stdio 子进程环境：inherit（继承并剔除密钥，默认）| minimal（只留白名单）")
 	mcpRespawn := flag.Bool("mcp-respawn", true, "MCP stdio 服务崩溃后按需自动重启（每会话每服务上限 3 次）")
 	mcpTimeout := flag.Duration("mcp-timeout", defaultMCPCallTimeout, "单个 MCP 工具调用的默认墙钟上限（0 表示无上限）")
 	flag.Parse()
 
+	normShell, err := normalizeShellMode(*shellMode)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ecdi-core] %v\n", err)
+		os.Exit(2)
+	}
 	setSandboxConfig(SandboxConfig{
 		Enabled:        *sandboxEnabled,
 		MemoryLimitMB:  *sandboxMemMB,
 		MaxProcesses:   *sandboxMaxProcs,
 		DropPrivileges: *sandboxDropPrivs,
+		Shell:          normShell,
 	})
 	// MCP 运行期开关：坏值拒绝启动（静默回落会让「我明明写了 minimal」变成谎言）。
 	envMode, err := normalizeMCPEnvMode(*mcpEnv)

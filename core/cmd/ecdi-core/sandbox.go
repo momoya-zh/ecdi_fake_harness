@@ -2,16 +2,35 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
 
 // SandboxConfig 存储 run_command 的 L1 沙盒配置。
 type SandboxConfig struct {
-	Enabled        bool // 是否启用 L1 沙盒（默认 true）
-	MemoryLimitMB  int  // 单个命令作业内存限制（MB，默认 1024；≤0 = 不设上限）
-	MaxProcesses   int  // 单个命令作业最大并发进程数（默认 32，防 fork 炸弹；≤0 = 用默认）
-	DropPrivileges bool // 是否剥离管理与调试等高危特权（默认 true）
+	Enabled        bool   // 是否启用 L1 沙盒（默认 true）
+	MemoryLimitMB  int    // 单个命令作业内存限制（MB，默认 1024；≤0 = 不设上限）
+	MaxProcesses   int    // 单个命令作业最大并发进程数（默认 32，防 fork 炸弹；≤0 = 用默认）
+	DropPrivileges bool   // 是否剥离管理与调试等高危特权（默认 true）
+	Shell          string // run_command 用的 shell：""/"auto" | "pwsh" | "powershell" | "cmd" | "sh"
+}
+
+func normalizeShellMode(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto":
+		return "auto", nil
+	case "pwsh":
+		return "pwsh", nil
+	case "powershell":
+		return "powershell", nil
+	case "cmd":
+		return "cmd", nil
+	case "sh":
+		return "sh", nil
+	default:
+		return "", fmt.Errorf("无效的 --shell 值 %q（允许：auto | pwsh | powershell | cmd）", raw)
+	}
 }
 
 // defaultSandboxConfig 返回出厂配置。

@@ -170,6 +170,51 @@ func TestToolReadFile(t *testing.T) {
 	if r := executeTool("read_file", map[string]any{"path": "../secret.txt"}, root); r.OK {
 		t.Fatalf("越界读取应被拒绝")
 	}
+
+	// 按行分段读取
+	linesFile := root + "/lines.txt"
+	if err := os.WriteFile(linesFile, []byte("L1\nL2\nL3\nL4\nL5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := executeTool("read_file", map[string]any{"path": "lines.txt", "start_line": float64(2), "end_line": float64(4)}, root); !r.OK || r.Output != "L2\nL3\nL4\n" {
+		t.Fatalf("2..4 行读取不符: ok=%v out=%q", r.OK, r.Output)
+	}
+	if r := executeTool("read_file", map[string]any{"path": "lines.txt", "start_line": float64(4)}, root); !r.OK || r.Output != "L4\nL5\n" {
+		t.Fatalf("仅传 start_line=4 应读到末尾: ok=%v out=%q", r.OK, r.Output)
+	}
+	if r := executeTool("read_file", map[string]any{"path": "lines.txt", "end_line": float64(2)}, root); !r.OK || r.Output != "L1\nL2\n" {
+		t.Fatalf("仅传 end_line=2 应从头读到第 2 行: ok=%v out=%q", r.OK, r.Output)
+	}
+	if r := executeTool("read_file", map[string]any{"path": "lines.txt", "start_line": float64(99)}, root); !r.OK || !strings.Contains(r.Output, "超出范围") {
+		t.Fatalf("start_line 超出范围应给出提示: ok=%v out=%q", r.OK, r.Output)
+	}
+	if r := executeTool("read_file", map[string]any{"path": "lines.txt", "start_line": float64(4), "end_line": float64(2)}, root); r.OK {
+		t.Fatalf("start_line > end_line 应报错")
+	}
+	if r := executeTool("read_file", map[string]any{"path": "lines.txt", "start_line": float64(0)}, root); r.OK {
+		t.Fatalf("start_line < 1 应报错")
+	}
+}
+
+func TestToolRunCommandCwd(t *testing.T) {
+	root := setupWS(t)
+
+	// 合法子目录（同时兼容 PowerShell 与 CMD 输出当前目录）
+	if r := executeTool("run_command", map[string]any{"command": "cmd /c cd", "cwd": "sub"}, root); !r.OK || !strings.Contains(strings.ToLower(r.Output), "sub") {
+		t.Fatalf("合法 cwd=sub 应在该目录执行: ok=%v out=%q", r.OK, r.Output)
+	}
+	// 越界目录
+	if r := executeTool("run_command", map[string]any{"command": "cd", "cwd": ".."}, root); r.OK {
+		t.Fatalf("越界 cwd 应被拒绝")
+	}
+	// 文件当作目录
+	if r := executeTool("run_command", map[string]any{"command": "cd", "cwd": "notes.md"}, root); r.OK {
+		t.Fatalf("文件不可作为 cwd")
+	}
+	// 不存在的目录
+	if r := executeTool("run_command", map[string]any{"command": "cd", "cwd": "missing_dir"}, root); r.OK {
+		t.Fatalf("不存在的 cwd 应报错")
+	}
 }
 
 // ── list_dir：目录在前带 / 尾、文件在后、排序 ───────────────────
@@ -446,7 +491,7 @@ func TestRunCommand_StripsApiKeys(t *testing.T) {
 
 	// `set NAME` 在变量不存在时返回非 0 —— 正好当存在性判据（不看本地化文案）。
 	for _, name := range []string{"ECDI_CORE_KEY", "ECDI_PROVIDER_DEEPSEEK_KEY"} {
-		res := executeTool("run_command", map[string]any{"command": "set " + name}, rootN)
+		res := executeTool("run_command", map[string]any{"command": "cmd /c set " + name}, rootN)
 		if res.OK {
 			t.Errorf("%s 仍存在于子进程环境：%s", name, res.Output)
 		}

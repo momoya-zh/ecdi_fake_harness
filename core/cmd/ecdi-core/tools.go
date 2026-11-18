@@ -21,9 +21,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -126,8 +128,12 @@ func toolDefsFor(agents bool, depth int) []toolDef {
 	}
 	pathProp := func() map[string]any { return str("工作区内相对路径（或工作区内绝对路径）") }
 	defs := []toolDef{
-		{Name: "read_file", Description: "读取工作区内的一个文本文件（UTF-8，上限 40KB，超出截断并标注）",
-			Parameters: obj(map[string]any{"path": pathProp()}, "path")},
+		{Name: "read_file", Description: "读取工作区内的一个文本文件（UTF-8，单次上限 40KB，超出截断并标注；可用 start_line / end_line 按行分段读取）",
+			Parameters: obj(map[string]any{
+				"path":       pathProp(),
+				"start_line": map[string]any{"type": "integer", "description": "起始行号（从 1 开始，可选）"},
+				"end_line":   map[string]any{"type": "integer", "description": "结束行号（含该行，从 1 开始，可选）"},
+			}, "path")},
 		{Name: "list_dir", Description: "列出工作区内某目录的单层内容（目录在前带 / 尾，文件在后，按名排序）",
 			Parameters: obj(map[string]any{"path": pathProp()})},
 		{Name: "grep", Description: "在工作区内递归搜索正则（跳过二进制与 >1MB 文件，上限 200 条命中）",
@@ -151,9 +157,10 @@ func toolDefsFor(agents bool, depth int) []toolDef {
 				"replace_all": map[string]any{"type": "boolean", "description": "为 true 时替换全部匹配（默认 false = 要求唯一）"},
 			}, "path", "old_string", "new_string")},
 		{Name: "run_command",
-			Description: "在工作区根目录下执行一条 shell 命令（Windows 走 cmd /c），返回合并后的 stdout+stderr。会改变世界，执行前需用户确认",
+			Description: "在工作区目录（默认根目录，可用 cwd 指定工作区内子目录）下执行一条 shell 命令，返回合并后的 stdout+stderr。会改变世界，执行前需用户确认",
 			Parameters: obj(map[string]any{
-				"command":         str("要执行的命令行（Windows: CMD 语法；一次只跑一条，多步请分次调用）"),
+				"command":         str(shellPromptHint()),
+				"cwd":             str("可选工作目录（工作区内相对路径或绝对路径，默认工作区根目录）"),
 				"timeout_seconds": map[string]any{"type": "number", "description": "超时秒数，默认 60，上限 300"},
 				"background":      map[string]any{"type": "boolean", "description": "为 true 时后台运行、立即返回 job_id（长构建/测试/dev server 用）；用 job_output 取输出、job_kill 终止"},
 			}, "command")},
@@ -284,11 +291,40 @@ func samePath(a, b string) bool {
 
 // ── 三件 ────────────────────────────────────────────────────────
 
+func intArg(args map[string]any, key string) (int, bool, bool) {
+	v, exists := args[key]
+	if !exists || v == nil {
+		return 0, false, true
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n), true, true
+	case int:
+		return n, true, true
+	case int64:
+		return int(n), true, true
+	default:
+		return 0, true, false
+	}
+}
+
 func toolReadFile(args map[string]any, root string) toolResult {
 	p, _ := args["path"].(string)
 	if strings.TrimSpace(p) == "" {
 		return toolResult{OK: false, Output: "read_file 缺少 path 参数"}
 	}
+	startLine, hasStart, okStart := intArg(args, "start_line")
+	endLine, hasEnd, okEnd := intArg(args, "end_line")
+	if !okStart || !okEnd {
+		return toolResult{OK: false, Output: "start_line / end_line 必须是整数"}
+	}
+	if (hasStart && startLine < 1) || (hasEnd && endLine < 1) {
+		return toolResult{OK: false, Output: "start_line / end_line 必须 >= 1"}
+	}
+	if hasStart && hasEnd && startLine > endLine {
+		return toolResult{OK: false, Output: fmt.Sprintf("start_line (%d) 不能大于 end_line (%d)", startLine, endLine)}
+	}
+
 	abs, err := resolveInWorkspace(root, p)
 	if err != nil {
 		return toolResult{OK: false, Output: err.Error()}
@@ -306,17 +342,62 @@ func toolReadFile(args map[string]any, root string) toolResult {
 	}
 	defer f.Close()
 
-	buf := make([]byte, readFileLimit+1)
-	n, _ := f.Read(buf)
-	data := buf[:n]
-	if hasNUL(data) {
-		return toolResult{OK: false, Output: "疑似二进制文件（含 NUL 字节），read_file 只处理文本"}
+	if !hasStart && !hasEnd {
+		buf := make([]byte, readFileLimit+1)
+		n, _ := f.Read(buf)
+		data := buf[:n]
+		if hasNUL(data) {
+			return toolResult{OK: false, Output: "疑似二进制文件（含 NUL 字节），read_file 只处理文本"}
+		}
+		text := string(data)
+		if n > readFileLimit {
+			text = text[:readFileLimit] + fmt.Sprintf("\n（截断：文件共 %d 字节，只读前 %d 字节）", st.Size(), readFileLimit)
+		}
+		return toolResult{OK: true, Output: text}
 	}
-	text := string(data)
-	if n > readFileLimit {
-		text = text[:readFileLimit] + fmt.Sprintf("\n（截断：文件共 %d 字节，只读前 %d 字节）", st.Size(), readFileLimit)
+
+	if !hasStart {
+		startLine = 1
 	}
-	return toolResult{OK: true, Output: text}
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var out strings.Builder
+	lineNo := 0
+	lastIncluded := 0
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			if hasNUL([]byte(line)) {
+				return toolResult{OK: false, Output: "疑似二进制文件（含 NUL 字节），read_file 只处理文本"}
+			}
+			lineNo++
+			if lineNo >= startLine && (!hasEnd || lineNo <= endLine) {
+				if out.Len()+len(line) > readFileLimit {
+					rem := readFileLimit - out.Len()
+					if rem > 0 {
+						out.WriteString(safeCut(line, rem))
+					}
+					out.WriteString(fmt.Sprintf("\n（截断：第 %d 行起已达单次 %d 字节上限，请缩小 start_line/end_line 分段读取）",
+						startLine, readFileLimit))
+					return toolResult{OK: true, Output: out.String()}
+				}
+				out.WriteString(line)
+				lastIncluded = lineNo
+			}
+			if hasEnd && lineNo >= endLine {
+				break
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return toolResult{OK: false, Output: fmt.Sprintf("读取失败：%v", err)}
+		}
+	}
+	if lastIncluded == 0 && lineNo > 0 && startLine > lineNo {
+		return toolResult{OK: true, Output: fmt.Sprintf("（文件共 %d 行，start_line=%d 超出范围）", lineNo, startLine)}
+	}
+	return toolResult{OK: true, Output: out.String()}
 }
 
 func toolListDir(args map[string]any, root string) toolResult {
@@ -556,10 +637,33 @@ func toolEditFile(args map[string]any, root string) toolResult {
 //   - 超时或取消时强杀整个作业对象（含挂接后派生的全部子孙），并补杀根进程；
 //   - 令牌/作业任一步失败 ⇒ 命令不执行（fail-closed），不静默降级；
 //   - 只有运行者显式传 --sandbox=false 才退回宿主直接执行。
+func resolveCommandCwd(args map[string]any, root string) (string, error) {
+	raw, _ := args["cwd"].(string)
+	if strings.TrimSpace(raw) == "" {
+		return root, nil
+	}
+	abs, err := resolveInWorkspace(root, raw)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("cwd 目录不可访问：%v", err)
+	}
+	if !st.IsDir() {
+		return "", fmt.Errorf("cwd 不是目录：%s", raw)
+	}
+	return abs, nil
+}
+
 func toolRunCommand(args map[string]any, root string) toolResult {
 	command, _ := args["command"].(string)
 	if strings.TrimSpace(command) == "" {
 		return toolResult{OK: false, Output: "run_command 缺少 command 参数"}
+	}
+	cwd, err := resolveCommandCwd(args, root)
+	if err != nil {
+		return toolResult{OK: false, Output: err.Error()}
 	}
 	timeout := runCmdTimeoutS
 	if v, ok := args["timeout_seconds"].(float64); ok && v > 0 {
@@ -574,7 +678,7 @@ func toolRunCommand(args map[string]any, root string) toolResult {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	return runCommandInSandbox(ctx, command, root, timeout, getSandboxConfig())
+	return runCommandInSandbox(ctx, command, cwd, timeout, getSandboxConfig())
 }
 
 // childEnv：继承环境但**剔除密钥**（见文件头 ③）。
