@@ -497,8 +497,8 @@ void HarnessApp::Relayout() {
                             const int minLineH = uikit::LineBox(harness::kFontMicro);
                             auto& cv = s->GetContentView();
                             if (cv.GetChildCount() > 0) {
-                                if (auto* codeLabel = dynamic_cast<ECDI::Label*>(cv.GetChildAt(0))) {
-                                    const std::string& raw = codeLabel->GetText();
+                                if (auto* codeWidget = dynamic_cast<ECDI::TextWidget*>(cv.GetChildAt(0))) {
+                                    const std::string& raw = codeWidget->GetText();
                                     const ECDI::Font monoFont = harness::MonoFont(harness::kFontMicro);
                                     int maxLineW = 1;
                                     size_t pos = 0;
@@ -518,14 +518,19 @@ void HarnessApp::Relayout() {
                                         if (nl == std::string::npos) break;
                                         pos = nl + 1;
                                     }
-                                    // 开启 wrap 并把宽钉到 maxLineW+2：既让 '\n' 逐行折段，又确保长行绝不软折行
+                                    // Label 需开启 wrap 并把宽钉到 maxLineW+2 才逐行拆 '\n'；
+                                    // TextBox 原生按 '\n' 分行，保持 SetWordWrap(false) 避免意外软折行。
                                     const int textW = std::max(1, maxLineW + 2);
-                                    codeLabel->SetWordWrap(true);
-                                    codeLabel->SetSize(textW, minLineH);
-                                    codeLabel->AutoSize();
-                                    const int textH = std::max(minLineH, codeLabel->GetHeight());
-                                    codeLabel->SetPosition(padX, padY);
-                                    codeLabel->SetSize(std::max(textW, viewW - 2 * padX), textH);
+                                    if (dynamic_cast<ECDI::Label*>(codeWidget)) {
+                                        codeWidget->SetWordWrap(true);
+                                    } else {
+                                        codeWidget->SetWordWrap(false);
+                                    }
+                                    codeWidget->SetSize(textW, minLineH);
+                                    codeWidget->AutoSize();
+                                    const int textH = std::max(minLineH, codeWidget->GetHeight());
+                                    codeWidget->SetPosition(padX, padY);
+                                    codeWidget->SetSize(std::max(textW, viewW - 2 * padX), textH);
                                     contentW = textW + 2 * padX;
                                     contentH = textH + 2 * padY;
                                     s->SetContentExtent(contentW, contentH);

@@ -296,7 +296,7 @@ func (a *subagent) runTool(c aggregatedCall) toolResult {
 		res = toolResult{OK: false, Output: "子代理不能再派子代理（深度固定为 1）；需要更多探查就把结论说清，让主代理再派"}
 	case !isReadOnlyTool(c.Name):
 		res = toolResult{OK: false, Output: fmt.Sprintf(
-			"子代理只能使用只读工具（read_file / list_dir / grep），“%s” 需要主代理亲自执行并由用户确认", c.Name)}
+			"子代理只能使用只读工具（read_file / list_dir / find_files / grep），“%s” 需要主代理亲自执行并由用户确认", c.Name)}
 	default:
 		res = executeTool(c.Name, argsMap, a.sess.cwd)
 	}
@@ -321,7 +321,7 @@ func (a *subagent) runTool(c aggregatedCall) toolResult {
 
 func isReadOnlyTool(name string) bool {
 	switch name {
-	case "read_file", "list_dir", "grep":
+	case "read_file", "list_dir", "find_files", "grep":
 		return true
 	}
 	return false
@@ -331,7 +331,7 @@ func isReadOnlyTool(name string) bool {
 func (a *subagent) messages() []chatMessage {
 	sys := fmt.Sprintf("你是主代理委派出来的子代理，负责一个**只读**探查任务。当前工作区：%s。\n"+
 		"任务：%s\n"+
-		"你只能用 read_file / list_dir / grep（相对路径以工作区为根，越界会被拒绝），"+
+		"你只能用 read_file / list_dir / find_files / grep（相对路径以工作区为根，越界会被拒绝），"+
 		"不能修改任何文件、不能执行命令、不能再派子代理。\n"+
 		"做完后用**简短结论**回答（不超过 200 字，不复述过程、不贴大段原文）；"+
 		"任务无法完成就直接说明原因。用用户的语言回答。", a.sess.cwd, a.task)
@@ -348,7 +348,7 @@ func (a *subagent) messages() []chatMessage {
 // 必须把**授权范围**摆出来：任务原文、可用工具、轮数/时间预算。
 // 没写清「授权了什么」的确认框等于没确认。
 func delegationAskPrompt(name, task string, o agentOpts) string {
-	return fmt.Sprintf("允许派子代理「%s」吗？任务：%s（授权：read_file / list_dir / grep 只读，限 %d 轮 / %s）",
+	return fmt.Sprintf("允许派子代理「%s」吗？任务：%s（授权：read_file / list_dir / find_files / grep 只读，限 %d 轮 / %s）",
 		name, clipRunes(task, 120), o.maxTurns, o.timeout)
 }
 

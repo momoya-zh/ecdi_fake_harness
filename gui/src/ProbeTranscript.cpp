@@ -1654,6 +1654,113 @@ void HarnessApp::RunMdProbe() {
         add("render-codeblock-extent", ok, note);
     }
 
+    // 29. render-codeblock-selectable-and-copy-reset：代码块正文可只读选中 + 复制按钮 1.5s 回弹
+    {
+        bool ok = false;
+        std::string note = "missing mock codeblock";
+        if (m_sess && !m_sess->rows.empty()) {
+            const RowRec& added = m_sess->rows.back();
+            for (size_t i = 0; i < added.segments.size() && i < added.segMeta.size(); ++i) {
+                if (added.segMeta[i].kind != MarkdownSegmentKind::CodeBlock) continue;
+                ECDI::Widget* card = added.segments[i];
+                if (!card || card->GetChildCount() < 2) break;
+                ECDI::Widget* bar = card->GetChildAt(0);
+                auto* sv = dynamic_cast<ECDI::ScrollView*>(card->GetChildAt(1));
+                if (!bar || bar->GetChildCount() < 2 || !sv) break;
+                auto* copyBtn = dynamic_cast<ECDI::Button*>(bar->GetChildAt(1));
+                auto& cv = sv->GetContentView();
+                ECDI::Widget* codeW = cv.GetChildCount() > 0 ? cv.GetChildAt(0) : nullptr;
+                auto* codeBox = dynamic_cast<ECDI::TextBox*>(codeW);
+                const bool widgetOk = m_options.selectableRows
+                    ? (codeBox != nullptr && codeBox->IsReadOnly())
+                    : (dynamic_cast<ECDI::Label*>(codeW) != nullptr);
+
+                bool copyOk = false;
+                bool resetOk = false;
+                if (copyBtn) {
+                    if (m_scroll) {
+                        m_scroll->SetContentOffset(0, m_scroll->GetMaxOffsetY());
+                    }
+                    const ECDI::Point abs = copyBtn->GetAbsolutePosition();
+                    SynthesizeClickAt(static_cast<int>(abs.x) + copyBtn->GetWidth() / 2,
+                                      static_cast<int>(abs.y) + copyBtn->GetHeight() / 2);
+                    copyOk = (copyBtn->GetText() == "已复制");
+                    for (auto& kv : m_copiedBtns) {
+                        if (kv.first == copyBtn) {
+                            kv.second -= std::chrono::seconds(2);
+                        }
+                    }
+                    ExpireCopiedButtons();
+                    resetOk = (copyBtn->GetText() == "复制");
+                }
+                ok = widgetOk && copyOk && resetOk;
+                note = "widgetOk=" + std::to_string(widgetOk ? 1 : 0) +
+                       " copyOk=" + std::to_string(copyOk ? 1 : 0) +
+                       " resetOk=" + std::to_string(resetOk ? 1 : 0);
+                break;
+            }
+        }
+        add("render-codeblock-selectable-and-copy-reset", ok, note);
+    }
+
+    // 30. render-table-inline-code-no-clip：表格行内代码（Consolas）按样式实测列宽，不误折行也不压窄裁切
+    {
+        bool ok = false;
+        std::string note = "missing sess/scroll/window";
+        if (m_sess && m_scroll && m_window) {
+            Block mockBlock;
+            mockBlock.id = "mock_table_inline_code";
+            mockBlock.kind = "assistant";
+            mockBlock.text =
+                "| 工具 | 作用 |\n"
+                "| --- | --- |\n"
+                "| `read_file` | 读文本文件 |\n"
+                "| `list_dir` | 列目录单层内容 |\n"
+                "| `job_kill` | 终止后台任务 |\n"
+                "| `task` | 派只读探查任务 |";
+            mockBlock.ended = true;
+
+            RowRec rec;
+            auto panel = BuildBlockRow(mockBlock, rec);
+            rec.panel = panel.get();
+            m_scroll->GetContentView().AddChild(std::move(panel));
+            m_sess->rows.push_back(std::move(rec));
+            Relayout();
+
+            const RowRec& added = m_sess->rows.back();
+            if (!added.tables.empty()) {
+                const RowRec::TableRec& t = added.tables[0];
+                bool allSingleLine = !t.cellLabels.empty();
+                bool allFitWidth = !t.cellLabels.empty();
+                int worstDiff = 0;
+                for (size_t r = 0; r < t.cellLabels.size(); ++r) {
+                    if (t.cellLabels[r].empty() || !t.cellLabels[r][0]) {
+                        allSingleLine = false;
+                        allFitWidth = false;
+                        break;
+                    }
+                    ECDI::Label* cell = t.cellLabels[r][0];
+                    if (cell->GetHeight() > t.lineH || cell->IsWordWrap()) {
+                        allSingleLine = false;
+                    }
+                    const int prefW = static_cast<int>(cell->GetPreferredSize().width + 0.999f);
+                    const int diff = cell->GetWidth() - prefW;
+                    if (diff < 0) {
+                        allFitWidth = false;
+                        worstDiff = std::min(worstDiff, diff);
+                    }
+                }
+                ok = allSingleLine && allFitWidth;
+                note = "singleLine=" + std::to_string(allSingleLine ? 1 : 0) +
+                       " fitW=" + std::to_string(allFitWidth ? 1 : 0) +
+                       " worstDiff=" + std::to_string(worstDiff);
+            } else {
+                note = "no table created";
+            }
+        }
+        add("render-table-inline-code-no-clip", ok, note);
+    }
+
     if (m_application) m_application->Exit();
 }
 
@@ -1852,7 +1959,12 @@ void HarnessApp::RunTableProbe() {
             sRec.cellLabels[0][0] && sRec.cellLabels[0][1] &&
             sRec.cellLabels[0][0]->GetText() == "运行 git status" &&
             sRec.cellLabels[0][1]->GetText() == "正常";
-        const bool widthOk = (sRec.naturalW == pRec.naturalW);
+        // 行内 code（Consolas）比正文比例字体（Noto Sans SC）更宽，自然列宽须按真实样式字体计入，
+        // 故含 `git status` 的首列自然宽应严格大于纯正文版本（不再与无样式宽相等，避免误折行）。
+        const bool widthOk =
+            sRec.naturalW.size() == 2 && pRec.naturalW.size() == 2 &&
+            sRec.naturalW[0] > pRec.naturalW[0] &&
+            sRec.naturalW[1] >= pRec.naturalW[1];
         rec.matched = textOk && widthOk;
         rec.note = "textOk=" + std::to_string(textOk) +
                    " widthOk=" + std::to_string(widthOk);

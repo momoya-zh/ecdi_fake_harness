@@ -30,6 +30,7 @@
 #endif
 
 #include "ECDI/Core/Logger.h"
+#include "ECDI/Core/UTF8.h"
 #include "ECDI/Theme/PanelStyle.h"
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/Label.h"
@@ -2079,6 +2080,21 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildCodeBlockWidget(const MarkdownSeg
             m_window->GetPlatformWindow().SetClipboardText(code);
         }
         copyBtnRaw->SetText("已复制");
+        const auto now = std::chrono::steady_clock::now();
+        bool updated = false;
+        for (auto& kv : m_copiedBtns) {
+            if (kv.first == copyBtnRaw) {
+                kv.second = now;
+                updated = true;
+                break;
+            }
+        }
+        if (!updated) {
+            m_copiedBtns.emplace_back(copyBtnRaw, now);
+        }
+        if (m_promptBar) {
+            m_promptBar->SetHint("已复制代码块到剪贴板", Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
+        }
     });
 
     bar->AddChild(std::move(langLabel));
@@ -2095,10 +2111,27 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildCodeBlockWidget(const MarkdownSeg
     if (auto* vb = scroll->GetVerticalScrollBar()) {
         vb->SetStyle(ECDI::ScrollBarStyleOverride{.thickness = kCodeBarThickness});
     }
-    auto codeLabel = std::make_unique<ECDI::Label>(code);
-    codeLabel->SetFont(harness::MonoFont(harness::kFontMicro));
-    codeLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
-    scroll->GetContentView().AddChild(std::move(codeLabel));
+    if (m_options.selectableRows) {
+        auto codeBox = std::make_unique<ECDI::TextBox>();
+        codeBox->SetReadOnly(true);
+        codeBox->SetShowFocusRect(false);
+        codeBox->SetWordWrap(false);
+        codeBox->SetFont(harness::MonoFont(harness::kFontMicro));
+        codeBox->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        codeBox->SetStyle(ECDI::TextBoxStyleOverride{
+            .background = codeBg,
+            .caretWidth = 0.0f,
+            .padding = 0.0f,
+            .cornerRadius = 0.0f,
+            .borderWidth = 0.0f});
+        codeBox->SetText(code);
+        scroll->GetContentView().AddChild(std::move(codeBox));
+    } else {
+        auto codeLabel = std::make_unique<ECDI::Label>(code);
+        codeLabel->SetFont(harness::MonoFont(harness::kFontMicro));
+        codeLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
+        scroll->GetContentView().AddChild(std::move(codeLabel));
+    }
     // ★ extent 先按「内容自然尺寸」占位，真正的宽由 Relayout 期实测后重下（见下）。
     //   这里给一个非零值，避免 ScrollView 在首次 ApplyLayout 时把内容裁成 0 宽。
     scroll->SetContentExtent(1, 1);
@@ -2215,15 +2248,55 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     InlineCodeStyle inlineCodeStyle;
     inlineCodeStyle.family = harness::kMonoFamily;
     inlineCodeStyle.color = Pick(m_options.probeContrast, kDarkAccent, kProbeInk);
-    auto strippedText = [&](const std::string& raw) -> std::string {
+    // 建表时 Label 尚未挂窗，AutoSize 拿不到测量器（preferred 回落当前尺寸=0）⇒ 显式实测设尺寸。
+    // ★ 必须按 ParseInlineRuns 的 spans 叠加样式字体逐段测量：行内 code（Consolas）与粗体比
+    //   正文字体（Noto Sans SC）更宽，按纯 bodyFont 测会低估列宽导致短标识符误折行。
+    auto measureStyledWidth = [&](const std::string& raw) -> int {
         const InlineRuns runs = ParseInlineRuns(raw, inlineCodeStyle);
-        return HasInlineStyles(runs) ? runs.text : raw;
-    };
-    // 建表时 Label 尚未挂窗，AutoSize 拿不到测量器（preferred 回落当前尺寸=0）⇒ 显式实测设尺寸
-    auto measureWidth = [&](const std::string& str) -> int {
-        if (!m_window) return estimateWidth(str);
-        const float w = m_window->GetTextMeasurer().MeasureText(bodyFont, str).width;
-        return static_cast<int>(w + 0.999f);
+        const std::string& plain = HasInlineStyles(runs) ? runs.text : raw;
+        if (!m_window) return estimateWidth(plain);
+        auto& measurer = m_window->GetTextMeasurer();
+        if (!HasInlineStyles(runs) || runs.spans.empty()) {
+            const float w = measurer.MeasureText(bodyFont, plain).width;
+            return static_cast<int>(w + 0.999f);
+        }
+        std::vector<ECDI::TextSpan> sorted = runs.spans;
+        std::sort(sorted.begin(), sorted.end(), [](const ECDI::TextSpan& a, const ECDI::TextSpan& b) {
+            return a.startCp < b.startCp;
+        });
+        const size_t totalCp = ECDI::ByteOffsetToCodepointIndex(plain, plain.size());
+        size_t cursorCp = 0;
+        float totalW = 0.0f;
+        auto addSlice = [&](size_t fromCp, size_t toCp, const ECDI::Font& f) {
+            if (toCp <= fromCp || fromCp >= totalCp) return;
+            const size_t clampedTo = std::min(toCp, totalCp);
+            const size_t b0 = ECDI::CodepointIndexToByteOffset(plain, fromCp);
+            const size_t b1 = ECDI::CodepointIndexToByteOffset(plain, clampedTo);
+            if (b1 > b0) {
+                totalW += measurer.MeasureText(f, plain.substr(b0, b1 - b0)).width;
+            }
+        };
+        for (const auto& sp : sorted) {
+            if (sp.cpCount == 0 || sp.startCp >= totalCp) continue;
+            const size_t s0 = std::max(cursorCp, sp.startCp);
+            if (s0 > cursorCp) {
+                addSlice(cursorCp, s0, bodyFont);
+            }
+            const size_t s1 = std::min(totalCp, sp.startCp + sp.cpCount);
+            if (s1 > s0) {
+                ECDI::Font spanFont = bodyFont;
+                if (sp.style.family.has_value()) spanFont.family = *sp.style.family;
+                if (sp.style.weight.has_value()) spanFont.weight = *sp.style.weight;
+                if (sp.style.italic.has_value()) spanFont.italic = *sp.style.italic;
+                if (ECDI::IsEffectiveSizeOverride(sp.style)) spanFont.size = *sp.style.size;
+                addSlice(s0, s1, spanFont);
+                cursorCp = s1;
+            }
+        }
+        if (cursorCp < totalCp) {
+            addSlice(cursorCp, totalCp, bodyFont);
+        }
+        return static_cast<int>(totalW + 0.999f) + 2;
     };
     int lineH = 16;
     if (m_window) {
@@ -2232,13 +2305,13 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
     }
 
     for (size_t c = 0; c < numCols; ++c) {
-        int w = measureWidth(strippedText(table.headers[c])) + 2 * colPadX;
+        int w = measureStyledWidth(table.headers[c]) + 2 * colPadX;
         if (w > colWidths[c]) colWidths[c] = w;
     }
 
     for (const auto& r : table.rows) {
         for (size_t c = 0; c < numCols && c < r.size(); ++c) {
-            int w = measureWidth(strippedText(r[c])) + 2 * colPadX;
+            int w = measureStyledWidth(r[c]) + 2 * colPadX;
             if (w > colWidths[c]) colWidths[c] = w;
         }
     }
@@ -2295,7 +2368,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
         hLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
         hLabel->SetFont(bodyFont);
         ApplyInlineText(*hLabel, table.headers[c]);
-        const int labelW = measureWidth(hLabel->GetText());
+        const int labelW = measureStyledWidth(table.headers[c]);
         const int labelH = lineH;
         hLabel->SetSize(labelW, labelH);
         int lx = curColX + colPadX;
@@ -2359,7 +2432,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildTableWidget(const MarkdownTable& 
             cLabel->SetTextColor(Pick(m_options.probeContrast, kDarkInk, kProbeInk));
             cLabel->SetFont(bodyFont);
             ApplyInlineText(*cLabel, text);
-            const int labelW = measureWidth(cLabel->GetText());
+            const int labelW = measureStyledWidth(text);
             const int labelH = lineH;
             cLabel->SetSize(labelW, labelH);
             int lx = curColX + colPadX;
@@ -2449,13 +2522,6 @@ void HarnessApp::LayoutTableInterior(RowRec::TableRec& t, int availW) {
     std::vector<int> colX(numCols + 1, 0);
     for (size_t c = 0; c < numCols; ++c) colX[c + 1] = colX[c] + colW[c];
 
-    const ECDI::Font bodyFont = harness::SansFont(harness::kFontBody, 400);
-    auto measureWidth = [&](const std::string& str) -> int {
-        if (!m_window) return 0;
-        const float w = m_window->GetTextMeasurer().MeasureText(bodyFont, str).width;
-        return static_cast<int>(w + 0.999f);
-    };
-
     auto wrapLabel = [&](ECDI::Label* lb, size_t c) -> int {
         if (!lb) return t.lineH;
         lb->SetWordWrap(true);
@@ -2491,14 +2557,18 @@ void HarnessApp::LayoutTableInterior(RowRec::TableRec& t, int availW) {
         const int lh = lb->GetHeight();
         int lx = colX[c] + t.colPadX;
         if (lh <= t.lineH) {
-            const int ink = std::min(innerW, measureWidth(lb->GetText()));
+            // ★ 单行单元格用控件自身（含 spans）的原生自然宽，禁止按无样式 bodyFont 反压宽度：
+            //   后者会把 Consolas 行内代码压窄并在 WordWrap=true 下二次折行+上下裁切。
+            lb->SetWordWrap(false);
+            const int natW = static_cast<int>(lb->GetPreferredSize().width + 0.999f);
+            const int ink = std::min(innerW, std::max(1, natW));
             const MarkdownAlign align = (c < t.alignments.size()) ? t.alignments[c] : MarkdownAlign::Left;
             if (align == MarkdownAlign::Center) {
                 lx = colX[c] + std::max(0, (colW[c] - ink) / 2);
             } else if (align == MarkdownAlign::Right) {
                 lx = colX[c] + std::max(0, colW[c] - ink - t.colPadX);
             }
-            lb->SetSize(ink, lh);
+            lb->SetSize(align == MarkdownAlign::Left ? innerW : ink, lh);
         } else {
             lb->SetSize(innerW, lh);
         }

@@ -489,8 +489,22 @@ void HarnessApp::RunSidebarProbe() {
     //   ⇒ 诚实的读法是：1 个会话时行内没有按钮，故 buttons == 0 且点不到。
     {
         ECDI::Widget* row = rowAt(0);
-        const bool noButton = (row != nullptr && row->GetChildCount() == 2);
+        bool noButton = (row != nullptr);
+        bool hasAccentIndicator = false;
+        if (row) {
+            for (size_t c = 0; c < row->GetChildCount(); ++c) {
+                ECDI::Widget* ch = row->GetChildAt(c);
+                if (dynamic_cast<ECDI::Button*>(ch) != nullptr) {
+                    noButton = false;
+                }
+                if (dynamic_cast<ECDI::Panel*>(ch) != nullptr &&
+                    !ch->IsEnabled() && ch->GetWidth() == 3 && ch->GetHeight() == 18) {
+                    hasAccentIndicator = true;
+                }
+            }
+        }
         expect("single-session", {{noButton, "row still offers a delete button"},
+                                  {hasAccentIndicator, "active row missing 3x18 accent indicator"},
                                   {m_sessions.size() == 1, "sessionCount != 1"},
                                   {m_sess != nullptr, "active session became null"}});
     }

@@ -28,6 +28,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -38,6 +39,7 @@ import (
 const (
 	readFileLimit  = 40 * 1024 // 单文件读取上限（超出截断并标注）
 	listDirLimit   = 500       // 单层目录项上限
+	findFilesLimit = 500       // find_files 命中文件上限
 	grepHitLimit   = 200       // grep 命中行上限
 	grepSkipBytes  = 1 << 20   // >1MB 的文件跳过
 	binaryProbeLen = 8 * 1024  // 二进制探测窗口（前 8KB 见 NUL 即判二进制）
@@ -71,6 +73,8 @@ func executeToolWithJobs(name string, args map[string]any, root string, jobs *jo
 		return toolReadFile(args, root)
 	case "list_dir":
 		return toolListDir(args, root)
+	case "find_files":
+		return toolFindFiles(args, root)
 	case "grep":
 		return toolGrep(args, root)
 	case "write_file":
@@ -102,7 +106,7 @@ func executeToolWithJobs(name string, args map[string]any, root string, jobs *jo
 		return jobs.toolList()
 	}
 	return toolResult{OK: false, Output: fmt.Sprintf(
-		"未知工具 %q（可用：read_file / list_dir / grep / write_file / edit_file / run_command / job_output / job_kill / job_list）", name)}
+		"未知工具 %q（可用：read_file / list_dir / find_files / grep / write_file / edit_file / run_command / job_output / job_kill / job_list）", name)}
 }
 
 // toolDefsFor：上交 API 的工具定义（JSON Schema）。
@@ -136,10 +140,16 @@ func toolDefsFor(agents bool, depth int) []toolDef {
 			}, "path")},
 		{Name: "list_dir", Description: "列出工作区内某目录的单层内容（目录在前带 / 尾，文件在后，按名排序）",
 			Parameters: obj(map[string]any{"path": pathProp()})},
-		{Name: "grep", Description: "在工作区内递归搜索正则（跳过二进制与 >1MB 文件，上限 200 条命中）",
+		{Name: "find_files", Description: "在工作区内按文件名或路径 glob 模式递归查找文件（跳过 .git，上限 500 条）",
+			Parameters: obj(map[string]any{
+				"path":    pathProp(),
+				"pattern": str("可选 glob 模式：不含 / 时按文件名匹配（如 *.cpp、Probe*.cpp），含 / 时按相对路径匹配（支持 **，如 gui/**/*.h）；省略则列出全部文件"),
+			})},
+		{Name: "grep", Description: "在工作区内递归搜索正则（跳过二进制与 >1MB 文件，上限 200 条命中；可用 glob 过滤文件名/路径）",
 			Parameters: obj(map[string]any{
 				"path":    pathProp(),
 				"pattern": str("Go 正则表达式（RE2 语法）"),
+				"glob":    str("可选文件过滤模式（如 *.cpp、*.go、gui/**/*.h），只搜索匹配的文件"),
 			}, "pattern")},
 		// ── 写入/执行（每次都会先过 ask 门，除非运行者用 --allow-tools 显式豁免）──
 		{Name: "write_file",
@@ -149,13 +159,22 @@ func toolDefsFor(agents bool, depth int) []toolDef {
 				"content": str("完整文件内容（UTF-8）。写空文件必须显式传 \"\"，缺参数 ≠ 空内容"),
 			}, "path", "content")},
 		{Name: "edit_file",
-			Description: "在工作区内按**逐字节精确匹配**替换文本（要求 old_string 唯一，否则报错；replace_all=true 才允许替换多处）。改小段内容优先用它，别整文件重写",
+			Description: "在工作区内按**逐字节精确匹配**替换文本（单处传 old_string+new_string，同文件多处传 edits 数组按序原子应用；默认要求唯一匹配，replace_all=true 允许替换全部）。改小段内容优先用它，别整文件重写",
 			Parameters: obj(map[string]any{
 				"path":        pathProp(),
-				"old_string":  str("要被替换的原文，必须与文件内容逐字节一致（含缩进与换行），且在文件中唯一"),
-				"new_string":  str("替换后的文本；传 \"\" 表示删除该片段"),
-				"replace_all": map[string]any{"type": "boolean", "description": "为 true 时替换全部匹配（默认 false = 要求唯一）"},
-			}, "path", "old_string", "new_string")},
+				"old_string":  str("单处编辑：要被替换的原文，必须与文件内容逐字节一致（含缩进与换行）"),
+				"new_string":  str("单处编辑：替换后的文本；传 \"\" 表示删除该片段"),
+				"replace_all": map[string]any{"type": "boolean", "description": "单处编辑：为 true 时替换全部匹配（默认 false = 要求唯一）"},
+				"edits": map[string]any{
+					"type":        "array",
+					"description": "同文件多处编辑（与 old_string/new_string 二选一）：按顺序原子应用，任一项失败则整文件不写入",
+					"items": obj(map[string]any{
+						"old_string":  str("要被替换的原文"),
+						"new_string":  str("替换后的文本；传 \"\" 表示删除"),
+						"replace_all": map[string]any{"type": "boolean", "description": "为 true 时替换全部匹配（默认 false）"},
+					}, "old_string", "new_string"),
+				},
+			}, "path")},
 		{Name: "run_command",
 			Description: "在工作区目录（默认根目录，可用 cwd 指定工作区内子目录）下执行一条 shell 命令，返回合并后的 stdout+stderr。会改变世界，执行前需用户确认",
 			Parameters: obj(map[string]any{
@@ -433,6 +452,126 @@ func toolListDir(args map[string]any, root string) toolResult {
 	return toolResult{OK: true, Output: out}
 }
 
+// validateGlob / matchGlob：支持 * / ? / [...] 与 **（跨目录段），零第三方依赖。
+// - pattern 不含 '/' 时只匹配文件名（path.Base）；
+// - pattern 含 '/' 时按 '/' 切段匹配工作区相对路径，其中 "**" 匹配 0 个或多个路径段。
+func validateGlob(pattern string) error {
+	norm := strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(pattern)), "./")
+	if norm == "" {
+		return nil
+	}
+	for _, seg := range strings.Split(norm, "/") {
+		if seg == "**" {
+			continue
+		}
+		if _, err := path.Match(seg, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func matchGlobSegments(patSegs, pathSegs []string) bool {
+	if len(patSegs) == 0 {
+		return len(pathSegs) == 0
+	}
+	if patSegs[0] == "**" {
+		// "**" 匹配 0 段（跳过 "**"）或吃掉当前 1 段并继续
+		if matchGlobSegments(patSegs[1:], pathSegs) {
+			return true
+		}
+		if len(pathSegs) > 0 {
+			return matchGlobSegments(patSegs, pathSegs[1:])
+		}
+		return false
+	}
+	if len(pathSegs) == 0 {
+		return false
+	}
+	ok, err := path.Match(patSegs[0], pathSegs[0])
+	if err != nil || !ok {
+		return false
+	}
+	return matchGlobSegments(patSegs[1:], pathSegs[1:])
+}
+
+func matchGlob(pattern, relSlash string) bool {
+	norm := strings.TrimPrefix(filepath.ToSlash(strings.TrimSpace(pattern)), "./")
+	if norm == "" {
+		return true
+	}
+	rel := strings.TrimPrefix(filepath.ToSlash(relSlash), "./")
+	if !strings.Contains(norm, "/") {
+		ok, err := path.Match(norm, path.Base(rel))
+		return err == nil && ok
+	}
+	return matchGlobSegments(strings.Split(norm, "/"), strings.Split(rel, "/"))
+}
+
+func toolFindFiles(args map[string]any, root string) toolResult {
+	pattern, _ := args["pattern"].(string)
+	if err := validateGlob(pattern); err != nil {
+		return toolResult{OK: false, Output: fmt.Sprintf("pattern 不合法：%v", err)}
+	}
+	p, _ := args["path"].(string)
+	abs, err := resolveInWorkspace(root, p)
+	if err != nil {
+		return toolResult{OK: false, Output: err.Error()}
+	}
+	st, serr := os.Stat(abs)
+	if serr != nil {
+		return toolResult{OK: false, Output: fmt.Sprintf("目录不可访问：%v", serr)}
+	}
+	if !st.IsDir() {
+		return toolResult{OK: false, Output: "path 不是目录，find_files 需要目录路径"}
+	}
+
+	var matched []string
+	truncated := false
+	rootAbs, _ := filepath.Abs(root)
+	err = filepath.WalkDir(abs, func(cur string, d fs.DirEntry, werr error) error {
+		if _, lerr := os.Readlink(cur); lerr == nil {
+			if !withinRoot(rootAbs, realPathWithin(cur)) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
+		if werr != nil || d.IsDir() {
+			if d != nil && d.IsDir() && d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel := cur
+		if r, rerr := filepath.Rel(rootAbs, cur); rerr == nil {
+			rel = filepath.ToSlash(r)
+		}
+		if !matchGlob(pattern, rel) {
+			return nil
+		}
+		if len(matched) >= findFilesLimit {
+			truncated = true
+			return filepath.SkipAll
+		}
+		matched = append(matched, rel)
+		return nil
+	})
+	if err != nil {
+		return toolResult{OK: false, Output: fmt.Sprintf("遍历失败：%v", err)}
+	}
+	if len(matched) == 0 {
+		return toolResult{OK: true, Output: "（无匹配文件）"}
+	}
+	sort.Strings(matched)
+	out := strings.Join(matched, "\n")
+	if truncated {
+		out += fmt.Sprintf("\n（截断：匹配超过 %d 项，只列前 %d 项）", findFilesLimit, findFilesLimit)
+	}
+	return toolResult{OK: true, Output: out}
+}
+
 func toolGrep(args map[string]any, root string) toolResult {
 	pattern, _ := args["pattern"].(string)
 	if strings.TrimSpace(pattern) == "" {
@@ -441,6 +580,10 @@ func toolGrep(args map[string]any, root string) toolResult {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return toolResult{OK: false, Output: fmt.Sprintf("正则不合法：%v", err)}
+	}
+	fileGlob, _ := args["glob"].(string)
+	if err := validateGlob(fileGlob); err != nil {
+		return toolResult{OK: false, Output: fmt.Sprintf("glob 不合法：%v", err)}
 	}
 	p, _ := args["path"].(string)
 	abs, err := resolveInWorkspace(root, p)
@@ -476,6 +619,13 @@ func toolGrep(args map[string]any, root string) toolResult {
 			truncated = true
 			return filepath.SkipAll
 		}
+		rel := path
+		if r, rerr := filepath.Rel(rootAbs, path); rerr == nil {
+			rel = filepath.ToSlash(r)
+		}
+		if strings.TrimSpace(fileGlob) != "" && !matchGlob(fileGlob, rel) {
+			return nil
+		}
 		info, ierr := d.Info()
 		if ierr != nil || info.Size() > grepSkipBytes {
 			return nil // 大文件跳过（不算截断——是规则）
@@ -483,10 +633,6 @@ func toolGrep(args map[string]any, root string) toolResult {
 		data, rerr := os.ReadFile(path)
 		if rerr != nil || hasNUL(data) {
 			return nil
-		}
-		rel := path
-		if r, rerr := filepath.Rel(rootAbs, path); rerr == nil {
-			rel = filepath.ToSlash(r)
 		}
 		for i, line := range strings.Split(string(data), "\n") {
 			if re.MatchString(line) {
@@ -567,22 +713,66 @@ func toolWriteFile(args map[string]any, root string) toolResult {
 		verb, filepath.ToSlash(p), len(content), countLines(content))}
 }
 
-// toolEditFile：逐字节精确替换。**唯一匹配**是硬要求——模型给个 `return nil`
-// 这种片段就能同时命中八处，静默改第一处是最难查的一类事故。
+type editOp struct {
+	oldStr     string
+	newStr     string
+	replaceAll bool
+}
+
+// parseEditOps：统一解析 edit_file 的单处（old_string/new_string）与多处（edits 数组）两种入参。
+// 供 toolEditFile、editFileDetail、askPrompt 共用，保证校验与提案预览同源。
+func parseEditOps(args map[string]any) ([]editOp, bool, error) {
+	if rawEdits, hasEdits := args["edits"]; hasEdits && rawEdits != nil {
+		list, ok := rawEdits.([]any)
+		if !ok {
+			return nil, true, fmt.Errorf("edit_file 的 edits 必须是对象数组")
+		}
+		if len(list) == 0 {
+			return nil, true, fmt.Errorf("edit_file 的 edits 不能为空数组")
+		}
+		ops := make([]editOp, 0, len(list))
+		for i, item := range list {
+			m, ok := item.(map[string]any)
+			if !ok {
+				return nil, true, fmt.Errorf("edits[%d] 必须是对象（含 old_string 与 new_string）", i)
+			}
+			oldStr, ok1 := m["old_string"].(string)
+			newStr, ok2 := m["new_string"].(string)
+			if !ok1 || !ok2 {
+				return nil, true, fmt.Errorf("edits[%d] 需要 old_string 与 new_string 两个字符串参数", i)
+			}
+			if oldStr == "" {
+				return nil, true, fmt.Errorf("edits[%d] 的 old_string 不能为空", i)
+			}
+			repAll, _ := m["replace_all"].(bool)
+			ops = append(ops, editOp{oldStr: oldStr, newStr: newStr, replaceAll: repAll})
+		}
+		return ops, true, nil
+	}
+	oldStr, ok1 := args["old_string"].(string)
+	newStr, ok2 := args["new_string"].(string)
+	if !ok1 || !ok2 {
+		return nil, false, fmt.Errorf("edit_file 需要 old_string 与 new_string 两个字符串参数（或传 edits 数组；删除片段时 new_string 传 \"\"）")
+	}
+	if oldStr == "" {
+		return nil, false, fmt.Errorf("old_string 不能为空（空串会匹配一切）；整文件替换请用 write_file")
+	}
+	replaceAll, _ := args["replace_all"].(bool)
+	return []editOp{{oldStr: oldStr, newStr: newStr, replaceAll: replaceAll}}, false, nil
+}
+
+// toolEditFile：逐字节精确替换（支持单处或同文件 edits 数组按序原子应用）。
+// **唯一匹配**是硬要求——模型给个 `return nil` 这种片段就能同时命中八处，
+// 静默改第一处是最难查的一类事故。多处编辑任一项失败 ⇒ 整文件不写入。
 func toolEditFile(args map[string]any, root string) toolResult {
 	p, _ := args["path"].(string)
 	if strings.TrimSpace(p) == "" {
 		return toolResult{OK: false, Output: "edit_file 缺少 path 参数"}
 	}
-	oldStr, ok1 := args["old_string"].(string)
-	newStr, ok2 := args["new_string"].(string)
-	if !ok1 || !ok2 {
-		return toolResult{OK: false, Output: "edit_file 需要 old_string 与 new_string 两个字符串参数（删除片段时 new_string 传 \"\"）"}
+	ops, isMulti, perr := parseEditOps(args)
+	if perr != nil {
+		return toolResult{OK: false, Output: perr.Error()}
 	}
-	if oldStr == "" {
-		return toolResult{OK: false, Output: "old_string 不能为空（空串会匹配一切）；整文件替换请用 write_file"}
-	}
-	replaceAll, _ := args["replace_all"].(bool)
 	abs, err := resolveInWorkspace(root, p)
 	if err != nil {
 		return toolResult{OK: false, Output: err.Error()}
@@ -605,27 +795,44 @@ func toolEditFile(args map[string]any, root string) toolResult {
 	if hasNUL(data) {
 		return toolResult{OK: false, Output: "疑似二进制文件（含 NUL 字节），edit_file 只处理文本"}
 	}
-	text := string(data)
-	n := strings.Count(text, oldStr)
-	switch {
-	case n == 0:
-		return toolResult{OK: false, Output: fmt.Sprintf(
-			"未找到 old_string（%d 字节）：匹配是逐字节的，缩进、行尾空格、CRLF/LF 都要与文件一致。先 read_file 看一眼原文再改", len(oldStr))}
-	case n > 1 && !replaceAll:
-		return toolResult{OK: false, Output: fmt.Sprintf(
-			"old_string 在文件中出现 %d 次，不唯一；请带上更多上下文让它唯一，或传 replace_all=true 明确表示改全部", n)}
+	cur := string(data)
+	totalReplaced := 0
+	firstLine := 0
+	for i, op := range ops {
+		n := strings.Count(cur, op.oldStr)
+		prefix := ""
+		if isMulti {
+			prefix = fmt.Sprintf("第 %d 处编辑失败（文件未写入）：", i+1)
+		}
+		switch {
+		case n == 0:
+			return toolResult{OK: false, Output: fmt.Sprintf(
+				"%s未找到 old_string（%d 字节）：匹配是逐字节的，缩进、行尾空格、CRLF/LF 都要与文件一致。先 read_file 看一眼原文再改",
+				prefix, len(op.oldStr))}
+		case n > 1 && !op.replaceAll:
+			return toolResult{OK: false, Output: fmt.Sprintf(
+				"%sold_string 在文件中出现 %d 次，不唯一；请带上更多上下文让它唯一，或传 replace_all=true 明确表示改全部",
+				prefix, n)}
+		}
+		if i == 0 {
+			firstLine = 1 + strings.Count(cur[:strings.Index(cur, op.oldStr)], "\n")
+		}
+		limit := 1
+		if op.replaceAll {
+			limit = -1
+		}
+		cur = strings.Replace(cur, op.oldStr, op.newStr, limit)
+		totalReplaced += n
 	}
-	limit := 1
-	if replaceAll {
-		limit = -1
-	}
-	out := strings.Replace(text, oldStr, newStr, limit)
-	if err := os.WriteFile(abs, []byte(out), info.Mode().Perm()); err != nil {
+	if err := os.WriteFile(abs, []byte(cur), info.Mode().Perm()); err != nil {
 		return toolResult{OK: false, Output: fmt.Sprintf("写入失败：%v", err)}
 	}
-	firstLine := 1 + strings.Count(text[:strings.Index(text, oldStr)], "\n")
+	if isMulti {
+		return toolResult{OK: true, Output: fmt.Sprintf("已修改 %s：共 %d 项编辑，替换 %d 处",
+			filepath.ToSlash(p), len(ops), totalReplaced)}
+	}
 	return toolResult{OK: true, Output: fmt.Sprintf("已修改 %s：替换 %d 处（首次在第 %d 行；该片段 −%d +%d 行）",
-		filepath.ToSlash(p), n, firstLine, strings.Count(oldStr, "\n"), strings.Count(newStr, "\n"))}
+		filepath.ToSlash(p), totalReplaced, firstLine, strings.Count(ops[0].oldStr, "\n"), strings.Count(ops[0].newStr, "\n"))}
 }
 
 // toolRunCommand：在工作区根目录跑一条 shell 命令。
@@ -788,6 +995,9 @@ func askPrompt(name string, args map[string]any, raw string, mcpRef *mcpToolRef)
 		return fmt.Sprintf("允许写入 %s 吗？（整文件覆盖，%d 字节 / %d 行）", p, len(c), countLines(c))
 	case "edit_file":
 		p, _ := args["path"].(string)
+		if ops, isMulti, err := parseEditOps(args); err == nil && isMulti {
+			return fmt.Sprintf("允许修改 %s 吗？（同文件 %d 处编辑）", p, len(ops))
+		}
 		o, _ := args["old_string"].(string)
 		nw, _ := args["new_string"].(string)
 		return fmt.Sprintf("允许修改 %s 吗？替换「%s」为「%s」",

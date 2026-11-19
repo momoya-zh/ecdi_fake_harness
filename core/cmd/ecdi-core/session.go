@@ -1757,7 +1757,7 @@ func (b *streamBlocks) closeAll(ok bool) {
 func (s *session) renderRequest() ([]chatMessage, maskStats) {
 	sys := fmt.Sprintf("你是一个运行在用户本机 GUI（harness）里的编码 agent。当前工作区：%s。\n"+
 		"相对路径以工作区为根解析；越界路径（含符号链接指向外面）会被直接拒绝。\n"+
-		"工具：read_file / list_dir / grep 可直接用；write_file / edit_file / run_command "+
+		"工具：read_file / list_dir / find_files / grep 可直接用；write_file / edit_file / run_command "+
 		"每次都要经过用户确认，被拒绝时不要重试同一操作，先解释你要做什么或换个做法。\n"+
 		"改动代码优先 edit_file（逐字节精确替换），只有新建或整体重写才用 write_file；"+
 		"一条命令只做一件事，别把多步 shell 塞进一次调用。用用户的语言回答。", s.cwd)

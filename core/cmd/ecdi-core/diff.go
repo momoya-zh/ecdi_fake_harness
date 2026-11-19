@@ -320,11 +320,28 @@ func writeFileDetail(args map[string]any, root string) map[string]any {
 	return d
 }
 
-// editFileDetail：替换**片段**的 diff（old_string→new_string）——那正是本次
+// editFileDetail：替换**片段**的 diff（old_string→new_string，或 edits 多处拼接）——那正是本次
 // 提议的改动本体；整文件上下文已在 tool_call 块的 args 里，不重复搬运。
 func editFileDetail(args map[string]any) map[string]any {
 	p, _ := args["path"].(string)
 	d := map[string]any{"tool": "edit_file", "path": filepath.ToSlash(p)}
+	if ops, isMulti, err := parseEditOps(args); err == nil && isMulti {
+		d["editCount"] = len(ops)
+		var chunks []string
+		for i, op := range ops {
+			body := unifiedDiff(op.oldStr, op.newStr)
+			if body == "" {
+				body = "（替换前后相同）"
+			}
+			if len(ops) > 1 {
+				chunks = append(chunks, fmt.Sprintf("@@ edit %d/%d @@\n%s", i+1, len(ops), body))
+			} else {
+				chunks = append(chunks, body)
+			}
+		}
+		d["diff"] = fmt.Sprintf("--- a/%s\n+++ b/%s\n", filepath.ToSlash(p), filepath.ToSlash(p)) + strings.Join(chunks, "\n")
+		return d
+	}
 	if replaceAll, _ := args["replace_all"].(bool); replaceAll {
 		d["replaceAll"] = true
 	}
@@ -377,7 +394,7 @@ func delegationAskDetail(name, task string, o agentOpts) map[string]any {
 		"tool":           "task",
 		"task":           task,
 		"name":           name,
-		"tools":          []string{"read_file", "list_dir", "grep"},
+		"tools":          []string{"read_file", "list_dir", "find_files", "grep"},
 		"maxTurns":       o.maxTurns,
 		"timeoutSeconds": int(o.timeout.Seconds()),
 	}

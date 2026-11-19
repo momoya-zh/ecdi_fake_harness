@@ -48,8 +48,8 @@ func main() {
 	//     有了**，且**刻意不在这里**——它们会改磁盘、跑任意命令，逐次过 ask 才是
 	//     ask 门存在的理由。要豁免请自己显式写 `--allow-tools=read_file,...,run_command`，
 	//     那是运行者的决定，不是我们的默认值。
-	allowTools := flag.String("allow-tools", "read_file,list_dir,grep",
-		"免 ask 工具名单（逗号分隔）；默认只读三件；`--allow-tools=` = 全部 ask")
+	allowTools := flag.String("allow-tools", "read_file,list_dir,find_files,grep",
+		"免 ask 工具名单（逗号分隔）；默认只读四件；`--allow-tools=` = 全部 ask")
 	workspace := flag.String("workspace", "", "初始工作区；缺省 = 进程 cwd")
 	quiet := flag.Bool("quiet", false, "关闭 stderr 日志")
 	resumeID := flag.String("resume", "", "恢复会话 ID（从 .ecdi/sessions/<id> 续接）")

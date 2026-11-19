@@ -284,7 +284,14 @@ void HarnessApp::CopyTurnTextByBlockId(const std::string& blockId, ECDI::Button*
     m_window->GetPlatformWindow().SetClipboardText(text);
     if (btn) {
         btn->SetText("已复制");
-        m_copiedBtns.emplace_back(btn, std::chrono::steady_clock::now());
+        const auto now = std::chrono::steady_clock::now();
+        bool updated = false;
+        for (auto& kv : m_copiedBtns) {
+            if (kv.first == btn) { kv.second = now; updated = true; break; }
+        }
+        if (!updated) {
+            m_copiedBtns.emplace_back(btn, now);
+        }
     }
     if (m_promptBar) {
         m_promptBar->SetHint("已复制本轮智能体回答到剪贴板", Pick(m_options.probeContrast, kDarkMuted, kProbeInk));
@@ -315,8 +322,28 @@ void HarnessApp::ExpireCopiedButtons() {
     for (auto it = m_copiedBtns.begin(); it != m_copiedBtns.end();) {
         if (now - it->second < std::chrono::milliseconds(1500)) { ++it; continue; }
         if (m_sess) {
+            bool found = false;
             for (RowRec& r : m_sess->rows) {
-                if (r.copyBtn == it->first) { r.copyBtn->SetText("复制"); break; }
+                if (r.copyBtn == it->first) {
+                    r.copyBtn->SetText("复制");
+                    found = true;
+                    break;
+                }
+                for (size_t i = 0; i < r.segments.size() && i < r.segMeta.size(); ++i) {
+                    if (r.segMeta[i].kind != MarkdownSegmentKind::CodeBlock) continue;
+                    ECDI::Widget* card = r.segments[i];
+                    if (!card || card->GetChildCount() < 1) continue;
+                    ECDI::Widget* bar = card->GetChildAt(0);
+                    if (!bar || bar->GetChildCount() < 2) continue;
+                    if (bar->GetChildAt(1) == it->first) {
+                        if (auto* b = dynamic_cast<ECDI::Button*>(bar->GetChildAt(1))) {
+                            b->SetText("复制");
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
             }
         }
         it = m_copiedBtns.erase(it);

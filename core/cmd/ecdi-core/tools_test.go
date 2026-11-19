@@ -331,7 +331,7 @@ func TestToolDefs_NineToolsWithSchemas(t *testing.T) {
 	// ★ v6：这张表是「子代理关闭」的那一臂——九件（六件基础 + 三件后台作业），
 	//   没有 task。有 task 的十件表由 TestToolDefsFor_AgentsAddTaskOnlyAtRoot 盖。
 	defs := toolDefsFor(false, 0)
-	want := map[string]bool{"read_file": false, "list_dir": false, "grep": false,
+	want := map[string]bool{"read_file": false, "list_dir": false, "find_files": false, "grep": false,
 		"write_file": false, "edit_file": false, "run_command": false,
 		"job_output": false, "job_kill": false, "job_list": false}
 	for _, d := range defs {
@@ -548,5 +548,116 @@ func TestCountLines(t *testing.T) {
 		if got := countLines(in); got != want {
 			t.Errorf("countLines(%q) = %d，期望 %d", in, got, want)
 		}
+	}
+}
+
+func TestFindFiles_PatternsAndSubdir(t *testing.T) {
+	root := setupWS(t)
+	_ = os.MkdirAll(filepath.Join(root, "src", "ui"), 0o755)
+	_ = os.MkdirAll(filepath.Join(root, ".git"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "src", "main.go"), []byte("package main\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "src", "ui", "view.cpp"), []byte("// ui\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "src", "ui", "view.h"), []byte("// h\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, ".git", "HEAD"), []byte("ref: main\n"), 0o644)
+
+	// 1. 按文件名 glob（不含 /）
+	r := executeTool("find_files", map[string]any{"pattern": "*.cpp"}, root)
+	if !r.OK || strings.TrimSpace(r.Output) != "src/ui/view.cpp" {
+		t.Fatalf("*.cpp 期望 src/ui/view.cpp，实际 ok=%v out=%q", r.OK, r.Output)
+	}
+
+	// 2. 按路径 ** glob（含 /）
+	r = executeTool("find_files", map[string]any{"pattern": "src/**/*.h"}, root)
+	if !r.OK || strings.TrimSpace(r.Output) != "src/ui/view.h" {
+		t.Fatalf("src/**/*.h 期望 src/ui/view.h，实际 ok=%v out=%q", r.OK, r.Output)
+	}
+
+	// 3. 指定子目录且不传 pattern：跳过 .git
+	r = executeTool("find_files", map[string]any{"path": "src"}, root)
+	if !r.OK || !strings.Contains(r.Output, "src/main.go") || !strings.Contains(r.Output, "src/ui/view.cpp") {
+		t.Fatalf("path=src 列表异常：ok=%v out=%q", r.OK, r.Output)
+	}
+	r = executeTool("find_files", map[string]any{}, root)
+	if !r.OK || strings.Contains(r.Output, ".git/HEAD") {
+		t.Fatalf("不应列出 .git 内容：ok=%v out=%q", r.OK, r.Output)
+	}
+
+	// 4. 非法 glob 语法必须报错
+	r = executeTool("find_files", map[string]any{"pattern": "[unclosed"}, root)
+	if r.OK {
+		t.Fatalf("非法 glob 应失败，实际 ok=true out=%q", r.Output)
+	}
+}
+
+func TestGrep_GlobFilter(t *testing.T) {
+	root := setupWS(t)
+	_ = os.MkdirAll(filepath.Join(root, "pkg"), 0o755)
+	_ = os.WriteFile(filepath.Join(root, "pkg", "a.go"), []byte("needle-token\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(root, "pkg", "b.md"), []byte("needle-token\n"), 0o644)
+
+	r := executeTool("grep", map[string]any{"pattern": "needle-token", "glob": "*.go"}, root)
+	if !r.OK || !strings.Contains(r.Output, "pkg/a.go:1:") || strings.Contains(r.Output, "pkg/b.md") {
+		t.Fatalf("grep glob=*.go 过滤异常：ok=%v out=%q", r.OK, r.Output)
+	}
+
+	r = executeTool("grep", map[string]any{"pattern": "needle-token", "glob": "*.cpp"}, root)
+	if !r.OK || !strings.Contains(r.Output, "无命中") {
+		t.Fatalf("grep glob=*.cpp 应无命中：ok=%v out=%q", r.OK, r.Output)
+	}
+
+	r = executeTool("grep", map[string]any{"pattern": "needle-token", "glob": "["}, root)
+	if r.OK {
+		t.Fatalf("非法 glob 应失败：out=%q", r.Output)
+	}
+}
+
+func TestEditFile_MultiEditsAtomicAndDiff(t *testing.T) {
+	root := setupWS(t)
+	p := filepath.Join(root, "multi.txt")
+	orig := "alpha = 1\nbeta = 2\ngamma = 3\n"
+	_ = os.WriteFile(p, []byte(orig), 0o644)
+
+	// 1. 原子回滚：第 1 处命中、第 2 处缺失 ⇒ 整文件不得被改写
+	badArgs := map[string]any{
+		"path": "multi.txt",
+		"edits": []any{
+			map[string]any{"old_string": "alpha = 1", "new_string": "alpha = 10"},
+			map[string]any{"old_string": "not-exist", "new_string": "x"},
+		},
+	}
+	res := executeTool("edit_file", badArgs, root)
+	if res.OK {
+		t.Fatalf("第 2 处缺失应失败")
+	}
+	got, _ := os.ReadFile(p)
+	if string(got) != orig {
+		t.Fatalf("原子性破坏：失败后文件被改写为 %q", string(got))
+	}
+
+	// 2. 多处成功 + 提案 diff & askPrompt 覆盖
+	okArgs := map[string]any{
+		"path": "multi.txt",
+		"edits": []any{
+			map[string]any{"old_string": "alpha = 1", "new_string": "alpha = 10"},
+			map[string]any{"old_string": "gamma = 3", "new_string": "gamma = 30"},
+		},
+	}
+	q := askPrompt("edit_file", okArgs, "", nil)
+	if !strings.Contains(q, "2 处编辑") {
+		t.Errorf("多处编辑问句异常：%q", q)
+	}
+	det := editFileDetail(okArgs)
+	diffStr, _ := det["diff"].(string)
+	if !strings.Contains(diffStr, "alpha = 10") || !strings.Contains(diffStr, "gamma = 30") {
+		t.Errorf("editFileDetail 缺少多处 diff：%q", diffStr)
+	}
+	res = executeTool("edit_file", okArgs, root)
+	if !res.OK {
+		t.Fatalf("多处编辑应成功：%s", res.Output)
+	}
+	got, _ = os.ReadFile(p)
+	want := "alpha = 10\nbeta = 2\ngamma = 30\n"
+	if string(got) != want {
+		t.Fatalf("写入结果不符：\ngot:  %q\nwant: %q", string(got), want)
 	}
 }

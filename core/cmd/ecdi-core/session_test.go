@@ -502,10 +502,10 @@ func TestLoopE2E_FullChain(t *testing.T) {
 	if err := json.Unmarshal(recorded[0], &req1); err != nil {
 		t.Fatal(err)
 	}
-	// ★ 2026-11-05：6 → 9（v6 后台作业三件上线）。这里断"件数"是为了抓
+	// ★ 2026-11-19：9 → 10（新增只读工具 find_files）。这里断"件数"是为了抓
 	//   「tools 没进请求体」这类整块丢失；每件的 schema 由 toolDefs 的单测盖。
-	if len(req1.Tools) != 9 {
-		t.Fatalf("tools 定义应 9 件，got %d", len(req1.Tools))
+	if len(req1.Tools) != 10 {
+		t.Fatalf("tools 定义应 10 件，got %d", len(req1.Tools))
 	}
 	if req1.Model != "test-model" {
 		t.Fatalf("model = %q", req1.Model)

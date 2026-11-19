@@ -603,16 +603,32 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     row->SetSize(curRowW, kSidebarRowH);
     row->SetStyle(ECDI::ButtonStyleOverride{
         .background = active ? kUserBg : kPanel2,
-        .border = active ? harness::kDarkAccent : kLine,
+        .border = active ? kUserBorder : kLine,
         .borderWidth = 1.0f,
         .cornerRadius = 8.0f,
         .textAlignment = ECDI::TextAlignment::Left,   // 行根不带文字，显式给值防依赖零值
         .foreground = active ? kAccentInk : kDarkInk});
 
+    if (active) {
+        // Fluent 2 侧栏选中态 3px 强调竖条（docs/design-system.md §8 Step 2）
+        // 禁用命中，避免抢走整行 Button 的 hover/click。
+        auto indicator = std::make_unique<ECDI::Panel>();
+        constexpr int kIndicatorW = 3;
+        constexpr int kIndicatorH = 18;
+        indicator->SetSize(kIndicatorW, kIndicatorH);
+        indicator->SetPosition(2, (kSidebarRowH - kIndicatorH) / 2);
+        indicator->SetStyle(ECDI::PanelStyleOverride{
+            .background = harness::kDarkAccent,
+            .cornerRadius = 1.5f,
+            .borderWidth = 0.0f});
+        indicator->SetEnabled(false);
+        row->AddChild(std::move(indicator));
+    }
+
     auto dot = uikit::Dot(7, active ? harness::kDarkAccent : kLine);
     // ★ 2026-11-01：与 `uikit::DotCell` 同一条规则——按行居中后再下移
     //   `kTextInkDy`（行盒中线比墨迹中线高 2px，实测）。
-    dot->SetPosition(8, (kSidebarRowH - 7) / 2 + uikit::kTextInkDy);
+    dot->SetPosition(10, (kSidebarRowH - 7) / 2 + uikit::kTextInkDy);
     row->AddChild(std::move(dot));
 
     // 名称 = `Session::label`（「会话 N」/ 夹具名 /「xxx (live)」）。
@@ -625,8 +641,8 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
     // ★ 宽度随「有没有按钮」变：两个按钮占 20+18+6=44 ⇒ 名称到 90；
     //   一个按钮占 18+6=24 ⇒ 名称到 110；无按钮 ⇒ 铺到行右边距。
     const int nameW = (canDelete || isArchived)
-        ? ((canDelete && !isArchived) || (isArchived && canDelete) ? (curRowW - 68) : (curRowW - 48))
-        : (curRowW - 24);
+        ? ((canDelete && !isArchived) || (isArchived && canDelete) ? (curRowW - 69) : (curRowW - 49))
+        : (curRowW - 25);
     std::string rowLabel = session->label.empty() ? "会话" : session->label;
     if (session->originKind == "journal") {
         rowLabel += " [只读]";
@@ -636,7 +652,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildSessionRow(size_t index, bool act
                              active ? kAccentInk : (session->originKind == "journal" ? kDarkMuted : kDarkInk),
                              harness::kFontSmall);
     // ★ 2026-11-01：居中按行盒高算（同 AppHistory）——否则与行首圆点错位 2px。
-    name->SetPosition(22, (kSidebarRowH - uikit::LineBox(harness::kFontSmall)) / 2);
+    name->SetPosition(23, (kSidebarRowH - uikit::LineBox(harness::kFontSmall)) / 2);
     // ★ 名称标签禁用 ⇒ 它**不参与命中**（`Widget::HitTest` 的 `!IsEnabled()` 早退，
     //   `Widget.cpp:321`），鼠标落点直接归行根 Button。两个后果都是想要的：
     //   ① 行根的 hover/press 视觉真的会亮（若 Label 抢了命中，`UpdateHoverState`

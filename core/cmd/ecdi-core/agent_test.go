@@ -498,8 +498,8 @@ func TestAgent_DepthLimit(t *testing.T) {
 			t.Fatalf("子代理的工具表里出现了 task ⇒ 深度 1 失效")
 		}
 	}
-	if len(toolDefsFor(true, 1)) != 6 {
-		t.Fatalf("子代理应看到 6 件只读/写工具（无 task），got %d", len(toolDefsFor(true, 1)))
+	if len(toolDefsFor(true, 1)) != 7 {
+		t.Fatalf("子代理应看到 7 件只读/写工具（无 task），got %d", len(toolDefsFor(true, 1)))
 	}
 	// 根代理开启时才有 task
 	hasTask := func(defs []toolDef) bool {
