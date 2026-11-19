@@ -390,6 +390,10 @@ void HarnessApp::RunOverlayProbe() {
         //   留着它，⑦ 的点击会命中遮罩而不是主题钮，那一相就成了空真。
         //   （关闭**不收回**，所以遮罩/sheet 仍挂在浮层根上——`overlayNodes` 不变。）
         SetSettingsVisible(false);
+        ShowTooltipFor(m_hud.themeToggle, "导入文件到工作区");
+        OnTooltipFire();
+        const int cjkTipW = m_hud.tooltip ? m_hud.tooltip->GetWidth() : 0;
+        const int cjkTxtH = m_hud.tooltipText ? m_hud.tooltipText->GetHeight() : 0;
         ShowTooltipFor(m_hud.themeToggle, "overlay-probe");
         OnTooltipFire();
         expect("tip", {{m_hud.tooltip != nullptr, "tooltip was not created"},
@@ -398,7 +402,11 @@ void HarnessApp::RunOverlayProbe() {
                        {m_hud.tooltip && !ReachesAncestor(m_hud.tooltip, &root),
                         "tooltip is inside the root subtree (it would be clipped by the viewport)"},
                        {m_window->HasActiveOverlay(ECDI::OverlayLayer::Tooltip),
-                        "tooltip layer does not report an active overlay"}});
+                        "tooltip layer does not report an active overlay"},
+                       // 8 个汉字 = 16 列 ⇒ 16*7 + 20 = 132（旧按 UTF-8 字节乘 24*7 + 20 = 188 会虚宽）
+                       {cjkTipW == 132, "CJK tooltip width not sized by display columns"},
+                       {cjkTxtH >= uikit::LineBox(harness::kFontSmall),
+                        "tooltip label height smaller than LineBox (would clip descenders)"}});
     }
 
     // ── ⑥b tip-palette：**配色**在两个主题下都必须「深底浅字」 ────────────

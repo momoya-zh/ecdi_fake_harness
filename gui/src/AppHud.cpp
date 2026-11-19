@@ -847,8 +847,17 @@ void HarnessApp::OnTooltipFire() {
 
     const int cw = m_window->GetRootWidget().GetWidth();
     const int ch = m_window->GetRootWidget().GetHeight();
-    const int w = std::clamp<int>(static_cast<int>(m_tooltipPending.size()) * 7 + 20,
-                                  48, std::max(48, cw));
+    // ★ 按 UTF-8 码点列宽（ASCII=1，多字节=2）估算宽度：此前用 `size() * 7` 按字节乘，
+    //   导致 3 字节中文字符被算成 21px（14px 字号实宽 ~14px），长中文提示框右侧空出一大截；
+    //   纯列宽算术同时保证零 MeasureText 调用，不扰动 `--cull-probe` 的 measureCalls 读数。
+    int tipCols = 0;
+    for (size_t i = 0; i < m_tooltipPending.size();) {
+        const unsigned char c = static_cast<unsigned char>(m_tooltipPending[i]);
+        const size_t len = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0 ? 2 : ((c & 0xF0) == 0xE0 ? 3 : 4));
+        tipCols += (len == 1) ? 1 : 2;
+        i += len;
+    }
+    const int w = std::clamp<int>(tipCols * 7 + 20, 48, std::max(48, cw));
     const int h = 26;
     // ★ 锚点坐标 = 客户区绝对坐标（浮层根的坐标系与它同源，不再需要减视口原点）。
     const ECDI::Point a = m_tooltipAnchor->GetAbsolutePosition();
@@ -870,8 +879,9 @@ void HarnessApp::OnTooltipFire() {
     auto txt = std::make_unique<ECDI::Label>();
     txt->SetTextColor(kTooltipInk);
     txt->SetFont(harness::SansFont(harness::kFontSmall));
-    txt->SetSize(w - 16, 16);
-    txt->SetPosition(8, 5);
+    const int lineH = uikit::LineBox(harness::kFontSmall);
+    txt->SetSize(w - 16, lineH);
+    txt->SetPosition(8, (h - lineH) / 2);
     txt->SetText(m_tooltipPending);
     m_hud.tooltipText = txt.get();
     tip->AddChild(std::move(txt));
@@ -1398,7 +1408,7 @@ void HarnessApp::RefreshHud() {
                 sub = ProviderDisplayLabel(m_sess->providerId) + " › " +
                       (m_sess->modelName.empty() ? "?" : m_sess->modelName);
             } else {
-                sub = "未连接模型 — 点击右上角模型胶囊或按 Ctrl+, 配置";
+                sub = "未连接模型 — 点击输入框左下角模型胶囊或按 Ctrl+, 配置";
             }
             if (!m_sess->memories.empty()) {
                 size_t loaded = 0;

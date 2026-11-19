@@ -95,7 +95,7 @@ def main():
 
     print('\n=== 2. 不应入库的路径与锁文件 ===')
     bad = [p for _, p in paths
-           if p.startswith(('.scratch/', '.workbuddy/', 'gui/build/', 'third_party/', '.dsh-acl-recovery/'))]
+           if p.startswith(('.scratch/', '.workbuddy/', '.workbuddy-ai/', '.zcode/', '.ecdi/', 'gui/build/', 'third_party/', '.dsh-acl-recovery/'))]
     for p in bad:
         print('  !! forbidden dir in git status: ', p)
 
