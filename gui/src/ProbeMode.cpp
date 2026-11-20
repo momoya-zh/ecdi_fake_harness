@@ -291,9 +291,36 @@ void HarnessApp::RunModeProbe() {
                     m_hud.inspectorSv->SetContentOffset(0, maxY);
                     const int scrolledY = m_hud.inspectorSv->GetScrollOffsetY();
                     m_hud.inspectorSv->SetContentOffset(0, 0);
-                    sok = (maxY > 0 && maxX == 0 && scrolledY == maxY);
+
+                    // 验证检视栏拉宽（230 -> 340）时卡片与内部列表/进度条随之自适应伸展且不越过卡片内边距
+                    RebuildModelList();
+                    const int origInspW = m_inspectorWidth;
+                    const int cardW0 = m_hud.inspProbeCard ? m_hud.inspProbeCard->GetWidth() : 0;
+                    const int modelListW0 = m_hud.modelList ? m_hud.modelList->GetWidth() : 0;
+                    const int barW0 = m_usageBarIn ? m_usageBarIn->GetWidth() : 0;
+                    const bool noOverflow0 = (modelListW0 > 0 && cardW0 >= modelListW0 + 24);
+
+                    m_inspectorWidth = 340;
+                    SyncResponsiveColumns();
+                    SyncInspectorLayout();
+                    RebuildModelList();
+                    const int cardW1 = m_hud.inspProbeCard ? m_hud.inspProbeCard->GetWidth() : 0;
+                    const int modelListW1 = m_hud.modelList ? m_hud.modelList->GetWidth() : 0;
+                    const int barW1 = m_usageBarIn ? m_usageBarIn->GetWidth() : 0;
+                    const bool expandedOk = (cardW1 > cardW0 + 80) &&
+                                            (modelListW1 == cardW1 - 24) &&
+                                            (barW1 > barW0 + 80);
+
+                    m_inspectorWidth = origInspW;
+                    SyncResponsiveColumns();
+                    SyncInspectorLayout();
+
+                    sok = (maxY > 0 && maxX == 0 && scrolledY == maxY && noOverflow0 && expandedOk);
                     snote = "maxY=" + std::to_string(maxY) + " maxX=" + std::to_string(maxX) +
-                            " scrolledY=" + std::to_string(scrolledY);
+                            " scrolledY=" + std::to_string(scrolledY) +
+                            " cardW=" + std::to_string(cardW0) + "->" + std::to_string(cardW1) +
+                            " modelListW=" + std::to_string(modelListW0) + "->" + std::to_string(modelListW1) +
+                            " barW=" + std::to_string(barW0) + "->" + std::to_string(barW1);
                 }
                 srec.matched = sok;
                 srec.note = snote;

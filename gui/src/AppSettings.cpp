@@ -29,6 +29,7 @@
 #include "ECDI/Window/Window.h"         // ★ 同上：ShowOverlay / HideOverlay
 #include "ECDI/Platform/PlatformWindow.h"   // ★ 2026-11-01：RepositionModelPopup 的客户区夹取
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Layout/HorizontalLayout.h"
 #include "ECDI/Widget/ScrollView.h"
 
 #include <algorithm>
@@ -805,18 +806,18 @@ void HarnessApp::RebuildModelList() {
     const Session* s = m_sess;
     auto addRow = [this](const std::string& label, const std::string& value) {
         auto row = std::make_unique<ECDI::Panel>();
-        row->SetSize(200, 18);
+        row->SetSize(176, 18);
+        row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(2, false, 0));
         auto l = std::make_unique<ECDI::Label>(label);
         l->SetTextColor(kDarkMuted);
         l->SetFont(harness::SansFont(harness::kFontMicro));
-        l->SetSize(70, 16);
-        l->SetPosition(0, 1);
+        l->SetSize(70, 18);
         row->AddChild(std::move(l));
         auto v = std::make_unique<ECDI::Label>(value);
         v->SetTextColor(kDarkInk);
         v->SetFont(harness::SansFont(harness::kFontMicro));
-        v->SetSize(130, 16);
-        v->SetPosition(72, 1);
+        v->SetSize(104, 18);
+        v->SetStretch(1);
         row->AddChild(std::move(v));
         m_hud.modelList->AddChild(std::move(row));
     };

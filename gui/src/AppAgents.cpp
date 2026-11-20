@@ -68,16 +68,15 @@ void HarnessApp::BuildAgentCard(ECDI::Widget& insp, int rowH) {
     card->SetStyle(ECDI::PanelStyleOverride{
         .background = kContentBg, .cornerRadius = kRadiusCard2,
         .borderWidth = 1.0f, .borderColor = kCardBorder});
-    card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
-    card->AddChild(uikit::Label("代理", 178, 14, kDarkMuted, harness::kFontMicro));
+    card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
+    card->AddChild(uikit::Label("代理", 176, 14, kDarkMuted, harness::kFontMicro));
 
     auto list = std::make_unique<ECDI::Panel>();
     m_hud.agentList = list.get();
-    // ★ 176 = 卡宽 200 − 左右各 12 内边距：列表容器与行按钮都必须收在版心内。
-    //   此前 190 ⇒ 右缘 12+190=202，越过卡片右边界（~x=199），不透明底把
-    //   1px 描边盖掉一截（实测「代理卡选项遮住右边框」）。
+    // ★ 176 = 卡宽 200 − 左右各 12 内边距：列表容器与行按钮都必须收在版心内，
+    //   且开启 fillCrossAxis 让卡片与行随右栏拖拽自适应伸展。
     list->SetSize(176, rowH);
-    list->SetLayout(std::make_unique<ECDI::VerticalLayout>(kAgentRowGap, false, 0));
+    list->SetLayout(std::make_unique<ECDI::VerticalLayout>(kAgentRowGap, true, 0));
     card->AddChild(std::move(list));
 
     insp.AddChild(std::move(card));
@@ -188,9 +187,10 @@ void HarnessApp::RebuildAgentList() {
 
     const int rows = static_cast<int>(s->transcript.Agents().size()) + 1;   // +1 = 主代理行
     const int listH = rows * kRowH + (rows - 1) * kAgentRowGap;
-    // 算式同建卡处：pad12 + 标题 17 + 间距 8 + 列表 + pad12
-    m_hud.inspAgentCard->SetSize(200, 49 + listH);
-    m_hud.agentList->SetSize(176, listH);
+    // 算式同建卡处：pad12 + 标题 17 + 间距 8 + 列表 + pad12；保留当前拉伸后的卡宽
+    const int cardW = std::max(176, m_hud.inspAgentCard->GetWidth());
+    m_hud.inspAgentCard->SetSize(cardW, 49 + listH);
+    m_hud.agentList->SetSize(std::max(152, cardW - 24), listH);
     m_hud.inspAgentCard->Arrange();
     SyncInspectorLayout();
     RequestRepaint();

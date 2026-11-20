@@ -79,13 +79,13 @@ void HarnessApp::BuildMcpCard(ECDI::Widget& insp, int rowH) {
     card->SetStyle(ECDI::PanelStyleOverride{
         .background = kContentBg, .cornerRadius = kRadiusCard2,
         .borderWidth = 1.0f, .borderColor = kCardBorder});
-    card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
-    card->AddChild(uikit::Label("MCP", 178, 14, kDarkMuted, harness::kFontMicro));
+    card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
+    card->AddChild(uikit::Label("MCP", 176, 14, kDarkMuted, harness::kFontMicro));
 
     auto list = std::make_unique<ECDI::Panel>();
     m_hud.mcpList = list.get();
-    list->SetSize(190, rowH);
-    list->SetLayout(std::make_unique<ECDI::VerticalLayout>(kMcpRowGap, false, 0));
+    list->SetSize(176, rowH);
+    list->SetLayout(std::make_unique<ECDI::VerticalLayout>(kMcpRowGap, true, 0));
     card->AddChild(std::move(list));
 
     insp.AddChild(std::move(card));
@@ -108,7 +108,7 @@ void HarnessApp::RebuildMcpCard() {
     if (!show) return;
 
     auto addRow = [this](const std::string& text, const ECDI::Color& ink) {
-        m_hud.mcpList->AddChild(uikit::Label(text, 178, kMcpRowH, ink));
+        m_hud.mcpList->AddChild(uikit::Label(text, 176, kMcpRowH, ink));
     };
 
     const McpStatus& m = s->mcp;
@@ -147,8 +147,9 @@ void HarnessApp::RebuildMcpCard() {
 
     const int rows = static_cast<int>(m_hud.mcpList->GetChildCount());
     const int listH = rows * kMcpRowH + (rows > 0 ? (rows - 1) * kMcpRowGap : 0);
-    m_hud.inspMcpCard->SetSize(200, 49 + listH);
-    m_hud.mcpList->SetSize(190, listH);
+    const int cardW = std::max(176, m_hud.inspMcpCard->GetWidth());
+    m_hud.inspMcpCard->SetSize(cardW, 49 + listH);
+    m_hud.mcpList->SetSize(std::max(152, cardW - 24), listH);
     m_hud.inspMcpCard->Arrange();
     SyncInspectorLayout();
     RequestRepaint();

@@ -1339,9 +1339,10 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     };
     auto kvRow = [kInspRowH](ECDI::Panel& parent, const std::string& k,
                              ECDI::Label** vOut, int kw = 56) {
-        auto row = uikit::Row(178, kInspRowH, 10);
+        auto row = uikit::Row(176, kInspRowH, 10);
         row->AddChild(uikit::Label(k, kw, kInspRowH, kDarkMuted));
         auto vl = uikit::Label("—", 110, kInspRowH, kDarkInk, 12.5f, /*mono=*/true);
+        vl->SetStretch(1);
         *vOut = vl.get();
         row->AddChild(std::move(vl));
         parent.AddChild(std::move(row));
@@ -1352,7 +1353,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         // ★ 2026-11-02：pad12 + 标题17 + 3×(8+22) + pad12 = 131 → 132
         auto card = makeCard(132);
         m_hud.inspProbeCard = card.get();
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
         cardTitle(*card, "渲染探针");
         kvRow(*card, "重绘", &m_hud.evalPaints);
         kvRow(*card, "命令/帧", &m_hud.probeCmds);
@@ -1365,15 +1366,15 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
         // ★ 2026-11-02：pad12 + 标题17 + 8 + 列表110 + pad12 = 159 → 160（列表恒定 110）
         auto card = makeCard(160);
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
         cardTitle(*card, "模型");
         {
             // ★ P3.6：提供商切换列表（行由 RebuildModelList 重建；
             //   点击 = RequestModelSwitch，running 时排队——I11 语义）。
             auto list = std::make_unique<ECDI::Panel>();
             m_hud.modelList = list.get();
-            list->SetSize(190, 110);
-            list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+            list->SetSize(176, 110);
+            list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, true, 0));
             card->AddChild(std::move(list));
         }
         body.AddChild(std::move(card));
@@ -1384,7 +1385,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         //   算式：48（环行）+ 8（间距）+ 16（输入）+ 8 + 16（输出）+ 2×10（卡片内边距）= 124。
         // ★ 2026-11-02：pad12 + 标题17 + 8 + 环行48 + 8 + 22 + 8 + 22 + pad12 = 157 → 158
         auto card = makeCard(158);
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
         cardTitle(*card, "用量");
         // ★★ 协议 v2（2026-10-14）上下文占用百分比——**用户要求**。
         //   ★ 为什么必须有 `hello.context`：百分比**需要分母**，而 v1 协议里
@@ -1404,7 +1405,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         //     而 ECDI 布局无居中能力 ⇒ 数值仍由右侧 `ctxPct` 标签承担。
         auto urow = [&card, kInspRowH](const std::string& k, ECDI::Label** vOut,
                                        ECDI::ProgressBar** barOut, const ECDI::Color& fill) {
-            auto row = uikit::Row(178, kInspRowH, 8);
+            auto row = uikit::Row(176, kInspRowH, 8);
             row->AddChild(uikit::Label(k, 40, kInspRowH, kDarkMuted));
             auto bar = std::make_unique<ECDI::ProgressBar>();
             *barOut = bar.get();
@@ -1413,10 +1414,20 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
                 .trackColor = kTrackBg, .fillColor = fill,
                 .cornerRadius = 2.0f});
             // ★ 2026-11-02：行盒抬高到 22 后，5px 细条在 fillCross=false 的行里
-            //   会顶对齐贴到文字上方——套一个等高 cell 手动垂直居中（同环行手法）。
+            //   会顶对齐贴到文字上方——套一个等高 cell 手动垂直居中（同环行手法）；
+            //   barCell 设 stretch=1 + HorizontalLayout(0, false, 0) 让进度条水平占满、
+            //   上方用透明垫片固定在 y=(kInspRowH - 5) / 2，与「上下文」圆环左缘严格同列对齐。
             auto barCell = std::make_unique<ECDI::Panel>();
             barCell->SetSize(70, kInspRowH);
-            bar->SetPosition(0, (kInspRowH - 5) / 2);
+            barCell->SetStretch(1);
+            barCell->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true, 0));
+            auto topPad = std::make_unique<ECDI::Panel>();
+            topPad->SetSize(1, (kInspRowH - 5) / 2);
+            topPad->SetStyle(ECDI::PanelStyleOverride{
+                .background = ECDI::Color::FromRGBA8(0, 0, 0, 0),
+                .cornerRadius = 0.0f,
+                .borderWidth = 0.0f});
+            barCell->AddChild(std::move(topPad));
             barCell->AddChild(std::move(bar));
             row->AddChild(std::move(barCell));
             auto vl = uikit::Label("—", 52, kInspRowH, kDarkInk, 13.0f, /*mono=*/true);
@@ -1439,7 +1450,7 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
             //   文字左对齐位置不动、墨迹间隙 ~6px 不变）⇒「文」完整、环与条的
             //   列对齐、百分比位置全部不变。
             auto row = std::make_unique<ECDI::Panel>();
-            row->SetSize(178, 48);
+            row->SetSize(176, 48);
             auto cell = [](std::unique_ptr<ECDI::Widget> inner, int x) {
                 auto c = std::make_unique<ECDI::Panel>();   // 无 layout ⇒ 保留子控件 SetPosition
                 c->SetPosition(x, 0);
@@ -1481,12 +1492,12 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         auto card = makeCard(100);
         m_hud.inspMemoryCard = card.get();
         card->SetVisible(false); // 默认隐藏，有记忆文件时展示
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
         cardTitle(*card, "记忆");
         auto list = std::make_unique<ECDI::Panel>();
         m_hud.memoryList = list.get();
-        list->SetSize(190, 50);
-        list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, false, 0));
+        list->SetSize(176, 50);
+        list->SetLayout(std::make_unique<ECDI::VerticalLayout>(4, true, 0));
         card->AddChild(std::move(list));
         body.AddChild(std::move(card));
     }
@@ -1495,20 +1506,21 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
         // ★ 2026-11-02：pad12 + 标题17 + 3×(8+22) + pad12 = 131 → 132
         auto card = makeCard(132);
         m_hud.inspHealthCard = card.get();
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
         cardTitle(*card, "协议健康");
         // ★ 第三行（2026-10-13）：未知 kind 单独一行。
         //   为何不并进 healthViol：实测把「未知kind N」追加到同一 label 后**被裁掉**
         //   （该 label 宽 150，`违规 N · 未知 N · 未知kind N` 放不下，截图可见「未知k」）。
         //   单独一行既避免裁切，也让「协议未规定的事」有一处固定的可见落点。
         auto hrow = [&card, kInspRowH](ECDI::Label** vOut, const char* initial = "—") {
-            auto row = uikit::Row(178, kInspRowH, 8);
+            auto row = uikit::Row(176, kInspRowH, 8);
             // ★ 2026-11-01：点必须按**行盒**在格内居中——`Dot` 直接塞进
             //   fillCross=false 的行里是顶对齐的（点中心 4 vs 文字中心 9.5，差 4px，
             //   用户实测反馈「协议健康下面三个点和文字没对齐」）。
             //   2026-11-02：cell 高随行盒抬到 22，居中基准不变。
             row->AddChild(uikit::DotCell(8, kOkDark, kInspRowH, nullptr));
             auto vl = uikit::Label(initial, 150, kInspRowH, kDarkInk);
+            vl->SetStretch(1);
             *vOut = vl.get();
             row->AddChild(std::move(vl));
             card->AddChild(std::move(row));
@@ -1522,14 +1534,15 @@ void HarnessApp::BuildInspector(ECDI::Panel& main) {
     {
         // ★ 2026-11-02：pad12 + 标题17 + 3×(8+22) + pad12 = 131 → 132
         auto card = makeCard(132);
-        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, false, 12));
+        card->SetLayout(std::make_unique<ECDI::VerticalLayout>(8, true, 12));
         cardTitle(*card, "权限历史");
         for (size_t i = 0; i < 3; ++i) {
-            auto row = uikit::Row(178, kInspRowH, 8);
+            auto row = uikit::Row(176, kInspRowH, 8);
             auto chip = uikit::Label("", 42, kInspRowH, kDarkMuted, 12.5f, /*mono=*/true);
             m_hud.histChip[i] = chip.get();
             row->AddChild(std::move(chip));
-            auto what = uikit::Label("", 122, kInspRowH, kDarkMuted, 13.0f);
+            auto what = uikit::Label("", 126, kInspRowH, kDarkMuted, 13.0f);
+            what->SetStretch(1);
             m_hud.histWhat[i] = what.get();
             row->AddChild(std::move(what));
             card->AddChild(std::move(row));

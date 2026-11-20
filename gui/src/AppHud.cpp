@@ -32,6 +32,7 @@
 #include "ECDI/Window/OverlayTypes.h"       // ★ 2026-10-30：tooltip 走浮层根（OverlayOptions）
 #include "ECDI/Window/Window.h"             // ★ 同上：ShowOverlay / HideOverlay / GetOverlayRoot
 // ★ 2026-10-25（Stage 3 刀③）：App.h 不再传递包含控件头，用到就自己包。
+#include "ECDI/Layout/HorizontalLayout.h"
 #include "ECDI/Layout/VerticalLayout.h"
 #include "ECDI/Widget/CollapsiblePanel.h"
 #include "ECDI/Widget/ProgressBar.h"
@@ -1888,11 +1889,12 @@ void HarnessApp::RebuildMemoryList() {
 
     for (const auto& m : s->memories) {
         auto row = std::make_unique<ECDI::Panel>();
-        row->SetSize(180, 18);
+        row->SetSize(176, 18);
+        row->SetLayout(std::make_unique<ECDI::HorizontalLayout>(4, false, 0));
         auto nameLbl = std::make_unique<ECDI::Label>(m.name);
         nameLbl->SetFont(harness::SansFont(harness::kFontMicro));
-        nameLbl->SetSize(110, 16);
-        nameLbl->SetPosition(0, 1);
+        nameLbl->SetSize(107, 18);
+        nameLbl->SetStretch(1);
         if (m.skipped) {
             nameLbl->SetTextColor(kWarn);
         } else {
@@ -1914,18 +1916,19 @@ void HarnessApp::RebuildMemoryList() {
         }
         auto metaLbl = std::make_unique<ECDI::Label>(metaStr);
         metaLbl->SetFont(harness::MonoFont(12.0f));
-        metaLbl->SetSize(65, 16);
-        metaLbl->SetPosition(112, 1);
+        metaLbl->SetSize(65, 18);
         metaLbl->SetTextColor(m.skipped ? kWarn : kDarkMuted);
         row->AddChild(std::move(metaLbl));
 
         m_hud.memoryList->AddChild(std::move(row));
     }
 
-    const int totalH = 28 + static_cast<int>(s->memories.size()) * 20;
+    const int nMem = static_cast<int>(s->memories.size());
+    const int listH = nMem * 18 + (nMem > 0 ? (nMem - 1) * 4 : 0);
     if (m_hud.inspMemoryCard) {
-        m_hud.inspMemoryCard->SetSize(200, std::max(60, totalH));
-        m_hud.memoryList->SetSize(190, static_cast<int>(s->memories.size()) * 20);
+        const int cardW = std::max(176, m_hud.inspMemoryCard->GetWidth());
+        m_hud.inspMemoryCard->SetSize(cardW, 49 + listH);
+        m_hud.memoryList->SetSize(std::max(152, cardW - 24), listH);
         m_hud.inspMemoryCard->Arrange();
     }
     SyncInspectorLayout();
