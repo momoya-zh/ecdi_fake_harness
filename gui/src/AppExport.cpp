@@ -321,7 +321,9 @@ void HarnessApp::ExpireCopiedButtons() {
     // 按钮可能已随行重建而销毁：只有仍挂在某个存活行上的指针才解引用。
     for (auto it = m_copiedBtns.begin(); it != m_copiedBtns.end();) {
         if (now - it->second < std::chrono::milliseconds(1500)) { ++it; continue; }
-        if (m_sess) {
+        if (m_hud.previewCopyBtn && m_hud.previewCopyBtn == it->first) {
+            m_hud.previewCopyBtn->SetText("复制路径");
+        } else if (m_sess) {
             bool found = false;
             for (RowRec& r : m_sess->rows) {
                 if (r.copyBtn == it->first) {

@@ -53,11 +53,14 @@ MCP_SMOKE_CHECKS = 119  # 数量钉死：少一条 = 有断言被删/漏跑，�
 #       「崩在写盘前」和「根本没起来」；也正因为写盘在收尾，它**不能**证明
 #       崩的时刻，账本里「退出时段错误」这类措辞就是这样滑进来的。
 #     · 绿门：写盘后崩掉的门**照样绿**——判据看不见进程怎么死的。
-#   修法：**只加读数，不改判据**（判据仍是 json 存在性 + 相分类，逐位等价）。
+#   修法（2026-11-01）：先**只加读数，不改判据**（判据仍是 json 存在性 + 相分类，逐位等价）。
 #     每次起子进程后落一行 RUNLOG：门名 | rc | json 有无。
 #     每轮开头再落一次 exe 指纹（sha256 前 8 位 + size + mtime）——
 #     没有它，两轮红相不同就永远无法排除「换了二进制」，那正是 TODO-06
 #     立案时最缺的一环。
+#   ★ 2026-11-19（本批）：读数已足够，判据随后补齐——GUI 进程统一走
+#     `run_gui_summary`，rc != 0 / 超时 / 缺 JSON / 坏 JSON 一律红；JSON 内
+#     的 designed-red 仍只是断言结论，不能豁免异常退出。
 #   ★ rc 的口径：Windows 上进程被结构化异常终止时 rc 是 0xC0000005 这类值，
 #     Python 拿到的是同一个 DWORD ⇒ 按 `0x` 大写十六进制打印，别写成负数。
 # ============================================================
@@ -90,8 +93,115 @@ def exe_fingerprint():
 
 def record(label, rc, out_path):
     """落一行可复核性读数。out_path=None 表示该跑法本就没有 json 产物。"""
-    state = "-" if out_path is None else ("yes" if out_path.exists() else "MISSING")
+    if out_path is None:
+        state = "-"
+    elif not out_path.exists():
+        state = "MISSING"
+    elif out_path.stat().st_size == 0:
+        state = "EMPTY"
+    else:
+        state = "yes"
     RUNLOG.append((label, rc, state))
+
+
+def process_tail(result):
+    """失败进程的最后一条非空输出（最多 160 字符）；没有输出则返回空串。"""
+    for stream in (result.stderr, result.stdout):
+        if not stream:
+            continue
+        text = stream.decode("utf-8", errors="replace") if isinstance(stream, bytes) else str(stream)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if lines:
+            return lines[-1][:160]
+    return ""
+
+
+def run_gui_summary(label, args, out, timeout=180, runner=None):
+    """跑一个 GUI 进程并读取摘要，返回 (dict|None, 错误描述)。
+
+    所有 GUI 跑法共用这里的进程判据：designed-red 是 JSON 内的**断言结论**，
+    不是进程退出码；因此任何非零 rc 都是失败，包括「JSON 已落盘、随后崩溃」。
+    非 GUI 子命令（go / MCP smoke / validate.py）有自己的 rc 语义，不走这里。
+
+    runner 仅供本文件开头的合成自测注入；产品路径恒为 subprocess.run。
+    """
+    out = pathlib.Path(out)
+    # 预清空而不是 unlink：跑批累计几十个产物，逐个删除会撞上批量删除保护；
+    # 同时旧内容若不清理，「进程 rc=0 却根本没写」会被陈旧 JSON 假绿。
+    out.write_bytes(b"")
+    argv = [str(EXE)] + [str(a) for a in args] + ["--out", str(out)]
+    run = subprocess.run if runner is None else runner
+    try:
+        r = run(argv, cwd=ROOT, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        record(label, None, out)
+        return None, "TIMEOUT"
+    record(label, r.returncode, out)
+    if r.returncode != 0:
+        detail = f"PROCESS EXIT rc={rc_str(r.returncode)}  json={'yes' if out.exists() and out.stat().st_size else 'EMPTY'}"
+        tail = process_tail(r)
+        return None, detail + (f"  tail={tail}" if tail else "")
+    if not out.exists() or out.stat().st_size == 0:
+        return None, "FAILED TO PRODUCE OUTPUT  rc=0"
+    try:
+        doc = json.loads(out.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        return None, f"SUMMARY UNPARSABLE: {e}"
+    if not isinstance(doc, dict):
+        return None, "SUMMARY ROOT IS NOT AN OBJECT"
+    return doc, ""
+
+
+def selftest_process_gate():
+    """门的元断言：先证明「合法 JSON + 异常退出」不再能伪装成绿。
+
+    不启动 GUI；fake runner 只负责按场景写/不写临时 JSON 与返回 rc。
+    第二项同时计算旧判据 out.exists()，确保这个反例对旧门确实曾经可绿。
+    """
+    from types import SimpleNamespace
+
+    saved_runlog = RUNLOG[:]
+    paths = []
+    try:
+        OUT.mkdir(exist_ok=True)
+        cases = [
+            # name, rc, JSON payload, timeout, 是否应返回 doc, 错误串前缀
+            ("normal", 0, '{"ok":true}', False, True, ""),
+            ("valid-json-then-crash", 0xC0000005, '{"ok":true}', False, False, "PROCESS EXIT"),
+            ("nonzero-without-json", 1, None, False, False, "PROCESS EXIT"),
+            ("zero-without-json", 0, None, False, False, "FAILED TO PRODUCE OUTPUT"),
+            ("nonzero-before-bad-json", 1, '{bad', False, False, "PROCESS EXIT"),
+            ("zero-with-bad-json", 0, '{bad', False, False, "SUMMARY UNPARSABLE"),
+            ("timeout", None, None, True, False, "TIMEOUT"),
+        ]
+        for i, (name, rc, payload, timed_out, want_doc, prefix) in enumerate(cases):
+            out = OUT / f"_reg-selftest-{i}.json"
+            paths.append(out)
+
+            def fake_runner(cmd, _rc=rc, _payload=payload, _timed_out=timed_out, **kwargs):
+                if _timed_out:
+                    raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+                if _payload is not None:
+                    out.write_text(_payload, encoding="utf-8")
+                return SimpleNamespace(returncode=_rc, stdout=b"", stderr=b"")
+
+            doc, detail = run_gui_summary(f"selftest:{name}", ["--replay", "unused"], out,
+                                          runner=fake_runner)
+            if (doc is not None) != want_doc or not detail.startswith(prefix):
+                raise RuntimeError(f"{name}: doc={doc!r} detail={detail!r}")
+            if name == "valid-json-then-crash" and not out.exists():
+                raise RuntimeError("反例不成立：旧判据 out.exists() 在此情形下不为真")
+
+        rows = [{"phase": "negative", "matched": False},
+                {"phase": "real-regression", "matched": False}]
+        _green, designed, _skipped, unexpected = classify(rows, [])
+        if designed != ["negative"] or unexpected != ["real-regression"]:
+            raise RuntimeError("designed-red 与 UNEXPECTED 的分类语义发生变化")
+        return len(cases) + 1
+    finally:
+        RUNLOG[:] = saved_runlog
+        for path in paths:
+            path.unlink(missing_ok=True)
 
 
 FIXTURES = [
@@ -328,19 +438,13 @@ def run_probe(flag, key, fixture, extra, designed, configs):
         else:
             resolved.append(a)
     out = OUT / f"_reg{flag}.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / fixture), "--instant",
-                            "--theme", "light", flag] + resolved +
-                           ["--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record(flag, None, out)
-        return False, "TIMEOUT"
-    record(flag, r.returncode, out)          # ★ 只看读数，判据仍是下面那行存在性
-    if not out.exists():
-        return False, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        flag,
+        ["--replay", ROOT / fixture, "--instant", "--theme", "light", flag] + resolved +
+        ["--auto-close", "30000"],
+        out)
+    if d is None:
+        return False, error
     rows = d.get(key) or []
     if not rows:
         return False, f"NO ROWS (key={key})"
@@ -417,27 +521,15 @@ def check_live_settings_probe():
     # 配置文件必须**不存在** ⇒ 应用从首启分支进来（设置面板可见）。
     LIVE_SETTINGS_CONFIG.unlink(missing_ok=True)
     out = OUT / "_reg-live-settings.json"
-    out.unlink(missing_ok=True)
-    try:
-        subprocess.run([str(EXE), "--settings-probe",
-                        "--config", str(LIVE_SETTINGS_CONFIG),
-                        "--theme", "light", "--auto-close", "40000", "--out", str(out)],
-                       cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        check("--settings-probe (live)", False, "TIMEOUT")
-        return fail
-    if not out.exists():
-        check("--settings-probe (live)", False, "FAILED TO PRODUCE OUTPUT")
+    d, error = run_gui_summary(
+        "--settings-probe (live)",
+        ["--settings-probe", "--config", LIVE_SETTINGS_CONFIG,
+         "--theme", "light", "--auto-close", "40000"],
+        out)
+    if d is None:
+        check("--settings-probe (live)", False, error)
         return fail
 
-    try:
-        d = json.loads(out.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        # 摘要坏了（实测：探针把**未转义的双引号**写进 firstDivergence，
-        # 而 escS 不转义引号）——"门自己炸了"必须与"判据红了"分开报，
-        # 否则 traceback 会盖掉结论，看的人只会以为脚本有 bug。
-        check("--settings-probe (live)", False, f"summary unparsable: {e}")
-        return fail
     rows = d.get("settingsProbe") or []
     if not rows:
         # 没有行 = 探针根本没跑（不是"全绿"）。静默当成通过是最坏的一种假绿。
@@ -535,19 +627,16 @@ def check_mcp_smoke():
 
 
 def run_live(core, core_args, auto_close_ms, extra, out_name):
-    """跑一次 live（真子进程）；返回摘要 dict 或 None。
+    """跑一次 live（真子进程）；返回 (摘要 dict|None, 错误描述)。
     `core_args` 是假 core 的参数串（`--speed=N` 或 `--burst`）——注意它只能有
     一个 token：`--core-args` 的值按空格切分，带空格就变成两个参数。"""
     out = OUT / out_name
-    out.unlink(missing_ok=True)
-    r = subprocess.run([str(EXE), "--core", str(core), "--core-args", core_args,
-                        "--auto-prompt", "hello", "--async-probe",
-                        "--auto-close", str(auto_close_ms), "--out", str(out)] + extra,
-                       cwd=ROOT, capture_output=True)
-    record(f"live:{out_name}", r.returncode, out)
-    if not out.exists():
-        return None
-    return json.loads(out.read_text(encoding="utf-8"))
+    return run_gui_summary(
+        f"live:{out_name}",
+        ["--core", core, "--core-args", core_args,
+         "--auto-prompt", "hello", "--async-probe",
+         "--auto-close", str(auto_close_ms)] + extra,
+        out)
 
 
 def check_async_delivery(core):
@@ -567,17 +656,20 @@ def check_async_delivery(core):
         fail += 0 if ok else 1
         print(f"  {label:42s} {'OK' if ok else 'FAILED':6s}  {detail}")
 
-    legacy = run_live(core, "--speed=8", 15000, ["--legacy-poll"], "_reg_async-legacy.json")
-    pushed = run_live(core, "--speed=8", 15000, [], "_reg_async-async.json")
-    paced = run_live(core, "--speed=1", 12000, [], "_reg_async-paced.json")
+    legacy, legacy_error = run_live(core, "--speed=8", 15000, ["--legacy-poll"],
+                                    "_reg_async-legacy.json")
+    pushed, pushed_error = run_live(core, "--speed=8", 15000, [], "_reg_async-async.json")
+    paced, paced_error = run_live(core, "--speed=1", 12000, [], "_reg_async-paced.json")
     # ★ 第四跑用 `--burst`：它把一轮攒成一次写出 ⇒ 队列真的厚到 400+ 行。
     #   没有这一跑，C3 的「单回调 ≤256」在 `--speed=8` 下**恒真而未被触碰**
     #   （实测 maxCB 只有 6~8），等于一条永不失败的判据。
-    burst = run_live(core, "--burst", 8000, [], "_reg_async-burst.json")
-    for name, d in (("legacy", legacy), ("async", pushed), ("paced", paced),
-                    ("burst", burst)):
+    burst, burst_error = run_live(core, "--burst", 8000, [], "_reg_async-burst.json")
+    for name, d, error in (("legacy", legacy, legacy_error),
+                           ("async", pushed, pushed_error),
+                           ("paced", paced, paced_error),
+                           ("burst", burst, burst_error)):
         if d is None:
-            print(f"  {name:8s} FAILED TO PRODUCE OUTPUT")
+            print(f"  {name:8s} {error}")
             return fail + 1
 
     la = legacy["asyncProbe"]
@@ -649,19 +741,13 @@ def check_agent_probe_negative():
       才能把这两者分开（本仓的老纪律：正反对照各自成立才算判据成立）。
     """
     out = OUT / "_reg-agent-probe-negative.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
-                            "--theme", "light", "--agent-probe",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("--agent-probe (negative)", None, out)
-        return 1, "TIMEOUT"
-    record("--agent-probe (negative)", r.returncode, out)
-    if not out.exists():
-        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        "--agent-probe (negative)",
+        ["--replay", ROOT / DEMO, "--instant", "--theme", "light", "--agent-probe",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        return 1, error
     rows = d.get("agentProbe") or []
     if not rows:
         return 1, "NO ROWS (key=agentProbe)"
@@ -685,19 +771,13 @@ def check_proposal_probe_negative():
       `matched` 含 `detailRows>=1`（正向臂专用），负对照看的是具体读数。
     """
     out = OUT / "_reg-proposal-probe-negative.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
-                            "--theme", "light", "--proposal-probe",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("--proposal-probe (negative)", None, out)
-        return 1, "TIMEOUT"
-    record("--proposal-probe (negative)", r.returncode, out)
-    if not out.exists():
-        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        "--proposal-probe (negative)",
+        ["--replay", ROOT / DEMO, "--instant", "--theme", "light", "--proposal-probe",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        return 1, error
     rows = d.get("proposalProbe") or []
     if not rows:
         return 1, "NO ROWS (key=proposalProbe)"
@@ -719,19 +799,13 @@ def check_job_probe_negative():
       只有"没有 job 消息时一行都不贴"才能把两者分开（回落路径 = v5 行为）。
     """
     out = OUT / "_reg-job-probe-negative.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
-                            "--theme", "light", "--job-probe",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("--job-probe (negative)", None, out)
-        return 1, "TIMEOUT"
-    record("--job-probe (negative)", r.returncode, out)
-    if not out.exists():
-        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        "--job-probe (negative)",
+        ["--replay", ROOT / DEMO, "--instant", "--theme", "light", "--job-probe",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        return 1, error
     rows = d.get("jobProbe") or []
     if not rows:
         return 1, "NO ROWS (key=jobProbe)"
@@ -751,19 +825,13 @@ def check_mcp_probe_negative():
       卡片不可见、0 行、副标无 MCP、0 条 MCP system 行"才能把两者分开。
     """
     out = OUT / "_reg-mcp-probe-negative.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / DEMO), "--instant",
-                            "--theme", "light", "--mcp-probe",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("--mcp-probe (negative)", None, out)
-        return 1, "TIMEOUT"
-    record("--mcp-probe (negative)", r.returncode, out)
-    if not out.exists():
-        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        "--mcp-probe (negative)",
+        ["--replay", ROOT / DEMO, "--instant", "--theme", "light", "--mcp-probe",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        return 1, error
     rows = d.get("mcpProbe") or []
     if not rows:
         return 1, "NO ROWS (key=mcpProbe)"
@@ -795,20 +863,14 @@ def check_fold_probe_negative():
       ——否则夹具哪天长出过程行，这一支会静默变成"真空成立"。
     """
     out = OUT / "_reg-fold-probe-negative.json"
-    out.unlink(missing_ok=True)
     fixture = "protocol/fixtures/hostile/truncated-final-line.jsonl"
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / fixture), "--instant",
-                            "--theme", "light", "--fold-probe",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("--fold-probe (negative)", None, out)
-        return 1, "TIMEOUT"
-    record("--fold-probe (negative)", r.returncode, out)
-    if not out.exists():
-        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        "--fold-probe (negative)",
+        ["--replay", ROOT / fixture, "--instant", "--theme", "light", "--fold-probe",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        return 1, error
     rows = d.get("foldProbe") or []
     if not rows:
         return 1, "NO ROWS (key=foldProbe)"
@@ -835,19 +897,13 @@ def check_agent_probe_cap_gate():
     ★ 判据在探针里（`cardOk` 按 `hasAgentsCap` 分两支），这里只看 `matched`。
     """
     out = OUT / "_reg-agent-probe-capgate.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / AGENT_CAP_MISSING), "--instant",
-                            "--theme", "light", "--agent-probe",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("--agent-probe (cap gate)", None, out)
-        return 1, "TIMEOUT"
-    record("--agent-probe (cap gate)", r.returncode, out)
-    if not out.exists():
-        return 1, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}"
-    d = json.loads(out.read_text(encoding="utf-8"))
+    d, error = run_gui_summary(
+        "--agent-probe (cap gate)",
+        ["--replay", ROOT / AGENT_CAP_MISSING, "--instant", "--theme", "light", "--agent-probe",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        return 1, error
     rows = d.get("agentProbe") or []
     if not rows:
         return 1, "NO ROWS (key=agentProbe)"
@@ -877,48 +933,53 @@ def check_readout_probes():
 
     # ① --reasoning-probe（协议 v2 §7）：只有 cot 夹具带 reasoning 块。
     out = OUT / "_reg--reasoning-probe.json"
-    out.unlink(missing_ok=True)
-    subprocess.run([str(EXE), "--replay", str(ROOT / COT), "--instant", "--theme", "light",
-                    "--reasoning-probe", "--auto-close", "30000", "--out", str(out)],
-                   cwd=ROOT, capture_output=True)
-    d = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
-    rows = d.get("reasoningProbe") or []
-    check("R1 折叠三态齐全（default/展开/收回）", len(rows) == 3, f"rows={len(rows)}")
-    if len(rows) == 3:
-        d0, d1, d2 = rows
-        check("R2 默认折叠：内容不可见",
-              d0["expanded"] is False and d0["contentVisible"] is False,
-              f"expanded={d0['expanded']} visible={d0['contentVisible']}")
-        check("R3 点开：可见且面板变高",
-              d1["expanded"] is True and d1["contentVisible"] is True
-              and d1["panelH"] > d0["panelH"],
-              f"h {d0['panelH']}->{d1['panelH']} visible={d1['contentVisible']}")
-        check("R4 再点收回：回到不可见",
-              d2["expanded"] is False and d2["contentVisible"] is False,
-              f"expanded={d2['expanded']} visible={d2['contentVisible']}")
-    title = d.get("reasoningStreamingTitle") or ""
-    check("R5 流式态标题在**建行时刻**抓到（非事后终态）", bool(title), f"title={title!r}")
+    d, error = run_gui_summary(
+        "--reasoning-probe",
+        ["--replay", ROOT / COT, "--instant", "--theme", "light",
+         "--reasoning-probe", "--auto-close", "30000"],
+        out)
+    if d is None:
+        check("--reasoning-probe · process", False, error)
+    else:
+        rows = d.get("reasoningProbe") or []
+        check("R1 折叠三态齐全（default/展开/收回）", len(rows) == 3, f"rows={len(rows)}")
+        if len(rows) == 3:
+            d0, d1, d2 = rows
+            check("R2 默认折叠：内容不可见",
+                  d0["expanded"] is False and d0["contentVisible"] is False,
+                  f"expanded={d0['expanded']} visible={d0['contentVisible']}")
+            check("R3 点开：可见且面板变高",
+                  d1["expanded"] is True and d1["contentVisible"] is True
+                  and d1["panelH"] > d0["panelH"],
+                  f"h {d0['panelH']}->{d1['panelH']} visible={d1['contentVisible']}")
+            check("R4 再点收回：回到不可见",
+                  d2["expanded"] is False and d2["contentVisible"] is False,
+                  f"expanded={d2['expanded']} visible={d2['contentVisible']}")
+        title = d.get("reasoningStreamingTitle") or ""
+        check("R5 流式态标题在**建行时刻**抓到（非事后终态）", bool(title), f"title={title!r}")
 
     # ② --order-probe（Step 0a）：到达序。
     # ★ 判据必须带一条"夹具区分力"断言：如果夹具的块数太少，自然序恰好等于字典序，
     #   那么"到达序正确"这条断言在字典序实现下也会绿——等于没测。
     out = OUT / "_reg--order-probe.json"
-    out.unlink(missing_ok=True)
-    subprocess.run([str(EXE), "--replay", str(ROOT / COT), "--instant", "--theme", "light",
-                    "--order-probe", "--auto-close", "30000", "--out", str(out)],
-                   cwd=ROOT, capture_output=True)
-    order = []
-    if out.exists():
-        order = json.loads(out.read_text(encoding="utf-8")).get("blockOrder") or []
-    if not order or not all(len(s) > 1 and s[1:].isdigit() for s in order):
-        check("O0 blockOrder 可解析为 b<N>", False, f"sample={order[:3]}")
+    d, error = run_gui_summary(
+        "--order-probe",
+        ["--replay", ROOT / COT, "--instant", "--theme", "light",
+         "--order-probe", "--auto-close", "30000"],
+        out)
+    if d is None:
+        check("--order-probe · process", False, error)
     else:
-        natural = sorted(order, key=lambda s: int(s[1:]))
-        lexical = sorted(order)
-        check("O1 夹具让自然序与字典序可区分（否则下一条无区分力）",
-              lexical != natural, f"n={len(order)} 字典序头={lexical[:4]}")
-        check("O2 块到达序 == 自然序（不是字典序）",
-              order == natural, f"头={order[:4]} 尾={order[-3:]}")
+        order = d.get("blockOrder") or []
+        if not order or not all(len(s) > 1 and s[1:].isdigit() for s in order):
+            check("O0 blockOrder 可解析为 b<N>", False, f"sample={order[:3]}")
+        else:
+            natural = sorted(order, key=lambda s: int(s[1:]))
+            lexical = sorted(order)
+            check("O1 夹具让自然序与字典序可区分（否则下一条无区分力）",
+                  lexical != natural, f"n={len(order)} 字典序头={lexical[:4]}")
+            check("O2 块到达序 == 自然序（不是字典序）",
+                  order == natural, f"头={order[:4]} 尾={order[-3:]}")
 
     return fail
 
@@ -954,20 +1015,14 @@ def check_sidebar_geom():
 def check_workspace_probe(core):
     """workspace 探针需要**活会话的写通道**：回放没有 writer ⇒ unavailable（那是失败，不是跳过）。"""
     out = OUT / "_reg--workspace-probe.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--core", str(core), "--auto-prompt", "hello",
-                            "--workspace-probe", "--auto-close", "100000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=240)
-    except subprocess.TimeoutExpired:
-        record("--workspace-probe", None, out)
-        print("  --workspace-probe    TIMEOUT")
+    doc, error = run_gui_summary(
+        "--workspace-probe",
+        ["--core", core, "--auto-prompt", "hello",
+         "--workspace-probe", "--auto-close", "100000"],
+        out, timeout=240)
+    if doc is None:
+        print(f"  --workspace-probe    {error}")
         return 1
-    record("--workspace-probe", r.returncode, out)
-    if not out.exists():
-        print(f"  --workspace-probe    FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
-        return 1
-    doc = json.loads(out.read_text(encoding="utf-8"))
     rows = doc.get("workspaceProbe") or []
     if not rows:
         print("  --workspace-probe    NO ROWS (key=workspaceProbe)")
@@ -1038,23 +1093,15 @@ def check_sidebar_live_arm(core):
         print(f"  {label:44s} {'OK' if ok else 'FAILED':6s}  {detail}")
 
     out = OUT / "_reg-sidebar-live.json"
-    out.unlink(missing_ok=True)
-    try:
-        r = subprocess.run([str(EXE), "--core", str(core), "--sidebar-probe",
-                            "--theme", "light",
-                            "--auto-close", "30000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        record("sidebar-live", None, out)
-        check("sidebar-live", False, "TIMEOUT（唤醒洪泛？见 status.txt TIMER-STARVATION）")
+    d, error = run_gui_summary(
+        "sidebar-live",
+        ["--core", core, "--sidebar-probe", "--theme", "light",
+         "--auto-close", "30000"],
+        out)
+    if d is None:
+        check("sidebar-live", False, error)
         return fail
-    record("sidebar-live", r.returncode, out)
-    if not out.exists():
-        check("sidebar-live", False,
-              f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
-        return fail
-    doc = json.loads(out.read_text(encoding="utf-8"))
-    rows = {x.get("phase"): x for x in (doc.get("sidebarProbe") or [])}
+    rows = {x.get("phase"): x for x in (d.get("sidebarProbe") or [])}
     after_new = rows.get("live-after-new") or {}
     after_del = rows.get("live-after-delete") or {}
     if not after_del:
@@ -1095,21 +1142,14 @@ def check_protocol_arms(core):
 
     for name, core_args, proto, want_ws, want_model in PROTO_ARMS:
         out = OUT / f"_reg-proto-arm-{name}.json"
-        out.unlink(missing_ok=True)
-        try:
-            r = subprocess.run([str(EXE), "--core", str(core), "--core-args", core_args,
-                                "--state-probe", "--theme", "light",
-                                "--auto-close", "15000", "--out", str(out)],
-                               cwd=ROOT, capture_output=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            record(f"proto-arm:{name}", None, out)
-            check(name, False, "TIMEOUT")
+        doc, error = run_gui_summary(
+            f"proto-arm:{name}",
+            ["--core", core, "--core-args", core_args,
+             "--state-probe", "--theme", "light", "--auto-close", "15000"],
+            out, timeout=120)
+        if doc is None:
+            check(name, False, error)
             continue
-        record(f"proto-arm:{name}", r.returncode, out)
-        if not out.exists():
-            check(name, False, f"FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
-            continue
-        doc = json.loads(out.read_text(encoding="utf-8"))
         rows = doc.get("stateProbe") or []
         if not rows:
             check(name, False, "NO ROWS (stateProbe)")
@@ -1154,6 +1194,17 @@ def check_protocol_arms(core):
 
 
 def main():
+    try:
+        selftest_n = selftest_process_gate()
+    except (RuntimeError, OSError, ValueError) as e:
+        print("== 0. 回归门自测（合法 JSON + 异常退出不得判绿） ==")
+        print(f"  FAILED: {e}")
+        print()
+        print("RESULT: 1 FAILURE(S)")
+        return 1
+    print("== 0. 回归门自测（合法 JSON + 异常退出不得判绿） ==")
+    print(f"  {selftest_n}/{selftest_n} PASS")
+
     if not EXE.exists():
         print(f"Error: GUI executable not found at {EXE}")
         print("Please build it first: cmake --build gui\\build --config Release")
@@ -1170,16 +1221,15 @@ def main():
     print("== 1. 夹具结构基线 (7 fixtures) ==")
     for name, rel, exp in FIXTURES:
         out = OUT / f"_reg_{name}.json"
-        out.unlink(missing_ok=True)
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / rel), "--instant",
-                            "--theme", "light", "--auto-close", "40000", "--out", str(out)],
-                           cwd=ROOT, capture_output=True)
-        record(name, r.returncode, out)
-        if not out.exists():
-            print(f"  {name:20s} FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
+        d, error = run_gui_summary(
+            name,
+            ["--replay", ROOT / rel, "--instant", "--theme", "light",
+             "--auto-close", "40000"],
+            out)
+        if d is None:
+            print(f"  {name:20s} {error}")
             fail += 1
             continue
-        d = json.loads(out.read_text(encoding="utf-8"))
         got = (d["blocks"], d["deltas"], d["messages"])
         ok = (got == exp)
         # ★ 2026-11-07（F7 闭合）：§1.2 报错面的机读判据——摘要新增
@@ -1197,16 +1247,15 @@ def main():
     print("\n== 2. 探针断言 (13 probes) ==")
     for flag, key in PROBES:
         out = OUT / f"_reg{flag}.json"
-        out.unlink(missing_ok=True)
-        r = subprocess.run([str(EXE), "--replay", str(ROOT / "protocol/fixtures/demo-session.jsonl"),
-                            "--instant", "--theme", "light", flag, "--auto-close", "20000",
-                            "--out", str(out)], cwd=ROOT, capture_output=True)
-        record(flag, r.returncode, out)
-        if not out.exists():
-            print(f"  {flag:18s} FAILED TO PRODUCE OUTPUT  rc={rc_str(r.returncode)}")
+        d, error = run_gui_summary(
+            flag,
+            ["--replay", ROOT / "protocol/fixtures/demo-session.jsonl",
+             "--instant", "--theme", "light", flag, "--auto-close", "20000"],
+            out)
+        if d is None:
+            print(f"  {flag:18s} {error}")
             fail += 1
             continue
-        d = json.loads(out.read_text(encoding="utf-8"))
         rows = d.get(key) or []
         if not rows:
             print(f"  {flag:18s} NO ROWS (key={key})")
@@ -1296,9 +1345,10 @@ def main():
     fail += 0 if r.returncode == 0 else 1
 
     print("\n== 4. 可复核性读数（rc / 落盘；TODO-06 机制欠账的补齐）==")
-    print("  （判据未改，仍是 json 存在性 + 相分类。本节只把 rc 摆出来：")
+    print("  （进程判据已改：非零 rc、超时、缺 JSON、坏 JSON 直接失败；")
+    print("    designed-red 仍是 JSON 内的断言结论。本节保留逐门 rc/json：")
     print("    rc=0 且 json=yes ⇒ 真跑完；json=MISSING ⇒ 崩在写盘前；")
-    print("    json=yes 但 rc≠0 ⇒ **写盘后崩**——旧判据对这一格全盲，门照样绿）")
+    print("    json=yes 但 rc≠0 ⇒ 写盘后崩——旧门对这一格全盲，现在会红）")
     for label, rc, state in RUNLOG:
         # ★ 2026-11-01：RUNLOG 里存的是**原始 rc（int）**，打印时才转字符串——
         #   第一版写成 `rc={rc:>10s}`，第一次全量跑就在这里 ValueError 炸掉

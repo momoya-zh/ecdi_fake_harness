@@ -235,6 +235,7 @@ private:
         ECDI::ScrollView* previewSv = nullptr;   // 预览体滚动区
         ECDI::Label* previewTitle = nullptr;     // 文件名行
         ECDI::Widget* previewBody = nullptr;     // 行容器（GetContentView，OpenPreview 后重建）
+        ECDI::Button* previewCopyBtn = nullptr;  // 预览底栏：「复制路径」按钮（1.5s 复位用）
         // ★★ §9.5（2026-10-27）：识别名 / 显示名两个字段（原来只有 BaseURL 派生）。
         ECDI::TextBox* settingsProviderId = nullptr;    // 识别名（机器键，唯一）
         ECDI::TextBox* settingsProviderName = nullptr;  // 显示名（可重复，空 ⇒ 回落 id）
@@ -657,7 +658,9 @@ private:
         //   行数/配色统计在**建行期**定死（行的内容不随宽度变），宽度相关
         //   的 SetSize 在 Relayout 期按 lastWrapW 门闸统一下发。
         struct ProposalRec {
+            ECDI::ScrollView* sv = nullptr;       // 提案行横向滚动容器（长 diff 行不裁切），非拥有
             std::vector<ECDI::Label*> lines;      // 折叠体内容行（问句行之后），非拥有
+            int maxCols = 0;                      // 最长提案行的显示列宽（ASCII=1，多字节=2，建行期定死）
             int diffLines = 0;                    // detail.diff 派生的行（含 @@/头/上下文）
             int plus = 0;                         // '+' 行数（建行期统计）
             int minus = 0;                        // '-' 行数

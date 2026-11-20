@@ -30,6 +30,8 @@
 #include "App.h"
 #include "AppInternal.h"
 
+#include "ECDI/Widget/ScrollView.h"
+
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -64,11 +66,15 @@ void HarnessApp::RunProposalProbe() {
     }
 
     // 视图侧（建行期统计）
+    size_t missingSvRows = 0;
     for (const RowRec& r : m_sess->rows) {
         if (!r.ask) continue;
         ++rec.askRows;
         if (r.proposal.lines.empty()) continue;
         ++rec.detailRows;
+        if (!r.proposal.sv || r.proposal.sv->GetWidth() <= 0 || r.proposal.sv->GetHeight() <= 0) {
+            ++missingSvRows;
+        }
         rec.diffRows += r.proposal.diffLines;
         rec.plusRows += r.proposal.plus;
         rec.minusRows += r.proposal.minus;
@@ -85,6 +91,7 @@ void HarnessApp::RunProposalProbe() {
                   rec.plusRows == rec.modelPlus &&
                   rec.minusRows == rec.modelMinus &&
                   rec.emptyDetailRows == 0 &&
+                  missingSvRows == 0 &&
                   rec.askRows >= 1 && rec.detailRows >= 1;
 
     if (!rec.matched) {

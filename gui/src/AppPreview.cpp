@@ -13,6 +13,7 @@
 #include "App.h"
 #include "AppInternal.h"
 #include "ThemeUsing.h"
+#include "UiKit.h"
 
 #include "ECDI/Layout/HorizontalLayout.h"
 #include "ECDI/Layout/VerticalLayout.h"
@@ -186,20 +187,24 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
 
     // ── 头：[只读] · 文件名（弹性） · × ──
     auto head = std::make_unique<ECDI::Panel>();
+    head->SetSize(390, 26);
     head->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, true, 0));
     auto badge = std::make_unique<ECDI::Label>("[只读]");
     badge->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kOkDark));
     badge->SetFont(harness::SansFont(14.0f));
+    badge->SetSize(46, 22);
     head->AddChild(std::move(badge));
     auto title = std::make_unique<ECDI::Label>("（未打开）");
     m_hud.previewTitle = title.get();
     title->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkInk));
     title->SetFont(harness::SansFont(14.0f));
+    title->SetSize(300, 22);
     title->SetStretch(1);   // 弹性吃掉剩余宽度，× 靠右
     head->AddChild(std::move(title));
     auto close = std::make_unique<ECDI::Button>("×");
     close->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkMuted));
     close->SetFont(harness::SansFont(15.0f));
+    close->SetSize(26, 26);
     close->SetStyle(ECDI::ButtonStyleOverride{
         .background = Pick(m_options.probeContrast, kProbeBg, kCardBg),
         .border = Pick(m_options.probeContrast, kProbeBg, kCardBorder),
@@ -220,14 +225,16 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
     ApplyCompactScrollBars(*sv);   // ★ 条宽全仓统一（kScrollBarThickness）
     ECDI::Widget* content = &sv->GetContentView();
     m_hud.previewBody = content;
-    content->SetLayout(std::make_unique<ECDI::VerticalLayout>(1, true, 2));
+    content->SetLayout(std::make_unique<ECDI::VerticalLayout>(1, false, 2));
     panel->AddChild(std::move(sv));
 
     // ── 底：在资源管理器中显示 · 复制路径 ──
     auto foot = std::make_unique<ECDI::Panel>();
+    foot->SetSize(390, 28);
     foot->SetLayout(std::make_unique<ECDI::HorizontalLayout>(8, false, 0));
     auto reveal = std::make_unique<ECDI::Button>("在资源管理器中显示");
     reveal->SetFont(harness::SansFont(14.0f));
+    reveal->SetSize(148, 28);
     reveal->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkInk));
     reveal->SetStyle(ECDI::ButtonStyleOverride{
         .background = Pick(m_options.probeContrast, kProbeBg, kToolHeaderBg),
@@ -250,7 +257,9 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
     });
     foot->AddChild(std::move(reveal));
     auto copy = std::make_unique<ECDI::Button>("复制路径");
+    m_hud.previewCopyBtn = copy.get();
     copy->SetFont(harness::SansFont(14.0f));
+    copy->SetSize(84, 28);
     copy->SetTextColor(Pick(m_options.probeContrast, kProbeInk, kDarkInk));
     copy->SetStyle(ECDI::ButtonStyleOverride{
         .background = Pick(m_options.probeContrast, kProbeBg, kToolHeaderBg),
@@ -260,8 +269,23 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildPreviewSheet() {
         .pressedBackground = Pick(m_options.probeContrast, kProbeBg, kToolHeaderPressed),
         .hoverBackground = Pick(m_options.probeContrast, kProbeBg, kToolHeaderHover)});
     // 复制走 ECDI 口（PlatformWindow.h:76 SetClipboardText），不直调 Win32 剪贴板。
-    copy->SetOnClick([this] {
-        m_window->GetPlatformWindow().SetClipboardText(m_previewPath);
+    copy->SetOnClick([this, copyRaw = copy.get()] {
+        if (m_window) {
+            m_window->GetPlatformWindow().SetClipboardText(m_previewPath);
+        }
+        copyRaw->SetText("已复制");
+        const auto now = std::chrono::steady_clock::now();
+        bool updated = false;
+        for (auto& kv : m_copiedBtns) {
+            if (kv.first == copyRaw) {
+                kv.second = now;
+                updated = true;
+                break;
+            }
+        }
+        if (!updated) {
+            m_copiedBtns.emplace_back(copyRaw, now);
+        }
     });
     foot->AddChild(std::move(copy));
     panel->AddChild(std::move(foot));
@@ -283,10 +307,21 @@ void HarnessApp::RebuildPreviewContent() {
                                         : m_previewPath + "（未读取）");
     }
 
+    const int rowH = uikit::LineBox(14.0f);
+    const int baseW = m_hud.previewSv ? std::max(360, m_hud.previewSv->GetWidth() - 12) : 360;
     const auto mkRow = [&](const std::string& text, const ECDI::Color& color) {
         auto row = std::make_unique<ECDI::Label>(text);
         row->SetTextColor(color);
         row->SetFont(harness::MonoFont(14.0f));   // §11：等宽（kMonoFamily=Consolas）
+        row->SetWordWrap(false);
+        int cols = 0;
+        for (size_t i = 0; i < text.size();) {
+            const unsigned char c = static_cast<unsigned char>(text[i]);
+            const size_t len = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0 ? 2 : ((c & 0xF0) == 0xE0 ? 3 : 4));
+            cols += (len == 1) ? 1 : 2;
+            i += len;
+        }
+        row->SetSize(std::max(baseW, cols * 8 + 16), rowH);
         body.AddChild(std::move(row));
     };
 
@@ -297,9 +332,13 @@ void HarnessApp::RebuildPreviewContent() {
         mkRow("[已截断] 文件超过预览上限（512KB / 2000 行），只显示前一部分",
               Pick(m_options.probeContrast, kProbeInk, kWarn));
     }
-    for (const std::string& line : m_previewLines) {
-        mkRow(line, Pick(m_options.probeContrast, kProbeInk, kDarkInk));
+    for (size_t i = 0; i < m_previewLines.size(); ++i) {
+        char numBuf[32];
+        std::snprintf(numBuf, sizeof(numBuf), "%4zu \xE2\x94\x82 ", i + 1);
+        mkRow(std::string(numBuf) + m_previewLines[i],
+              Pick(m_options.probeContrast, kProbeInk, kDarkInk));
     }
+    body.Arrange();
     if (m_hud.previewSv) {
         m_hud.previewSv->UpdateContentExtent();   // 包围盒 → 滚动范围（extent=0 教训）
     }

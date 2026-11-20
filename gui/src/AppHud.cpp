@@ -258,9 +258,16 @@ void HarnessApp::Relayout() {
                 if (r.lastWrapW != wrapW) {
                     r.label->SetSize(wrapW, r.label->GetHeight());
                     // ★★ 协议 v5（2026-11-05）：提案行宽随行宽统一下发。高度定死
-                    //   kProposalLineH（mono 不折行，宽=裁剪界），只有宽度随行变。
+                    //   kProposalLineH（mono 不折行），超长行由 r.proposal.sv 横向滚动承载。
+                    const int propContentW = std::max(wrapW, r.proposal.maxCols * 8 + 12);
                     for (ECDI::Label* l : r.proposal.lines) {
-                        if (l) l->SetSize(wrapW, kProposalLineH);
+                        if (l) l->SetSize(propContentW, kProposalLineH);
+                    }
+                    if (r.proposal.sv && !r.proposal.lines.empty()) {
+                        const int linesH = static_cast<int>(r.proposal.lines.size()) * kProposalLineH;
+                        const int barExtra = (propContentW > wrapW) ? (kScrollBarThickness + 2) : 0;
+                        r.proposal.sv->SetSize(wrapW, linesH + barExtra);
+                        r.proposal.sv->SetContentExtent(propContentW, linesH);
                     }
                     r.lastWrapW = wrapW;
                 }
@@ -282,8 +289,12 @@ void HarnessApp::Relayout() {
                 bodyH = r.label->GetHeight() + 8;
                 // ★★ 协议 v5（2026-11-05）：提案行是**定高乘法**——行数在建行期
                 //   定死进 `rec.proposal.lines`（内容不随宽度变），这里零测量。
-                //   问句行 AutoSize 之后接 N 行 kProposalLineH，公式的其余部分不动。
-                bodyH += static_cast<int>(r.proposal.lines.size()) * kProposalLineH;
+                //   问句行 AutoSize 之后接 N 行 kProposalLineH（超宽时留出 6px 横条脚印）。
+                if (!r.proposal.lines.empty()) {
+                    const int propContentW = std::max(wrapW, r.proposal.maxCols * 8 + 12);
+                    const int barExtra = (propContentW > wrapW) ? (kScrollBarThickness + 2) : 0;
+                    bodyH += static_cast<int>(r.proposal.lines.size()) * kProposalLineH + barExtra;
+                }
             }
             r.bodyH = bodyH;
             if (r.headerBtn) {

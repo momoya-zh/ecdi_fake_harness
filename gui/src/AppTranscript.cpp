@@ -1242,14 +1242,39 @@ std::vector<std::string> SplitLines(const std::string& s) {
 }   // namespace
 void HarnessApp::AppendProposalLines(const AskDetail& d,
                                      ECDI::Widget& content, RowRec::ProposalRec& out) {
-    auto addLine = [&content, &out](const std::string& text, const ECDI::Color& color) {
+    // 提案区套一层紧凑 ScrollView（4px 条厚）：短行不显条，超长 diff/命令单行可横向滚动审阅，
+    // 避免固定 wrapW 把右侧关键修改直接裁切（同时保持单行不折行以守护 diff 缩进语义）。
+    auto sv = std::make_unique<ECDI::ScrollView>();
+    sv->SetScrollStep(28);
+    harness::internal::ApplyCompactScrollBars(*sv);
+    out.sv = sv.get();
+    ECDI::Widget& inner = sv->GetContentView();
+    inner.SetLayout(std::make_unique<ECDI::VerticalLayout>(0, false, 0));
+
+    auto addLine = [&inner, &out](const std::string& text, const ECDI::Color& color) {
         auto l = std::make_unique<ECDI::Label>(text);
         l->SetTextColor(color);
         l->SetFont(harness::MonoFont(13.0f));
         l->SetWordWrap(false);
+        int cols = 0;
+        for (size_t i = 0; i < text.size();) {
+            const unsigned char c = static_cast<unsigned char>(text[i]);
+            const size_t len = (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0 ? 2 : ((c & 0xF0) == 0xE0 ? 3 : 4));
+            cols += (len == 1) ? 1 : 2;
+            i += len;
+        }
+        out.maxCols = std::max(out.maxCols, cols);
         l->SetSize(100, kProposalLineH);   // 宽为占位——Relayout 期按行宽统一下发
         out.lines.push_back(l.get());
-        content.AddChild(std::move(l));
+        inner.AddChild(std::move(l));
+    };
+    auto finishSv = [&content, &sv, &out]() {
+        const int lineCount = static_cast<int>(out.lines.size());
+        const int h = std::max(kProposalLineH, lineCount * kProposalLineH);
+        const int w = std::max(100, out.maxCols * 8 + 12);
+        sv->SetSize(100, h);
+        sv->SetContentExtent(w, h);
+        content.AddChild(std::move(sv));
     };
     auto clipRunes = [](const std::string& s, size_t n) {
         std::string out;
@@ -1283,6 +1308,7 @@ void HarnessApp::AppendProposalLines(const AskDetail& d,
                 if (line[0] == '-') out.minus++;
             }
         }
+        finishSv();
         return;
     }
     if (d.tool == "run_command") {
@@ -1296,6 +1322,7 @@ void HarnessApp::AppendProposalLines(const AskDetail& d,
             addLine(line, kDarkMuted);
             ++out.kvLines;
         }
+        finishSv();
         return;
     }
     if (d.tool == "task") {
@@ -1310,6 +1337,7 @@ void HarnessApp::AppendProposalLines(const AskDetail& d,
         addLine(tools, kDarkMuted);
         addLine("预算  " + std::to_string(d.timeoutSeconds) + " 秒（轮数见问句）", kDarkMuted);
         out.kvLines = 3 + (d.name.empty() ? 0 : 1);
+        finishSv();
         return;
     }
     if (d.tool == "mcp") {
@@ -1321,17 +1349,20 @@ void HarnessApp::AppendProposalLines(const AskDetail& d,
         if (d.argsKv.empty()) {
             addLine("参数  （无）", kDarkMuted);
             ++out.kvLines;
+            finishSv();
             return;
         }
         for (const auto& [k, v] : d.argsKv) {
             addLine("参数  " + k + " = " + v, kDarkInk);
             ++out.kvLines;
         }
+        finishSv();
         return;
     }
     // 未知 tool：has=true 但不认识——发一行中性说明，不猜语义（§3.6 回落义务）。
     addLine("（提案类型 " + d.tool + "）", kDarkMuted);
     out.kvLines = 1;
+    finishSv();
 }
 
 // 权限门行：**纯构造**（重建可重放）。问句与 id 都来自模型条目，不是来自"刚到的消息"

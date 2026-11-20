@@ -19,6 +19,9 @@
 #include "AppInternal.h"
 #include "ThemeUsing.h"
 
+#include "ECDI/Widget/Button.h"
+#include "ECDI/Widget/Label.h"
+
 using harness::internal::PathToUtf8;
 
 #include <cstdio>
@@ -121,6 +124,41 @@ void HarnessApp::RunPreviewProbe() {
             if (m_previewLines.size() == 3 && m_previewLines[0] != "line1") {
                 bad += bad.empty() ? "" : "; ";
                 bad += "first line mismatch";
+            }
+            if (!m_hud.previewBody || m_hud.previewBody->GetChildCount() != 3) {
+                bad += bad.empty() ? "" : "; ";
+                bad += "previewBody child count != 3";
+            } else if (auto* firstLbl = dynamic_cast<ECDI::Label*>(m_hud.previewBody->GetChildAt(0))) {
+                if (firstLbl->GetText() != "   1 \xE2\x94\x82 line1") {
+                    bad += bad.empty() ? "" : "; ";
+                    bad += "first label text missing line number prefix: " + firstLbl->GetText();
+                }
+                if (firstLbl->GetWidth() <= 0 || firstLbl->GetHeight() <= 0) {
+                    bad += bad.empty() ? "" : "; ";
+                    bad += "first label has zero size";
+                }
+            }
+            if (m_hud.previewCopyBtn) {
+                const ECDI::Point abs = m_hud.previewCopyBtn->GetAbsolutePosition();
+                SynthesizeClickAt(static_cast<int>(abs.x) + m_hud.previewCopyBtn->GetWidth() / 2,
+                                  static_cast<int>(abs.y) + m_hud.previewCopyBtn->GetHeight() / 2);
+                if (m_hud.previewCopyBtn->GetText() != "已复制") {
+                    bad += bad.empty() ? "" : "; ";
+                    bad += "previewCopyBtn did not change to 已复制";
+                }
+                for (auto& kv : m_copiedBtns) {
+                    if (kv.first == m_hud.previewCopyBtn) {
+                        kv.second -= std::chrono::seconds(2);
+                    }
+                }
+                ExpireCopiedButtons();
+                if (m_hud.previewCopyBtn->GetText() != "复制路径") {
+                    bad += bad.empty() ? "" : "; ";
+                    bad += "previewCopyBtn did not reset to 复制路径";
+                }
+            } else {
+                bad += bad.empty() ? "" : "; ";
+                bad += "previewCopyBtn is null";
             }
         } else {
             bad = "unexpected error: " + m_previewError;
