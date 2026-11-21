@@ -194,7 +194,7 @@ void HarnessApp::ApplySettingsVisibility() {
 //   ★ root.Arrange()（HarnessRootLayout）**跳过浮层子**——浮层几何完全归
 //   本函数管，布局与浮层互不干扰。
 void HarnessApp::LayoutSettingsOverlay() {
-    if (!m_hud.settingsPanel) return;
+    if (!m_hud.settingsPanel || !m_hud.settingsPanel->IsVisible()) return;
     ECDI::Widget& root = m_window->GetRootWidget();
     const int rw = root.GetWidth();
     const int rh = root.GetHeight();
@@ -832,6 +832,7 @@ void HarnessApp::RebuildModelList() {
         s ? m_appConfig.Find(s->providerId) : nullptr;
     addRow("输出上限",
            pc && pc->ActiveMaxOutput() > 0 ? std::to_string(pc->ActiveMaxOutput()) : "—");
+    m_inspectorLayoutDirty = true;
     if (ECDI::Widget* parent = m_hud.modelList->GetParent()) parent->Arrange();
     RequestRepaint();
 }
@@ -1080,13 +1081,18 @@ void HarnessApp::UpdateModelChip() {
     }
     // ★ 用 `﹀`(U+FE40，与思维链卡同款，Microsoft YaHei 有字形，不画 `□` 缺字块)。
     text += " \xEF\xB9\x80";
-    if (m_hud.modelChip->GetText() != text) {
+    const int rootW = m_window ? m_window->GetRootWidget().GetWidth() : 1200;
+    const int maxChipW = (rootW > 0 && rootW < 960) ? 130 : 220;
+    const bool textChanged = (m_hud.modelChip->GetText() != text);
+    if (!textChanged && maxChipW == m_lastModelChipMaxW && m_hud.modelChip->GetHeight() == 22) {
+        return;
+    }
+    m_lastModelChipMaxW = maxChipW;
+    if (textChanged) {
         m_hud.modelChip->SetText(text);
     }
     const int prevW = m_hud.modelChip->GetWidth();
     m_hud.modelChip->AutoSize();
-    const int rootW = m_window ? m_window->GetRootWidget().GetWidth() : 1200;
-    const int maxChipW = (rootW > 0 && rootW < 960) ? 130 : 220;
     const int wantW = std::clamp(m_hud.modelChip->GetWidth() + 12, 64, maxChipW);
     if (wantW != m_hud.modelChip->GetWidth() || m_hud.modelChip->GetHeight() != 22) {
         m_hud.modelChip->SetSize(wantW, 22);

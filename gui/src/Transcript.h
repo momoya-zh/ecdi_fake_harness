@@ -67,6 +67,7 @@ struct AgentInfo {
     std::string task;         // start：委派任务原文（权限门里展示过的同一段）
     std::string model;        // start（可选）：仅显示
     int depth = 0;            // start：恒 1
+    size_t order = 0;         // 首次出现序号（1-based），用于选项卡稳定排序
     bool started = false;
     bool ended = false;
     bool ok = false;          // end
@@ -138,6 +139,7 @@ private:
     size_t m_unknownTypes = 0;
     size_t m_unknownKinds = 0;   // ★ 未知 block_start.kind 计数（2026-10-13）
     std::map<std::string, AgentInfo> m_agents;   // ★ v5 子代理生命周期（id → 状态）
+    size_t m_nextAgentOrder = 0;                 // ★ 子代理首次出现递增序号
     size_t m_agentBlocks = 0;                    // ★ v5 带 agent 归属的块数
     size_t m_agentViolations = 0;                // ★ v5 I12 的 GUI 侧记账
     long long m_lastSeq = -1;

@@ -78,7 +78,7 @@ public:
     JournalWriter& operator=(const JournalWriter&) = delete;
 
     bool Open(const std::filesystem::path& journalPath, std::string& error);
-    bool AppendLine(const std::string& rawLine, std::string& error);
+    bool AppendLine(const std::string& rawLine, std::string& error, bool flush = true);
     void Flush();
     void Close();
 

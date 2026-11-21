@@ -137,11 +137,15 @@ void HarnessApp::SyncTurnCopyButtons() {
         while (turnEnd < n && !m_sess->rows[turnEnd].alignRight) {
             RowRec& r = m_sess->rows[turnEnd];
             if (!r.blockId.empty()) {
-                if (const Block* b = m_sess->transcript.FindBlock(r.blockId)) {
-                    if (!b->ended || !r.ended) {
-                        turnHasStreamingBlock = true;
-                    } else if (b->kind == "assistant" && !b->text.empty() && r.copyBtn) {
-                        lastEndedAssistantIdx = turnEnd;
+                if (!r.ended) {
+                    turnHasStreamingBlock = true;
+                } else if (r.copyBtn) {
+                    if (const Block* b = m_sess->transcript.FindBlock(r.blockId)) {
+                        if (!b->ended) {
+                            turnHasStreamingBlock = true;
+                        } else if (b->kind == "assistant" && !b->text.empty()) {
+                            lastEndedAssistantIdx = turnEnd;
+                        }
                     }
                 }
             }
@@ -152,7 +156,11 @@ void HarnessApp::SyncTurnCopyButtons() {
         for (size_t k = i; k < turnEnd; ++k) {
             RowRec& r = m_sess->rows[k];
             if (r.copyBtn) {
-                r.copyBtn->SetVisible(k == visibleIdx);
+                const bool want = (k == visibleIdx);
+                if (r.copyBtn->IsVisible() != want) {
+                    r.copyBtn->SetVisible(want);
+                    r.layoutDirty = true;
+                }
             }
         }
         i = turnEnd;
@@ -167,21 +175,29 @@ void HarnessApp::Relayout() {
     // 行左边界：按**行宽**居中（`(scrollW − 行宽)/2`），两侧留白恒等。
     const int canvasX0 = TranscriptCanvasX();
 
+    const bool inAgentTab = m_sess && !m_sess->activeAgentTab.empty();
     if (m_options.rowModeList) {
         // listlayout：行高固定、不测量；Arrange 由 ListLayout 完成
         for (RowRec& r : m_sess->rows) {
-            if (r.panel->GetHeight() != kListRowHeight) {
-                r.panel->SetSize(layoutW, kListRowHeight);
+            r.tabHidden = inAgentTab && (r.agentTag != m_sess->activeAgentTab);
+            if (r.panel) {
+                r.panel->SetVisible(inAgentTab ? !r.tabHidden : !r.foldHidden);
+                if (r.panel->GetHeight() != kListRowHeight) {
+                    r.panel->SetSize(layoutW, kListRowHeight);
+                }
             }
         }
         for (PendingPromptView& view : m_pendingPromptViews) {
-            if (view.row.panel && view.row.panel->GetHeight() != kListRowHeight) {
-                view.row.panel->SetSize(layoutW, kListRowHeight);
+            if (view.row.panel) {
+                view.row.panel->SetVisible(!inAgentTab);
+                if (view.row.panel->GetHeight() != kListRowHeight) {
+                    view.row.panel->SetSize(layoutW, kListRowHeight);
+                }
             }
         }
         m_content->Arrange();
         m_scroll->UpdateContentExtent();
-        SyncInspectorLayout();
+        SyncInspectorLayout(false);
         return;
     }
 
@@ -193,10 +209,13 @@ void HarnessApp::Relayout() {
     //     会话越长越卡」的根因）。版心封顶后，宽窗口里 toggle 是零重测的。
     const int innerW0 = std::max(120, layoutW - 2 * kCanvasPadX);
     int y = 0;
+    SyncAgentTaskBanner(canvasX0, innerW0, y);
     // ★ v5：改成**带下标**的遍历，唯一目的是让竖线能看一眼"下一行是不是同一个代理"
     //   （见下方 gutter 高度）。行数 O(n)，多一次比较不改变复杂度。
     for (size_t rowIdx = 0; rowIdx < m_sess->rows.size(); ++rowIdx) {
         RowRec& r = m_sess->rows[rowIdx];
+        const bool rowHidden = inAgentTab ? (r.agentTag != m_sess->activeAgentTab) : r.foldHidden;
+        r.tabHidden = inAgentTab && (r.agentTag != m_sess->activeAgentTab);
         // ★★ 2026-11-06（回合级折叠）：被折叠过程行**不参与排版**，`y` 也不推进。
         //   ★ 为什么必须在这里跳过、而不是只靠 `SetVisible(false)`：`ListLayout`
         //     会跳过不可见子控件（那是 list 模式那半边的全部理由），但 autosize
@@ -204,7 +223,7 @@ void HarnessApp::Relayout() {
         //     但高度还在"，屏上留下一个与折叠内容等高的空洞（回放实测的最初形态）。
         //   ★ 为什么同时还要 `SetVisible(false)`：命中测试/绘制/`Arrange` 在
         //     list 模式由布局器负责，可见性必须由控件自己持有。
-        if (r.foldHidden) {
+        if (rowHidden) {
             if (r.panel) {
                 r.panel->SetVisible(false);
                 // ★★ 2026-11-06（订正）：被折叠的行**仍然要横向定位**。
@@ -214,12 +233,15 @@ void HarnessApp::Relayout() {
                 //   `indentPx == kAgentIndent` 无故变红，note 里却看不出是折叠引起的。
                 //   纵向 y 不参与（不可见、不占位），所以这里只下发横坐标；
                 //   `y` 照旧不推进。
-                r.panel->SetPosition(canvasX0 + r.indent, y);
+                r.panel->SetPosition(canvasX0 + (inAgentTab ? 0 : r.indent), y);
             }
             if (r.gutter && !m_options.rowModeList) {
                 r.gutter->SetVisible(false);
             }
             continue;
+        }
+        if (r.panel && !r.panel->IsVisible()) {
+            r.panel->SetVisible(true);
         }
         // ★★ 协议 v5（2026-11-04）：子代理行右移一档。**只改宽度与横坐标**——
         //   `y` 的累加、行高的求解路径一个字不动（缩进是一次减法，不是一层新布局）。
@@ -227,13 +249,29 @@ void HarnessApp::Relayout() {
         //     是本行的。循环体内所有既有算式因此逐字不变地变成"按本行宽"，
         //     不可能漏改某一处——漏一处就是「面板按版心宽、文字按缩进宽」的错位，
         //     而那种错位只在有子代理的行上出现，既有探针一条都抓不到。
-        const int innerW = std::max(160, innerW0 - r.indent);
-        const int canvasX = canvasX0 + r.indent;
+        const int effIndent = inAgentTab ? 0 : r.indent;
+        const int innerW = std::max(160, innerW0 - effIndent);
+        const int canvasX = canvasX0 + effIndent;
         int rowH = 0;
-        // ★★ 2026-11-06：回合摘要条 = 单行通栏标题，无折叠体、无换行。
-        //   高度与工具行"收起态"取同一个数（kHeaderH + 上下各 2），
-        //   因为它在同一个槽位上与那条工具行互斥出现。
-        if (r.foldBar) {
+
+        // ★★ P0 Step 1 & Step 3: Row-level layout cache + lazy collapsed measurement.
+        //   When neither row content nor column width changed, skip all text measurements
+        //   and SetSize calls, updating only vertical placement `y` and gutter continuation.
+        if (!r.layoutDirty && r.lastLayoutW == innerW) {
+            rowH = r.cachedRowH;
+            if (r.panel) {
+                const bool isChatBubble =
+                    (!r.foldBar && !r.tool && !r.reasoning && !r.ask && !r.hasMarkdown);
+                const int px = (isChatBubble && r.alignRight)
+                                   ? (canvasX + innerW - r.cachedBubbleW)
+                                   : canvasX;
+                r.panel->SetPosition(px, y);
+            }
+            if (r.foldBar) {
+                y += rowH + kRowGap;
+                continue;
+            }
+        } else if (r.foldBar) {
             if (r.headerBtn) {
                 r.headerBtn->SetSize(std::max(80, innerW - 2 * kRowPadX), kHeaderH);
                 r.headerBtn->SetPosition(kRowPadX, 2);
@@ -243,406 +281,406 @@ void HarnessApp::Relayout() {
                 r.panel->SetSize(innerW, rowH);
                 r.panel->SetPosition(canvasX, y);
             }
+            r.lastLayoutW = innerW;
+            r.cachedRowH = rowH;
+            r.cachedBubbleW = innerW;
+            r.layoutDirty = false;
             y += rowH + kRowGap;
             continue;
-        }
-        // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
-        if (r.tool || r.reasoning || r.ask) {
-            const int bodyW = innerW - 2 * kRowPadX;
-            const int wrapW = std::max(40, bodyW - 20);
-            int bodyH = 0;
-            if (r.label) {
-                // Phase 29 wrap：工具体按 bodyW 宽断行；★ 宽度不变不 SetSize——
-                // 无条件 SetSize 会打穿 C29-10 wrap 布局缓存（指纹含宽度），
-                // 逐帧重建 = 4.8s 测量成本事故（2026-10-06 实测）
-                if (r.lastWrapW != wrapW) {
-                    r.label->SetSize(wrapW, r.label->GetHeight());
-                    // ★★ 协议 v5（2026-11-05）：提案行宽随行宽统一下发。高度定死
-                    //   kProposalLineH（mono 不折行），超长行由 r.proposal.sv 横向滚动承载。
-                    const int propContentW = std::max(wrapW, r.proposal.maxCols * 8 + 12);
-                    for (ECDI::Label* l : r.proposal.lines) {
-                        if (l) l->SetSize(propContentW, kProposalLineH);
-                    }
-                    if (r.proposal.sv && !r.proposal.lines.empty()) {
-                        const int linesH = static_cast<int>(r.proposal.lines.size()) * kProposalLineH;
-                        const int barExtra = (propContentW > wrapW) ? (kScrollBarThickness + 2) : 0;
-                        r.proposal.sv->SetSize(wrapW, linesH + barExtra);
-                        r.proposal.sv->SetContentExtent(propContentW, linesH);
-                    }
-                    r.lastWrapW = wrapW;
-                }
-                // ★★ A-2 已复核**否决**（2026-10-13 晚）：此处**保持**无条件 `AutoSize()`。
-                //   我曾判定「折叠卡的长文本被每帧重测」并改成「按需重测」，
-                //   **实测推翻了它**——把 `chars` 分解为 `chars = a(一次性) + b(每帧)·frames`
-                //   （`.scratch/probe_a2_decompose.py`，同长度下多档 `--auto-close` 拟合）：
-                //     body=4000 ⇒ a = 123,081 · **b = 504**
-                //     body=40   ⇒ a =     138 · **b = 502**
-                //   ⇒ **每帧成本与文本长度无关**（b 之比 **1.00×**）；长文本的代价是
-                //     **一次性**的布局建立（ECDI 的 C29-10 五元组指纹缓存**按文档生效**）。
-                //   ⇒ 先前那个「8.80×」是**同时长下两个不同长度**的对比，差值全在 a，
-                //     被我误读成了逐帧浪费 ⇒ **原判收回**（条 30/40）。
-                //   ⇒ 「按需重测」那版实测**零收益**（读数完全一致），故**不保留**——
-                //     留一个不解决问题的状态变量只会带来「失效纪律」的腐化风险。
-                //   ★ 一次性成本是**必需的**：`CollapsiblePanel` 的收起态 `SetSize`
-                //     **定义展开基准**（其头注释 76-78 行），`bodyH` 必须有值。
-                r.label->AutoSize();
-                bodyH = r.label->GetHeight() + 8;
-                // ★★ 协议 v5（2026-11-05）：提案行是**定高乘法**——行数在建行期
-                //   定死进 `rec.proposal.lines`（内容不随宽度变），这里零测量。
-                //   问句行 AutoSize 之后接 N 行 kProposalLineH（超宽时留出 6px 横条脚印）。
-                if (!r.proposal.lines.empty()) {
-                    const int propContentW = std::max(wrapW, r.proposal.maxCols * 8 + 12);
-                    const int barExtra = (propContentW > wrapW) ? (kScrollBarThickness + 2) : 0;
-                    bodyH += static_cast<int>(r.proposal.lines.size()) * kProposalLineH + barExtra;
-                }
-            }
-            r.bodyH = bodyH;
-            if (r.headerBtn) {
-                // ★★ 2026-10-27：权限门的 header 必须给右侧两钮**让位**（按钮不进折叠体，
-                //   见 BuildAskRow 的注释）。168 = 按钮区 160（`innerW-160` 起到右边缘）
-                //   + 8 间隙；不留这一段，摘要文字会被不透明按钮盖掉一截。
-                const int headW = r.ask ? std::max(80, innerW - kRowPadX - 168)
-                                        : innerW - 2 * kRowPadX;
-                r.headerBtn->SetSize(headW, kHeaderH);
-                r.headerBtn->SetPosition(kRowPadX, 2);
-            }
-            if (r.body) {
-                // 只在基准尺寸变化时下发：收起态 SetSize 定义展开基准，
-                // 展开态 SetSize 会直接钉住呈现值——动画期间重入会把动画打死
-                if (r.lastBodyW != bodyW || r.lastBodyH != bodyH) {
-                    r.lastBodyW = bodyW;
-                    r.lastBodyH = bodyH;
-                    r.body->SetSize(bodyW, bodyH);
-                }
-                r.body->SetPosition(kRowPadX, 2 + kHeaderH + 2);
-            }
-            rowH = 2 + kHeaderH + 2 + (r.expanded ? bodyH : 0);
-            // ★★ 2026-10-27：权限门的两钮与已答结论锚在 **header 行**（垂直居中）。
-            //   · 按钮**不随折叠体走**：折叠体一收，按钮必须还在（`--answer-probe`
-            //     用控件绝对中心点合成点击，按钮一隐藏它就必红；真用户也会找不到）。
-            //   · 结论沿用 P4 D 的右对齐位，纵坐标从固定的 10 换成 header 行中线——
-            //     `kHeaderH=32`、结论高 16 ⇒ 仍是 10，与改造前逐像素一致。
-            if (r.ask) {
-                const int btnY = 2 + (kHeaderH - 28) / 2;
-                if (r.allowBtn) {
-                    r.allowBtn->SetSize(70, 28);
-                    r.allowBtn->SetPosition(innerW - 160, btnY);
-                }
-                if (r.denyBtn) {
-                    r.denyBtn->SetSize(70, 28);
-                    r.denyBtn->SetPosition(innerW - 82, btnY);
-                }
-                if (r.conclusion && r.conclusion->IsVisible()) {
-                    r.conclusion->AutoSize();
-                    const int cw = r.conclusion->GetWidth();
-                    const int ch = r.conclusion->GetHeight();
-                    r.conclusion->SetPosition(innerW - cw - 14, 2 + (kHeaderH - ch) / 2);
-                }
-            }
-        } else if (r.hasMarkdown) {
-            // ★★ 富内容 B+（2026-11-08）：复合 assistant 行的高度由下方 segments 累加计算，
-            //   不走单气泡 wrap（原注释只写「含表格」，现已扩到块级全套）。
-            //   ★ 这里是**早返回分支**：真正的高度与摆放全在下面的段循环里定稿，
-            //     所以此处刻意什么都不做——不是遗漏。
         } else {
-            const int maxBubbleW = std::max(120, innerW * 78 / 100);
-            const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
-            if (r.label) {
-                // ★★ 2026-10-27：权限门已并入上面的折叠分支（`r.ask` 走 header + 折叠体，
-                //   两钮与结论锚在 header 行）⇒ 原来这里的 `if (r.ask) {...}` 整支删除。
-                //   本块现在只剩真正的聊天气泡。
-                // 聊天气泡（Phase 29 wrap）：单行放得下 → 气泡收缩；
-                // 超上限 → 按上限宽断行（高度 = 行数×行高，布局驱动）
-                if (!r.wrapped) {
-                    r.label->AutoSize();   // 单行 extent
-                }
-                // ★ REQ-01（2026-10-13）：含**显式 `\n`** 的文本也必须走 wrap 路径。
-                //   非 wrap ⇒ `TextWidget` 走 Phase 28 的「单条 DrawText、布局引擎零接触」
-                //   路径（`TextWidget.h:62-63`）⇒ **`\n` 不被消费**，整段被拼成一行，
-                //   再由宽度重新断行（断点与原意不符）。ECDI 侧本身正确（`TextWidget.cpp:235-248`
-                //   显式切硬段、段数 = `\n` 数 + 1），此前误判为 ECDI 缺陷，实为本行只看了宽度。
-                const bool hasNewline =
-                    r.label->GetText().find('\n') != std::string::npos;
-                const bool needWrap =
-                    r.wrapped || hasNewline || r.label->GetWidth() > maxTextW;
-                if (needWrap != r.wrapped) {
-                    r.wrapped = needWrap;
-                    r.label->SetWordWrap(needWrap);
-                }
-                if (r.wrapped) {
-                    if (r.lastWrapW != maxTextW) {
-                        r.label->SetSize(maxTextW, r.label->GetHeight());
-                        r.lastWrapW = maxTextW;
-                    }
-                    r.label->AutoSize();   // 稳定期命中 wrap 布局缓存，不逐帧重建
-                }
-                r.label->SetPosition(kRowPadX, 8);
-            }
-            if (r.copyBtn && r.copyBtn->IsVisible()) {
-                r.copyBtn->SetSize(48, 22);
-                r.copyBtn->SetPosition(kRowPadX, r.label ? r.label->GetHeight() + 10 : 8);
-                rowH = (r.label ? r.label->GetHeight() + 10 : 0) + 22 + 8;
-            } else {
-                rowH = r.label ? r.label->GetHeight() + 16 : 0;
-            }
-        }
-        if (r.tool || r.reasoning || r.ask) {
-            // 工具卡 / 思维链卡 / 权限门：通栏（hi-fi align-self: stretch）
-            r.panel->SetSize(innerW, rowH);
-            r.panel->SetPosition(canvasX, y);
-        } else if (r.hasMarkdown) {
-            // ★★ 富内容二期：含有 Markdown 表格的复合 assistant 行
-            //   T1+T2（2026-11-01）：表格内部布局先按版心宽定稿（折行/行高/列线），
-            //   再走下面的 ScrollView 尺寸下发；宽不变不重排（同 lastWrapW 纪律）
-            const int tableAvailW = std::max(40, innerW - 2 * kRowPadX);
-            for (RowRec::TableRec& t : r.tables) {
-                if (t.lastAvailW != tableAvailW) {
-                    LayoutTableInterior(t, tableAvailW);
-                    t.lastAvailW = tableAvailW;
-                }
-            }
-            int curY = 8;
-            // ★★ 2026-11-08（富内容 B+）：段间距**按段种**取，不再一律 +10。
-            //   ★ index 与 `r.segMeta` 严格对齐——这就是 BuildAssistantMarkdownWidgets
-            //     里「每种段种都必须推一条 meta」的消费端。少推一条，后面所有段
-            //     的整体间距错位一格，且不报错（只会越排越挤）。
-            for (size_t si = 0; si < r.segments.size(); ++si) {
-                ECDI::Widget* w = r.segments[si];
-                if (!w) continue;
-                RowRec::SegMeta meta;
-                if (si < r.segMeta.size()) meta = r.segMeta[si];
-                // 本段下方间距（画在 curY 推进量里）：标题与代码块留白多，列表项紧凑。
-                int gapAfter = 10;
-                switch (meta.kind) {
-                    case MarkdownSegmentKind::Heading:
-                        // h1 最松，h3 次之；标题下方比上方更需要留白
-                        gapAfter = (meta.level <= 1) ? 12 : (meta.level == 2 ? 10 : 8);
-                        break;
-                    case MarkdownSegmentKind::CodeBlock:
-                        gapAfter = 12;
-                        break;
-                    case MarkdownSegmentKind::ListItem:
-                        // 列表项之间 3px（原型 `gap:3px`）；末项后 10px 收束整组
-                        gapAfter = meta.lastOfList ? 10 : 3;
-                        break;
-                    case MarkdownSegmentKind::Quote:
-                        gapAfter = 10;
-                        break;
-                    case MarkdownSegmentKind::Hr:
-                        gapAfter = 12;
-                        break;
-                    case MarkdownSegmentKind::Table:
-                        gapAfter = 12;
-                        break;
-                    default:
-                        gapAfter = 10;
-                        break;
-                }
-
-                if (meta.kind == MarkdownSegmentKind::Hr) {
-                    // 分隔线：撑满版心、定高 1px（视觉是线，不是块）
-                    w->SetSize(std::max(40, innerW - 2 * kRowPadX), 1);
-                    w->SetPosition(kRowPadX, curY + 4);
-                    curY += 1 + 4 + gapAfter;
-                } else if (meta.kind == MarkdownSegmentKind::ListItem) {
-                    // 列表项：marker 槽 26px + 正文；正文左边界越过槽（悬挂缩进）
-                    //   depth 每级再缩 26px（原型 `padding-left: 26px` 的嵌套口径）
-                    const int indentStep = 26;
-                    const int slotW = 26;
-                    int left = kRowPadX + meta.depth * indentStep;
-                    // 子控件：第 0 个 = marker，第 1 个 = 正文
-                    if (w->GetChildCount() >= 2) {
-                        auto* mk = w->GetChildAt(0);
-                        auto* body = dynamic_cast<ECDI::TextWidget*>(w->GetChildAt(1));
-                        if (!mk || !body) { w->SetPosition(left, curY); curY += w->GetHeight() + gapAfter; continue; }
-                        const int availW = std::max(40, innerW - left - kRowPadX);
-                        // body 是 Label（TextWidget 派生）⇒ SetWordWrap 可用；
-                        // 先钉宽再 AutoSize 求高（wrap 态「宽钉死、高求解」）。
-                        body->SetWordWrap(true);
-                        body->SetSize(std::max(20, availW - slotW), body->GetHeight());
-                        body->AutoSize();
-                        // ★ 列表行盒与布局锚定（2026-11-10 修复数字列表裁切与对齐）：
-                        //   1. 序号点裁切真因：slotW=22 过窄导致两位数序号（如 "10."）超宽被 PushClip 裁除，
-                        //      扩展至 slotW=26 彻底解决；
-                        //   2. marker 垂直下沉真因：原 mk->SetSize(slotW, h) 误用多行正文高度，导致 Label
-                        //      在多行盒内垂直居中下沉；现固定单行行盒高 singleLineH 并锚定在顶部 (0, 0)；
-                        //   3. 高度截断说明：框架 Widget::AutoSize 向零截断浮点高度已登记 REQ-22；
-                        //      此处不堆硬编码 +2 余量，保持单行保底 LineBox 并遵循统一 AutoSize 语义。
-                        const int singleLineH = uikit::LineBox(harness::kFontBody);
-                        const int bodyH = std::max(singleLineH, body->GetHeight());
-                        body->SetSize(body->GetWidth(), bodyH);
-                        mk->SetSize(slotW, singleLineH);
-                        mk->SetPosition(0, 0);
-                        body->SetPosition(slotW, 0);
-                        w->SetSize(availW, bodyH);
-                        w->SetPosition(left, curY);
-                        curY += bodyH + gapAfter;
-                    } else {
-                        w->SetPosition(left, curY);
-                        curY += w->GetHeight() + gapAfter;
-                    }
-                } else if (meta.kind == MarkdownSegmentKind::CodeBlock) {
-                    // 代码块：卡宽吃版心；内部顶部条定高 + 代码区按内容宽定（可横滚）
-                    if (w->GetChildCount() >= 2) {
-                        auto* bar = w->GetChildAt(0);
-                        auto* sv = w->GetChildAt(1);
-                        const int cardW = std::max(40, innerW - 2 * kRowPadX);
-                        const int barH = 28;
-                        bar->SetSize(cardW - 2, barH);
-                        bar->SetPosition(1, 1);
-                        // 顶部条内：语言标左、复制钮右
-                        if (bar->GetChildCount() >= 2) {
-                            auto* lang = bar->GetChildAt(0);
-                            auto* btn = bar->GetChildAt(1);
-                            lang->AutoSize();
-                            lang->SetPosition(10, (barH - lang->GetHeight()) / 2);
-                            btn->SetSize(48, 20);
-                            btn->SetPosition(cardW - 2 - 48 - 8, (barH - 20) / 2);
-                        }
-                        const int viewW = cardW - 2;
-                        // 代码区：按最长行实测宽（不软折行）+ 按 '\n' 拆行后的真实高度定尺寸并更新 ScrollView extent
-                        int contentW = 0;
-                        int contentH = 0;
-                        if (auto* s = dynamic_cast<ECDI::ScrollView*>(sv)) {
-                            const int padX = 12;
-                            const int padY = 8;
-                            const int minLineH = uikit::LineBox(harness::kFontMicro);
-                            auto& cv = s->GetContentView();
-                            if (cv.GetChildCount() > 0) {
-                                if (auto* codeWidget = dynamic_cast<ECDI::TextWidget*>(cv.GetChildAt(0))) {
-                                    const std::string& raw = codeWidget->GetText();
-                                    const ECDI::Font monoFont = harness::MonoFont(harness::kFontMicro);
-                                    int maxLineW = 1;
-                                    size_t pos = 0;
-                                    while (true) {
-                                        const size_t nl = raw.find('\n', pos);
-                                        const std::string line = (nl == std::string::npos)
-                                            ? raw.substr(pos)
-                                            : raw.substr(pos, nl - pos);
-                                        int lw = 1;
-                                        if (m_window) {
-                                            lw = static_cast<int>(
-                                                m_window->GetTextMeasurer().MeasureText(monoFont, line).width + 0.999f);
-                                        } else {
-                                            lw = static_cast<int>(line.size()) * 7;
-                                        }
-                                        maxLineW = std::max(maxLineW, lw);
-                                        if (nl == std::string::npos) break;
-                                        pos = nl + 1;
-                                    }
-                                    // Label 需开启 wrap 并把宽钉到 maxLineW+2 才逐行拆 '\n'；
-                                    // TextBox 原生按 '\n' 分行，保持 SetWordWrap(false) 避免意外软折行。
-                                    const int textW = std::max(1, maxLineW + 2);
-                                    if (dynamic_cast<ECDI::Label*>(codeWidget)) {
-                                        codeWidget->SetWordWrap(true);
-                                    } else {
-                                        codeWidget->SetWordWrap(false);
-                                    }
-                                    codeWidget->SetSize(textW, minLineH);
-                                    codeWidget->AutoSize();
-                                    const int textH = std::max(minLineH, codeWidget->GetHeight());
-                                    codeWidget->SetPosition(padX, padY);
-                                    codeWidget->SetSize(std::max(textW, viewW - 2 * padX), textH);
-                                    contentW = textW + 2 * padX;
-                                    contentH = textH + 2 * padY;
-                                    s->SetContentExtent(contentW, contentH);
-                                }
-                            }
-                            contentW = static_cast<int>(s->GetContentExtent().width);
-                            contentH = static_cast<int>(s->GetContentExtent().height);
-                        }
-                        // 4 = 代码块横条厚度（与 kCodeBarThickness 同值；本文件取不到那个 constexpr）
-                        const int barFoot = (contentW > viewW) ? (4 + 2) : 0;
-                        sv->SetSize(viewW, contentH + barFoot);
-                        sv->SetPosition(1, 1 + barH);
-                        const int cardH = 1 + barH + contentH + barFoot + 1;
-                        w->SetSize(cardW, cardH);
-                        w->SetPosition(kRowPadX, curY);
-                        curY += cardH + gapAfter;
-                    } else {
-                        w->SetPosition(kRowPadX, curY);
-                        curY += w->GetHeight() + gapAfter;
-                    }
-                } else if (meta.kind == MarkdownSegmentKind::Quote) {
-                    // 引用块：竖条 3px + 正文（左 padding 12px）
-                    if (w->GetChildCount() >= 2) {
-                        auto* bar = w->GetChildAt(0);
-                        auto* body = dynamic_cast<ECDI::TextWidget*>(w->GetChildAt(1));
-                        if (!bar || !body) { w->SetPosition(kRowPadX, curY); curY += w->GetHeight() + gapAfter; continue; }
-                        const int availW = std::max(40, innerW - 2 * kRowPadX);
-                        body->SetWordWrap(true);
-                        body->SetSize(std::max(20, availW - 3 - 12), body->GetHeight());
-                        body->AutoSize();
-                        const int singleLineH = uikit::LineBox(harness::kFontBody);
-                        const int h = std::max(singleLineH, body->GetHeight());
-                        body->SetSize(body->GetWidth(), h);
-                        bar->SetSize(3, h);
-                        bar->SetPosition(0, 0);
-                        body->SetPosition(3 + 12, 0);
-                        w->SetSize(availW, h);
-                        w->SetPosition(kRowPadX, curY);
-                        curY += h + gapAfter;
-                    } else {
-                        w->SetPosition(kRowPadX, curY);
-                        curY += w->GetHeight() + gapAfter;
-                    }
-                } else if (auto* tw = dynamic_cast<ECDI::TextWidget*>(w)) {
-                    tw->SetWordWrap(true);
-                    tw->SetSize(std::max(40, innerW - 2 * kRowPadX), tw->GetHeight());
-                    tw->AutoSize();
-                    tw->SetPosition(kRowPadX, curY);
-                    curY += tw->GetHeight() + gapAfter;
-                } else if (auto* sv = dynamic_cast<ECDI::ScrollView*>(w)) {
-                    const int contentW = static_cast<int>(sv->GetContentExtent().width);
-                    const int contentH = static_cast<int>(sv->GetContentExtent().height);
-                    const int availW = std::max(40, innerW - 2 * kRowPadX);
-                    const int tableW = std::min(availW, contentW);
-                    // +2 = ScrollView 条四边内缩（与上游 BarFootprint 同式）；表格横条已薄化 ⇒ 不能写死 14
-                    const int barFoot = sv->GetHorizontalScrollBar()
-                                            ? sv->GetHorizontalScrollBar()->GetThickness() + 2
-                                            : 14;
-                    const int barExtraH = (contentW > availW) ? barFoot : 0;
-                    const int tableH = contentH + barExtraH;
-                    sv->SetSize(tableW, tableH);
-                    sv->SetPosition(kRowPadX, curY);
-                    curY += tableH + gapAfter;
-                } else {
-                    w->SetPosition(kRowPadX, curY);
-                    curY += w->GetHeight() + gapAfter;
-                }
-            }
-            if (r.copyBtn && r.copyBtn->IsVisible()) {
-                r.copyBtn->SetSize(48, 22);
-                r.copyBtn->SetPosition(kRowPadX, curY);
-                curY += 22 + 8;
-            }
-            rowH = curY + 8;
-            r.panel->SetSize(innerW, rowH);
-            r.panel->SetPosition(canvasX, y);
-        } else {
-            // 聊天气泡（hi-fi .msg max-width:78%）：user 右对齐、assistant 左对齐
-            const int maxBubbleW = std::max(120, innerW * 78 / 100);
             int bubbleW = innerW;
-            if (r.label) {
-                bubbleW = r.wrapped
+            // ★ 协议 v2：思维链卡与工具卡**同一套几何**（通栏 + 折叠体），故共用本分支
+            if (r.tool || r.reasoning || r.ask) {
+                const int bodyW = innerW - 2 * kRowPadX;
+                const int wrapW = std::max(40, bodyW - 20);
+                int bodyH = r.bodyH;
+                // Collapsed reasoning/tool rows skip text wrap + AutoSize completely during streaming;
+                // ToggleRow measures synchronously before calling body->Toggle().
+                if (r.label && (r.expanded || r.ask)) {
+                    if (r.lastWrapW != wrapW) {
+                        r.label->SetSize(wrapW, r.label->GetHeight());
+                        const int propContentW = std::max(wrapW, r.proposal.maxCols * 8 + 12);
+                        for (ECDI::Label* l : r.proposal.lines) {
+                            if (l) l->SetSize(propContentW, kProposalLineH);
+                        }
+                        if (r.proposal.sv && !r.proposal.lines.empty()) {
+                            const int linesH = static_cast<int>(r.proposal.lines.size()) * kProposalLineH;
+                            const int barExtra = (propContentW > wrapW) ? (kScrollBarThickness + 2) : 0;
+                            r.proposal.sv->SetSize(wrapW, linesH + barExtra);
+                            r.proposal.sv->SetContentExtent(propContentW, linesH);
+                        }
+                        r.lastWrapW = wrapW;
+                    }
+                    r.label->AutoSize();
+                    bodyH = r.label->GetHeight() + 8;
+                    if (!r.proposal.lines.empty()) {
+                        const int propContentW = std::max(wrapW, r.proposal.maxCols * 8 + 12);
+                        const int barExtra = (propContentW > wrapW) ? (kScrollBarThickness + 2) : 0;
+                        bodyH += static_cast<int>(r.proposal.lines.size()) * kProposalLineH + barExtra;
+                    }
+                    r.bodyH = bodyH;
+                }
+                if (r.headerBtn) {
+                    const int headW = r.ask ? std::max(80, innerW - kRowPadX - 168)
+                                            : innerW - 2 * kRowPadX;
+                    r.headerBtn->SetSize(headW, kHeaderH);
+                    r.headerBtn->SetPosition(kRowPadX, 2);
+                }
+                if (r.body) {
+                    if ((r.expanded || r.ask) && (r.lastBodyW != bodyW || r.lastBodyH != bodyH)) {
+                        r.lastBodyW = bodyW;
+                        r.lastBodyH = bodyH;
+                        r.body->SetSize(bodyW, bodyH);
+                    }
+                    r.body->SetPosition(kRowPadX, 2 + kHeaderH + 2);
+                }
+                rowH = 2 + kHeaderH + 2 + (r.expanded ? bodyH : 0);
+                if (r.ask) {
+                    const int btnY = 2 + (kHeaderH - 28) / 2;
+                    if (r.allowBtn) {
+                        r.allowBtn->SetSize(70, 28);
+                        r.allowBtn->SetPosition(innerW - 160, btnY);
+                    }
+                    if (r.denyBtn) {
+                        r.denyBtn->SetSize(70, 28);
+                        r.denyBtn->SetPosition(innerW - 82, btnY);
+                    }
+                    if (r.conclusion && r.conclusion->IsVisible()) {
+                        r.conclusion->AutoSize();
+                        const int cw = r.conclusion->GetWidth();
+                        const int ch = r.conclusion->GetHeight();
+                        r.conclusion->SetPosition(innerW - cw - 14, 2 + (kHeaderH - ch) / 2);
+                    }
+                }
+                if (r.panel) {
+                    r.panel->SetSize(innerW, rowH);
+                    r.panel->SetPosition(canvasX, y);
+                }
+            } else if (r.hasMarkdown) {
+                const int tableAvailW = std::max(40, innerW - 2 * kRowPadX);
+                for (RowRec::TableRec& t : r.tables) {
+                    if (t.lastAvailW != tableAvailW) {
+                        LayoutTableInterior(t, tableAvailW);
+                        t.lastAvailW = tableAvailW;
+                    }
+                }
+                int curY = 8;
+                RowRec::SegMeta defaultMeta;
+                for (size_t si = 0; si < r.segments.size(); ++si) {
+                    ECDI::Widget* w = r.segments[si];
+                    if (!w) continue;
+                    RowRec::SegMeta& meta = (si < r.segMeta.size()) ? r.segMeta[si] : defaultMeta;
+                    int gapAfter = 10;
+                    switch (meta.kind) {
+                        case MarkdownSegmentKind::Heading:
+                            gapAfter = (meta.level <= 1) ? 12 : (meta.level == 2 ? 10 : 8);
+                            break;
+                        case MarkdownSegmentKind::CodeBlock:
+                            gapAfter = 12;
+                            break;
+                        case MarkdownSegmentKind::ListItem:
+                            gapAfter = meta.lastOfList ? 10 : 3;
+                            break;
+                        case MarkdownSegmentKind::Quote:
+                            gapAfter = 10;
+                            break;
+                        case MarkdownSegmentKind::Hr:
+                            gapAfter = 12;
+                            break;
+                        case MarkdownSegmentKind::Table:
+                            gapAfter = 12;
+                            break;
+                        default:
+                            gapAfter = 10;
+                            break;
+                    }
+
+                    if (meta.kind == MarkdownSegmentKind::Hr) {
+                        w->SetSize(std::max(40, innerW - 2 * kRowPadX), 1);
+                        w->SetPosition(kRowPadX, curY + 4);
+                        curY += 1 + 4 + gapAfter;
+                    } else if (meta.kind == MarkdownSegmentKind::ListItem) {
+                        const int indentStep = 26;
+                        const int slotW = 26;
+                        int left = kRowPadX + meta.depth * indentStep;
+                        if (w->GetChildCount() >= 2) {
+                            auto* mk = w->GetChildAt(0);
+                            auto* body = dynamic_cast<ECDI::TextWidget*>(w->GetChildAt(1));
+                            if (!mk || !body) { w->SetPosition(left, curY); curY += w->GetHeight() + gapAfter; continue; }
+                            const int availW = std::max(40, innerW - left - kRowPadX);
+                            body->SetWordWrap(true);
+                            body->SetSize(std::max(20, availW - slotW), body->GetHeight());
+                            body->AutoSize();
+                            const int singleLineH = uikit::LineBox(harness::kFontBody);
+                            const int bodyH = std::max(singleLineH, body->GetHeight());
+                            body->SetSize(body->GetWidth(), bodyH);
+                            mk->SetSize(slotW, singleLineH);
+                            mk->SetPosition(0, 0);
+                            body->SetPosition(slotW, 0);
+                            w->SetSize(availW, bodyH);
+                            w->SetPosition(left, curY);
+                            curY += bodyH + gapAfter;
+                        } else {
+                            w->SetPosition(left, curY);
+                            curY += w->GetHeight() + gapAfter;
+                        }
+                    } else if (meta.kind == MarkdownSegmentKind::CodeBlock) {
+                        if (w->GetChildCount() >= 2) {
+                            auto* bar = w->GetChildAt(0);
+                            auto* sv = w->GetChildAt(1);
+                            const int cardW = std::max(40, innerW - 2 * kRowPadX);
+                            const int barH = 28;
+                            bar->SetSize(cardW - 2, barH);
+                            bar->SetPosition(1, 1);
+                            if (bar->GetChildCount() >= 2) {
+                                auto* lang = bar->GetChildAt(0);
+                                auto* btn = bar->GetChildAt(1);
+                                lang->AutoSize();
+                                lang->SetPosition(10, (barH - lang->GetHeight()) / 2);
+                                btn->SetSize(48, 20);
+                                btn->SetPosition(cardW - 2 - 48 - 8, (barH - 20) / 2);
+                            }
+                            const int viewW = cardW - 2;
+                            int contentW = 0;
+                            int contentH = 0;
+                            if (auto* s = dynamic_cast<ECDI::ScrollView*>(sv)) {
+                                const int padX = 12;
+                                const int padY = 8;
+                                const int minLineH = uikit::LineBox(harness::kFontMicro);
+                                auto& cv = s->GetContentView();
+                                if (cv.GetChildCount() > 0) {
+                                    if (auto* codeWidget = dynamic_cast<ECDI::TextWidget*>(cv.GetChildAt(0))) {
+                                        if (!meta.codeMeasured) {
+                                            const std::string& raw = codeWidget->GetText();
+                                            const ECDI::Font monoFont = harness::MonoFont(harness::kFontMicro);
+                                            int maxLineW = 1;
+                                            size_t pos = 0;
+                                            while (true) {
+                                                const size_t nl = raw.find('\n', pos);
+                                                const std::string line = (nl == std::string::npos)
+                                                    ? raw.substr(pos)
+                                                    : raw.substr(pos, nl - pos);
+                                                int lw = 1;
+                                                if (m_window) {
+                                                    lw = static_cast<int>(
+                                                        m_window->GetTextMeasurer().MeasureText(monoFont, line).width + 0.999f);
+                                                } else {
+                                                    lw = static_cast<int>(line.size()) * 7;
+                                                }
+                                                maxLineW = std::max(maxLineW, lw);
+                                                if (nl == std::string::npos) break;
+                                                pos = nl + 1;
+                                            }
+                                            const int textW0 = std::max(1, maxLineW + 2);
+                                            if (dynamic_cast<ECDI::Label*>(codeWidget)) {
+                                                codeWidget->SetWordWrap(true);
+                                            } else {
+                                                codeWidget->SetWordWrap(false);
+                                            }
+                                            codeWidget->SetSize(textW0, minLineH);
+                                            codeWidget->AutoSize();
+                                            meta.cachedCodeMaxLineW = maxLineW;
+                                            meta.cachedCodeTextH = std::max(minLineH, codeWidget->GetHeight());
+                                            meta.codeMeasured = true;
+                                        }
+                                        const int textW = std::max(1, meta.cachedCodeMaxLineW + 2);
+                                        const int textH = meta.cachedCodeTextH;
+                                        codeWidget->SetPosition(padX, padY);
+                                        codeWidget->SetSize(std::max(textW, viewW - 2 * padX), textH);
+                                        contentW = textW + 2 * padX;
+                                        contentH = textH + 2 * padY;
+                                        s->SetContentExtent(contentW, contentH);
+                                    }
+                                }
+                                contentW = static_cast<int>(s->GetContentExtent().width);
+                                contentH = static_cast<int>(s->GetContentExtent().height);
+                            }
+                            const int barFoot = (contentW > viewW) ? (4 + 2) : 0;
+                            sv->SetSize(viewW, contentH + barFoot);
+                            sv->SetPosition(1, 1 + barH);
+                            const int cardH = 1 + barH + contentH + barFoot + 1;
+                            w->SetSize(cardW, cardH);
+                            w->SetPosition(kRowPadX, curY);
+                            curY += cardH + gapAfter;
+                        } else {
+                            w->SetPosition(kRowPadX, curY);
+                            curY += w->GetHeight() + gapAfter;
+                        }
+                    } else if (meta.kind == MarkdownSegmentKind::Quote) {
+                        if (w->GetChildCount() >= 2) {
+                            auto* bar = w->GetChildAt(0);
+                            auto* body = dynamic_cast<ECDI::TextWidget*>(w->GetChildAt(1));
+                            if (!bar || !body) { w->SetPosition(kRowPadX, curY); curY += w->GetHeight() + gapAfter; continue; }
+                            const int availW = std::max(40, innerW - 2 * kRowPadX);
+                            body->SetWordWrap(true);
+                            body->SetSize(std::max(20, availW - 3 - 12), body->GetHeight());
+                            body->AutoSize();
+                            const int singleLineH = uikit::LineBox(harness::kFontBody);
+                            const int h = std::max(singleLineH, body->GetHeight());
+                            body->SetSize(body->GetWidth(), h);
+                            bar->SetSize(3, h);
+                            bar->SetPosition(0, 0);
+                            body->SetPosition(3 + 12, 0);
+                            w->SetSize(availW, h);
+                            w->SetPosition(kRowPadX, curY);
+                            curY += h + gapAfter;
+                        } else {
+                            w->SetPosition(kRowPadX, curY);
+                            curY += w->GetHeight() + gapAfter;
+                        }
+                    } else if (auto* tw = dynamic_cast<ECDI::TextWidget*>(w)) {
+                        tw->SetWordWrap(true);
+                        tw->SetSize(std::max(40, innerW - 2 * kRowPadX), tw->GetHeight());
+                        tw->AutoSize();
+                        tw->SetPosition(kRowPadX, curY);
+                        curY += tw->GetHeight() + gapAfter;
+                    } else if (auto* sv = dynamic_cast<ECDI::ScrollView*>(w)) {
+                        const int contentW = static_cast<int>(sv->GetContentExtent().width);
+                        const int contentH = static_cast<int>(sv->GetContentExtent().height);
+                        const int availW = std::max(40, innerW - 2 * kRowPadX);
+                        const int tableW = std::min(availW, contentW);
+                        const int barFoot = sv->GetHorizontalScrollBar()
+                                                ? sv->GetHorizontalScrollBar()->GetThickness() + 2
+                                                : 14;
+                        const int barExtraH = (contentW > availW) ? barFoot : 0;
+                        const int tableH = contentH + barExtraH;
+                        sv->SetSize(tableW, tableH);
+                        sv->SetPosition(kRowPadX, curY);
+                        curY += tableH + gapAfter;
+                    } else {
+                        w->SetPosition(kRowPadX, curY);
+                        curY += w->GetHeight() + gapAfter;
+                    }
+                }
+                if (r.copyBtn && r.copyBtn->IsVisible()) {
+                    r.copyBtn->SetSize(48, 22);
+                    r.copyBtn->SetPosition(kRowPadX, curY);
+                    curY += 22 + 8;
+                }
+                rowH = curY + 8;
+                if (r.panel) {
+                    r.panel->SetSize(innerW, rowH);
+                    r.panel->SetPosition(canvasX, y);
+                }
+            } else if (!r.streamChunks.empty()) {
+                const int maxBubbleW = std::max(120, innerW * 78 / 100);
+                const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
+                int curY = 8;
+                int maxUsedW = 0;
+                bool anyWrapped = false;
+                for (RowRec::StreamChunk& ch : r.streamChunks) {
+                    if (!ch.widget) continue;
+                    const bool needChunkLayout =
+                        ch.dirty ||
+                        (ch.wrapped && ch.lastWrapW != maxTextW) ||
+                        (!ch.wrapped && ch.cachedW > maxTextW);
+                    if (needChunkLayout) {
+                        if (!ch.wrapped) {
+                            ch.widget->AutoSize();
+                        }
+                        const bool hasNewline =
+                            ch.widget->GetText().find('\n') != std::string::npos;
+                        const bool needWrap =
+                            ch.wrapped || hasNewline || ch.widget->GetWidth() > maxTextW;
+                        if (needWrap != ch.wrapped) {
+                            ch.wrapped = needWrap;
+                            ch.widget->SetWordWrap(needWrap);
+                        }
+                        if (ch.wrapped) {
+                            if (ch.lastWrapW != maxTextW) {
+                                ch.widget->SetSize(maxTextW, ch.widget->GetHeight());
+                                ch.lastWrapW = maxTextW;
+                            }
+                            ch.widget->AutoSize();
+                        }
+                        ch.cachedW = ch.widget->GetWidth();
+                        ch.cachedH = ch.widget->GetHeight();
+                        ch.dirty = false;
+                    }
+                    ch.widget->SetPosition(kRowPadX, curY);
+                    curY += ch.cachedH;
+                    maxUsedW = std::max(maxUsedW, ch.cachedW);
+                    if (ch.wrapped) anyWrapped = true;
+                }
+                if (r.copyBtn && r.copyBtn->IsVisible()) {
+                    r.copyBtn->SetSize(48, 22);
+                    r.copyBtn->SetPosition(kRowPadX, curY + 2);
+                    rowH = curY + 2 + 22 + 8;
+                } else {
+                    rowH = curY + 8;
+                }
+                bubbleW = anyWrapped
                               ? maxBubbleW
-                              : std::min(maxBubbleW,
-                                         r.label->GetWidth() + 2 * kRowPadX + 2);
+                              : std::min(maxBubbleW, maxUsedW + 2 * kRowPadX + 2);
+                if (r.copyBtn && r.copyBtn->IsVisible()) {
+                    bubbleW = std::max(bubbleW, 48 + 2 * kRowPadX);
+                }
+                if (r.panel) {
+                    r.panel->SetSize(bubbleW, rowH);
+                    r.panel->SetPosition(r.alignRight ? canvasX + innerW - bubbleW
+                                                      : canvasX,
+                                         y);
+                }
+            } else {
+                const int maxBubbleW = std::max(120, innerW * 78 / 100);
+                const int maxTextW = std::max(40, maxBubbleW - 2 * kRowPadX - 2);
+                if (r.label) {
+                    if (!r.wrapped) {
+                        r.label->AutoSize();   // 单行 extent
+                    }
+                    const bool hasNewline =
+                        r.label->GetText().find('\n') != std::string::npos;
+                    const bool needWrap =
+                        r.wrapped || hasNewline || r.label->GetWidth() > maxTextW;
+                    if (needWrap != r.wrapped) {
+                        r.wrapped = needWrap;
+                        r.label->SetWordWrap(needWrap);
+                    }
+                    if (r.wrapped) {
+                        if (r.lastWrapW != maxTextW) {
+                            r.label->SetSize(maxTextW, r.label->GetHeight());
+                            r.lastWrapW = maxTextW;
+                        }
+                        r.label->AutoSize();   // 稳定期命中 wrap 布局缓存，不逐帧重建
+                    }
+                    r.label->SetPosition(kRowPadX, 8);
+                }
+                if (r.copyBtn && r.copyBtn->IsVisible()) {
+                    r.copyBtn->SetSize(48, 22);
+                    r.copyBtn->SetPosition(kRowPadX, r.label ? r.label->GetHeight() + 10 : 8);
+                    rowH = (r.label ? r.label->GetHeight() + 10 : 0) + 22 + 8;
+                } else {
+                    rowH = r.label ? r.label->GetHeight() + 16 : 0;
+                }
+                if (r.label) {
+                    bubbleW = r.wrapped
+                                  ? maxBubbleW
+                                  : std::min(maxBubbleW,
+                                             r.label->GetWidth() + 2 * kRowPadX + 2);
+                }
+                if (r.copyBtn && r.copyBtn->IsVisible()) {
+                    bubbleW = std::max(bubbleW, 48 + 2 * kRowPadX);
+                }
+                if (r.panel) {
+                    r.panel->SetSize(bubbleW, rowH);
+                    r.panel->SetPosition(r.alignRight ? canvasX + innerW - bubbleW
+                                                      : canvasX,
+                                         y);
+                }
             }
-            if (r.copyBtn && r.copyBtn->IsVisible()) {
-                bubbleW = std::max(bubbleW, 48 + 2 * kRowPadX);
-            }
-            r.panel->SetSize(bubbleW, rowH);
-            r.panel->SetPosition(r.alignRight ? canvasX + innerW - bubbleW
-                                              : canvasX,
-                                 y);
+            r.lastLayoutW = innerW;
+            r.cachedRowH = rowH;
+            r.cachedBubbleW = bubbleW;
+            r.layoutDirty = false;
         }
         r.y = y;   // ★ v5：「代理」卡点击定位要用（见 `AppAgents.cpp::FocusAgent`）
         // ★ v5：归属竖线跟着**本行行高**走（建行期给不出高度，测量后才定）。
         //   autosize 模式下竖线挂在画布层（m_content）于 (canvasX, y)，下一可见行
         //   同属该代理时多画 kRowGap 10px 无缝衔接成一条连续竖线；list 模式保留行内挂法。
         if (r.gutter) {
-            if (m_options.rowModeList) {
+            if (inAgentTab) {
+                r.gutter->SetVisible(false);
+            } else if (m_options.rowModeList) {
                 r.gutter->SetSize(kAgentGutterW, rowH);
                 r.gutter->SetPosition(0, 0);
             } else {
@@ -667,6 +705,11 @@ void HarnessApp::Relayout() {
     for (PendingPromptView& view : m_pendingPromptViews) {
         RowRec& r = view.row;
         if (!r.panel) continue;
+        if (inAgentTab) {
+            r.panel->SetVisible(false);
+            continue;
+        }
+        if (!r.panel->IsVisible()) r.panel->SetVisible(true);
         // ★ v5：待确认气泡恒为根行（没有归属），用整栏量——循环内那两个
         //   遮蔽名出不了 main loop，这里必须显式用 `innerW0`。
         const int maxBubbleW = std::max(120, innerW0 * 78 / 100);
@@ -720,16 +763,28 @@ void HarnessApp::Relayout() {
     //   scroll 子表里，视口坐标不随窗口变，所以没有这条需求）。
     //   `SetPosition` 有同值守卫 ⇒ 空闲帧零代价（不会置脏、不会多一次重绘）。
     RepositionModelPopup();
-    SyncInspectorLayout();
+    SyncInspectorLayout(false);
 }
 
-void HarnessApp::SyncInspectorLayout() {
-    if (!m_hud.inspector || !m_hud.inspectorSv || !m_hud.inspector->IsVisible()) return;
-    m_hud.inspector->Arrange();
+void HarnessApp::SyncInspectorLayout(bool force) {
+    if (!m_hud.inspector || !m_hud.inspectorSv || !m_hud.inspector->IsVisible()) {
+        m_inspectorLayoutDirty = true;
+        return;
+    }
     ECDI::ScrollView* sv = m_hud.inspectorSv;
+    const int availWPre = std::max(1, sv->GetWidth());
+    const int availHPre = std::max(1, sv->GetHeight());
+    if (!force && !m_inspectorLayoutDirty &&
+        availWPre == m_lastInspW && availHPre == m_lastInspH) {
+        return;
+    }
+    m_hud.inspector->Arrange();
     ECDI::Widget& body = sv->GetContentView();
     const int availW = std::max(1, sv->GetWidth());
     const int availH = std::max(1, sv->GetHeight());
+    m_lastInspW = availW;
+    m_lastInspH = availH;
+    m_inspectorLayoutDirty = false;
     constexpr int kBodyPad = harness::kPadFrame - 1;
 
     auto measureBottom = [&]() -> int {
@@ -1344,29 +1399,77 @@ std::vector<std::string> HarnessApp::HudUnbuilt() const {
     return out;
 }
 
+void HarnessApp::ResetHudCaches() {
+    m_lastInspW = -1;
+    m_lastInspH = -1;
+    m_inspectorLayoutDirty = true;
+    m_lastModelChipMaxW = -1;
+    m_hudCachedTitle.clear();
+    m_hudCachedRowChip.clear();
+    m_hudCachedSessChip.clear();
+    m_hudCachedModeChip.clear();
+    m_hudCachedBackendChip.clear();
+    m_hudCachedConvTitle.clear();
+    m_hudCachedConvSub.clear();
+    m_hudCachedWsPath.clear();
+    m_hudCachedWsStatus.clear();
+    m_hudCachedWsFontDev = -1;
+    m_hudCachedWsPickEnabled = -1;
+    m_hudCachedStateChip.clear();
+    m_hudCachedStatusDotState = -1;
+    m_hudCachedSessCount.clear();
+    m_hudCachedSessProgress.clear();
+    m_hudCachedReplayProg = -1.0f;
+    m_hudCachedHealthSeq.clear();
+    m_hudCachedHealthSeqGap = -1;
+    m_hudCachedHealthViol.clear();
+    m_hudCachedHealthKind.clear();
+    m_hudCachedHealthKindNz = -1;
+    m_hudCachedEvalPaints.clear();
+    m_hudCachedProbeCmds.clear();
+    m_hudCachedProbeExec.clear();
+    m_hudCachedUsageIn.clear();
+    m_hudCachedUsageOut.clear();
+    m_hudCachedCtxPct.clear();
+    m_hudCachedCtxPctLevel = -1;
+    m_hudCachedCtxFrac = -1.0f;
+    m_hudCachedInFrac = -1.0f;
+    m_hudCachedOutFrac = -1.0f;
+    for (int i = 0; i < 3; ++i) {
+        m_hudCachedHistChip[i].clear();
+        m_hudCachedHistWhat[i].clear();
+    }
+    m_hudCachedStState.clear();
+    m_hudCachedStMsgs.clear();
+    m_hudCachedStTokens.clear();
+    m_hudCachedStPaint.clear();
+}
+
 // HUD 刷新：每 tick 至多一次；SetText 同值仍会请求重绘，
 // 因此靠 m_hudDirty + settled 判定避免 30Hz 空转。
 void HarnessApp::RefreshHud() {
     m_hudDirty = false;
     if (!m_hud.title) return;
 
-    m_hud.title->SetText("harness");
+    if (m_hudCachedTitle != "harness") {
+        m_hudCachedTitle = "harness";
+        m_hud.title->SetText(m_hudCachedTitle);
+    }
     if (HudTouch("rowChip"), m_hud.rowChip) {
-        m_hud.rowChip->SetText(m_options.rowModeList ? "listlayout" : "autosize");
+        const std::string want = m_options.rowModeList ? "listlayout" : "autosize";
+        if (m_hudCachedRowChip != want) {
+            m_hudCachedRowChip = want;
+            m_hud.rowChip->SetText(want);
+        }
     }
     if (HudTouch("sessChip"), m_hud.sessChip) {
-        m_hud.sessChip->SetText(m_sess->sessionId.empty() ? "s-____" : m_sess->sessionId);
+        const std::string want = m_sess->sessionId.empty() ? "s-____" : m_sess->sessionId;
+        if (m_hudCachedSessChip != want) {
+            m_hudCachedSessChip = want;
+            m_hud.sessChip->SetText(want);
+        }
     }
     if (HudTouch("modeChip"), m_hud.modeChip) {
-        // ★★ 2026-10-26（订正）：判据是**会话自述的 `originKind`**，不是指针推断。
-        //   ★ 上一版写的是 `if (live) ... else if (replay != nullptr) "replay"`——
-        //     而 `App.h` 的 `originKind` 注释（Step 5 就写下的）明确说过
-        //     **`replay != nullptr` 不能当来源判据**：历史会话 `s.replay` 也非空
-        //     （`AppHistory.cpp` 里 `s.replay = replay.get()` 与
-        //     `s.originKind = "replay-history"` 是同时赋的），于是从磁盘点开的会话
-        //     会被报成 "replay"，恰好把这一版想修掉的"来源恒显示 replay"换个理由重现。
-        //   ⇒ 四类来源一对一投影，`originKind` 是唯一真相。
-        //     "replay-history" 缩成 "history"（胶囊只有 64px，7 码点装得下）。
         const std::string& origin = m_sess->originKind;
         const char* modeText = "empty";
         if (origin == "live") {
@@ -1376,47 +1479,42 @@ void HarnessApp::RefreshHud() {
         } else if (origin == "replay-history") {
             modeText = "history";
         }
-        m_hud.modeChip->SetText(modeText);
+        if (m_hudCachedModeChip != modeText) {
+            m_hudCachedModeChip = modeText;
+            m_hud.modeChip->SetText(modeText);
+        }
     }
     if (HudTouch("backendChip"), m_hud.backendChip) {
-        // ★★ 2026-10-21：**不再拼 `▽`**。后端在 `Create` 时定死，运行期没有切换
-        //   路径（全仓唯一赋值处是 GL 就绪检查之后）⇒ 箭头会承诺一个不存在的菜单。
-        //   原写法 `m_backendName + " ▽"` 是"看着能点、其实不能"的标本。
-        m_hud.backendChip->SetText(m_backendName);
+        if (m_hudCachedBackendChip != m_backendName) {
+            m_hudCachedBackendChip = m_backendName;
+            m_hud.backendChip->SetText(m_backendName);
+        }
     }
-    // 中栏会话头（2026-10-18，原型 C）：副标随会话 id / core 版本到达而更新。
-    // ★ 2026-10-18 订正：此前只拼 `协议 v2 · 回放模式 · <sessionId>`，漏掉
-    //   `hello.core_version` 与 `protocol`（截图上副标是
-    //   `core 0.1.0 · session s-0001 · protocol 1` —— 与规格 §9 的
-    //   `version/protocol` 呈现位不符，看着像没接上 hello）。
-    //   ★ 只更新**会变的部分**（模式与工作区是启动即定的），标题保持建头时的值。
-    // ★ 0d：标题改成反映**活动会话**（多会话后，标题不该恒是首会话的名字）。
     if (HudTouch("convTitle"), m_hud.convTitle) {
-        m_hud.convTitle->SetText(m_sess->label.empty() ? ConversationTitle() : m_sess->label);
+        const std::string want = m_sess->label.empty() ? ConversationTitle() : m_sess->label;
+        if (m_hudCachedConvTitle != want) {
+            m_hudCachedConvTitle = want;
+            m_hud.convTitle->SetText(want);
+        }
     }
     if (HudTouch("convSub"), m_hud.convSub) {
+        std::string sub;
         if (m_devMode) {
-            std::string sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
+            sub = "core " + (m_sess->coreVer.empty() ? std::string("—") : m_sess->coreVer);
             if (!m_sess->sessionId.empty()) sub += " · " + m_sess->sessionId;
             sub += " · protocol " + std::to_string(m_sess->protocolVer);
             if (!m_sess->memories.empty()) {
                 sub += " · 记忆 " + std::to_string(m_sess->memories.size());
             }
-            // ★ 2026-11-06：MCP 启动期状态（产品面可见性）。没有 MCP 状态时
-            //   McpStatusText() 返回空串 ⇒ 副标逐字不变。
             if (std::string mcpText = McpStatusText(); !mcpText.empty()) {
                 sub += " · " + mcpText;
             }
-            // ★ 0d：会话计数——让用户看见"现在有几个会话、我在第几个"。
             sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
                    std::to_string(m_sessions.size());
-            m_hud.convSub->SetText(sub);
         } else {
-            std::string sub;
             if (!m_sess->workspacePath.empty()) {
                 sub = "工作区：" + m_sess->workspacePath;
             } else if (!m_sess->providerId.empty()) {
-                // ★ §9.5：显示名（空回落 id）。副标题是给眼睛看的，不是给协议看的。
                 sub = ProviderDisplayLabel(m_sess->providerId) + " › " +
                       (m_sess->modelName.empty() ? "?" : m_sess->modelName);
             } else {
@@ -1429,8 +1527,6 @@ void HarnessApp::RefreshHud() {
                 }
                 sub += " · 记忆 " + std::to_string(loaded);
             }
-            // ★ 2026-11-06：MCP 状态在**用户模式**也要可见（产品面默认视图）。
-            //   与开发者分支共用 McpStatusText()，两处不各拼一份文案。
             if (std::string mcpText = McpStatusText(); !mcpText.empty()) {
                 sub += " · " + mcpText;
             }
@@ -1438,6 +1534,9 @@ void HarnessApp::RefreshHud() {
                 sub += " · 会话 " + std::to_string(m_activeIndex + 1) + "/" +
                        std::to_string(m_sessions.size());
             }
+        }
+        if (m_hudCachedConvSub != sub) {
+            m_hudCachedConvSub = sub;
             m_hud.convSub->SetText(sub);
         }
     }
@@ -1445,23 +1544,9 @@ void HarnessApp::RefreshHud() {
         m_sess->coreState.empty() ? std::string("idle") : m_sess->coreState;
     const bool active = (m_sess->coreState == "running" || m_sess->coreState == "waiting");
     const bool live = m_sess->writer != nullptr;
-    // ★★ 2026-10-20：`liveReady` **不再**包含 `workspaceCap`——协议 §3.1 只要求
-    //   「未声明 workspace 的 core，GUI 不得显示工作区选择器」，而不是「不能对话」。
-    //   旧写法把 workspace 能力当成 live 就绪的前提，导致一份合法的不支持工作区的
-    //   core 连一句 prompt 都发不出去（发送钮永久置灰）。
-    // ★★ 2026-10-27 修：`== 3` 是协议 v4 升级后**最后一处没迁移**的版本守卫
-    //   （同族缺陷 2026-10-26 在 `ChooseWorkspaceFolder` 里修过，注释见
-    //   AppWorkspace.cpp:332「`protocolVer != 3` 是 P3.6 升 v4 后没更新的拦路守卫」，
-    //   当时只改了这一处，HUD 这处漏了）。v4 core 下 `liveReady` 恒假 ⇒
-    //   `pickerEnabled` 与 `sendEnabled` 一起恒假 ⇒ 无参数启动（默认连真 core，
-    //   `protocolDeclared: 4`）时「选择文件夹…」和「发送」**都是死钮**——
-    //   禁用钮在 ECDI 里吞掉点击（`--hit-probe` 已证：forced-disabled ⇒ 点击不送达），
-    //   所以症状是「点了没反应」而不是「点了报错」。
-    //   ⇒ 口径与其余五处一致：workspace/prompt 语义 v3 引入、v4 保留 ⇒ `>= 3`。
     const bool liveReady = live && m_sess->protocolVer >= 3 &&
                            !m_sess->protocolIncompatible && !m_sess->disconnected &&
                            !m_sess->liveEof;
-    // 只有「core 声明了 workspace 且初始同步未完成」才是阻塞条件；无此能力时直接放行。
     const bool workspaceReady = !m_sess->workspaceCap || m_sess->workspaceSyncComplete;
     const bool sendEnabled = live
         ? (liveReady && workspaceReady && m_sess->coreState == "idle" &&
@@ -1498,11 +1583,6 @@ void HarnessApp::RefreshHud() {
     const bool pickerEnabled = m_sess->workspaceCap && liveReady &&
                                m_sess->coreState == "idle" &&
                                m_sess->pendingWorkspaceId.empty();
-    // ★★ 协议 §3.1：对一份**真实的 core**，它未声明 workspace ⇒ GUI「不得显示工作区
-    //   选择器」。⇒ 隐藏路径与选择钮，只留一行诚实的状态说明（“core 未声明 workspace 能力”）。
-    //   ★ 只在 live 下藏：回放/空会话根本没有 core，沿用既有外观（零回归风险）。
-    //   ★ 用控件自己的 IsVisible() 当“上次已应用值”，不新增模型字段——重建后新建的
-    //     控件默认可见，这个判据会自己纠回来；换成成员记录反而会在重建后陈旧。
     const bool hideWorkspace = live && !m_sess->workspaceCap;
     bool workspaceVisChanged = false;
     auto applyWorkspaceVis = [&](ECDI::Widget* w) {
@@ -1515,31 +1595,37 @@ void HarnessApp::RefreshHud() {
     applyWorkspaceVis(m_hud.workspacePath);
     applyWorkspaceVis(m_hud.workspacePick);
     if (workspaceVisChanged) {
-        // VerticalLayout 只在 Arrange 时给隐藏子不占槽（C-VIS-1）⇒ 不重排就会留个空洞。
         if (ECDI::Widget* p = m_hud.workspaceStatus ? m_hud.workspaceStatus->GetParent()
                                                     : nullptr) {
             p->Arrange();
         }
     }
     if (HudTouch("workspacePath"), m_hud.workspacePath) {
+        const int wantDev = m_devMode ? 1 : 0;
+        if (m_hudCachedWsFontDev != wantDev) {
+            m_hudCachedWsFontDev = wantDev;
+            m_hud.workspacePath->SetFont(
+                m_devMode ? harness::MonoFont(12.0f) : harness::SansFont(harness::kFontMicro));
+        }
+        std::string wantPath;
         if (m_devMode) {
-            m_hud.workspacePath->SetFont(harness::MonoFont(12.0f));
-            // ★★ 2026-11-03（P2）：空路径不再写「尚未确认」——下一行
-            //   `workspaceStatus` 此刻正是「等待 core 确认（…）」，两行说同一句话，
-            //   读起来像界面在结巴。这里只留一个「未确立」的占位，把"为什么还没有"
-            //   交给状态行（它同时还要承载「core 未声明 workspace 能力」「切换失败：…」
-            //   这类**非**同义的诊断，所以不能反过来把它并进这一行）。
-            m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
-                ? "core 实际工作区：—" : "core 实际工作区：" + m_sess->workspacePath);
+            wantPath = m_sess->workspacePath.empty()
+                           ? "core 实际工作区：—"
+                           : "core 实际工作区：" + m_sess->workspacePath;
         } else {
-            m_hud.workspacePath->SetFont(harness::SansFont(harness::kFontMicro));
-            m_hud.workspacePath->SetText(m_sess->workspacePath.empty()
-                ? "尚未选择工作区目录" : m_sess->workspacePath);
+            wantPath = m_sess->workspacePath.empty()
+                           ? "尚未选择工作区目录"
+                           : m_sess->workspacePath;
+        }
+        if (m_hudCachedWsPath != wantPath) {
+            m_hudCachedWsPath = wantPath;
+            m_hud.workspacePath->SetText(wantPath);
         }
     }
     if (HudTouch("workspaceStatus"), m_hud.workspaceStatus) {
+        std::string wantStatus;
         if (m_devMode) {
-            m_hud.workspaceStatus->SetText(m_sess->workspaceStatus);
+            wantStatus = m_sess->workspaceStatus;
         } else {
             const bool hasPath = !m_sess->workspacePath.empty();
             if (m_hud.workspaceStatus->IsVisible() != hasPath) {
@@ -1547,31 +1633,31 @@ void HarnessApp::RefreshHud() {
                 if (m_hud.sidebar) m_hud.sidebar->Arrange();
             }
             const bool synced = hasPath && m_sess->workspaceStatus.find("已确认") == 0;
-            m_hud.workspaceStatus->SetText(synced ? "已就绪" : m_sess->workspaceStatus);
+            wantStatus = synced ? "已就绪" : m_sess->workspaceStatus;
+        }
+        if (m_hudCachedWsStatus != wantStatus) {
+            m_hudCachedWsStatus = wantStatus;
+            m_hud.workspaceStatus->SetText(wantStatus);
         }
     }
     if (HudTouch("workspacePick"), m_hud.workspacePick) {
-        m_hud.workspacePick->SetEnabled(pickerEnabled);
-        m_hud.workspacePick->SetTextColor(pickerEnabled ? kDarkInk : kDarkMuted);
+        const int wantPick = pickerEnabled ? 1 : 0;
+        if (m_hudCachedWsPickEnabled != wantPick) {
+            m_hudCachedWsPickEnabled = wantPick;
+            m_hud.workspacePick->SetEnabled(pickerEnabled);
+            m_hud.workspacePick->SetTextColor(pickerEnabled ? kDarkInk : kDarkMuted);
+        }
     }
-    // ★★ REQ-04 直接回读探针（--state-probe，2026-10-14）
-    //   · `SetEnabled` 不内建 Invalidate（Widget.h:185-187）⇒ 使能翻转**没有**绘制侧读数
-    //     ⇒ 用**只读回读**替代：把按钮的真实 IsEnabled() 与 GetText() 取出来记档。
-    //   · 只在「与上次不同」时记一行 ⇒ 摘要是一份状态翻转轨迹，可逐行核对协议 §6。
-    //   · 放在 SetStateDrivenEnabled **之后**——读到的才是本次驱动后的结果。
     if (m_options.stateProbe && m_promptBar) {
         ECDI::Button* send = m_promptBar->sendButton();
         ECDI::Button* stop = m_promptBar->stopButton();
-        ECDI::Button* pick = m_hud.workspacePick;   // ★ 2026-11-07：picker 同点回读
+        ECDI::Button* pick = m_hud.workspacePick;
         if (send && stop) {
             const bool sendEnabled = send->IsEnabled();
             const bool stopEnabled = stop->IsEnabled();
             const std::string sendTitle = send->GetText();
             const bool pickerEnabledNow = pick ? pick->IsEnabled() : false;
             const bool pickerVisibleNow = pick ? pick->IsVisible() : false;
-            // ★ picker 使能也参与「变化才记」：它比 send 先翻（hello 解析出 caps
-            //   即翻，不必等 workspace 同步完成）——不记的话，「picker 已就绪而
-            //   send 未就绪」的中间态在轨迹里不存在，2d-b 臂就少了定位分歧的那行。
             const bool changed = !m_probeState.stateProbeLastValid ||
                                  sendEnabled != m_probeState.stateProbeLastSend ||
                                  stopEnabled != m_probeState.stateProbeLastStop ||
@@ -1594,13 +1680,6 @@ void HarnessApp::RefreshHud() {
                 m_probeState.stateProbeLastValid = true;
             }
         }
-        // ★★ 2026-11-07（2d-b 第四臂）：model-cap 拒绝侧 live 断言。
-        //   条件：live（writer 在场——与 RequestModelSwitch 第一道门同一判据，回放
-        //   不触发）+ hello 已解析 + caps 缺 "model" + idle + 尚未试过。经
-        //   RequestModelSwitch 试一次切换——那是设置面板按钮的**同一入口**（单入口
-        //   纪律），拒绝必须留下通知行且不落 pending/queue。此前整条 live 语料里
-        //   「拒绝分支」结构性不可见（真 core 恒声明 model），与 2026-11-06 的
-        //   「选择文件夹死钮」同族缺口。
         if (m_sess->writer && !m_sess->hasModelCap && m_sess->protocolVer > 0 &&
             m_sess->coreState == "idle" && !m_probeState.capRefusalTried) {
             m_probeState.capRefusalTried = true;
@@ -1627,45 +1706,45 @@ void HarnessApp::RefreshHud() {
             else if (stateText == "waiting") friendly = "等待授权";
             chipText = friendly;
         }
-        // ★★ 协议 v5（2026-11-04）：并行时带上**活跃代理数**。
-        //   ★ 为什么放顶栏而不是只放「代理」卡：卡可以收起（`m_inspectorVisible`
-        //     = false），收起后这是唯一能看出"还有几路在跑"的地方——而"现在
-        //     是谁在干活"正是产品目的本身，不该依赖某张卡是否展开。
-        //   ★ 只在 >0 时附加：0 是常态，常态不该多占字（胶囊宽 104，见
-        //     `AppUiChrome.cpp` 的 `stateChip->SetSize`——那一处与这里是一对，
-        //     改格式必须同批复核宽度）。
         if (size_t activeAgents = ActiveAgentCount(); activeAgents > 0) {
             chipText += " " + std::to_string(activeAgents) + "代理";
         }
         if (size_t activeJobs = ActiveJobCount(); activeJobs > 0) {
             chipText += " " + std::to_string(activeJobs) + "后台";
         }
-        m_hud.stateChip->SetText(chipText);
-        m_hud.stateChip->SetTextColor(kDarkMuted);
+        if (m_hudCachedStateChip != chipText) {
+            m_hudCachedStateChip = chipText;
+            m_hud.stateChip->SetText(chipText);
+            if (m_hud.stateChip->GetTextColor() != kDarkMuted) {
+                m_hud.stateChip->SetTextColor(kDarkMuted);
+            }
+        }
     }
+    const int dotState = active ? 1 : 0;
+    const bool dotChanged = (m_hudCachedStatusDotState != dotState);
     if (HudTouch("statusDot"), m_hud.statusDot) {
-        m_hud.statusDot->SetStyle(ECDI::PanelStyleOverride{
-            .background = active ? kOkDark : kDarkMuted, .cornerRadius = 4.0f});
+        if (dotChanged) {
+            m_hud.statusDot->SetStyle(ECDI::PanelStyleOverride{
+                .background = active ? kOkDark : kDarkMuted, .cornerRadius = 4.0f});
+        }
     }
     if (HudTouch("sbDot"), m_hud.sbDot) {
-        m_hud.sbDot->SetStyle(ECDI::PanelStyleOverride{
-            .background = active ? kOkDark : kDarkMuted, .cornerRadius = 3.5f});
+        if (dotChanged) {
+            m_hud.sbDot->SetStyle(ECDI::PanelStyleOverride{
+                .background = active ? kOkDark : kDarkMuted, .cornerRadius = 3.5f});
+        }
+    }
+    if (dotChanged) {
+        m_hudCachedStatusDotState = dotState;
     }
 
-    // ★★ Step 1：侧栏会话的"活动会话"读数**搬到了列表行里**（每行自带 id/label/选中态）。
-    //   `sessSession` / `sessCore` 两个槽位因此**不再赋值**。
-    //   ★★ 2026-10-21：这两个槽位与它们的 `if` 分支**已删除**。原注释写的是
-    //     "字段仍留在 Hud 里（删字段是独立清理），故这里的两处 if 永远不成立
-    //     （死代码但无害）"——"无害"这个判断错了：留着它们会让**下一个读代码的人
-    //     以为侧栏有一行会话 id/meta**，而那一行早就不存在了。更重要的是，
-    //     它们是"**读了但永远不写**"这一类缺陷的样板，而这类缺陷刚好可以机检
-    //     （见 `--hud-probe`）。修一个样板、留一个样板是自相矛盾的。
     if (HudTouch("sessCount"), m_hud.sessCount) {
-        // 计数与列表同源：都从 m_sessions.size() 出发 ⇒ 这一行是列表的**文字对照**。
-        // 两者不一致（列表少画/多画了一行）时，人和探针都读得出来。
         char buf[48];
         std::snprintf(buf, sizeof(buf), "%zu 个会话", m_sessions.size());
-        m_hud.sessCount->SetText(buf);
+        if (m_hudCachedSessCount != buf) {
+            m_hudCachedSessCount = buf;
+            m_hud.sessCount->SetText(m_hudCachedSessCount);
+        }
     }
     if (HudTouch("sessProgress"), m_hud.sessProgress) {
         char buf[64];
@@ -1675,57 +1754,66 @@ void HarnessApp::RefreshHud() {
         } else if (m_sess->source) {
             std::snprintf(buf, sizeof(buf), "%zu 条（live）", m_sess->liveLines);
         } else {
-            // ★ 无 source 且无 replay = 回放模式下新建的空会话（0d 起就有这种会话）。
-            //   上一版把它归进 else 支，于是侧栏写着「0 条（live）」——**谎报来源**。
-            //   这个错在 0d 就存在，但那时侧栏只画活动会话、用户几乎见不到空会话；
-            //   Step 1 把 N 个会话都摆到屏上之后，它变成每点一次「新建」就出现一次。
             std::snprintf(buf, sizeof(buf), "%s", "空会话 · 无 core");
         }
-        m_hud.sessProgress->SetText(buf);
+        if (m_hudCachedSessProgress != buf) {
+            m_hudCachedSessProgress = buf;
+            m_hud.sessProgress->SetText(m_hudCachedSessProgress);
+        }
     }
     if (m_replayBar) {
+        float wantProg = 0.0f;
         if (m_sess->replay) {
             const size_t total = m_sess->replay->Total();
-            m_replayBar->SetProgress(total > 0
-                                         ? static_cast<float>(m_sess->replay->Consumed()) /
-                                               static_cast<float>(total)
-                                         : 0.0f);
-        } else {
-            m_replayBar->SetProgress(0.0f);   // live：总量未知，进度条不表达
+            wantProg = total > 0
+                           ? static_cast<float>(m_sess->replay->Consumed()) /
+                                 static_cast<float>(total)
+                           : 0.0f;
+        }
+        if (wantProg != m_hudCachedReplayProg) {
+            m_hudCachedReplayProg = wantProg;
+            m_replayBar->SetProgress(wantProg);
         }
     }
 
     if (HudTouch("healthSeq"), m_hud.healthSeq) {
         const size_t gaps = m_sess->transcript.SeqGaps();
-        if (gaps == 0) {
-            m_hud.healthSeq->SetText("seq 连续 · 0 缺口");
-            m_hud.healthSeq->SetTextColor(kDarkInk);
-        } else {
-            m_hud.healthSeq->SetText("seq 缺口 " + std::to_string(gaps));
-            m_hud.healthSeq->SetTextColor(kErrorDark);
+        const int wantGapFlag = (gaps == 0) ? 0 : 1;
+        const std::string wantText =
+            (gaps == 0) ? std::string("seq 连续 · 0 缺口")
+                        : ("seq 缺口 " + std::to_string(gaps));
+        if (m_hudCachedHealthSeq != wantText) {
+            m_hudCachedHealthSeq = wantText;
+            m_hud.healthSeq->SetText(wantText);
+        }
+        if (m_hudCachedHealthSeqGap != wantGapFlag) {
+            m_hudCachedHealthSeqGap = wantGapFlag;
+            m_hud.healthSeq->SetTextColor(gaps == 0 ? kDarkInk : kErrorDark);
         }
     }
     if (HudTouch("healthViol"), m_hud.healthViol) {
-        m_hud.healthViol->SetText("违规 " + std::to_string(m_sess->transcript.Violations()) +
-                                  " · 未知 " + std::to_string(m_sess->transcript.UnknownTypes()));
-    }
-    // ★ 未知 kind 单列一行（2026-10-13）：它与「未知 t」管辖**不同的判别符**，
-    //   合并会同时导致①语义误读（把「协议空白」读成「I5 已覆盖」）
-    //   ②文本裁切（并进上行实测被裁，见 BuildInspector 注释）。
-    if (HudTouch("healthKind"), m_hud.healthKind) {
-        const size_t uk = m_sess->transcript.UnknownKinds();
-        if (uk == 0) {
-            m_hud.healthKind->SetText("未知 kind · 0");
-            m_hud.healthKind->SetTextColor(kDarkMuted);
-        } else {
-            // 协议 §3.3 没有这些值 ⇒ 用琥珀色（与 seq 缺口的红、正常的灰区分）
-            // ★ 2026-10-18：`⚠`(U+26A0) 两主题 face 都无字形 ⇒ `△`(U+25B3) 空心三角
-            //   （本身就是警示语义，且 `▲` 同族已在用），配琥珀色。
-            m_hud.healthKind->SetText("未知 kind · " + std::to_string(uk) + " △");
-            m_hud.healthKind->SetTextColor(kWarn);
+        const std::string want = "违规 " + std::to_string(m_sess->transcript.Violations()) +
+                                 " · 未知 " + std::to_string(m_sess->transcript.UnknownTypes());
+        if (m_hudCachedHealthViol != want) {
+            m_hudCachedHealthViol = want;
+            m_hud.healthViol->SetText(want);
         }
     }
-    // 用户模式下若出现真实协议健康异常，自动浮现「协议健康」卡片（不静默吞错）。
+    if (HudTouch("healthKind"), m_hud.healthKind) {
+        const size_t uk = m_sess->transcript.UnknownKinds();
+        const int wantUkFlag = (uk == 0) ? 0 : 1;
+        const std::string wantText =
+            (uk == 0) ? std::string("未知 kind · 0")
+                      : ("未知 kind · " + std::to_string(uk) + " △");
+        if (m_hudCachedHealthKind != wantText) {
+            m_hudCachedHealthKind = wantText;
+            m_hud.healthKind->SetText(wantText);
+        }
+        if (m_hudCachedHealthKindNz != wantUkFlag) {
+            m_hudCachedHealthKindNz = wantUkFlag;
+            m_hud.healthKind->SetTextColor(uk == 0 ? kDarkMuted : kWarn);
+        }
+    }
     if (!m_devMode && m_hud.inspHealthCard) {
         const bool hasIssue = (m_sess->transcript.SeqGaps() > 0 ||
                                m_sess->transcript.Violations() > 0 ||
@@ -1737,148 +1825,190 @@ void HarnessApp::RefreshHud() {
         }
     }
     if (HudTouch("evalPaints"), m_hud.evalPaints) {
-        m_hud.evalPaints->SetText(std::to_string(m_evalPaints) + " 次 · 请求 " +
-                                  std::to_string(m_invalidations));
+        const std::string want = std::to_string(m_evalPaints) + " 次 · 请求 " +
+                                 std::to_string(m_invalidations);
+        if (m_hudCachedEvalPaints != want) {
+            m_hudCachedEvalPaints = want;
+            m_hud.evalPaints->SetText(want);
+        }
     }
     if (HudTouch("probeCmds"), m_hud.probeCmds) {
-        if (m_options.cullProbe && m_probe) {
-            m_hud.probeCmds->SetText("avg " + std::to_string(m_probeState.evalProbeAvg));
-        } else {
-            m_hud.probeCmds->SetText("—");
+        const std::string want = (m_options.cullProbe && m_probe)
+                                     ? ("avg " + std::to_string(m_probeState.evalProbeAvg))
+                                     : std::string("—");
+        if (m_hudCachedProbeCmds != want) {
+            m_hudCachedProbeCmds = want;
+            m_hud.probeCmds->SetText(want);
         }
     }
     if (HudTouch("probeExec"), m_hud.probeExec) {
-        if (m_options.cullProbe && m_probe) {
-            m_hud.probeExec->SetText("avg " +
-                                     std::to_string(static_cast<unsigned long long>(m_evalAvgExecUs)) +
-                                     " us");
-        } else {
-            m_hud.probeExec->SetText("—");
+        const std::string want =
+            (m_options.cullProbe && m_probe)
+                ? ("avg " + std::to_string(static_cast<unsigned long long>(m_evalAvgExecUs)) +
+                   " us")
+                : std::string("—");
+        if (m_hudCachedProbeExec != want) {
+            m_hudCachedProbeExec = want;
+            m_hud.probeExec->SetText(want);
         }
     }
     if (HudTouch("usageInV"), m_hud.usageInV) {
-        m_hud.usageInV->SetText(m_sess->usageIn < 0 ? "—"
-                                              : std::to_string(m_sess->usageIn));
+        const std::string want =
+            m_sess->usageIn < 0 ? std::string("—") : std::to_string(m_sess->usageIn);
+        if (m_hudCachedUsageIn != want) {
+            m_hudCachedUsageIn = want;
+            m_hud.usageInV->SetText(want);
+        }
     }
     if (HudTouch("usageOutV"), m_hud.usageOutV) {
-        m_hud.usageOutV->SetText(m_sess->usageOut < 0 ? "—"
-                                                : std::to_string(m_sess->usageOut));
+        const std::string want =
+            m_sess->usageOut < 0 ? std::string("—") : std::to_string(m_sess->usageOut);
+        if (m_hudCachedUsageOut != want) {
+            m_hudCachedUsageOut = want;
+            m_hud.usageOutV->SetText(want);
+        }
     }
-    // ★★ 上下文占用百分比（协议 v2 §3.1，2026-10-14）——**用户要求**。
-    //   ★ 分母 = `hello.context`（**唯一来源**）；**不再**用 `max(input, output)`。
-    //     旧写法是**拿输入跟输出比**（两个不同量纲的东西相除）⇒ 读数无意义，
-    //     现已被"真正的分母"取代。这是本行**修掉的一个既有缺陷**，不只是新增。
-    //   ★ 分子 = `usage.input`（= 本轮送进模型的上下文规模）。**不含 output**：
-    //     output 是本轮新生成的，尚未回到下一轮的上下文里。
-    //   ★ 三者任一未知 ⇒ 显示 `—` 且条归零（**不猜**；分母未知时百分比无定义）。
-    // ★★ P4 H 修复（P3.6 遗留接线）：分母改 **ctxCapacity**（v4 逐轮覆盖：
-    // hello.context ⇒ usage.context ⇒ model ack 逐级写它）——此前只写不读，
-    // 百分比/环一直用 v2 的 contextLimit，usage.context 覆盖从未生效。
-    // ★ P4 H：顶栏模型 chip 的常驻数据同源刷新。
     UpdateModelChip();
     const bool ctxKnown = (m_sess->ctxCapacity > 0 && m_sess->usageIn >= 0);
     if (HudTouch("ctxPct"), m_hud.ctxPct) {
         if (!ctxKnown) {
-            m_hud.ctxPct->SetText("—");
-            m_hud.ctxPct->SetTextColor(kDarkMuted);
+            if (m_hudCachedCtxPct != "—") {
+                m_hudCachedCtxPct = "—";
+                m_hud.ctxPct->SetText("—");
+            }
+            if (m_hudCachedCtxPctLevel != 0) {
+                m_hudCachedCtxPctLevel = 0;
+                m_hud.ctxPct->SetTextColor(kDarkMuted);
+            }
         } else {
-            // 四舍五入到整数百分比；占用可能 >100%（core 低估容量）⇒ 如实显示，不钳
             const long long pct =
                 (m_sess->usageIn * 100 + m_sess->ctxCapacity / 2) / m_sess->ctxCapacity;
-            m_hud.ctxPct->SetText(std::to_string(pct) + "%");
-            // 配色：<70% 常规 · 70–90% 琥珀（该收尾了）· >90% 红（快溢出）
-            m_hud.ctxPct->SetTextColor(pct >= 90 ? kErrorDark
-                                                 : (pct >= 70 ? kWarn : kOkDark));
+            const std::string wantPct = std::to_string(pct) + "%";
+            const int wantLevel = pct >= 90 ? 3 : (pct >= 70 ? 2 : 1);
+            if (m_hudCachedCtxPct != wantPct) {
+                m_hudCachedCtxPct = wantPct;
+                m_hud.ctxPct->SetText(wantPct);
+            }
+            if (m_hudCachedCtxPctLevel != wantLevel) {
+                m_hudCachedCtxPctLevel = wantLevel;
+                m_hud.ctxPct->SetTextColor(pct >= 90 ? kErrorDark
+                                                     : (pct >= 70 ? kWarn : kOkDark));
+            }
         }
     }
     if (m_ctxRing) {
-        const float frac = ctxKnown
-                               ? static_cast<float>(m_sess->usageIn) /
-                                     static_cast<float>(m_sess->ctxCapacity)
-                               : 0.0f;
-        // 环本身钳到 [0,1]（SetProgress 契约）；文本仍如实显示 >100%
-        m_ctxRing->SetProgress(frac > 1.0f ? 1.0f : frac);
-        // ★ 环色与右侧数字**同源**（同一组阈值），避免「环是绿的、字是红的」自相矛盾。
-        //   阈值沿用既有口径：<70 常规绿 · 70–90 琥珀 · >90 红；分母未知 ⇒ 回退绿（环归零）。
+        const float rawFrac = ctxKnown
+                                  ? static_cast<float>(m_sess->usageIn) /
+                                        static_cast<float>(m_sess->ctxCapacity)
+                                  : 0.0f;
+        const float clampedFrac = rawFrac > 1.0f ? 1.0f : rawFrac;
+        if (clampedFrac != m_hudCachedCtxFrac) {
+            m_hudCachedCtxFrac = clampedFrac;
+            m_ctxRing->SetProgress(clampedFrac);
+        }
         const long long pctForColor =
             ctxKnown ? (m_sess->usageIn * 100 + m_sess->ctxCapacity / 2) / m_sess->ctxCapacity : 0;
         const int level = pctForColor >= 90 ? 2 : (pctForColor >= 70 ? 1 : 0);
-        // ★★ 只在**档位翻转**时 SetStyle + 补重绘——不能每 tick 都做：
-        //   `RingProgressBar::SetStyle` 的头**未**声明「覆盖后 Invalidate」
-        //   （对比 `Panel.h:39` 明确写了），实现又在 lib 里 ⇒ 不能假定它内建重绘；
-        //   但每 tick 补一次 `RequestRepaint()` 会把 `invalidations`/`paints`
-        //   凭空刷高（cot instant 20s ≈ 600 ticks ⇒ 16 变 ~616），而这两个数正是
-        //   本项目的**评估读数**（与 p32 基线逐位对比）⇒ 那是「自己的仪器污染实验」
-        //   （条 57③）。档位翻转全场至多 2 次 ⇒ 污染可忽略且可解释。
         if (level != m_ctxRingLevel) {
             m_ctxRingLevel = level;
             m_ctxRing->SetStyle(ECDI::RingProgressBarStyleOverride{
                 .fillColor = level == 2 ? kErrorDark
                                         : (level == 1 ? kWarn : harness::kOkDark)});
-            RequestRepaint();   // 颜色变了 ⇒ 确保这一帧被重画
+            RequestRepaint();
         }
     }
     if (m_usageBarIn && m_usageBarOut) {
-        // ★ 输入/输出两根条改为**以上下文容量为共同分母**（原来拿二者峰值互比，
-        //   两个不同量纲相除 ⇒ 无意义）。容量未知时退化为二者峰值互比，
-        //   仅作"相对大小"提示——**不**声称是占用率。
         const long long denom = (m_sess->contextLimit > 0)
                                     ? m_sess->contextLimit
                                     : std::max(m_sess->usageIn, m_sess->usageOut);
-        const float inFrac = (m_sess->usageIn >= 0 && denom > 0)
-                                 ? static_cast<float>(m_sess->usageIn) / static_cast<float>(denom)
+        const float inRaw = (m_sess->usageIn >= 0 && denom > 0)
+                                ? static_cast<float>(m_sess->usageIn) / static_cast<float>(denom)
+                                : 0.0f;
+        const float outRaw = (m_sess->usageOut >= 0 && denom > 0)
+                                 ? static_cast<float>(m_sess->usageOut) / static_cast<float>(denom)
                                  : 0.0f;
-        const float outFrac = (m_sess->usageOut >= 0 && denom > 0)
-                                  ? static_cast<float>(m_sess->usageOut) / static_cast<float>(denom)
-                                  : 0.0f;
-        m_usageBarIn->SetProgress(inFrac > 1.0f ? 1.0f : inFrac);
-        m_usageBarOut->SetProgress(outFrac > 1.0f ? 1.0f : outFrac);
+        const float inFrac = inRaw > 1.0f ? 1.0f : inRaw;
+        const float outFrac = outRaw > 1.0f ? 1.0f : outRaw;
+        if (inFrac != m_hudCachedInFrac) {
+            m_hudCachedInFrac = inFrac;
+            m_usageBarIn->SetProgress(inFrac);
+        }
+        if (outFrac != m_hudCachedOutFrac) {
+            m_hudCachedOutFrac = outFrac;
+            m_usageBarOut->SetProgress(outFrac);
+        }
     }
-    // 权限历史：无记录时给一行占位（否则是一张 70px 高的空盒子——`v8-light-insp.png` 可见）。
-    // ★ 为何不 `SetVisible(false)` 把卡片藏掉：`Widget::SetVisible` **故意不内建 Invalidate**
-    //   （`Widget.h:160-170` 明写「静默不刷新」），harness 还得自己补重绘；而「协议允许问、
-    //   但本次一次都没问」本身是**有信息量的评估读数**（ask 门是 I3 的可见载体），
-    //   藏掉不如显式说「暂无」。复用现有 3 行控件 ⇒ 零新增控件、零布局改动。
     const bool noHist = m_sess->askHist.empty();
     for (size_t i = 0; i < 3; ++i) {
         if (m_hud.histChip[i] && m_hud.histWhat[i]) {
             const size_t n = m_sess->askHist.size();
+            std::string wantChip;
+            std::string wantWhat;
+            ECDI::Color wantColor = kDarkMuted;
             if (i < n) {
                 const auto& [choice, what] = m_sess->askHist[n - 1 - i];
-                m_hud.histChip[i]->SetText(choice);
-                m_hud.histChip[i]->SetTextColor(choice == "allow" ? kOkDark : kErrorDark);
-                m_hud.histWhat[i]->SetText(what);
+                wantChip = choice;
+                wantWhat = what;
+                wantColor = (choice == "allow") ? kOkDark : kErrorDark;
             } else {
-                m_hud.histChip[i]->SetText(noHist && i == 0 ? "—" : "");
-                m_hud.histChip[i]->SetTextColor(kDarkMuted);
-                m_hud.histWhat[i]->SetText(noHist && i == 0 ? "暂无权限请求" : "");
+                wantChip = (noHist && i == 0) ? "—" : "";
+                wantWhat = (noHist && i == 0) ? "暂无权限请求" : "";
+            }
+            if (m_hudCachedHistChip[i] != wantChip) {
+                m_hudCachedHistChip[i] = wantChip;
+                m_hud.histChip[i]->SetText(wantChip);
+            }
+            if (m_hud.histChip[i]->GetTextColor() != wantColor) {
+                m_hud.histChip[i]->SetTextColor(wantColor);
+            }
+            if (m_hudCachedHistWhat[i] != wantWhat) {
+                m_hudCachedHistWhat[i] = wantWhat;
+                m_hud.histWhat[i]->SetText(wantWhat);
             }
         }
     }
 
     if (m_hud.stState) {
-        m_hud.stState->SetText(stateText + " · protocol " +
-                               std::to_string(m_sess->protocolVer));
+        const std::string want = stateText + " · protocol " +
+                                 std::to_string(m_sess->protocolVer);
+        if (m_hudCachedStState != want) {
+            m_hudCachedStState = want;
+            m_hud.stState->SetText(want);
+        }
     }
     if (m_hud.stMsgs) {
+        std::string want;
         if (m_sess->replay) {
-            m_hud.stMsgs->SetText(std::to_string(m_sess->replay->Consumed()) + " / " +
-                                  std::to_string(m_sess->replay->Total()) + " msg");
+            want = std::to_string(m_sess->replay->Consumed()) + " / " +
+                   std::to_string(m_sess->replay->Total()) + " msg";
         } else {
-            m_hud.stMsgs->SetText(std::to_string(m_sess->liveLines) + " msg（live）");
+            want = std::to_string(m_sess->liveLines) + " msg（live）";
+        }
+        if (m_hudCachedStMsgs != want) {
+            m_hudCachedStMsgs = want;
+            m_hud.stMsgs->SetText(want);
         }
     }
     if (m_hud.stTokens) {
+        std::string want;
         if (m_sess->usageIn < 0) {
-            m_hud.stTokens->SetText("tokens —");
+            want = "tokens —";
         } else {
-            m_hud.stTokens->SetText("tokens " + std::to_string(m_sess->usageIn) + " / " +
-                                    std::to_string(m_sess->usageOut));
+            want = "tokens " + std::to_string(m_sess->usageIn) + " / " +
+                   std::to_string(m_sess->usageOut);
+        }
+        if (m_hudCachedStTokens != want) {
+            m_hudCachedStTokens = want;
+            m_hud.stTokens->SetText(want);
         }
     }
     if (m_hud.stPaint) {
-        m_hud.stPaint->SetText("paints " + std::to_string(m_evalPaints) + " · 上次 " +
-                               std::to_string(m_evalLastUs) + " us");
+        const std::string want = "paints " + std::to_string(m_evalPaints) + " · 上次 " +
+                                 std::to_string(m_evalLastUs) + " us";
+        if (m_hudCachedStPaint != want) {
+            m_hudCachedStPaint = want;
+            m_hud.stPaint->SetText(want);
+        }
     }
 }
 

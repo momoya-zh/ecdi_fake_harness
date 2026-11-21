@@ -26,14 +26,20 @@
 #include "UiKit.h"
 
 #include "ECDI/Core/TextAlignment.h"
+#include "ECDI/Layout/VerticalLayout.h"
+#include "ECDI/Platform/PlatformWindow.h"
 #include "ECDI/Theme/ButtonStyle.h"
 #include "ECDI/Theme/PanelStyle.h"
+#include "ECDI/Theme/ScrollBarStyle.h"
 #include "ECDI/Widget/Button.h"
+#include "ECDI/Widget/Label.h"
 #include "ECDI/Widget/Panel.h"
+#include "ECDI/Widget/ScrollBar.h"
 #include "ECDI/Widget/ScrollView.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -199,6 +205,17 @@ void HarnessApp::RebuildAgentList() {
 // ── 定位高亮（点击右栏代理卡跳转时同步标亮首行边框与整段归属竖线）────
 void HarnessApp::ApplyFocusedAgentHighlight() {
     if (!m_sess) return;
+    if (m_focusedAgentId.empty()) {
+        // Fast path: if no row currently has highlight active, skip O(N) SetStyle scan.
+        bool anyHighlighted = false;
+        for (const RowRec& r : m_sess->rows) {
+            if (r.gutterHighlight || r.focusHighlight) {
+                anyHighlighted = true;
+                break;
+            }
+        }
+        if (!anyHighlighted) return;
+    }
     bool firstVisibleMarked = false;
     const ECDI::Color normalGutter =
         harness::internal::Pick(m_options.probeContrast, kLine, harness::internal::kProbeInk);
@@ -242,7 +259,16 @@ void HarnessApp::ClearFocusedAgentHighlight() {
 
 // ── 定位（点卡上某一行）──────────────────────────────────────────────
 void HarnessApp::FocusAgent(const std::string& agentId) {
-    if (agentId.empty() || !m_scroll || !m_sess) return;
+    if (!m_scroll || !m_sess) return;
+    if (agentId.empty()) {
+        if (!m_sess->activeAgentTab.empty()) {
+            SelectAgentTab("");
+        }
+        return;
+    }
+    if (!m_sess->activeAgentTab.empty()) {
+        SelectAgentTab("");
+    }
     auto findAgentRow = [&]() -> const RowRec* {
         for (const RowRec& r : m_sess->rows) {
             if (r.agentTag == agentId) return &r;
@@ -296,4 +322,337 @@ size_t HarnessApp::ActiveJobCount() const {
         if (kv.second.status == "running") ++n;
     }
     return n;
+}
+
+// ── 中栏子代理动态选项卡条（默认隐藏，有子代理且 caps.agents 时显形）────────
+
+void HarnessApp::BuildAgentTabBar() {
+    if (!m_counting) return;
+    auto bar = std::make_unique<ECDI::Panel>();
+    m_hud.agentTabBar = bar.get();
+    bar->SetVisible(false);
+    bar->SetSize(600, 36);
+    bar->SetStyle(ECDI::PanelStyleOverride{
+        .background = m_options.probeContrast ? harness::internal::kProbeBg : kPanel2,
+        .borderWidth = 0.0f});
+    bar->SetLayout(std::make_unique<ECDI::VerticalLayout>(0, true, 0));
+
+    auto sv = std::make_unique<ECDI::ScrollView>();
+    m_hud.agentTabScroll = sv.get();
+    sv->SetStretch(1);
+    sv->SetSize(600, 35);
+    sv->SetScrollStep(32);
+    if (auto* hb = sv->GetHorizontalScrollBar()) {
+        hb->SetStyle(ECDI::ScrollBarStyleOverride{
+            .thickness = harness::internal::kScrollBarThickness});
+    }
+    if (auto* vb = sv->GetVerticalScrollBar()) {
+        vb->SetStyle(ECDI::ScrollBarStyleOverride{
+            .thickness = harness::internal::kScrollBarThickness});
+    }
+    sv->SetContentExtent(1, 28);
+    bar->AddChild(std::move(sv));
+
+    auto sep = std::make_unique<ECDI::Panel>();
+    sep->SetSize(600, 1);
+    sep->SetStyle(ECDI::PanelStyleOverride{
+        .background = m_options.probeContrast ? harness::internal::kProbeBg : kLine,
+        .borderWidth = 0.0f});
+    bar->AddChild(std::move(sep));
+
+    m_agentTabBtns.clear();
+    m_counting->AddChild(std::move(bar));
+}
+
+void HarnessApp::RefreshAgentTabStyles() {
+    if (!m_sess) return;
+    const bool waitingRoot = (m_sess->coreState == "waiting");
+    const ECDI::Color inactiveBg =
+        m_options.probeContrast ? harness::internal::kProbeBg : kContentBg;
+    for (const AgentTabBtn& item : m_agentTabBtns) {
+        if (!item.btn) continue;
+        const bool active = (m_sess->activeAgentTab == item.agentId);
+        ECDI::Color ink = kDarkMuted;
+        if (item.agentId.empty()) {
+            const std::string wantText = (!active && waitingRoot) ? "主对话 · 待授权" : "主对话";
+            if (item.btn->GetText() != wantText) item.btn->SetText(wantText);
+            ink = active ? kAccentInk : (waitingRoot ? kWarn : kDarkMuted);
+        } else if (active) {
+            ink = kAccentInk;
+        } else if (!item.ended) {
+            ink = kWarn;
+        } else if (item.ok) {
+            ink = kOkDark;
+        } else {
+            ink = kErrorDark;
+        }
+        item.btn->SetTextColor(ink);
+        if (active) {
+            item.btn->SetStyle(ECDI::ButtonStyleOverride{
+                .background = kUserBg,
+                .border = kDarkAccent,
+                .borderWidth = 1.0f,
+                .cornerRadius = 6.0f,
+                .pressedBackground = kUserBg,
+                .hoverBackground = kUserBg});
+        } else {
+            item.btn->SetStyle(ECDI::ButtonStyleOverride{
+                .background = inactiveBg,
+                .border = kLine,
+                .borderWidth = 1.0f,
+                .cornerRadius = 6.0f,
+                .pressedBackground = kToolHeaderPressed,
+                .hoverBackground = kToolHeaderHover});
+        }
+    }
+}
+
+void HarnessApp::RebuildAgentTabBar() {
+    if (!m_hud.agentTabBar || !m_hud.agentTabScroll) return;
+
+    m_agentTabBtns.clear();
+    ECDI::Widget& content = m_hud.agentTabScroll->GetContentView();
+    while (content.GetChildCount() > 0) {
+        content.RemoveChild(content.GetChildAt(0));
+    }
+
+    Session* s = m_sess;
+    const bool showTabs = s && s->hasAgentsCap && !s->transcript.Agents().empty();
+    if (!showTabs) {
+        const bool clearedActive = (s && !s->activeAgentTab.empty());
+        if (s) s->activeAgentTab.clear();
+        const bool wasVis = m_hud.agentTabBar->IsVisible();
+        if (wasVis) {
+            m_hud.agentTabBar->SetVisible(false);
+            if (ECDI::Widget* p = m_hud.agentTabBar->GetParent()) p->Arrange();
+        }
+        if (clearedActive) {
+            ApplyFoldVisibility();
+        }
+        if (wasVis || clearedActive) {
+            Relayout();
+            RequestRepaint();
+        }
+        return;
+    }
+
+    if (!s->activeAgentTab.empty() &&
+        s->transcript.Agents().count(s->activeAgentTab) == 0) {
+        s->activeAgentTab.clear();
+    }
+
+    std::vector<const AgentInfo*> order;
+    order.reserve(s->transcript.Agents().size());
+    std::map<std::string, int> nameCount;
+    for (const auto& kv : s->transcript.Agents()) {
+        order.push_back(&kv.second);
+        const std::string base = kv.second.name.empty() ? kv.second.id : kv.second.name;
+        ++nameCount[base];
+    }
+    std::sort(order.begin(), order.end(),
+              [](const AgentInfo* a, const AgentInfo* b) {
+                  if (a->order != b->order) return a->order < b->order;
+                  return a->id < b->id;
+              });
+
+    const ECDI::Font tabFont = harness::SansFont(harness::kFontSmall);
+    auto measureTabW = [&](const std::string& label, int minW) -> int {
+        int textW = static_cast<int>(label.size()) * 7;
+        if (m_window) {
+            textW = static_cast<int>(
+                m_window->GetTextMeasurer().MeasureText(tabFont, label).width + 0.999f);
+        }
+        return std::clamp(textW + 22, minW, 240);
+    };
+
+    int curX = 12;
+    constexpr int kTabY = 3;
+    constexpr int kTabH = 25;
+    constexpr int kTabGap = 6;
+
+    auto addTab = [&](const std::string& agentId, const std::string& label,
+                      bool ended, bool ok, int minW) {
+        auto btn = std::make_unique<ECDI::Button>(label);
+        const int w = measureTabW(label, minW);
+        btn->SetSize(w, kTabH);
+        btn->SetPosition(curX, kTabY);
+        btn->SetFont(tabFont);
+        btn->SetOnClick([this, agentId] { SelectAgentTab(agentId); });
+        m_agentTabBtns.push_back(AgentTabBtn{agentId, btn.get(), ended, ok});
+        content.AddChild(std::move(btn));
+        curX += w + kTabGap;
+    };
+
+    const bool rootWaiting = (s->coreState == "waiting" && !s->activeAgentTab.empty());
+    addTab(std::string(), rootWaiting ? "主对话 · 待授权" : "主对话", true, true, 76);
+
+    for (const AgentInfo* a : order) {
+        const std::string base = a->name.empty() ? a->id : a->name;
+        const std::string dispName =
+            (nameCount[base] > 1 && !a->name.empty()) ? (base + " (" + a->id + ")") : base;
+        std::string label;
+        if (!a->ended) {
+            label = "▸ " + dispName + " · 进行中";
+        } else {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%s %s · %d轮",
+                          a->ok ? "✓" : "✗", dispName.c_str(), a->turns);
+            label = buf;
+        }
+        addTab(a->id, label, a->ended, a->ok, 88);
+    }
+
+    m_hud.agentTabScroll->SetContentExtent(std::max(1, curX + 6), 28);
+    RefreshAgentTabStyles();
+
+    const bool becameVisible = !m_hud.agentTabBar->IsVisible();
+    if (becameVisible) {
+        m_hud.agentTabBar->SetVisible(true);
+        if (ECDI::Widget* p = m_hud.agentTabBar->GetParent()) p->Arrange();
+        Relayout();
+    }
+    RequestRepaint();
+}
+
+void HarnessApp::SelectAgentTab(const std::string& agentId) {
+    if (!m_sess) return;
+    if (!agentId.empty() && m_sess->transcript.Agents().count(agentId) == 0) return;
+    if (m_sess->activeAgentTab == agentId) return;
+
+    if (m_sess->activeAgentTab.empty() && !agentId.empty() && m_scroll) {
+        m_sess->rootScrollY = m_scroll->GetScrollOffsetY();
+    }
+    m_sess->activeAgentTab = agentId;
+    if (!agentId.empty()) {
+        m_focusedAgentId.clear();
+        m_focusedAgentPulse = 0;
+        ApplyFocusedAgentHighlight();
+    }
+    m_renderedAgentBannerId.clear();
+    RefreshAgentTabStyles();
+    ApplyFoldVisibility();
+    Relayout();
+    if (m_scroll) {
+        if (!agentId.empty()) {
+            m_scroll->SetContentOffset(0, 0);
+        } else {
+            m_scroll->SetContentOffset(0, std::min(m_sess->rootScrollY, m_scroll->GetMaxOffsetY()));
+        }
+    }
+    RefreshJumpButton();
+    RequestRepaint();
+}
+
+void HarnessApp::SyncAgentTaskBanner(int canvasX, int innerW, int& y) {
+    if (!m_content || !m_sess || m_options.rowModeList) return;
+    if (m_sess->activeAgentTab.empty()) {
+        if (m_hud.agentTaskBanner) {
+            m_content->RemoveChild(m_hud.agentTaskBanner);
+            m_hud.agentTaskBanner = nullptr;
+            m_hud.agentTaskTitle = nullptr;
+            m_hud.agentTaskBody = nullptr;
+        }
+        m_renderedAgentBannerId.clear();
+        return;
+    }
+
+    const auto it = m_sess->transcript.Agents().find(m_sess->activeAgentTab);
+    if (it == m_sess->transcript.Agents().end()) {
+        m_sess->activeAgentTab.clear();
+        if (m_hud.agentTaskBanner) {
+            m_content->RemoveChild(m_hud.agentTaskBanner);
+            m_hud.agentTaskBanner = nullptr;
+            m_hud.agentTaskTitle = nullptr;
+            m_hud.agentTaskBody = nullptr;
+        }
+        m_renderedAgentBannerId.clear();
+        return;
+    }
+    const AgentInfo& ag = it->second;
+
+    bool hasRows = false;
+    for (const RowRec& r : m_sess->rows) {
+        if (r.agentTag == ag.id) {
+            hasRows = true;
+            break;
+        }
+    }
+
+    if (!m_hud.agentTaskBanner) {
+        auto banner = std::make_unique<ECDI::Panel>();
+        banner->SetStyle(ECDI::PanelStyleOverride{
+            .background = m_options.probeContrast ? harness::internal::kProbeBg : kPanel2,
+            .cornerRadius = kRadiusCard2,
+            .borderWidth = 1.0f,
+            .borderColor = m_options.probeContrast ? harness::internal::kProbeInk : kLine});
+
+        auto title = std::make_unique<ECDI::Label>("");
+        title->SetFont(harness::SansFont(harness::kFontSmall));
+        m_hud.agentTaskTitle = title.get();
+        banner->AddChild(std::move(title));
+
+        auto body = std::make_unique<ECDI::Label>("");
+        body->SetFont(harness::SansFont(harness::kFontBody, 400));
+        body->SetTextColor(m_options.probeContrast ? harness::internal::kProbeInk : kDarkInk);
+        m_hud.agentTaskBody = body.get();
+        banner->AddChild(std::move(body));
+
+        m_hud.agentTaskBanner = banner.get();
+        m_content->AddChild(std::move(banner));
+        m_renderedAgentBannerId.clear();
+    }
+
+    if (m_renderedAgentBannerId != ag.id || m_renderedAgentBannerEnded != ag.ended ||
+        m_renderedAgentBannerHasRows != hasRows) {
+        const std::string dispName = ag.name.empty() ? ag.id : ag.name;
+        std::string titleText = "子代理 · " + dispName + " (" + ag.id + ")";
+        ECDI::Color titleColor = kWarn;
+        if (!ag.ended) {
+            titleText += " · 进行中";
+            titleColor = kWarn;
+        } else {
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), " · %s · %d轮 · %s",
+                          ag.ok ? "已完成" : "未完成", ag.turns,
+                          ElapsedText(ag.elapsedMs).c_str());
+            titleText += buf;
+            titleColor = ag.ok ? kOkDark : kErrorDark;
+        }
+        if (m_options.probeContrast) titleColor = harness::internal::kProbeInk;
+        if (m_hud.agentTaskTitle) {
+            m_hud.agentTaskTitle->SetText(titleText);
+            m_hud.agentTaskTitle->SetTextColor(titleColor);
+        }
+        std::string bodyText = "任务：" + (ag.task.empty() ? "（无任务描述）" : ag.task);
+        if (!hasRows && ag.ended && !ag.summary.empty()) {
+            bodyText += "\n结果：" + ag.summary;
+        }
+        if (m_hud.agentTaskBody) {
+            m_hud.agentTaskBody->SetText(bodyText);
+        }
+        m_renderedAgentBannerId = ag.id;
+        m_renderedAgentBannerEnded = ag.ended;
+        m_renderedAgentBannerHasRows = hasRows;
+    }
+
+    const int padX = harness::internal::kRowPadX;
+    const int textW = std::max(40, innerW - 2 * padX);
+    int curY = 8;
+    if (m_hud.agentTaskTitle) {
+        m_hud.agentTaskTitle->SetWordWrap(true);
+        m_hud.agentTaskTitle->SetSize(textW, 18);
+        m_hud.agentTaskTitle->AutoSize();
+        m_hud.agentTaskTitle->SetPosition(padX, curY);
+        curY += m_hud.agentTaskTitle->GetHeight() + 4;
+    }
+    if (m_hud.agentTaskBody) {
+        m_hud.agentTaskBody->SetWordWrap(true);
+        m_hud.agentTaskBody->SetSize(textW, 18);
+        m_hud.agentTaskBody->AutoSize();
+        m_hud.agentTaskBody->SetPosition(padX, curY);
+        curY += m_hud.agentTaskBody->GetHeight() + 8;
+    }
+    m_hud.agentTaskBanner->SetSize(innerW, curY);
+    m_hud.agentTaskBanner->SetPosition(canvasX, y);
+    y += curY + harness::internal::kRowGap;
 }

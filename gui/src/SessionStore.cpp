@@ -328,7 +328,7 @@ bool JournalWriter::Open(const std::filesystem::path& journalPath, std::string& 
     return true;
 }
 
-bool JournalWriter::AppendLine(const std::string& rawLine, std::string& error) {
+bool JournalWriter::AppendLine(const std::string& rawLine, std::string& error, bool flush) {
     if (!m_file.is_open()) {
         error = "journal writer is not open";
         return false;
@@ -340,9 +340,14 @@ bool JournalWriter::AppendLine(const std::string& rawLine, std::string& error) {
         m_file.put('\n');
         m_bytesWritten += 1;
     }
-    m_file.flush();
-    if (!m_file) {
-        error = "journal flush failed on write";
+    if (flush) {
+        m_file.flush();
+        if (!m_file) {
+            error = "journal flush failed on write";
+            return false;
+        }
+    } else if (!m_file) {
+        error = "journal write failed";
         return false;
     }
     return true;

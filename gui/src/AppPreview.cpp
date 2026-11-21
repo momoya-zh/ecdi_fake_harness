@@ -388,7 +388,7 @@ void HarnessApp::ApplyPreviewVisibility() {
 //    高 clamp(rh-80, 240..560)，右缘留 16px。浮层无父布局 ⇒ SetSize 后自己
 //    Arrange，再 UpdateContentExtent（extent=0 教训，同 LayoutSettingsOverlay）。
 void HarnessApp::LayoutPreviewOverlay() {
-    if (!m_hud.previewPanel) return;
+    if (!m_hud.previewPanel || !m_hud.previewPanel->IsVisible()) return;
     ECDI::Widget& root = m_window->GetRootWidget();
     const int rw = root.GetWidth();
     const int rh = root.GetHeight();

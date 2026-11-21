@@ -187,6 +187,11 @@ private:
     ImportTipFn m_onImportEnter;
     ImportTipFn m_onImportLeave;
     std::string m_fullHintText = "Enter 发送 · Shift+Enter 换行";
+    bool m_hintInit = false;
+    bool m_buttonStatesInit = false;
+    bool m_lastSendEnabled = false;
+    bool m_lastStopEnabled = false;
+    bool m_readOnlyInit = false;
     std::optional<StagedAttachment> m_attachment;
     bool m_isReadOnly = false;
     bool m_cardFocused = false;

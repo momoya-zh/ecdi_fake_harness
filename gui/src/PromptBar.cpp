@@ -495,6 +495,12 @@ void PromptBar::SetStateDrivenEnabled(bool enabled) {
 }
 
 void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
+    if (m_buttonStatesInit && m_lastSendEnabled == sendEnabled && m_lastStopEnabled == stopEnabled) {
+        return;
+    }
+    m_buttonStatesInit = true;
+    m_lastSendEnabled = sendEnabled;
+    m_lastStopEnabled = stopEnabled;
     // 行为与视觉分开驱动：workspace pending 禁用 Send，但不得启用 Stop。
     if (m_send) m_send->SetEnabled(sendEnabled);
     if (m_stop) m_stop->SetEnabled(stopEnabled);
@@ -505,6 +511,10 @@ void PromptBar::SetButtonStates(bool sendEnabled, bool stopEnabled) {
 }
 
 void PromptBar::SetReadOnlyMode(bool readOnly) {
+    if (m_readOnlyInit && m_isReadOnly == readOnly) {
+        return;
+    }
+    m_readOnlyInit = true;
     m_isReadOnly = readOnly;
     if (m_continue) m_continue->SetVisible(readOnly);
     if (m_send) m_send->SetVisible(!readOnly);
@@ -519,8 +529,15 @@ void PromptBar::SetReadOnlyMode(bool readOnly) {
 }
 
 void PromptBar::SetHint(const std::string& text, const ECDI::Color& color) {
+    if (!m_hint) {
+        m_fullHintText = text;
+        return;
+    }
+    if (m_hintInit && m_fullHintText == text && m_hint->GetTextColor() == color) {
+        return;
+    }
+    m_hintInit = true;
     m_fullHintText = text;
-    if (!m_hint) return;
     // ★★ 缺口 4 闭合：SetTextColor 底层调 SetStyle，会无条件 Invalidate；
     //   加同值守卫避免 RefreshHud 每 tick 触发无谓重绘。
     if (m_hint->GetTextColor() != color) {

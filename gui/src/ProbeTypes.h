@@ -468,6 +468,8 @@ struct AgentProbeRec {
     //     `cardVisible == (agents > 0)`。
     size_t cardRows = 0;
     bool cardVisible = false;
+    size_t tabCount = 0;
+    bool tabVisible = false;
     bool matched = true;          // 元断言（见 RunAgentProbe 头注）
     std::string note;
     std::vector<std::string> agentLines;   // "a1|名|end|ok|3轮|12行|18420ms"

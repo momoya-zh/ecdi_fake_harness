@@ -71,8 +71,13 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     //   `rows.size()`——重建时若某条目建不出行（块缺失即跳过），两者就会错位，
     //   而"视图状态写回模型"依赖这个下标指对地方（错位 = 把 A 的展开态写到 B 上）。
     stored.timelineIdx = timelineIdx;
+    const bool inAgentTab = m_sess && !m_sess->activeAgentTab.empty();
+    stored.tabHidden = inAgentTab && (stored.agentTag != m_sess->activeAgentTab);
     if (m_options.rowModeList) {
         stored.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
+    }
+    if (stored.tabHidden) {
+        stored.panel->SetVisible(false);
     }
     m_content->AddChild(std::move(row));
     if (!m_options.rowModeList && stored.indent > 0 && m_content) {
@@ -84,6 +89,7 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
         gutter->SetStyle(ECDI::PanelStyleOverride{
             .background = Pick(m_options.probeContrast, kLine, kProbeInk),
             .cornerRadius = 1.0f});
+        if (inAgentTab) gutter->SetVisible(false);
         m_content->AddChild(std::move(gutter));
     }
     m_sess->rows.push_back(stored);
@@ -96,6 +102,8 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     // settle 后新增的行（发送/停止/回答反馈）没有逐 tick 的 Relayout 可蹭——
     // 排一个补重排脉冲，让定时器把它布局出来
     m_relayoutPulse = std::max(m_relayoutPulse, 2);
+    m_liveStructuralDirty = true;
+    m_liveUiDirty = true;
 }
 
 // ★★ 2026-11-01（TODO-07 第二步）：`blockRows` 的**唯一**读取入口。
@@ -196,6 +204,8 @@ void HarnessApp::ApplyJobToRow(RowRec& row, const std::string& callId) {
     body += v.tail.empty() ? "（暂无输出）" : v.tail;
     if (v.status != "running") body += "\n[退出码 " + std::to_string(v.exitCode) + "]";
     row.label->SetText(body);
+    row.textSyncPending = false;
+    row.layoutDirty = true;
 }
 
 std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowRec& rec) {
@@ -266,6 +276,7 @@ std::unique_ptr<ECDI::Widget> HarnessApp::BuildBlockRow(const Block& block, RowR
     }
 
     if (block.kind == "assistant" || block.kind == "system" || block.kind == "error") {
+        rec.isAssistant = (block.kind == "assistant");
         // ★★ 2026-10-27：智能体正文（及 system/error）改为透明无边框纯文本直出样式
         //   （底色对齐画布 kContentBg、0 描边、0 圆角）。同一刀随后把工具行与权限门
         //   也拍平 ⇒ 整份转录里**只有用户消息**保留气泡（那是"我说的"，需要区分）。
@@ -622,6 +633,43 @@ void HarnessApp::ToggleRow(RowRec& stored, bool reasoning) {
     if (stored.timelineIdx < m_sess->timeline.size()) {
         m_sess->timeline[stored.timelineIdx].expanded = stored.expanded;
     }
+    if (stored.expanded && stored.label) {
+        if (stored.textSyncPending) {
+            if (const Block* b = m_sess->transcript.FindBlock(stored.blockId)) {
+                if (m_sess->jobsByCall.count(b->id)) {
+                    ApplyJobToRow(stored, b->id);
+                } else {
+                    stored.label->SetText(b->unknownKind ? UnknownKindText(*b) : b->text);
+                }
+            }
+            stored.textSyncPending = false;
+        }
+        if (stored.body) {
+            const int innerW = std::max(160, TranscriptLayoutWidth() - stored.indent);
+            const int bodyW = innerW - 2 * harness::internal::kRowPadX;
+            const int wrapW = std::max(40, bodyW - 20);
+            if (!stored.label->IsWordWrap()) stored.label->SetWordWrap(true);
+            if (stored.lastWrapW != wrapW) {
+                stored.label->SetSize(wrapW, stored.label->GetHeight());
+                stored.lastWrapW = wrapW;
+            }
+            stored.label->AutoSize();
+            int bodyH = stored.label->GetHeight() + 8;
+            if (!stored.proposal.lines.empty()) {
+                const int propContentW = std::max(wrapW, stored.proposal.maxCols * 8 + 12);
+                const int barExtra =
+                    (propContentW > wrapW) ? (harness::internal::kScrollBarThickness + 2) : 0;
+                bodyH += static_cast<int>(stored.proposal.lines.size()) * kProposalLineH + barExtra;
+            }
+            stored.bodyH = bodyH;
+            if (stored.lastBodyW != bodyW || stored.lastBodyH != bodyH) {
+                stored.lastBodyW = bodyW;
+                stored.lastBodyH = bodyH;
+                stored.body->SetSize(bodyW, bodyH);
+            }
+        }
+    }
+    stored.layoutDirty = true;
     if (stored.body) stored.body->Toggle();
     // 箭头随展开态翻转（﹀ ⇄ ︿）；文案与 token 副标由**单一真相源**决定，
     // 故回查块（`block_end` 可能已到达 ⇒ 文案应为「已完成」+ tokens）
@@ -798,12 +846,17 @@ void HarnessApp::RebuildTranscriptView(const std::vector<std::string>* orderOver
 
     m_sess->rows.clear();
     m_sess->blockRows.clear();
+    m_sess->dirtyTextRows.clear();
     if (m_content) {
         while (m_content->GetChildCount() > 0) {
             m_content->RemoveChild(m_content->GetChildAt(0));
         }
     }
     m_hud.emptyGuide = nullptr;
+    m_hud.agentTaskBanner = nullptr;
+    m_hud.agentTaskTitle = nullptr;
+    m_hud.agentTaskBody = nullptr;
+    m_renderedAgentBannerId.clear();
 
     if (!orderOverride) {
         MaterializeRows();
@@ -1141,7 +1194,6 @@ void HarnessApp::ToggleTurn(size_t foldIdx) {
         // 兜底（正常流到不了）：重算移动了摘要条 ⇒ 下标失效，只有整表重建能让
         // `rows[i].timelineIdx == i` 重新成立。慢，但正确性优先于快。
         RebuildTranscriptView();
-        m_relayoutPulse = 12;
         RequestRepaint();
         return;
     }
@@ -1154,8 +1206,7 @@ void HarnessApp::ToggleTurn(size_t foldIdx) {
             r.headerBtn->SetText(m_sess->timeline[r.timelineIdx].foldSummary);
         }
     }
-    m_relayoutPulse = 12;   // ~400ms：覆盖内容高度跳变
-    Relayout();             // 立即重排（同 ToggleRow：settle 后定时器路径不经过 Relayout）
+    Relayout();             // 立即重排（无平滑折叠动画，无需 400ms 补重排）
     RequestRepaint();
 }
 
@@ -1165,14 +1216,24 @@ void HarnessApp::ToggleTurn(size_t foldIdx) {
 //     等于让几何函数变成状态作者（`ToggleRow` 那条注释同款纪律）。
 void HarnessApp::ApplyFoldVisibility() {
     if (!m_sess) return;
+    const bool inAgentTab = !m_sess->activeAgentTab.empty();
     for (RowRec& r : m_sess->rows) {
-        if (r.timelineIdx >= m_sess->timeline.size()) continue;
-        const TimelineEntry& e = m_sess->timeline[r.timelineIdx];
-        r.foldable = e.foldable;
-        r.foldHidden = e.foldHidden;
-        r.foldBar = (e.kind == TimelineEntry::Kind::Fold);
-        if (r.panel) r.panel->SetVisible(!e.foldHidden);
-        if (r.gutter && !m_options.rowModeList) r.gutter->SetVisible(!e.foldHidden);
+        const bool tabHide = inAgentTab && (r.agentTag != m_sess->activeAgentTab);
+        r.tabHidden = tabHide;
+        if (r.timelineIdx < m_sess->timeline.size()) {
+            const TimelineEntry& e = m_sess->timeline[r.timelineIdx];
+            if (r.foldHidden != e.foldHidden) {
+                r.layoutDirty = true;
+            }
+            r.foldable = e.foldable;
+            r.foldHidden = e.foldHidden;
+            r.foldBar = (e.kind == TimelineEntry::Kind::Fold);
+        }
+        const bool show = inAgentTab ? !tabHide : !r.foldHidden;
+        if (r.panel) r.panel->SetVisible(show);
+        if (r.gutter && !m_options.rowModeList) {
+            r.gutter->SetVisible(!inAgentTab && !r.foldHidden);
+        }
     }
 }
 
@@ -1684,6 +1745,7 @@ void HarnessApp::ApplyAnsweredLook(RowRec& rec, const std::string& choice,
         rec.conclusion->SetText("\xE2\x97\x8F \xE5\xB7\xB2\xE5\x9B\x9E\xE7\xAD\x94\xEF\xBC\x88\xE6\x9C\xAA\xE7\x9F\xA5\xE7\xBB\x93\xE8\xAE\xBA\xEF\xBC\x89" + whenSeg);
     }
     rec.conclusion->SetVisible(true);
+    rec.layoutDirty = true;
 }
 
 // 通知行：**纯构造**（重建可重放）。
@@ -1750,6 +1812,10 @@ void HarnessApp::RefreshEmptyGuide() {
         if (m_hud.emptyGuide) {
             m_content->RemoveChild(m_hud.emptyGuide);   // 返回所有权，丢弃即析构
             m_hud.emptyGuide = nullptr;
+    m_hud.agentTaskBanner = nullptr;
+    m_hud.agentTaskTitle = nullptr;
+    m_hud.agentTaskBody = nullptr;
+    m_renderedAgentBannerId.clear();
             // ★ 不 RequestRepaint：拆除发生在「行/pending 到达」的 tick 里，
             //   调用方（relayoutPulse / Relayout 链）必然带着重绘——再请求一次
             //   会让 invalidations 漂 +1（demo 实测 8→10，违反 §0.3 读数纪律）。
@@ -2641,6 +2707,137 @@ void HarnessApp::LayoutTableInterior(RowRec::TableRec& t, int availW) {
     t.sv->SetContentExtent(totalW, totalH);
 }
 
+std::unique_ptr<ECDI::Widget> HarnessApp::MakeStreamingChunkWidget(const std::string& text) const {
+    const ECDI::Color plainBg = Pick(m_options.probeContrast, kContentBg, kProbeBg);
+    const ECDI::Color ink = Pick(m_options.probeContrast, kDarkInk, kProbeInk);
+    return MakeAssistantTextWidget(text, harness::SansFont(harness::kFontBody, 400), ink, plainBg);
+}
+
+void HarnessApp::SyncStreamingAssistantText(RowRec& rec, const std::string& text) {
+    if (!rec.label) return;
+    constexpr size_t kChunkSoftMin = 180;
+    constexpr size_t kChunkTarget = 320;
+    constexpr size_t kChunkHardMax = 720;
+
+    if (rec.streamChunks.empty() && text.size() <= kChunkTarget) {
+        if (rec.syncedTextLen != text.size() || rec.label->GetText() != text) {
+            rec.label->SetText(text);
+            rec.syncedTextLen = text.size();
+            rec.layoutDirty = true;
+        }
+        return;
+    }
+
+    auto* panel = dynamic_cast<ECDI::Panel*>(rec.panel);
+    if (!panel) {
+        rec.label->SetText(text);
+        rec.syncedTextLen = text.size();
+        rec.layoutDirty = true;
+        return;
+    }
+
+    if (rec.streamChunks.empty()) {
+        RowRec::StreamChunk c0;
+        c0.widget = rec.label;
+        c0.startOffset = 0;
+        c0.endOffset = 0;
+        c0.wrapped = rec.wrapped;
+        c0.lastWrapW = rec.lastWrapW;
+        rec.streamChunks.push_back(c0);
+    }
+
+    while (true) {
+        const size_t start = rec.streamChunks.back().startOffset;
+        const size_t rem = (text.size() > start) ? (text.size() - start) : 0;
+        if (rem <= kChunkTarget) break;
+
+        size_t splitPos = std::string::npos;
+        char sep = '\0';
+        size_t nextStart = 0;
+        const size_t scanEnd = std::min(text.size(), start + kChunkHardMax);
+        const size_t nl = text.find('\n', start + kChunkSoftMin);
+        if (nl != std::string::npos && nl < scanEnd && nl + 1 < text.size()) {
+            splitPos = nl;
+            sep = '\n';
+            nextStart = nl + 1;
+        } else if (rem > kChunkHardMax) {
+            const size_t spaceMin = start + kChunkTarget;
+            size_t sp = scanEnd;
+            while (sp > spaceMin && text[sp - 1] != ' ') {
+                --sp;
+            }
+            if (sp > spaceMin && text[sp - 1] == ' ') {
+                splitPos = sp - 1;
+                sep = ' ';
+                nextStart = sp;
+            } else {
+                size_t cut = scanEnd;
+                while (cut > start + kChunkSoftMin &&
+                       (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) {
+                    --cut;
+                }
+                splitPos = cut;
+                sep = '\0';
+                nextStart = cut;
+            }
+        } else {
+            break;
+        }
+
+        auto& cur = rec.streamChunks.back();
+        if (!cur.frozen || cur.endOffset != splitPos) {
+            cur.endOffset = splitPos;
+            cur.frozen = true;
+            cur.dirty = true;
+            if (cur.widget) {
+                cur.widget->SetText(text.substr(cur.startOffset, splitPos - cur.startOffset));
+            }
+        }
+        auto w = MakeStreamingChunkWidget(std::string());
+        RowRec::StreamChunk next;
+        next.widget = dynamic_cast<ECDI::TextWidget*>(w.get());
+        next.startOffset = nextStart;
+        next.endOffset = nextStart;
+        next.sepBefore = sep;
+        next.dirty = true;
+        panel->AddChild(std::move(w));
+        rec.streamChunks.push_back(next);
+    }
+
+    auto& tail = rec.streamChunks.back();
+    if (tail.widget && tail.endOffset != text.size()) {
+        const size_t len = (text.size() > tail.startOffset) ? (text.size() - tail.startOffset) : 0;
+        tail.endOffset = text.size();
+        tail.dirty = true;
+        tail.widget->SetText(text.substr(tail.startOffset, len));
+    }
+    rec.syncedTextLen = text.size();
+    rec.layoutDirty = true;
+}
+
+void HarnessApp::CollapseStreamingChunksToSingleLabel(RowRec& rec, const Block& block) {
+    if (rec.streamChunks.empty() || !rec.panel) return;
+    if (auto* panel = dynamic_cast<ECDI::Panel*>(rec.panel)) {
+        for (size_t k = 1; k < rec.streamChunks.size(); ++k) {
+            if (rec.streamChunks[k].widget) {
+                panel->RemoveChild(rec.streamChunks[k].widget);
+            }
+        }
+    }
+    rec.streamChunks.clear();
+    rec.syncedTextLen = block.text.size();
+    if (rec.label && rec.label->IsWordWrap()) {
+        rec.label->SetWordWrap(false);
+    }
+    rec.wrapped = false;
+    rec.lastWrapW = -1;
+    rec.layoutDirty = true;
+    rec.lastLayoutW = -1;
+    if (rec.label) {
+        ApplyInlineText(*rec.label, block.text);
+    }
+}
+
 void HarnessApp::UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
                                               const std::vector<MarkdownSegment>& segs) {
     if (!rec.panel) return;
@@ -2650,7 +2847,14 @@ void HarnessApp::UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
     while (panel->GetChildCount() > 0) {
         panel->RemoveChild(panel->GetChildAt(0));
     }
+    rec.streamChunks.clear();
+    rec.copyBtn = nullptr;
+    rec.syncedTextLen = block.text.size();
+    rec.wrapped = false;
+    rec.lastWrapW = -1;
     rec.hasMarkdown = true;
     rec.blockId = block.id;
+    rec.layoutDirty = true;
+    rec.lastLayoutW = -1;
     BuildAssistantMarkdownWidgets(*panel, rec, segs);
 }

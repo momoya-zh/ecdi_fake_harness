@@ -165,7 +165,17 @@ std::vector<std::string> HarnessApp::SnapshotRows() const {
             line += r.headerBtn ? r.headerBtn->GetText() : std::string();
         }
         line += '\x1f';
-        if (r.label && !RowAlive(live, r.label, "label", id ? id->c_str() : "")) {
+        if (!r.streamChunks.empty()) {
+            for (size_t k = 0; k < r.streamChunks.size(); ++k) {
+                const auto& ch = r.streamChunks[k];
+                if (k > 0 && ch.sepBefore != '\0') line += ch.sepBefore;
+                if (ch.widget && !RowAlive(live, ch.widget, "chunk", id ? id->c_str() : "")) {
+                    line += "<dead:chunk>";
+                } else if (ch.widget) {
+                    line += ch.widget->GetText();
+                }
+            }
+        } else if (r.label && !RowAlive(live, r.label, "label", id ? id->c_str() : "")) {
             line += "<dead:label>";
         } else if (r.label) {
             line += r.label->GetText();

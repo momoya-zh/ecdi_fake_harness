@@ -92,6 +92,9 @@ std::string HarnessApp::PostPrompt(const std::string& text, bool allowBusyForPro
     if (!m_sess->journalPromoted && !m_sess->workspacePath.empty()) {
         PromoteSessionJournal(*m_sess, text);
     }
+    if (!m_sess->activeAgentTab.empty()) {
+        SelectAgentTab("");
+    }
     PendingPrompt pending;
     pending.clientId = clientId;
     pending.text = text;

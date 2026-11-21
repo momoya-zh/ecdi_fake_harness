@@ -340,6 +340,12 @@ private:
         //     内联条让布局**自己**处理位置：菜单是 `counting` 的第 2 个子控件，
         //     藏在 `head` 与 `scroll` 之间，显隐只影响自己占不占槽。
         ECDI::Panel* moreMenu = nullptr;         // 菜单条容器（显隐切换）
+        // ★★ 中栏子代理动态选项卡条（默认隐藏，有子代理且 caps.agents 时显形）
+        ECDI::Panel* agentTabBar = nullptr;
+        ECDI::ScrollView* agentTabScroll = nullptr;
+        ECDI::Panel* agentTaskBanner = nullptr;   // 子代理视图顶部的任务与状态卡（m_content 子节点）
+        ECDI::Label* agentTaskTitle = nullptr;
+        ECDI::Label* agentTaskBody = nullptr;
         ECDI::Label* workspacePath = nullptr;   // 左栏：仅显示 core 确认的路径
         ECDI::Label* workspaceStatus = nullptr;// 左栏：workspace 请求状态
         ECDI::Button* workspacePick = nullptr;  // 左栏：目录选择器
@@ -397,6 +403,7 @@ private:
     void BuildSidebar(ECDI::Panel& main);
     void BuildConversationHead();
     void BuildMoreMenu();
+    void BuildAgentTabBar();
     std::unique_ptr<ECDI::Widget> BuildSettingsSheet();
     void BuildTranscriptViewport(std::unique_ptr<ECDI::Widget> settingsSheet,
                                  std::unique_ptr<ECDI::Widget> previewSheet);
@@ -418,10 +425,12 @@ private:
     void HudTouch(const char* name);          // RefreshHud 里每个 if 调一次
     // 返回"被读过但建树时从未赋值"的字段名列表（空 = 覆盖完整）。
     std::vector<std::string> HudUnbuilt() const;
-    void DrainInstant();
-    void DrainTimed();
+    bool DrainInstant();
+    bool DrainTimed();
     void HandleLine(const std::string& line);
     void RouteLastMessage();
+    void FlushDirtyStreamText();
+    void FlushLiveUi();
     // ★★ 协议 v5（2026-11-05）：ask 的**结构化提案**（§3.6 可选 `detail`）。
     //   问句是一行摘要，审批要看的结构化数据在这里：write/edit 的 unified diff、
     //   run/task 的作用域字段。**渲染数据，不是不变量对象**——字段缺失/`tool`
@@ -597,6 +606,7 @@ private:
         //     模型会让 A==B 恒等，折叠这类"该可见的行没显示"的缺陷就再也测不出来了。
         bool foldable = false;                    // 本行属于回合过程（可被折叠）
         bool foldHidden = false;
+        bool tabHidden = false;                   // 当前子代理选项卡过滤隐藏（与 foldHidden 正交）
         bool foldBar = false;
         // ★★ 2026-11-08（富内容 B+，rich-content-plan §G.1）：
         //   原 `hasTable` 是二期的字段名，语义是「本行走了复合 markdown 渲染」。
@@ -627,6 +637,9 @@ private:
             bool ordered = false;
             int marker = 0;
             bool lastOfList = false;   // 列表末项（下方间距更大，收束整体）
+            bool codeMeasured = false;
+            int cachedCodeMaxLineW = 0;
+            int cachedCodeTextH = 0;
         };
         std::vector<SegMeta> segMeta;
         // ★★ 富内容二期第二轮（2026-11-01，T1+T2 裁决）：表格内部布局的**可重跑**元数据。
@@ -693,6 +706,27 @@ private:
         //   只有布局过程知道。★ 存**结果**不存推算：拿行高累加去反推会在
         //   AutoSize 之后和真实值分叉（这正是本轮之前 `Relayout` 注释里
         //   「未变则不重发」那段防范的同一类错）。
+        struct StreamChunk {
+            ECDI::TextWidget* widget = nullptr;
+            size_t startOffset = 0;
+            size_t endOffset = 0;
+            char sepBefore = '\0';
+            bool frozen = false;
+            bool dirty = true;
+            bool wrapped = false;
+            int lastWrapW = -1;
+            int cachedW = 0;
+            int cachedH = 0;
+        };
+        std::vector<StreamChunk> streamChunks;
+        size_t syncedTextLen = 0;
+        bool isAssistant = false;
+        bool textSyncPending = false;
+        bool layoutDirty = true;
+        int lastLayoutW = -1;
+        int cachedRowH = 0;
+        int cachedBubbleW = 0;
+
         int y = 0;
         // 归属竖线（`indent > 0` 的行才有）。几何在 Relayout 里定——行高要到
         // 测量之后才知道，建行期给不出高度。
@@ -798,6 +832,7 @@ private:
         std::vector<TimelineEntry> timeline;
         std::deque<RowRec> rows;
         std::map<std::string, size_t> blockRows;  // block id → rows 下标（delta 流式追加用）
+        std::vector<size_t> dirtyTextRows;        // Live/delta pending text sync row indices
 
         // ★★ 协议 v6（2026-11-05）：后台作业。三张表各司其职：
         //   jobsByCall：run_command 的 tool_call 块 id → 作业视图（卡片挂在这张工具卡上）；
@@ -949,10 +984,14 @@ private:
         //   ★ 和 memories 同一纪律：信息**只来自 core**，GUI 不扫配置推断；
         //     没有 `mcp` 字段 ⇒ has=false ⇒ 副标/卡片都不出现（不发 0 服务）。
         McpStatus mcp;
+
+        // ── 子代理视图切换（空串 = 主对话；非空 = 对应子代理 id）──
+        std::string activeAgentTab;
+        int rootScrollY = 0;
     };
 
     // ── L1 会话持久化辅助 ──
-    void HandleLiveJournalLine(Session& session, const std::string& line);
+    void HandleLiveJournalLine(Session& session, const std::string& line, bool flush = true);
     void PromoteSessionJournal(Session& session, const std::string& promptText);
     void SyncSessionMeta(Session& session);
 
@@ -1156,6 +1195,9 @@ private:
                                                           const ECDI::Color& color,
                                                           const ECDI::Color& bg) const;
     void LayoutTableInterior(RowRec::TableRec& t, int availW);
+    std::unique_ptr<ECDI::Widget> MakeStreamingChunkWidget(const std::string& text) const;
+    void SyncStreamingAssistantText(RowRec& rec, const std::string& text);
+    void CollapseStreamingChunksToSingleLabel(RowRec& rec, const Block& block);
     void UpgradeAssistantRowToMarkdown(RowRec& rec, const Block& block,
                                        const std::vector<MarkdownSegment>& segs);
 
@@ -1454,7 +1496,7 @@ private:
     void ApplyUiStateToView(Session& s);
 
     void Relayout();
-    void SyncInspectorLayout();
+    void SyncInspectorLayout(bool force = true);
     void FollowTailIfPinned();
     // ★★ P4 Phase C（2026-10-25）：空状态引导。RefreshEmptyGuide 幂等——
     //   空且无 → 建；非空且有 → 拆（RemoveChild 丢弃所有权）；空且有 → 宽度跟随。
@@ -1465,6 +1507,7 @@ private:
     void RequestRepaint();
     void CacheEvalMetrics();
     void RefreshHud();
+    void ResetHudCaches();
     // ★★ 2026-11-04（用户裁决 A+C）：思考中 spinner 的唯一推进点。
     //   放在 `OnReplayTick` 里（33ms 节拍），**不**新开定时器、**不**走
     //   `AnimationManager`——后者的 Invalidate 绕过 `RequestRepaint()`，会让
@@ -1610,6 +1653,16 @@ private:
     //     会把整棵树拆掉重建。若开合态只活在 `ecdi::Panel::IsVisible()` 上，
     //     一次换主题就会把用户刚拉开的菜单**静默合上**——正是 0c/Step 2 踩过的
     //     「重建即丢状态」同一坑。`RebuildUi()` 第⑩步会按它重新投影。
+    struct AgentTabBtn {
+        std::string agentId;
+        ECDI::Button* btn = nullptr;
+        bool ended = false;
+        bool ok = false;
+    };
+    std::vector<AgentTabBtn> m_agentTabBtns;
+    std::string m_renderedAgentBannerId;
+    bool m_renderedAgentBannerEnded = false;
+    bool m_renderedAgentBannerHasRows = false;
     bool m_moreMenuOpen = false;
     PromptBar* m_promptBar = nullptr;              // 非拥有
     ECDI::ProgressBar* m_usageBarIn = nullptr;     // 右栏用量条（非拥有）
@@ -1742,6 +1795,50 @@ private:
     bool m_sidebarCompactVert = false;             // 左侧栏短窗口竖向紧凑态缓存
     bool m_summaryWritten = false;
     std::string m_backendName = "gdi";             // 实际运行的后端（GL 就绪检查后定；摘要用）
+    bool m_liveUiDirty = false;
+    bool m_liveStructuralDirty = false;
+    std::chrono::steady_clock::time_point m_lastLiveUiFlush{};
+    int m_lastInspW = -1;
+    int m_lastInspH = -1;
+    bool m_inspectorLayoutDirty = true;
+    int m_lastModelChipMaxW = -1;
+    std::string m_hudCachedTitle;
+    std::string m_hudCachedRowChip;
+    std::string m_hudCachedSessChip;
+    std::string m_hudCachedModeChip;
+    std::string m_hudCachedBackendChip;
+    std::string m_hudCachedConvTitle;
+    std::string m_hudCachedConvSub;
+    std::string m_hudCachedWsPath;
+    std::string m_hudCachedWsStatus;
+    int m_hudCachedWsFontDev = -1;
+    int m_hudCachedWsPickEnabled = -1;
+    std::string m_hudCachedStateChip;
+    int m_hudCachedStatusDotState = -1;
+    std::string m_hudCachedSessCount;
+    std::string m_hudCachedSessProgress;
+    float m_hudCachedReplayProg = -1.0f;
+    std::string m_hudCachedHealthSeq;
+    int m_hudCachedHealthSeqGap = -1;
+    std::string m_hudCachedHealthViol;
+    std::string m_hudCachedHealthKind;
+    int m_hudCachedHealthKindNz = -1;
+    std::string m_hudCachedEvalPaints;
+    std::string m_hudCachedProbeCmds;
+    std::string m_hudCachedProbeExec;
+    std::string m_hudCachedUsageIn;
+    std::string m_hudCachedUsageOut;
+    std::string m_hudCachedCtxPct;
+    int m_hudCachedCtxPctLevel = -1;
+    float m_hudCachedCtxFrac = -1.0f;
+    float m_hudCachedInFrac = -1.0f;
+    float m_hudCachedOutFrac = -1.0f;
+    std::string m_hudCachedHistChip[3];
+    std::string m_hudCachedHistWhat[3];
+    std::string m_hudCachedStState;
+    std::string m_hudCachedStMsgs;
+    std::string m_hudCachedStTokens;
+    std::string m_hudCachedStPaint;
 
     // ★ 2026-10-25（Stage 4）：探针状态整体搬到 `ProbeState.h`（103 个成员），本类只留一条入口。
     //   ⇒ 全仓 `grep -n "m_probeState\."` 就是**仪器状态接触面**的完整清单，
@@ -2029,6 +2126,10 @@ private:
     //   在每次 `agent` 生命周期消息到达时重建列表（代理数是动态的）。
     void BuildAgentCard(ECDI::Widget& insp, int rowH);
     void RebuildAgentList();
+    void RebuildAgentTabBar();
+    void RefreshAgentTabStyles();
+    void SelectAgentTab(const std::string& agentId);
+    void SyncAgentTaskBanner(int canvasX, int innerW, int& y);
     // ★★ 2026-11-06：右栏「MCP」卡与副标（实现全在 `AppMcp.cpp`）。
     //   状态来源：`hello.mcp`（启动快照）+ `t:"mcp"`（运行期权威覆盖，2026-11-07
     //   §3.14）——两者以最近一次收到的为准；空载荷 ⇒ `RebuildMcpCard` 隐藏卡片、

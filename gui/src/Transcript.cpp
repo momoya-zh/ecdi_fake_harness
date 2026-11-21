@@ -150,6 +150,9 @@ bool Transcript::OnLine(const std::string& jsonLine, std::string& error) {
         }
         AgentInfo& a = m_agents[id];
         a.id = id;
+        if (a.order == 0) {
+            a.order = ++m_nextAgentOrder;
+        }
         if (phase == "start") {
             if (a.started) ++m_agentViolations;
             a.started = true;

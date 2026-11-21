@@ -400,6 +400,7 @@ void HarnessApp::ContinueCurrentSession() {
     RefreshHud();
     RebuildMemoryList();
     RebuildAgentList();   // ★ v5：代理表随转录一起换（卡片按模型重投影，不retain旧会话的行）
+    RebuildAgentTabBar();
     RequestRepaint();
 }
 
@@ -521,6 +522,7 @@ bool HarnessApp::ResumeSession(Session& s) {
     RefreshHud();
     RebuildMemoryList();
     RebuildAgentList();   // ★ v5：代理表随转录一起换（卡片按模型重投影，不retain旧会话的行）
+    RebuildAgentTabBar();
     RequestRepaint();
     return true;
 }
@@ -568,6 +570,8 @@ void HarnessApp::SwitchToSession(size_t index) {
     //    传 nullptr ⇒ 按 timeline 正向重建（不是负对照）。
     //    ★ 顺带清掉与旧会话绑定的渲染缓存：环色档位（否则新会话首帧可能不重绘）。
     m_ctxRingLevel = -1;
+    m_inspectorLayoutDirty = true;
+    m_lastModelChipMaxW = -1;
     RebuildTranscriptView();
 
     // ④ 恢复新会话的 timed 时钟（补偿它被冻结的墙上时间）
@@ -583,6 +587,7 @@ void HarnessApp::SwitchToSession(size_t index) {
     RefreshHud();
     RebuildMemoryList();
     RebuildAgentList();   // ★ v5：代理表随转录一起换（卡片按模型重投影，不retain旧会话的行）
+    RebuildAgentTabBar();
     RequestRepaint();
 }
 

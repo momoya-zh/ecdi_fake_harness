@@ -133,9 +133,12 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
                     .count()));
         }
         ++m_sess->liveLines;
-        HandleLiveJournalLine(*m_sess, line);
+        HandleLiveJournalLine(*m_sess, line, false);
         HandleLine(line);
         ++handled;
+    }
+    if (handled > 0 && m_sess->journal && m_sess->journal->IsOpen()) {
+        m_sess->journal->Flush();
     }
 
     if (m_options.asyncProbe) {
@@ -175,12 +178,24 @@ void HarnessApp::DrainActiveLive(bool fromWake) {
     }
 
     if (handled > 0) {
-        Relayout();
-        FollowTailIfPinned();
-        CacheEvalMetrics();
-        RefreshHud();
-        RequestRepaint();
-    } else if (m_sess->child->Eof() && !m_sess->liveEof) {
+        const auto now = std::chrono::steady_clock::now();
+        const bool intervalElapsed =
+            (m_lastLiveUiFlush.time_since_epoch().count() == 0) ||
+            (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastLiveUiFlush).count() >= 33);
+        if (m_liveStructuralDirty || (!fromWake && (m_liveUiDirty || m_hudDirty)) || intervalElapsed) {
+            if (m_liveUiDirty || m_liveStructuralDirty || !m_sess->dirtyTextRows.empty()) {
+                FlushLiveUi();
+            } else if (m_hudDirty) {
+                CacheEvalMetrics();
+                RefreshHud();
+                RequestRepaint();
+            }
+        }
+    }
+    if (m_sess->child && m_sess->child->Eof() && !m_sess->liveEof) {
+        if (m_liveUiDirty || m_liveStructuralDirty || !m_sess->dirtyTextRows.empty()) {
+            FlushLiveUi();
+        }
         MarkLiveEof();
     }
 }
@@ -292,21 +307,27 @@ void HarnessApp::OnReplayTick() {
                 if (!got) break;
                 ++m_sess->liveLines;
                 if (m_options.asyncProbe) ++m_probeState.apLinesTick;
-                HandleLiveJournalLine(*m_sess, line);
+                HandleLiveJournalLine(*m_sess, line, false);
                 HandleLine(line);
                 gotAny = true;
             }
+            if (gotAny && m_sess->journal && m_sess->journal->IsOpen()) {
+                m_sess->journal->Flush();
+            }
             if (gotAny) {
-                Relayout();
-                FollowTailIfPinned();
-                CacheEvalMetrics();
-                RefreshHud();
-                RequestRepaint();
-            } else if (m_sess->child->Eof() && !m_sess->liveEof) {
+                FlushLiveUi();
+            }
+            if (m_sess->child->Eof() && !m_sess->liveEof) {
+                if (m_liveUiDirty || m_liveStructuralDirty || !m_sess->dirtyTextRows.empty()) {
+                    FlushLiveUi();
+                }
                 MarkLiveEof();   // core 退出（stdin EOF 或 bye 收尾）
             }
         } else {
             DrainActiveLive(false);   // 非阻塞兜底（含 EOF 检测）
+            if (m_liveUiDirty || m_liveStructuralDirty || (m_sess && !m_sess->dirtyTextRows.empty())) {
+                FlushLiveUi();
+            }
         }
         // ★★ 2026-10-27：live 分支也要吃 `m_hudDirty`。
         //   以前只有下面「replay 已 settle」那条分支（`if (m_hudDirty) RefreshHud()`）
@@ -332,6 +353,7 @@ void HarnessApp::OnReplayTick() {
         return;
     }
 
+    bool justSettled = false;
     if (m_sess->replay->Empty() && !m_sess->waitForAnswer) {
         if (m_sess->replaySettled) {
             if (m_relayoutPulse > 0) {   // 折叠/展开动画、settle 后新增行：几何持续跟随
@@ -424,39 +446,40 @@ void HarnessApp::OnReplayTick() {
             return;
         }
         m_sess->replaySettled = true;
+        justSettled = true;
     }
-    if (m_options.timed) {
-        DrainTimed();
-    } else {
-        DrainInstant();
-    }
-    Relayout();
-    FollowTailIfPinned();
-    if (m_sess->replaySettled && m_options.scrollSweepStep > 0 && !m_sweepStarted && m_scroll) {
-        // --scroll-sweep：等夹具拉完且尾随完成后，从顶部开始逐 tick 扫描到底
-        m_sweepStarted = true;
-        m_scroll->SetContentOffset(0, 0);
-        if (m_window) {
-            m_window->GetPlatformWindow().StartTimer(kSweepTimer, 33);
+    const bool drained = m_options.timed ? DrainTimed() : DrainInstant();
+    const bool hadPulse = (m_relayoutPulse > 0);
+    if (hadPulse) --m_relayoutPulse;
+    if (drained || justSettled || m_hudDirty || hadPulse ||
+        (m_options.scrollSweepStep > 0 && !m_sweepStarted && m_sess->replaySettled) ||
+        (m_options.hitProbe && m_sess->replaySettled && !m_probeState.hitProbeDone) ||
+        (m_options.reasoningProbe && m_sess->replaySettled && !m_probeState.reasoningProbeDone)) {
+        FlushDirtyStreamText();
+        Relayout();
+        FollowTailIfPinned();
+        if (m_sess->replaySettled && m_options.scrollSweepStep > 0 && !m_sweepStarted && m_scroll) {
+            // --scroll-sweep：等夹具拉完且尾随完成后，从顶部开始逐 tick 扫描到底
+            m_sweepStarted = true;
+            m_scroll->SetContentOffset(0, 0);
+            if (m_window) {
+                m_window->GetPlatformWindow().StartTimer(kSweepTimer, 33);
+            }
         }
+        CacheEvalMetrics();
+        RefreshHud();
+        // ★★ --hit-probe（REQ-04 边界）：夹具拉完 + `Relayout()` 之后**跑一次**。
+        if (m_options.hitProbe && m_sess->replaySettled && !m_probeState.hitProbeDone) {
+            m_probeState.hitProbeDone = true;
+            RunHitProbe();
+        }
+        // ★ 思维链折叠行为取证（协议 v2 §7）：跨 tick 状态机（每次只推进一步，
+        //   步间等过 200ms 折叠动画）⇒ 不能像 --hit-probe 那样一次跑完。
+        if (m_options.reasoningProbe && m_sess->replaySettled && !m_probeState.reasoningProbeDone) {
+            RunReasoningProbe();
+        }
+        RequestRepaint();
     }
-    CacheEvalMetrics();
-    RefreshHud();
-    // ★★ --hit-probe（REQ-04 边界）：夹具拉完 + `Relayout()` 之后**跑一次**。
-    //   位置理由：此刻几何已定（按钮位置/尺寸是探针坐标的来源），
-    //   且只跑一次（否则 30Hz 每 tick 都合成点击，读数被自身重复污染）。
-    if (m_options.hitProbe && m_sess->replaySettled && !m_probeState.hitProbeDone) {
-        m_probeState.hitProbeDone = true;
-        RunHitProbe();
-    }
-    // ★ 思维链折叠行为取证（协议 v2 §7）：跨 tick 状态机（每次只推进一步，
-    //   步间等过 200ms 折叠动画）⇒ 不能像 --hit-probe 那样一次跑完。
-    if (m_options.reasoningProbe && m_sess->replaySettled && !m_probeState.reasoningProbeDone) {
-        RunReasoningProbe();
-    }
-    // 注：`--rebuild-probe` 的推进在**上面 settle 分支里**（本函数到尾就 `return` 了，
-    //   这里再写一遍是死代码；第一版正是写在这里，所以探针一步都没跑）。
-    RequestRepaint();
 }
 
 void HarnessApp::OnAutoClose() {
@@ -482,44 +505,102 @@ void HarnessApp::OnSweepTick() {
     }
 }
 
-void HarnessApp::DrainInstant() {
-    if (m_sess->instantDone) return;
+bool HarnessApp::DrainInstant() {
+    if (m_sess->instantDone) return false;
     m_sess->instantDone = true;
+    bool anyConsumed = false;
     std::string line;
     // ★ 协议 §9：版本不兼容 ⇒ **停止消费**（"拒绝连接"的实质）。
-    //   只在 `HandleLine` 返回后检查：`Exit()` 只让消息循环退出，**不打断本循环**，
-    //   而 `--instant` 会在同一 tick 抽干整个夹具 ⇒ 若不在此处 break，
-    //   "拒绝"就只是打印一行提示、随后照常把整条流处理完（实测：protocol:3 的
-    //   夹具仍读到 blocks=44）——那不是拒绝，是"边抱怨边照做"。
     while (m_sess->source->Next(line)) {
+        anyConsumed = true;
         HandleLine(line);
         if (m_sess->protocolIncompatible) break;
     }
     if (!m_sess->pendingTruncated.empty()) {
+        anyConsumed = true;
         AddNoticeRow(m_sess->pendingTruncated, kErrorDark);   // 协议 §1.2：截断必须显式报错
         m_sess->pendingTruncated.clear();
     }
+    return anyConsumed;
 }
 
-void HarnessApp::DrainTimed() {
-    if (m_sess->waitForAnswer) return;   // I3：ask 未答前 core 不再发消息
-    if (m_sess->protocolIncompatible) return;   // ★ 协议 §9：版本不兼容 ⇒ 不再消费
+bool HarnessApp::DrainTimed() {
+    if (m_sess->waitForAnswer) return false;   // I3：ask 未答前 core 不再发消息
+    if (m_sess->protocolIncompatible) return false;   // ★ 协议 §9：版本不兼容 ⇒ 不再消费
     // ★ 0d：会话被切走（冻结）期间不拉取——它不在屏上，"到期"没有意义。
-    if (m_sess->timedPaused) return;
+    if (m_sess->timedPaused) return false;
     const double elapsedMs =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
                                                   m_sess->timedAnchor)
             .count();
+    bool anyConsumed = false;
     std::string line;
     while (m_sess->replay->NextDue(elapsedMs, line)) {
+        anyConsumed = true;
         HandleLine(line);
         if (m_sess->waitForAnswer) break;   // ask 已显示，停在 waiting（协议 §8.3）
         if (m_sess->protocolIncompatible) break;   // ★ 协议 §9：版本不兼容 ⇒ 停止消费
     }
     if (m_sess->replay->Empty() && !m_sess->pendingTruncated.empty()) {
+        anyConsumed = true;
         AddNoticeRow(m_sess->pendingTruncated, kErrorDark);
         m_sess->pendingTruncated.clear();
     }
+    return anyConsumed;
+}
+
+void HarnessApp::FlushDirtyStreamText() {
+    if (!m_sess || m_sess->dirtyTextRows.empty()) return;
+    for (size_t idx : m_sess->dirtyTextRows) {
+        if (idx >= m_sess->rows.size()) continue;
+        RowRec& r = m_sess->rows[idx];
+        if (!r.textSyncPending) continue;
+        const Block* block = m_sess->transcript.FindBlock(r.blockId);
+        if (!block) {
+            r.textSyncPending = false;
+            continue;
+        }
+        if ((r.tool || r.reasoning) && !r.expanded && !r.ended) {
+            // Keep textSyncPending = true while collapsed; block_end or ToggleRow will sync.
+            continue;
+        }
+        if (!r.label) {
+            r.textSyncPending = false;
+            continue;
+        }
+        if (block->unknownKind) {
+            const std::string txt = UnknownKindText(*block);
+            if (r.label->GetText() != txt) {
+                r.label->SetText(txt);
+                r.layoutDirty = true;
+            }
+        } else if (r.isAssistant && !r.hasMarkdown && !r.ended) {
+            SyncStreamingAssistantText(r, block->text);
+        } else {
+            if (r.label->GetText() != block->text) {
+                r.label->SetText(block->text);
+                r.layoutDirty = true;
+            }
+        }
+        r.textSyncPending = false;
+    }
+    m_sess->dirtyTextRows.clear();
+}
+
+void HarnessApp::FlushLiveUi() {
+    if (!m_liveUiDirty && !m_liveStructuralDirty &&
+        (!m_sess || m_sess->dirtyTextRows.empty())) {
+        return;
+    }
+    m_liveUiDirty = false;
+    m_liveStructuralDirty = false;
+    m_lastLiveUiFlush = std::chrono::steady_clock::now();
+    FlushDirtyStreamText();
+    Relayout();
+    FollowTailIfPinned();
+    CacheEvalMetrics();
+    RefreshHud();
+    RequestRepaint();
 }
 
 void HarnessApp::HandleLine(const std::string& line) {
@@ -552,28 +633,31 @@ void HarnessApp::RouteLastMessage() {
                     [&](const PendingPrompt& p) { return p.clientId == clientId; }), pending.end());
             }
             CreateBlockRow(*block);
+            m_liveStructuralDirty = true;
+            m_liveUiDirty = true;
         }
         return;
     }
     if (t == "delta") {
         const std::string id = msg.GetString("id");
-        // ★★ 2026-11-01（TODO-07 第二步）：`blockRows` 存的是**索引句柄**，
-        //   不再是指向 `rows` 元素的裸指针。取行统一走 `FindBlockRow`——
-        //   句柄越界（行表被重建过）时返回 nullptr，让「行没了」表现为
-        //   **一次显式的空判断**，而不是一个指向已释放内存的指针。
-        RowRec* const row = FindBlockRow(id);
-        const Block* block = m_sess->transcript.FindBlock(id);
-        if (row && block && row->label) {
-            // ★ 未知 kind 的行有**前缀**（`[未知 kind: xxx]`）——不能整段覆盖，
-            //   否则流式 delta 一到就把前缀擦掉（2026-10-13 实测：截图里 r2 的
-            //   `[未知 kind: thinking]` 前缀正是这样丢的）。此处保持与
-            //   `CreateBlockRow` 同一拼法。
-            if (block->unknownKind) {
-                row->label->SetText(UnknownKindText(*block));
-            } else {
-                row->label->SetText(block->text);   // 合并：只追加到文本缓冲，不逐字符刷新
-            }
+        const auto it = m_sess->blockRows.find(id);
+        if (it == m_sess->blockRows.end() || it->second >= m_sess->rows.size()) {
+            return;
         }
+        const size_t rowIdx = it->second;
+        RowRec& row = m_sess->rows[rowIdx];
+        if (!row.label) {
+            return;
+        }
+        if ((row.tool || row.reasoning) && !row.expanded) {
+            row.textSyncPending = true;
+            return;
+        }
+        if (!row.textSyncPending) {
+            row.textSyncPending = true;
+            m_sess->dirtyTextRows.push_back(rowIdx);
+        }
+        m_liveUiDirty = true;
         return;
     }
     if (t == "block_end") {
@@ -584,6 +668,9 @@ void HarnessApp::RouteLastMessage() {
             return;
         }
         row->ended = true;
+        row->layoutDirty = true;
+        m_liveStructuralDirty = true;
+        m_liveUiDirty = true;
 
         // ★★ 富内容 B+（2026-11-08）：流式结束升级判据从「含 Table」推广为
         //   「含任何块级构造」。与重建期 `AppTranscript.cpp` 的入口开关**同源**
@@ -593,20 +680,18 @@ void HarnessApp::RouteLastMessage() {
             auto segs = ParseMarkdownSegments(block->text);
             if (HasMarkdownBlocks(segs)) {
                 UpgradeAssistantRowToMarkdown(*row, *block, segs);
-                Relayout();
-                RequestRepaint();
+            } else if (!row->streamChunks.empty()) {
+                CollapseStreamingChunksToSingleLabel(*row, *block);
             } else if (row->label) {
-                // ★★ 2026-11-09（富内容 §H）：**只有行内样式**（无块级构造）的块，
-                //   流式期一直是原文（delta 逐条 `SetText`，见上面的 delta 分支）。
-                //   块结束时在这里就地升级成富文本。
-                //   ★ 为什么不重建整行：行内样式只改「文本片段 → 样式区间」，
-                //     控件类型、字体、颜色、所在面板都不变 ⇒ 重建是纯浪费，
-                //     还会把滚动位置与选中态一起冲掉。
-                //   ★ `Relayout` 不能省：去掉 `**` 之后段落变短，行高/换行点会变。
                 ApplyInlineText(*row->label, block->text);
-                Relayout();
-                RequestRepaint();
             }
+            row->textSyncPending = false;
+        } else if (block && (row->tool || row->reasoning) && row->textSyncPending && row->label) {
+            row->label->SetText(block->unknownKind ? UnknownKindText(*block) : block->text);
+            row->syncedTextLen = block->text.size();
+            row->textSyncPending = false;
+        } else {
+            row->textSyncPending = false;
         }
 
         if (!row->headerBtn) {
@@ -675,6 +760,8 @@ void HarnessApp::RouteLastMessage() {
     }
     if (t == "ask") {
         CreateAskRow(msg);
+        m_liveStructuralDirty = true;
+        m_liveUiDirty = true;
         return;
     }
     if (t == "error") {
@@ -697,6 +784,8 @@ void HarnessApp::RouteLastMessage() {
         } else if (!correlated) {
             AddNoticeRow("[error] " + message, kErrorDark);
         }
+        m_liveStructuralDirty = true;
+        m_liveUiDirty = true;
         return;
     }
     if (t == "hello") {
@@ -811,6 +900,8 @@ void HarnessApp::RouteLastMessage() {
         // ★ 无论字段在不在都重建一次：字段缺席时要能把上一份 hello 的卡片收掉
         //   （同一 Session 重新握手/切 core 时不留陈旧状态）。
         RebuildMcpCard();
+        RebuildAgentList();
+        RebuildAgentTabBar();
         m_hudDirty = true;
         if (m_devMode) {
             AddNoticeRow("core " + msg.GetString("core") + " · session " +
@@ -827,6 +918,9 @@ void HarnessApp::RouteLastMessage() {
     if (t == "state") {
         m_sess->coreState = msg.GetString("value");
         m_hudDirty = true;
+        if (m_sess->hasAgentsCap && !m_sess->transcript.Agents().empty()) {
+            RefreshAgentTabStyles();
+        }
         if (m_sess->coreState == "idle") {
             if (m_sess->journalPromoted) {
                 SyncSessionMeta(*m_sess);
@@ -845,7 +939,6 @@ void HarnessApp::RouteLastMessage() {
             SyncRowViewState();   // 视图→模型：重建会清空 rows
             if (RetagTurns()) {
                 RebuildTranscriptView();
-                m_relayoutPulse = 12;
                 FollowTailIfPinned();
                 RequestRepaint();
             }
@@ -1005,6 +1098,12 @@ void HarnessApp::RouteLastMessage() {
         //   ★ 为什么不在这里再校验一遍 I12：校验的唯一位点是 `Transcript`
         //     （带 I12 记账），两处各判一遍迟早判得不一样，而那时"谁对"无从判定。
         RebuildAgentList();
+        RebuildAgentTabBar();
+        if (!m_sess->activeAgentTab.empty() && m_sess->activeAgentTab == msg.GetString("id")) {
+            m_renderedAgentBannerId.clear();
+            Relayout();
+            RequestRepaint();
+        }
         m_hudDirty = true;   // 顶栏胶囊的「N代理」也要跟着变
         return;
     }
@@ -1145,11 +1244,11 @@ void HarnessApp::HandleJobMessage(const json::Value& msg) {
     m_hudDirty = true;
 }
 
-void HarnessApp::HandleLiveJournalLine(Session& session, const std::string& line) {
+void HarnessApp::HandleLiveJournalLine(Session& session, const std::string& line, bool flush) {
     if (session.originKind != "live") return;
     if (session.journal && session.journal->IsOpen()) {
         std::string err;
-        if (!session.journal->AppendLine(line, err)) {
+        if (!session.journal->AppendLine(line, err, flush)) {
             AddNoticeRow("[转录落盘失败] " + err, kErrorDark);
         }
     } else if (!session.journalPromoted) {

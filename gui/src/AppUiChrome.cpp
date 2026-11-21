@@ -56,6 +56,7 @@ using harness::internal::kSidebarListW;
 using harness::internal::kSidebarRowH;
 
 void HarnessApp::BuildUi(ECDI::Window& window) {
+    ResetHudCaches();
     ECDI::Widget& root = window.GetRootWidget();
     // ★★ 2026-10-30（浮层迁移）：root 布局回到**原版** `VerticalLayout(0,true)`。
     //   P4 F 当时换 `HarnessRootLayout` 的唯一理由是「可见浮层被当固定尺寸子统计
@@ -222,6 +223,8 @@ void HarnessApp::RebuildUi() {
     //    运行期重建必须自己把 `timeline` 铺回去——`RebuildTranscriptView` 做的就是
     //    这件事（它同时把滚动位置保持在原处）。
     RebuildTranscriptView();
+    RebuildAgentList();
+    RebuildAgentTabBar();
 
     // ⑧ 恢复草稿。`SetText` 不触发 `RaiseTextChanged`（`TextBox.cpp:121-141`），
     //    故不会误触发任何发送逻辑；`MoveCaretToEnd` 是唯一可用的光标落点。

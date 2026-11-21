@@ -115,6 +115,8 @@ void HarnessApp::RunAgentProbe() {
     //   且显隐与「有没有代理」严格同步。少了这条，卡片可以整块不工作而探针全绿。
     rec.cardRows = m_hud.agentList ? m_hud.agentList->GetChildCount() : 0;
     rec.cardVisible = m_hud.inspAgentCard && m_hud.inspAgentCard->IsVisible();
+    rec.tabCount = m_agentTabBtns.size();
+    rec.tabVisible = m_hud.agentTabBar && m_hud.agentTabBar->IsVisible();
     const size_t agents = m_sess->transcript.Agents().size();
     // ★★ 判据按**契约**写，不按"有没有 agents"写（2026-11-04 订正）：
     //   协议 §3.1 说「支持子代理的 core 必须声明 `caps.agents`；未声明 ⇒ GUI 不得
@@ -128,19 +130,22 @@ void HarnessApp::RunAgentProbe() {
     const bool cardOk = m_sess->hasAgentsCap && agents > 0
                             ? (rec.cardRows == agents + 1 && rec.cardVisible)
                             : (rec.cardRows == 0 && !rec.cardVisible);
+    const bool tabOk = m_sess->hasAgentsCap && agents > 0
+                           ? (rec.tabCount == agents + 1 && rec.tabVisible)
+                           : (rec.tabCount == 0 && !rec.tabVisible);
 
     // 元断言（见文件头 ①②③④⑤）
     rec.matched = rec.indentRows == rec.attributedBlocks &&
                   rec.gutterRows == rec.indentRows &&
                   rec.overflowRows == 0 &&
                   (rec.indentRows == 0 || rec.indentPx == kAgentIndent) &&
-                  cardOk;
+                  cardOk && tabOk;
 
     if (!rec.matched) {
-        char note[256];
+        char note[320];
         std::snprintf(note, sizeof(note),
                       "indentRows=%llu attributedBlocks=%llu gutter=%llu overflow=%llu indentPx=%d "
-                      "cardRows=%llu cardVisible=%d agents=%llu",
+                      "cardRows=%llu cardVisible=%d tabCount=%llu tabVisible=%d agents=%llu",
                       static_cast<unsigned long long>(rec.indentRows),
                       static_cast<unsigned long long>(rec.attributedBlocks),
                       static_cast<unsigned long long>(rec.gutterRows),
@@ -148,6 +153,8 @@ void HarnessApp::RunAgentProbe() {
                       rec.indentPx,
                       static_cast<unsigned long long>(rec.cardRows),
                       rec.cardVisible ? 1 : 0,
+                      static_cast<unsigned long long>(rec.tabCount),
+                      rec.tabVisible ? 1 : 0,
                       static_cast<unsigned long long>(agents));
         rec.note = note;
     }
@@ -301,9 +308,108 @@ void HarnessApp::RunAgentProbe() {
             }
         }
         rec2.indentPx = baseIndentPx;
+        rec2.tabCount = m_agentTabBtns.size();
+        rec2.tabVisible = m_hud.agentTabBar && m_hud.agentTabBar->IsVisible();
         rec2.matched = detail.empty();
         rec2.note = detail;
         m_probeState.agentProbeLog.push_back(std::move(rec2));
+
+        // ★ 相位 ③：子代理动态选项卡切换判据（切换到子代理对话视图 → 验证隔离与全宽 → 切回主对话）。
+        if (!targetId.empty()) {
+            AgentProbeRec rec3;
+            rec3.phase = "agent-tabs";
+            rec3.rows = m_sess->rows.size();
+            rec3.attributedBlocks = m_sess->transcript.AgentBlocks();
+            rec3.agentViolations = m_sess->transcript.AgentViolations();
+            rec3.unknownTypes = m_sess->transcript.UnknownTypes();
+            rec3.cardRows = m_hud.agentList ? m_hud.agentList->GetChildCount() : 0;
+            rec3.cardVisible = m_hud.inspAgentCard && m_hud.inspAgentCard->IsVisible();
+            rec3.tabCount = m_agentTabBtns.size();
+            rec3.tabVisible = m_hud.agentTabBar && m_hud.agentTabBar->IsVisible();
+            rec3.agentLines = baseRec.agentLines;
+            rec3.agents = baseRec.agents;
+            rec3.agentsEnded = baseRec.agentsEnded;
+            rec3.agentsOk = baseRec.agentsOk;
+
+            std::string tabDetail;
+            auto tfail = [&](const std::string& msg) {
+                if (!tabDetail.empty()) tabDetail += "; ";
+                tabDetail += msg;
+            };
+            if (!rec3.tabVisible || rec3.tabCount != agents + 1) {
+                tfail("tab bar visibility or count mismatch");
+            }
+
+            size_t foldIdx = static_cast<size_t>(-1);
+            bool wasExpanded = true;
+            for (const RowRec& r : m_sess->rows) {
+                if (r.agentTag != targetId) continue;
+                if (r.timelineIdx < m_sess->timeline.size()) {
+                    for (size_t i = r.timelineIdx + 1; i > 0; --i) {
+                        const size_t ti = i - 1;
+                        if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
+                            foldIdx = ti;
+                            wasExpanded = m_sess->timeline[ti].expanded;
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+            if (foldIdx != static_cast<size_t>(-1) && wasExpanded) {
+                ToggleTurn(foldIdx);
+            }
+
+            SelectAgentTab(targetId);
+            if (m_sess->activeAgentTab != targetId) {
+                tfail("activeAgentTab did not switch to " + targetId);
+            }
+            if (!m_options.rowModeList && (!m_hud.agentTaskBanner || !m_hud.agentTaskBanner->IsVisible())) {
+                tfail("agentTaskBanner missing in subagent tab");
+            }
+            size_t shownTarget = 0;
+            for (const RowRec& r : m_sess->rows) {
+                if (!r.panel) continue;
+                if (r.agentTag == targetId) {
+                    ++shownTarget;
+                    if (!r.panel->IsVisible()) tfail("target row hidden in subagent tab");
+                    if (r.tabHidden) tfail("target row marked tabHidden");
+                    if (!m_options.rowModeList && r.panel->GetX() != canvasX) {
+                        tfail("subagent tab row should use full canvasX (indent=0)");
+                    }
+                    if (!m_options.rowModeList && r.gutter && r.gutter->IsVisible()) {
+                        tfail("gutter should be hidden in subagent tab");
+                    }
+                } else {
+                    if (r.panel->IsVisible()) tfail("non-target row remained visible in subagent tab");
+                    if (!r.tabHidden) tfail("non-target row not marked tabHidden");
+                }
+            }
+            if (shownTarget == 0) tfail("no target rows shown in subagent tab");
+
+            SelectAgentTab("");
+            if (!m_sess->activeAgentTab.empty()) tfail("activeAgentTab did not return to root");
+            if (m_hud.agentTaskBanner != nullptr) tfail("agentTaskBanner remained after returning to root");
+            for (const RowRec& r : m_sess->rows) {
+                if (r.tabHidden) tfail("tabHidden remained after returning to root");
+                if (r.panel && r.panel->IsVisible() != !r.foldHidden) {
+                    tfail("root fold visibility mismatch after returning from subagent tab");
+                }
+                if (r.indent > 0 && !r.foldHidden && !m_options.rowModeList && r.panel &&
+                    r.panel->GetX() - canvasX != kAgentIndent) {
+                    tfail("subagent indent not restored in root view");
+                }
+            }
+            if (foldIdx != static_cast<size_t>(-1) && foldIdx < m_sess->timeline.size() &&
+                m_sess->timeline[foldIdx].expanded != wasExpanded) {
+                ToggleTurn(foldIdx);
+            }
+
+            rec3.indentPx = baseIndentPx;
+            rec3.matched = tabDetail.empty();
+            rec3.note = tabDetail;
+            m_probeState.agentProbeLog.push_back(std::move(rec3));
+        }
     }
     m_probeState.agentProbeDone = true;
 }
@@ -345,11 +451,13 @@ void HarnessApp::AppendAgentProbeSummary(std::string& json) {
                       "\"agents\": %zu, \"agentsEnded\": %zu, \"agentsOk\": %zu, "
                       "\"agentViolations\": %zu, \"unknownTypes\": %zu, "
                       "\"cardRows\": %zu, \"cardVisible\": %s, "
+                      "\"tabCount\": %zu, \"tabVisible\": %s, "
                       "\"matched\": %s, \"note\": \"%s\", \"agentList\": [",
                       r.phase.c_str(), r.rows, r.indentRows, r.rootRows, r.gutterRows,
                       r.attributedBlocks, r.indentPx, r.overflowRows, r.maxRight,
                       r.agents, r.agentsEnded, r.agentsOk, r.agentViolations,
                       r.unknownTypes, r.cardRows, r.cardVisible ? "true" : "false",
+                      r.tabCount, r.tabVisible ? "true" : "false",
                       r.matched ? "true" : "false", esc(r.note).c_str());
         json += b;
         for (size_t k = 0; k < r.agentLines.size(); ++k) {

@@ -176,6 +176,7 @@ void HarnessApp::BuildMainArea(ECDI::Widget& root) {
 
     BuildConversationHead();
     BuildMoreMenu();
+    BuildAgentTabBar();
 
     auto settingsSheet = BuildSettingsSheet();
     auto previewSheet = BuildPreviewSheet();
