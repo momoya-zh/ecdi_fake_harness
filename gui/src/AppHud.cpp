@@ -143,7 +143,8 @@ void HarnessApp::SyncTurnCopyButtons() {
                     if (const Block* b = m_sess->transcript.FindBlock(r.blockId)) {
                         if (!b->ended) {
                             turnHasStreamingBlock = true;
-                        } else if (b->kind == "assistant" && !b->text.empty()) {
+                        } else if (b->kind == "assistant" && !b->text.empty() &&
+                                   !(m_sess->hasAgentsCap && !b->agentId.empty())) {
                             lastEndedAssistantIdx = turnEnd;
                         }
                     }
@@ -179,9 +180,9 @@ void HarnessApp::Relayout() {
     if (m_options.rowModeList) {
         // listlayout：行高固定、不测量；Arrange 由 ListLayout 完成
         for (RowRec& r : m_sess->rows) {
-            r.tabHidden = inAgentTab && (r.agentTag != m_sess->activeAgentTab);
+            r.tabHidden = IsRowHiddenByAgentTab(r);
             if (r.panel) {
-                r.panel->SetVisible(inAgentTab ? !r.tabHidden : !r.foldHidden);
+                r.panel->SetVisible(inAgentTab ? !r.tabHidden : (!r.tabHidden && !r.foldHidden));
                 if (r.panel->GetHeight() != kListRowHeight) {
                     r.panel->SetSize(layoutW, kListRowHeight);
                 }
@@ -214,8 +215,8 @@ void HarnessApp::Relayout() {
     //   （见下方 gutter 高度）。行数 O(n)，多一次比较不改变复杂度。
     for (size_t rowIdx = 0; rowIdx < m_sess->rows.size(); ++rowIdx) {
         RowRec& r = m_sess->rows[rowIdx];
-        const bool rowHidden = inAgentTab ? (r.agentTag != m_sess->activeAgentTab) : r.foldHidden;
-        r.tabHidden = inAgentTab && (r.agentTag != m_sess->activeAgentTab);
+        r.tabHidden = IsRowHiddenByAgentTab(r);
+        const bool rowHidden = inAgentTab ? r.tabHidden : (r.tabHidden || r.foldHidden);
         // ★★ 2026-11-06（回合级折叠）：被折叠过程行**不参与排版**，`y` 也不推进。
         //   ★ 为什么必须在这里跳过、而不是只靠 `SetVisible(false)`：`ListLayout`
         //     会跳过不可见子控件（那是 list 模式那半边的全部理由），但 autosize
@@ -226,6 +227,11 @@ void HarnessApp::Relayout() {
         if (rowHidden) {
             if (r.panel) {
                 r.panel->SetVisible(false);
+                const int hiddenIndent = inAgentTab ? 0 : r.indent;
+                const int maxHiddenW = std::max(160, innerW0 - hiddenIndent);
+                if (r.panel->GetWidth() > maxHiddenW) {
+                    r.panel->SetSize(maxHiddenW, r.panel->GetHeight());
+                }
                 // ★★ 2026-11-06（订正）：被折叠的行**仍然要横向定位**。
                 //   只 `continue` 会让面板停在建行期的默认 x=0 ⇒ 任何"测行的横移"
                 //   的读数都会读到一个假值：`--agent-probe` 的 `indentPx` 实测变成
@@ -233,7 +239,7 @@ void HarnessApp::Relayout() {
                 //   `indentPx == kAgentIndent` 无故变红，note 里却看不出是折叠引起的。
                 //   纵向 y 不参与（不可见、不占位），所以这里只下发横坐标；
                 //   `y` 照旧不推进。
-                r.panel->SetPosition(canvasX0 + (inAgentTab ? 0 : r.indent), y);
+                r.panel->SetPosition(canvasX0 + hiddenIndent, y);
             }
             if (r.gutter && !m_options.rowModeList) {
                 r.gutter->SetVisible(false);

@@ -198,101 +198,44 @@ void HarnessApp::RunAgentProbe() {
         if (targetId.empty()) {
             fail("no attributed agent rows found");
         } else {
-            size_t foldIdx = static_cast<size_t>(-1);
-            bool wasExpanded = true;
+            // ① 主对话视图下，所有带 agentTag 的子代理内部过程行必须从主对话隔离（tabHidden=true 且不可见）
             for (const RowRec& r : m_sess->rows) {
-                if (r.agentTag != targetId) continue;
-                if (r.timelineIdx < m_sess->timeline.size()) {
-                    for (size_t i = r.timelineIdx + 1; i > 0; --i) {
-                        const size_t ti = i - 1;
-                        if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
-                            foldIdx = ti;
-                            wasExpanded = m_sess->timeline[ti].expanded;
-                            break;
-                        }
-                    }
+                if (!r.panel || r.agentTag.empty()) continue;
+                if (!r.tabHidden || r.panel->IsVisible()) {
+                    fail("subagent operation row leaked into main conversation view");
+                    break;
                 }
-                break;
             }
-            if (foldIdx != static_cast<size_t>(-1) && wasExpanded) {
-                ToggleTurn(foldIdx);  // 先人工折起，实测 FocusAgent 的自动展开链路
-            }
+            // ② 点击右栏代理卡（FocusAgent）直接切入该子代理专属标签页
             FocusAgent(targetId);
-
-            if (m_focusedAgentId != targetId) {
-                fail("m_focusedAgentId did not match " + targetId);
+            if (m_sess->activeAgentTab != targetId) {
+                fail("FocusAgent did not switch activeAgentTab to " + targetId);
             }
-            size_t focusBorders = 0;
-            size_t continuousBridges = 0;
             size_t targetVisible = 0;
-            const RowRec* firstVis = nullptr;
-            for (size_t i = 0; i < m_sess->rows.size(); ++i) {
-                const RowRec& r = m_sess->rows[i];
+            for (const RowRec& r : m_sess->rows) {
                 if (!r.panel) continue;
                 if (r.agentTag == targetId) {
-                    if (r.foldHidden) fail("agent row stayed foldHidden after FocusAgent");
-                    if (!firstVis) firstVis = &r;
-                    ++targetVisible;
-                    if (r.focusHighlight) ++focusBorders;
-                    if (!r.gutter) {
-                        fail("target agent row missing gutter");
-                    } else if (!m_options.rowModeList) {
-                        if (r.gutter->GetParent() != m_content) {
-                            fail("gutter parent is not m_content");
-                        }
-                        if (!r.gutter->IsVisible()) fail("gutter not visible after FocusAgent");
-                        if (r.gutter->GetWidth() != kAgentGutterW + 1) {
-                            fail("focused gutter width != kAgentGutterW+1");
-                        }
-                        size_t nextVis = i + 1;
-                        while (nextVis < m_sess->rows.size() && m_sess->rows[nextVis].foldHidden) {
-                            ++nextVis;
-                        }
-                        if (nextVis < m_sess->rows.size() && m_sess->rows[nextVis].agentTag == targetId) {
-                            ++continuousBridges;
-                            if (r.gutter->GetHeight() != r.panel->GetHeight() + kRowGap) {
-                                fail("continuous gutter height != rowH+kRowGap");
-                            }
-                        } else if (r.gutter->GetHeight() != r.panel->GetHeight()) {
-                            fail("terminal agent gutter height != rowH");
-                        }
+                    if (!r.panel->IsVisible() || r.tabHidden) {
+                        fail("target row stayed hidden after FocusAgent");
                     }
-                } else if (r.focusHighlight) {
-                    fail("non-target row has focusHighlight");
+                    ++targetVisible;
+                } else if (r.panel->IsVisible() || !r.tabHidden) {
+                    fail("non-target row visible inside focused subagent tab");
                 }
             }
             if (targetVisible == 0) fail("no visible rows for target agent");
-            if (focusBorders != 1) {
-                fail("expected focusBorders==1 got " + std::to_string(focusBorders));
-            }
-            if (!m_options.rowModeList && counts[targetId] >= 2 && continuousBridges == 0) {
-                fail("expected >=1 continuous gutter bridge for multi-row agent");
-            }
-            if (firstVis && !firstVis->focusHighlight) {
-                fail("focusHighlight not on first visible row of target agent");
-            }
-            if (m_scroll && firstVis) {
-                const int maxY = m_scroll->GetMaxOffsetY();
-                const int wantOff = std::min(std::max(0, firstVis->y - 8), maxY);
-                if (m_scroll->GetScrollOffsetY() != wantOff) {
-                    fail("scrollOffsetY mismatch after FocusAgent");
-                }
-            }
 
-            ClearFocusedAgentHighlight();
-            if (!m_focusedAgentId.empty()) fail("m_focusedAgentId not cleared");
-            for (const RowRec& r : m_sess->rows) {
-                if (r.focusHighlight || r.gutterHighlight) {
-                    fail("highlight flag remained after ClearFocusedAgentHighlight");
-                }
-                if (r.gutter && !r.foldHidden && !m_options.rowModeList &&
-                    r.gutter->GetWidth() != kAgentGutterW) {
-                    fail("gutter width not restored to kAgentGutterW");
-                }
+            // ③ FocusAgent("") 切回主对话，子代理过程行再次从主对话收起
+            FocusAgent("");
+            if (!m_sess->activeAgentTab.empty()) {
+                fail("FocusAgent(\"\") did not return to main conversation");
             }
-            if (foldIdx != static_cast<size_t>(-1) && foldIdx < m_sess->timeline.size() &&
-                m_sess->timeline[foldIdx].expanded != wasExpanded) {
-                ToggleTurn(foldIdx);
+            for (const RowRec& r : m_sess->rows) {
+                if (!r.panel || r.agentTag.empty()) continue;
+                if (!r.tabHidden || r.panel->IsVisible()) {
+                    fail("subagent row visible in main conversation after FocusAgent(\"\")");
+                    break;
+                }
             }
         }
         for (const RowRec& r : m_sess->rows) {
@@ -342,19 +285,12 @@ void HarnessApp::RunAgentProbe() {
 
             size_t foldIdx = static_cast<size_t>(-1);
             bool wasExpanded = true;
-            for (const RowRec& r : m_sess->rows) {
-                if (r.agentTag != targetId) continue;
-                if (r.timelineIdx < m_sess->timeline.size()) {
-                    for (size_t i = r.timelineIdx + 1; i > 0; --i) {
-                        const size_t ti = i - 1;
-                        if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
-                            foldIdx = ti;
-                            wasExpanded = m_sess->timeline[ti].expanded;
-                            break;
-                        }
-                    }
+            for (size_t ti = 0; ti < m_sess->timeline.size(); ++ti) {
+                if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
+                    foldIdx = ti;
+                    wasExpanded = m_sess->timeline[ti].expanded;
+                    break;
                 }
-                break;
             }
             if (foldIdx != static_cast<size_t>(-1) && wasExpanded) {
                 ToggleTurn(foldIdx);
@@ -391,13 +327,15 @@ void HarnessApp::RunAgentProbe() {
             if (!m_sess->activeAgentTab.empty()) tfail("activeAgentTab did not return to root");
             if (m_hud.agentTaskBanner != nullptr) tfail("agentTaskBanner remained after returning to root");
             for (const RowRec& r : m_sess->rows) {
-                if (r.tabHidden) tfail("tabHidden remained after returning to root");
-                if (r.panel && r.panel->IsVisible() != !r.foldHidden) {
-                    tfail("root fold visibility mismatch after returning from subagent tab");
-                }
-                if (r.indent > 0 && !r.foldHidden && !m_options.rowModeList && r.panel &&
-                    r.panel->GetX() - canvasX != kAgentIndent) {
-                    tfail("subagent indent not restored in root view");
+                if (!r.agentTag.empty()) {
+                    if (!r.tabHidden || (r.panel && r.panel->IsVisible())) {
+                        tfail("subagent row should stay hidden in root view");
+                    }
+                } else {
+                    if (r.tabHidden) tfail("root row marked tabHidden in root view");
+                    if (r.panel && r.panel->IsVisible() != !r.foldHidden) {
+                        tfail("root fold visibility mismatch after returning from subagent tab");
+                    }
                 }
             }
             if (foldIdx != static_cast<size_t>(-1) && foldIdx < m_sess->timeline.size() &&

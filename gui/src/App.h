@@ -2130,6 +2130,7 @@ private:
     void RefreshAgentTabStyles();
     void SelectAgentTab(const std::string& agentId);
     void SyncAgentTaskBanner(int canvasX, int innerW, int& y);
+    bool IsRowHiddenByAgentTab(const RowRec& r) const;
     // ★★ 2026-11-06：右栏「MCP」卡与副标（实现全在 `AppMcp.cpp`）。
     //   状态来源：`hello.mcp`（启动快照）+ `t:"mcp"`（运行期权威覆盖，2026-11-07
     //   §3.14）——两者以最近一次收到的为准；空载荷 ⇒ `RebuildMcpCard` 隐藏卡片、

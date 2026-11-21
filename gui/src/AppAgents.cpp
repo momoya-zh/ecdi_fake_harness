@@ -257,52 +257,23 @@ void HarnessApp::ClearFocusedAgentHighlight() {
     RequestRepaint();
 }
 
-// ── 定位（点卡上某一行）──────────────────────────────────────────────
+// ── 定位（点右栏「代理」卡上某一行：直接切换到对应子代理或主对话标签页）────
 void HarnessApp::FocusAgent(const std::string& agentId) {
-    if (!m_scroll || !m_sess) return;
-    if (agentId.empty()) {
-        if (!m_sess->activeAgentTab.empty()) {
-            SelectAgentTab("");
-        }
-        return;
-    }
+    if (!m_sess) return;
+    SelectAgentTab(agentId);
+}
+
+bool HarnessApp::IsRowHiddenByAgentTab(const RowRec& r) const {
+    if (!m_sess) return false;
     if (!m_sess->activeAgentTab.empty()) {
-        SelectAgentTab("");
+        return r.agentTag != m_sess->activeAgentTab;
     }
-    auto findAgentRow = [&]() -> const RowRec* {
-        for (const RowRec& r : m_sess->rows) {
-            if (r.agentTag == agentId) return &r;
-        }
-        return nullptr;
-    };
-    const RowRec* first = findAgentRow();
-    // 没找到 = 这个代理的块还没建（start 刚到、首个块还没到）⇒ 什么都不做。
-    if (!first) return;
-    // 若目标行所在回合处于折叠态，先展开该回合再定位。
-    if (first->foldHidden && first->timelineIdx < m_sess->timeline.size()) {
-        for (size_t i = first->timelineIdx + 1; i > 0; --i) {
-            const size_t ti = i - 1;
-            if (m_sess->timeline[ti].kind == TimelineEntry::Kind::Fold) {
-                if (!m_sess->timeline[ti].expanded) {
-                    ToggleTurn(ti);
-                }
-                break;
-            }
-        }
-        first = findAgentRow();
-        if (!first) return;
+    // 主对话视图（activeAgentTab 为空）：只要声明了 caps.agents，子代理的内部操作过程
+    // 只在对应子代理标签页内展示，不在主对话里平铺混排。
+    if (m_sess->hasAgentsCap && !r.agentTag.empty()) {
+        return true;
     }
-    m_focusedAgentId = agentId;
-    m_focusedAgentPulse = 60;
-    ApplyFocusedAgentHighlight();
-    Relayout();
-    first = findAgentRow();
-    if (!first) return;
-    // 留 8px 余量：目标行贴着视口上沿时读不出"它是谁的下一层"。
-    const int scrollY = std::min(std::max(0, first->y - 8), m_scroll->GetMaxOffsetY());
-    m_scroll->SetContentOffset(0, scrollY);
-    RefreshJumpButton();
-    RequestRepaint();
+    return false;
 }
 
 // ── 活跃代理数（顶栏胶囊用）────────────────────────────────────────────

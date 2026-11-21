@@ -72,7 +72,7 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
     //   而"视图状态写回模型"依赖这个下标指对地方（错位 = 把 A 的展开态写到 B 上）。
     stored.timelineIdx = timelineIdx;
     const bool inAgentTab = m_sess && !m_sess->activeAgentTab.empty();
-    stored.tabHidden = inAgentTab && (stored.agentTag != m_sess->activeAgentTab);
+    stored.tabHidden = IsRowHiddenByAgentTab(stored);
     if (m_options.rowModeList) {
         stored.panel->SetSize(ContentWidth(m_scroll), kListRowHeight);
     }
@@ -89,7 +89,7 @@ void HarnessApp::AddRow(std::unique_ptr<ECDI::Widget> row, const RowRec& rec,
         gutter->SetStyle(ECDI::PanelStyleOverride{
             .background = Pick(m_options.probeContrast, kLine, kProbeInk),
             .cornerRadius = 1.0f});
-        if (inAgentTab) gutter->SetVisible(false);
+        if (inAgentTab || stored.tabHidden) gutter->SetVisible(false);
         m_content->AddChild(std::move(gutter));
     }
     m_sess->rows.push_back(stored);
@@ -948,6 +948,7 @@ std::string HarnessApp::TurnSummary(size_t begin, size_t end) const {
         if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
         const Block* b = m_sess->transcript.FindBlock(e.id);
         if (!b || b->kind == "user") continue;
+        if (m_sess->hasAgentsCap && !b->agentId.empty()) continue;
         if (b->kind == "tool_call") ++steps;
         // 耗时口径：块自己的信封 `ts`（core 作者时刻）。缺一个就不显示——不做
         // "用现有最大的那个代替"（那是编造读数，同 `tokens` 的纪律）。
@@ -1048,6 +1049,7 @@ bool HarnessApp::RetagTurns() {
             const Block* b = m_sess->transcript.FindBlock(e.id);
             if (!b) continue;
             if (!b->ended) anyStreaming = true;
+            if (m_sess->hasAgentsCap && !b->agentId.empty()) continue;
             if (b->kind == "assistant" && b->ended && !b->text.empty()) lastAssistant = k;
         }
         // ★ 回合还在流式（或有待决权限门）⇒ 不折。折了会把正在写的那一行藏起来，
@@ -1058,6 +1060,7 @@ bool HarnessApp::RetagTurns() {
         }
 
         std::vector<size_t> proc;
+        size_t coreProcCount = 0;
         for (size_t k = begin; k < end; ++k) {
             if (k == lastAssistant) continue;   // 结论不折
             const TimelineEntry& e = tl[k];
@@ -1065,21 +1068,33 @@ bool HarnessApp::RetagTurns() {
             //   的 ask 必然已答（pending 已在上面 anyStreaming 一挡）；展开后结论由
             //   `answered/answer/answerAt` 经 `ApplyAnsweredLook` 原样还原，不丢审计。
             if (e.kind == TimelineEntry::Kind::Ask) {
-                if (!e.answer.empty()) proc.push_back(k);
+                if (!e.answer.empty()) {
+                    proc.push_back(k);
+                    ++coreProcCount;
+                }
+                continue;
+            }
+            if (e.kind == TimelineEntry::Kind::Notice) {
+                // 已答权限门追加的 "[answer] allow/deny" 通知行随本回合一并收起
+                if (e.text.rfind("[answer]", 0) == 0) {
+                    proc.push_back(k);
+                }
                 continue;
             }
             if (e.kind != TimelineEntry::Kind::Block || e.id.empty()) continue;
             const Block* b = m_sess->transcript.FindBlock(e.id);
             if (!b || b->kind == "user") continue;
+            if (m_sess->hasAgentsCap && !b->agentId.empty()) continue;
             if (b->kind == "tool_call" || b->kind == "tool_result" ||
                 b->kind == "reasoning" || b->kind == "assistant") {
                 proc.push_back(k);
+                ++coreProcCount;
             }
         }
 
         // 少于两条过程行不值得收——一条工具行本来就是收起态（只有标题一行），
         // 再套一层摘要条只会**多**一行、多一次点击，比现状更差。
-        if (proc.size() < 2) {
+        if (coreProcCount < 2) {
             i = end;
             continue;
         }
@@ -1218,7 +1233,7 @@ void HarnessApp::ApplyFoldVisibility() {
     if (!m_sess) return;
     const bool inAgentTab = !m_sess->activeAgentTab.empty();
     for (RowRec& r : m_sess->rows) {
-        const bool tabHide = inAgentTab && (r.agentTag != m_sess->activeAgentTab);
+        const bool tabHide = IsRowHiddenByAgentTab(r);
         r.tabHidden = tabHide;
         if (r.timelineIdx < m_sess->timeline.size()) {
             const TimelineEntry& e = m_sess->timeline[r.timelineIdx];
@@ -1229,10 +1244,10 @@ void HarnessApp::ApplyFoldVisibility() {
             r.foldHidden = e.foldHidden;
             r.foldBar = (e.kind == TimelineEntry::Kind::Fold);
         }
-        const bool show = inAgentTab ? !tabHide : !r.foldHidden;
+        const bool show = inAgentTab ? !tabHide : (!tabHide && !r.foldHidden);
         if (r.panel) r.panel->SetVisible(show);
         if (r.gutter && !m_options.rowModeList) {
-            r.gutter->SetVisible(!inAgentTab && !r.foldHidden);
+            r.gutter->SetVisible(!inAgentTab && !tabHide && !r.foldHidden);
         }
     }
 }
