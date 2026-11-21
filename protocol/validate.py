@@ -330,6 +330,62 @@ def check_stream(parsed, findings, is_resume=False, last_seq=None):
                 findings.hit("I10", i,
                              "workspace response without 'path'")
 
+    # ---- PROTOCOL 5 (v4, 2026-10-25): I11 model hot-switch acks -----------
+    # I11: each `model` response carries a non-empty `id` unique in the stream,
+    #      boolean `ok`, and `provider`; `ok:false` requires a non-empty
+    #      `message`; `ok:true` is only accepted while `state == "idle"` and
+    #      must report the adopted `provider`, `model`, `context`, `maxOutput`.
+    v4_stream = isinstance(declared_protocol, int) and declared_protocol >= 4
+    if v4_stream:
+        seen_model_ids = set()
+        cur_state = "idle"
+        for i, m in parsed:
+            if m is None:
+                continue
+            if m["t"] == "state" and isinstance(m.get("value"), str):
+                cur_state = m["value"]
+                continue
+            if m["t"] != "model":
+                continue
+            mid = m.get("id")
+            if not isinstance(mid, str) or not mid:
+                findings.hit("I11", i,
+                             "model response without a non-empty 'id'")
+                mid = None
+            if mid is not None and mid in seen_model_ids:
+                findings.hit("I11", i,
+                             "duplicate id %r across model responses" % mid)
+            elif mid is not None:
+                seen_model_ids.add(mid)
+            if not isinstance(m.get("provider"), str):
+                findings.hit("I11", i,
+                             "model response missing string 'provider'")
+            ok_val = m.get("ok")
+            if not isinstance(ok_val, bool):
+                findings.hit("I11", i,
+                             "model response missing boolean 'ok'")
+            elif ok_val is False:
+                if not isinstance(m.get("message"), str) or not m.get("message"):
+                    findings.hit("I11", i,
+                                 "model ok:false without non-empty 'message'")
+            else:
+                if cur_state != "idle":
+                    findings.hit("I11", i,
+                                 "model ok:true while state is %r (only legal "
+                                 "in 'idle')" % cur_state)
+                if not m.get("provider"):
+                    findings.hit("I11", i,
+                                 "model ok:true without non-empty 'provider'")
+                if not isinstance(m.get("model"), str) or not m.get("model"):
+                    findings.hit("I11", i,
+                                 "model ok:true without non-empty 'model'")
+                for cap_key in ("context", "maxOutput"):
+                    v = m.get(cap_key)
+                    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                        findings.hit("I11", i,
+                                     "model ok:true missing non-negative int "
+                                     "%r (got %r)" % (cap_key, v))
+
     # ---- PROTOCOL 5 (v5, 2026-11-04): I12 agent lifecycle, I13 delegation ----
     # I12: an `agent` id is unique in one stream; start/end each exactly once;
     #      any block or ask carrying `agent` must sit after its start and before

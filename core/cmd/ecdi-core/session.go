@@ -344,6 +344,19 @@ func (s *session) loadMemories() {
 	s.log("loaded memories: %d loaded, %d skipped", len(res.LoadedFiles), len(res.SkippedFiles))
 }
 
+func (s *session) isWorkspaceMemoryPath(rawPath string) bool {
+	if s.cwd == "" || strings.TrimSpace(rawPath) == "" {
+		return false
+	}
+	abs, err := resolveInWorkspace(s.cwd, rawPath)
+	if err != nil {
+		return false
+	}
+	memDir := filepath.Clean(filepath.Join(s.cwd, ".ecdi", "memory"))
+	return strings.EqualFold(filepath.Clean(filepath.Dir(abs)), memDir) &&
+		strings.HasSuffix(strings.ToLower(filepath.Base(abs)), ".md")
+}
+
 func (s *session) ensureCtxWriter() *contextlog.LogWriter {
 	if s.ctxWriter != nil {
 		return s.ctxWriter
@@ -913,6 +926,10 @@ func (s *session) runToolCall(turnCtx context.Context, c aggregatedCall, answerC
 	default:
 		res = s.execTool(turnCtx, c.Name, argsMap, callID)
 		s.log("tool %s executed: ok=%v len=%d", c.Name, res.OK, len(res.Output))
+		if p, _ := argsMap["path"].(string); res.OK && (c.Name == "write_file" || c.Name == "edit_file") && s.isWorkspaceMemoryPath(p) {
+			s.loadMemories()
+			s.invalidateUsageBase()
+		}
 	}
 
 	// tool_result 块（I7：必须带 for 指向已存在的 tool_call）
@@ -1760,7 +1777,8 @@ func (s *session) renderRequest() ([]chatMessage, maskStats) {
 		"工具：read_file / list_dir / find_files / grep 可直接用；write_file / edit_file / run_command "+
 		"每次都要经过用户确认，被拒绝时不要重试同一操作，先解释你要做什么或换个做法。\n"+
 		"改动代码优先 edit_file（逐字节精确替换），只有新建或整体重写才用 write_file；"+
-		"一条命令只做一件事，别把多步 shell 塞进一次调用。用用户的语言回答。", s.cwd)
+		"一条命令只做一件事，别把多步 shell 塞进一次调用。\n"+
+		"长期记忆：工作区 .ecdi/memory/*.md（仅扫描直接层 .md 文件并按文件名排序注入系统提示，预算为上下文容量的 10%%；通过 write_file / edit_file 修改后在下一轮请求即时生效）。用用户的语言回答。", s.cwd)
 	if s.agents.on {
 		sys += fmt.Sprintf("\n你还可以用 task 工具把**只读**探查任务派给子代理"+
 			"（同一条回复里给多个 task 会并行，最多 %d 路；每个子代理上限 %d 轮 / %s）。"+

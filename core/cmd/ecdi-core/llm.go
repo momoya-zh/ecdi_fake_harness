@@ -127,11 +127,6 @@ type aggregatedCall struct {
 func (c *llmClient) Stream(ctx context.Context, msgs []chatMessage, tools []toolDef,
 	onDelta func(content, reasoning string)) (calls []aggregatedCall, usage *chatUsage, err error) {
 
-	// tools 上交前套 OpenAI 兼容协议的包装层（toolEnvelope）。
-	enveloped := make([]toolEnvelope, len(tools))
-	for i, td := range tools {
-		enveloped[i] = toolEnvelope{Type: "function", Function: td}
-	}
 	body := map[string]any{
 		"model":    c.cfg.Model,
 		"messages": msgs,
@@ -139,9 +134,16 @@ func (c *llmClient) Stream(ctx context.Context, msgs []chatMessage, tools []tool
 	if c.cfg.MaxOutput > 0 {
 		body["max_tokens"] = c.cfg.MaxOutput
 	}
-	body["tools"] = enveloped
-	// 模型自己决定是否用工具（P3 纪律：core 不做策略）
-	body["tool_choice"] = "auto"
+	if len(tools) > 0 {
+		// tools 上交前套 OpenAI 兼容协议的包装层（toolEnvelope）。
+		enveloped := make([]toolEnvelope, len(tools))
+		for i, td := range tools {
+			enveloped[i] = toolEnvelope{Type: "function", Function: td}
+		}
+		body["tools"] = enveloped
+		// 模型自己决定是否用工具（P3 纪律：core 不做策略）
+		body["tool_choice"] = "auto"
+	}
 	body["stream"] = true
 	body["stream_options"] = map[string]any{
 		"include_usage": true, // 末尾块带 usage（真值纪律：不用就不用，不估）

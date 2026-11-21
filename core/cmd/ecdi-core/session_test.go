@@ -1192,6 +1192,44 @@ func TestMemory_ResumeNotice(t *testing.T) {
 	}
 }
 
+func TestMemory_DiscoverabilityAndLiveReload(t *testing.T) {
+	isolateMCPDiscovery(t)
+	ws := t.TempDir()
+
+	// 1. 空工作区（无 .ecdi/memory）时，system prompt 仍需说明 .ecdi/memory/*.md 机制
+	var recorded [][]byte
+	srv := newScriptedServer(t, "test-key-123", []sseScript{
+		{chunks: []string{deltaChunk("", "",
+			`[{"index":0,"id":"call_mem1","function":{"name":"write_file","arguments":"{\"path\":\".ecdi/memory/notes.md\",\"content\":\"Remember: code-pin-8848\"}"}}]`)}},
+		{chunks: []string{deltaChunk("已写入并生效。", "", "")}},
+	}, &recorded)
+	t.Cleanup(srv.Close)
+
+	s, col, lines, stc := newTestSession(t, srv.URL, "write_file", ws)
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":6,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"c-mem-live","text":"写一条记忆"}`)
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":2}`)
+	<-done
+
+	if len(recorded) != 2 {
+		t.Fatalf("expected 2 LLM requests, got %d", len(recorded))
+	}
+	req0 := string(recorded[0])
+	req1 := string(recorded[1])
+	if !strings.Contains(req0, ".ecdi/memory/*.md") {
+		t.Fatalf("first request system prompt should mention .ecdi/memory/*.md even when memory dir is empty: %s", req0)
+	}
+	if !strings.Contains(req1, "## 记忆 (Memory)") || !strings.Contains(req1, "Remember: code-pin-8848") {
+		t.Fatalf("second request in the same turn should immediately include reloaded memory after write_file: %s", req1)
+	}
+}
+
 // ── §7.3：轮内防爆（Stage 1 折叠 / Stage 2 压缩）───────────────
 
 // TestLoopE2E_ContextPruningMidTurn：单轮连续读大文件。

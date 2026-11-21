@@ -238,8 +238,22 @@ func (a *subagent) loop(ctx context.Context) (summary string, turns, inTok, outT
 		}
 		turns++
 
+		msgs := a.messages()
+		tools := toolDefsFor(false, 1)
+		// ★ 最后一轮收敛保护：若前序轮次已做过工具探查（history 非空）且当前已达 maxTurns，
+		//   不再提供工具定义并追加收敛提示，强制模型立即基于已收集的信息输出结论，避免把最后一轮
+		//   又花在 tool_call 上导致整趟探查以“未给出结论”全部作废。
+		if turns == a.sess.agents.maxTurns && len(a.history) > 0 {
+			tools = nil
+			msgs = append(msgs, chatMessage{
+				Role: "user",
+				Content: fmt.Sprintf("（系统提示：已达第 %d/%d 轮探查预算上限，本轮不再提供工具调用。请立即基于以上已获取的信息输出简短结论；若信息尚不完整，请把目前已查明的事实与缺口直接汇总出来。）",
+					turns, a.sess.agents.maxTurns),
+			})
+		}
+
 		blk := &streamBlocks{sess: a.sess, agentID: a.id, parentID: a.parentCall}
-		calls, usage, err := a.sess.llm.Stream(ctx, a.messages(), toolDefsFor(false, 1),
+		calls, usage, err := a.sess.llm.Stream(ctx, msgs, tools,
 			func(content, reasoning string) { blk.onDelta(content, reasoning, ctx) })
 		blk.closeAll(err == nil && ctx.Err() == nil)
 
@@ -281,8 +295,37 @@ func (a *subagent) loop(ctx context.Context) (summary string, turns, inTok, outT
 				ToolCallID: c.ID, Content: res.Output})
 		}
 	}
+	if fb := a.fallbackSummary(); fb != "" {
+		return fmt.Sprintf("（子代理已达轮数上限 %d 轮，以下为已获取的阶段进展）\n%s",
+			a.sess.agents.maxTurns, fb), turns, inTok, outTok, false
+	}
 	return fmt.Sprintf("（子代理已达轮数上限 %d 轮，未给出结论）", a.sess.agents.maxTurns),
 		turns, inTok, outTok, false
+}
+
+// fallbackSummary：超限兜底摘要——当子代理在最后一轮仍未收敛出纯文本结论时，
+// 从 history 提取最后一条非空 assistant 文本与已执行的工具轨迹，避免主代理收到“零信息”。
+func (a *subagent) fallbackSummary() string {
+	var lastText string
+	var toolTrace []string
+	for _, m := range a.history {
+		if m.Role == "assistant" {
+			if t := strings.TrimSpace(m.Content); t != "" {
+				lastText = t
+			}
+			for _, tc := range m.ToolCalls {
+				toolTrace = append(toolTrace, tc.Function.Name)
+			}
+		}
+	}
+	var parts []string
+	if lastText != "" {
+		parts = append(parts, lastText)
+	}
+	if len(toolTrace) > 0 {
+		parts = append(parts, fmt.Sprintf("已执行工具 %d 次：%s", len(toolTrace), strings.Join(toolTrace, " → ")))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // runTool：一次只读工具调用。**不过 ask 门**（委派即授权），但有第二道闸：
@@ -333,8 +376,8 @@ func (a *subagent) messages() []chatMessage {
 		"任务：%s\n"+
 		"你只能用 read_file / list_dir / find_files / grep（相对路径以工作区为根，越界会被拒绝），"+
 		"不能修改任何文件、不能执行命令、不能再派子代理。\n"+
-		"做完后用**简短结论**回答（不超过 200 字，不复述过程、不贴大段原文）；"+
-		"任务无法完成就直接说明原因。用用户的语言回答。", a.sess.cwd, a.task)
+		"你的探查预算上限为 %d 轮（同一轮可并行调用多个只读工具）；请在预算内完成探查并用**简短结论**回答（不超过 200 字，不复述过程、不贴大段原文）；"+
+		"任务无法完成就直接说明原因。用用户的语言回答。", a.sess.cwd, a.task, a.sess.agents.maxTurns)
 	msgs := make([]chatMessage, 0, len(a.history)+1)
 	msgs = append(msgs, chatMessage{Role: "system", Content: sys})
 	// ★ 子代理没有 API usage 锚点（它的 usage 只累加到 inTok/outTok），

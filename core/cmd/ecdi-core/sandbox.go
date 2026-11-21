@@ -10,8 +10,8 @@ import (
 // SandboxConfig 存储 run_command 的 L1 沙盒配置。
 type SandboxConfig struct {
 	Enabled        bool   // 是否启用 L1 沙盒（默认 true）
-	MemoryLimitMB  int    // 单个命令作业内存限制（MB，默认 1024；≤0 = 不设上限）
-	MaxProcesses   int    // 单个命令作业最大并发进程数（默认 32，防 fork 炸弹；≤0 = 用默认）
+	MemoryLimitMB  int    // 单个命令作业内存限制（MB，默认 1024；≤0 = 关闭内存上限）
+	MaxProcesses   int    // 单个命令作业最大并发进程数（默认 32，防 fork 炸弹；≤0 = 回落默认 32，并非无上限）
 	DropPrivileges bool   // 是否剥离管理与调试等高危特权（默认 true）
 	Shell          string // run_command 用的 shell：""/"auto" | "pwsh" | "powershell" | "cmd" | "sh"
 }

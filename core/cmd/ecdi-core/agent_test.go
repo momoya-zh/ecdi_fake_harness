@@ -665,3 +665,108 @@ func TestDeltaCoalescer_Concatenation(t *testing.T) {
 		t.Fatalf("合批没有减少消息数：add %d 次 → %d 条 delta", len(parts), len(msgs))
 	}
 }
+
+// ── ⑦ 轮数上限收敛与兜底摘要 ────────────────────────────────────
+
+func TestAgent_MaxTurnsConvergenceAndFallback(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.WriteFile(ws+"/note.md", []byte("key=77"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 臂 A（maxTurns=2）：第 1 轮调 read_file，第 2 轮（最后一轮）请求不再带 tools 且带收敛提示
+	rs := newRouteServer(
+		[]sseScript{
+			{chunks: []string{deltaChunk("", "", taskCallArgs("root_t1", "TASK-CONV 查 note.md", "收敛员"))}},
+			{chunks: []string{deltaChunk("主代理收到收敛结论。", "", "")}},
+		},
+		map[string][]sseScript{
+			"TASK-CONV": {
+				{chunks: []string{deltaChunk("先读文件看看", "",
+					`[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{\"path\":\"note.md\"}"}}]`)}},
+				{chunks: []string{deltaChunk("收敛结论：key=77", "", "")}},
+			},
+		},
+		nil,
+	)
+	srv := httptest.NewServer(rs.handler(t))
+	t.Cleanup(srv.Close)
+
+	s, col, lines, stc := newTestSessionAgents(t, srv.URL, ws,
+		agentOpts{on: true, maxParallel: 2, maxTurns: 2, timeout: 10 * time.Second})
+	done := runSession(s)
+	sendLine(lines, stc, `{"t":"hello","seq":0,"protocol":5,"gui":"test"}`)
+	waitFor(t, col, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+
+	sendLine(lines, stc, `{"t":"prompt","seq":1,"client_id":"c-conv","text":"测最后一轮收敛"}`)
+	ask := waitFor(t, col, "delegation ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	sendLine(lines, stc, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"allow"}`, mustJSON(ask["id"].(string))))
+	waitFor(t, col, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(lines, stc, `{"t":"bye","seq":3}`)
+	<-done
+
+	rs.mu.Lock()
+	var childBodies []string
+	for _, b := range rs.bodies {
+		if strings.Contains(b, childSysMarker) {
+			childBodies = append(childBodies, b)
+		}
+	}
+	rs.mu.Unlock()
+	if len(childBodies) != 2 {
+		t.Fatalf("子代理应跑满 2 轮请求，got %d", len(childBodies))
+	}
+	if !strings.Contains(childBodies[0], `"tools"`) {
+		t.Fatalf("第 1 轮请求应下发只读工具表")
+	}
+	if strings.Contains(childBodies[1], `"tools"`) {
+		t.Fatalf("最后一轮（第 2/2 轮）请求不应再下发 tools，以强制模型收敛出文本结论")
+	}
+	if !strings.Contains(childBodies[1], "本轮不再提供工具调用") {
+		t.Fatalf("最后一轮请求缺少收敛提示：%s", childBodies[1])
+	}
+
+	// 臂 B：若服务端无视 tools=nil 仍强行返回 tool_call，超限兜底应保留已获取文本与工具轨迹
+	rsFallback := newRouteServer(
+		[]sseScript{
+			{chunks: []string{deltaChunk("", "", taskCallArgs("root_t2", "TASK-FB 查 note.md", "兜底员"))}},
+			{chunks: []string{deltaChunk("主代理收到阶段进展。", "", "")}},
+		},
+		map[string][]sseScript{
+			"TASK-FB": {
+				{chunks: []string{deltaChunk("阶段发现：找到 note.md", "",
+					`[{"index":0,"id":"f1","function":{"name":"read_file","arguments":"{\"path\":\"note.md\"}"}}]`)}},
+				{chunks: []string{deltaChunk("", "",
+					`[{"index":0,"id":"f2","function":{"name":"list_dir","arguments":"{}"}}]`)}},
+			},
+		},
+		nil,
+	)
+	srvFB := httptest.NewServer(rsFallback.handler(t))
+	t.Cleanup(srvFB.Close)
+
+	sFB, colFB, linesFB, stcFB := newTestSessionAgents(t, srvFB.URL, ws,
+		agentOpts{on: true, maxParallel: 2, maxTurns: 2, timeout: 10 * time.Second})
+	doneFB := runSession(sFB)
+	sendLine(linesFB, stcFB, `{"t":"hello","seq":0,"protocol":5,"gui":"test"}`)
+	waitFor(t, colFB, "hello", func(m map[string]any) bool { return m["t"] == "hello" })
+
+	sendLine(linesFB, stcFB, `{"t":"prompt","seq":1,"client_id":"c-fb","text":"测超限兜底"}`)
+	askFB := waitFor(t, colFB, "delegation ask", func(m map[string]any) bool { return m["t"] == "ask" })
+	sendLine(linesFB, stcFB, fmt.Sprintf(`{"t":"answer","seq":2,"id":%s,"choice":"allow"}`, mustJSON(askFB["id"].(string))))
+	waitFor(t, colFB, "state idle", func(m map[string]any) bool {
+		return m["t"] == "state" && m["value"] == "idle"
+	})
+	sendLine(linesFB, stcFB, `{"t":"bye","seq":3}`)
+	<-doneFB
+
+	ends := agentMsgs(t, colFB, "end")
+	if len(ends) != 1 || ends[0]["ok"] != false {
+		t.Fatalf("超限未收敛时 agent end 应为 ok:false，got %v", ends)
+	}
+	if !hasDeltaWith(colFB, "阶段发现：找到 note.md") || !hasDeltaWith(colFB, "read_file → list_dir") {
+		t.Fatalf("超限兜底未保留已获取文本与工具轨迹")
+	}
+}

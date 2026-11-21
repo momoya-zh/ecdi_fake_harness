@@ -159,7 +159,7 @@ func toolDefsFor(agents bool, depth int) []toolDef {
 				"content": str("完整文件内容（UTF-8）。写空文件必须显式传 \"\"，缺参数 ≠ 空内容"),
 			}, "path", "content")},
 		{Name: "edit_file",
-			Description: "在工作区内按**逐字节精确匹配**替换文本（单处传 old_string+new_string，同文件多处传 edits 数组按序原子应用；默认要求唯一匹配，replace_all=true 允许替换全部）。改小段内容优先用它，别整文件重写",
+			Description: "在工作区内按**逐字节精确匹配**替换文本（单处传 old_string+new_string，同文件多处传 edits 数组按序原子应用；默认要求唯一匹配，replace_all=true 允许替换全部；文件上限 1MB）。改小段内容优先用它，别整文件重写",
 			Parameters: obj(map[string]any{
 				"path":        pathProp(),
 				"old_string":  str("单处编辑：要被替换的原文，必须与文件内容逐字节一致（含缩进与换行）"),
